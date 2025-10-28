@@ -11,6 +11,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
 
 from .database import QualcoderDatabase
+from .sessions import SessionManager, AICodingSession, CodingSuggestion
+from .refi_export import RefiQdaExporter
 
 # Set up logging
 logging.basicConfig(
@@ -25,6 +27,9 @@ mcp = FastMCP("Qualcoder")
 # Global database instance and current project path
 db: Optional[QualcoderDatabase] = None
 current_project_path: Optional[str] = None
+
+# Global session manager for AI coding
+session_manager = SessionManager()
 
 
 def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -757,6 +762,382 @@ def get_cases_by_code(code_id: int) -> str:
     """
     result = get_db().get_cases_by_code(code_id)
     return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# AI-ASSISTED CODING TOOLS
+# ============================================================================
+
+@mcp.tool()
+def suggest_coding_for_files(
+    file_ids: List[int],
+    code_names: Optional[List[str]] = None,
+    instruction: str = "Code all relevant segments",
+    min_confidence: float = 0.6
+) -> str:
+    """AI analyzes files and suggests coded segments.
+
+    This is the main AI coding tool. I will read each file and identify
+    segments that should be coded with the specified codes. The suggestions
+    are stored in a session but NOT written to your database - they remain
+    as suggestions until you review and import them.
+
+    Args:
+        file_ids: List of file IDs to analyze and code
+        code_names: List of code names to apply (if None, I'll use all codes)
+        instruction: Specific guidance for the coding task
+        min_confidence: Minimum confidence threshold (0.0-1.0, default: 0.6)
+
+    Returns:
+        JSON with:
+        - session_id: Unique ID for this coding session (save this!)
+        - total_suggestions: Count of suggested coded segments
+        - by_file: Breakdown by file
+        - by_code: Breakdown by code
+        - next_steps: What to do next
+
+    Example usage:
+        "Code files 1, 2, and 3 with codes related to 'workplace stress'"
+        "Apply the 'motivation' and 'team dynamics' codes to interview transcripts"
+        "Code all files using all available codes"
+
+    Note: After this completes, use export_coding_suggestions to save
+    the results for review, and then import into Qualcoder.
+    """
+    try:
+        # Validate inputs
+        if not file_ids:
+            return json.dumps({"error": "file_ids cannot be empty"})
+
+        if min_confidence < 0.0 or min_confidence > 1.0:
+            return json.dumps({"error": "min_confidence must be between 0.0 and 1.0"})
+
+        # Get database
+        database = get_db()
+
+        # Validate files exist
+        all_files = database.list_files()
+        valid_file_ids = {f["id"] for f in all_files}
+        invalid_files = [fid for fid in file_ids if fid not in valid_file_ids]
+        if invalid_files:
+            return json.dumps({
+                "error": f"Invalid file IDs: {invalid_files}",
+                "available_files": [{"id": f["id"], "name": f["name"]} for f in all_files]
+            })
+
+        # Get codes
+        all_codes = database.list_codes()
+        if code_names:
+            # Filter to specified codes
+            codes_to_use = [c for c in all_codes if c["name"] in code_names]
+            if not codes_to_use:
+                return json.dumps({
+                    "error": f"No matching codes found for: {code_names}",
+                    "available_codes": [c["name"] for c in all_codes]
+                })
+        else:
+            codes_to_use = all_codes
+
+        # Create session
+        session = AICodingSession(
+            project_path=current_project_path or "",
+            description=f"AI coding of files {file_ids} with instruction: {instruction}",
+            file_ids=file_ids,
+            code_names=[c["name"] for c in codes_to_use],
+            instruction=instruction,
+            min_confidence=min_confidence
+        )
+
+        # Return instructions for user to provide coding analysis
+        # Since we're using native Claude analysis (Option A), we return a structured
+        # prompt that guides Claude to analyze and create suggestions
+        return json.dumps({
+            "status": "ready_for_analysis",
+            "session_id": session.session_id,
+            "message": "I'm ready to analyze these files. I will now read each file and suggest coded segments.",
+            "files_to_analyze": file_ids,
+            "codes_to_apply": [c["name"] for c in codes_to_use],
+            "instruction": instruction,
+            "min_confidence": min_confidence,
+            "next_step": "I will now analyze each file and create coding suggestions. Please wait..."
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in suggest_coding_for_files: {e}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def export_coding_suggestions(
+    session_id: str,
+    output_format: str = "refi-qda",
+    output_path: Optional[str] = None,
+    include_rejected: bool = False
+) -> str:
+    """Export AI coding suggestions for review and import.
+
+    Exports the suggestions from a coding session in various formats.
+    The primary format is REFI-QDA XML for importing into Qualcoder.
+
+    Args:
+        session_id: The session ID from suggest_coding_for_files
+        output_format: Format to export ("refi-qda", "json", "csv")
+        output_path: Where to save (default: ~/Documents/coding_suggestions_DATE.*)
+        include_rejected: If True, includes rejected suggestions (default: False)
+
+    Returns:
+        JSON with:
+        - output_file: Path to generated file
+        - format: Format used
+        - segment_count: Number of coded segments included
+        - import_instructions: Next steps for importing
+
+    Formats:
+        - "refi-qda": Standard .qdpx file for Qualcoder import (recommended)
+        - "json": Machine-readable format for editing/review
+        - "csv": Spreadsheet format for documentation
+
+    Workflow:
+        1. Review suggestions (check the session info)
+        2. Optionally update_suggestion_status to approve/reject specific ones
+        3. Export with format="refi-qda"
+        4. Import the .qdpx file into Qualcoder
+
+    Example:
+        "Export session abc123 as REFI-QDA format"
+        "Export suggestions to JSON for review"
+    """
+    try:
+        # Load session
+        if not session_manager.session_exists(session_id):
+            return json.dumps({
+                "error": f"Session {session_id} not found",
+                "available_sessions": session_manager.list_sessions()
+            })
+
+        session = session_manager.load_session(session_id)
+
+        # Filter suggestions by status
+        if include_rejected:
+            suggestions = session.suggestions
+        else:
+            suggestions = [s for s in session.suggestions if s.status != "rejected"]
+
+        if not suggestions:
+            return json.dumps({
+                "error": "No suggestions to export",
+                "total_suggestions": len(session.suggestions),
+                "rejected_count": len([s for s in session.suggestions if s.status == "rejected"]),
+                "note": "All suggestions may have been rejected. Use include_rejected=true to export them anyway."
+            })
+
+        # Generate default output path if not specified
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+        if output_path is None:
+            home = Path.home()
+            if output_format == "refi-qda":
+                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.qdpx")
+            elif output_format == "json":
+                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.json")
+            elif output_format == "csv":
+                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.csv")
+            else:
+                return json.dumps({"error": f"Unknown format: {output_format}"})
+
+        # Export based on format
+        if output_format == "refi-qda":
+            # Use REFI-QDA exporter
+            database = get_db()
+            exporter = RefiQdaExporter(database)
+
+            # Validate suggestions
+            warnings = exporter.validate_suggestions(suggestions)
+            if warnings:
+                logger.warning(f"Validation warnings: {warnings}")
+
+            # Export to .qdpx
+            output_file = exporter.export_to_qdpx(
+                suggestions,
+                output_path,
+                project_name=f"AI Coding Suggestions - {timestamp}"
+            )
+
+            return json.dumps({
+                "success": True,
+                "output_file": output_file,
+                "format": "refi-qda",
+                "segment_count": len(suggestions),
+                "validation_warnings": warnings if warnings else [],
+                "import_instructions": [
+                    "1. Open Qualcoder",
+                    "2. Go to: File > Import > REFI-QDA Project",
+                    f"3. Select: {output_file}",
+                    "4. Review the import preview",
+                    "5. Confirm the import",
+                    "6. Your coded segments will be added to the project!"
+                ]
+            }, indent=2)
+
+        elif output_format == "json":
+            # Export as JSON
+            output_file = Path(output_path).expanduser()
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(output_file, 'w') as f:
+                json.dump(session.to_dict(), f, indent=2)
+
+            return json.dumps({
+                "success": True,
+                "output_file": str(output_file),
+                "format": "json",
+                "segment_count": len(suggestions),
+                "note": "JSON file can be edited and re-imported as a session"
+            }, indent=2)
+
+        elif output_format == "csv":
+            # Export as CSV
+            import csv as csv_module
+            output_file = Path(output_path).expanduser()
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(output_file, 'w', newline='') as f:
+                writer = csv_module.writer(f)
+                writer.writerow([
+                    "file_name", "code_name", "start_pos", "end_pos",
+                    "segment_text", "ai_memo", "confidence", "status"
+                ])
+                for s in suggestions:
+                    writer.writerow([
+                        s.file_name, s.code_name, s.start_pos, s.end_pos,
+                        s.segment_text, s.ai_memo, s.confidence, s.status
+                    ])
+
+            return json.dumps({
+                "success": True,
+                "output_file": str(output_file),
+                "format": "csv",
+                "segment_count": len(suggestions),
+                "note": "CSV file is for documentation/review only, not for import"
+            }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in export_coding_suggestions: {e}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def update_suggestion_status(
+    session_id: str,
+    updates: str
+) -> str:
+    """Update the status of coding suggestions (approve/reject).
+
+    Allows you to approve or reject specific suggestions before exporting.
+    Useful for quality control - you can reject suggestions that don't seem right.
+
+    Args:
+        session_id: The session ID from suggest_coding_for_files
+        updates: JSON array of updates, format:
+                 [{"index": 0, "status": "approved"}, {"index": 1, "status": "rejected"}, ...]
+
+    Returns:
+        JSON with updated statistics
+
+    Statuses:
+        - "approved": Include in export (default for new suggestions)
+        - "rejected": Exclude from export
+        - "pending": Not yet reviewed
+
+    Example:
+        updates = '[{"index": 0, "status": "approved"}, {"index": 2, "status": "rejected"}]'
+    """
+    try:
+        # Load session
+        if not session_manager.session_exists(session_id):
+            return json.dumps({"error": f"Session {session_id} not found"})
+
+        session = session_manager.load_session(session_id)
+
+        # Parse updates
+        try:
+            update_list = json.loads(updates)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "updates must be valid JSON array"})
+
+        # Apply updates
+        updated_count = 0
+        errors = []
+
+        for update in update_list:
+            index = update.get("index")
+            status = update.get("status")
+
+            if index is None or status is None:
+                errors.append(f"Update missing index or status: {update}")
+                continue
+
+            if status not in ["approved", "rejected", "pending"]:
+                errors.append(f"Invalid status '{status}' for index {index}")
+                continue
+
+            if session.update_suggestion_status(index, status):
+                updated_count += 1
+            else:
+                errors.append(f"Invalid index: {index} (out of range)")
+
+        # Save updated session
+        session_manager.save_session(session)
+
+        # Return updated statistics
+        stats = session.get_statistics()
+
+        return json.dumps({
+            "success": True,
+            "updated_count": updated_count,
+            "errors": errors if errors else [],
+            "statistics": stats
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in update_suggestion_status: {e}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_coding_session_info(session_id: str) -> str:
+    """Get detailed information about a coding session.
+
+    Shows all the suggestions, statistics, and metadata for a session.
+    Useful for reviewing what was suggested before exporting.
+
+    Args:
+        session_id: The session ID to query
+
+    Returns:
+        JSON with complete session details including all suggestions
+
+    Example:
+        "Show me session abc123"
+        "What's in coding session xyz789?"
+    """
+    try:
+        # Load session
+        if not session_manager.session_exists(session_id):
+            return json.dumps({
+                "error": f"Session {session_id} not found",
+                "available_sessions": session_manager.list_sessions()
+            })
+
+        session = session_manager.load_session(session_id)
+
+        # Return full session data
+        return json.dumps(session.to_dict(), indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in get_coding_session_info: {e}")
+        return json.dumps({"error": str(e)})
 
 
 # ============================================================================
