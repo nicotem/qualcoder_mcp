@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
+      "args": [
+        "-m",
+        "qualcoder_mcp.server"
+      ],
+      "env": {
+        "QUALCODER_PROJECT_PATH": "/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda"
+      }
+    }
+  }
+}
