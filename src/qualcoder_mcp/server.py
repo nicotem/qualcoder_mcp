@@ -543,6 +543,222 @@ def get_project_summary() -> str:
     return json.dumps(summary, indent=2)
 
 
+@mcp.tool()
+def analyze_file_with_coding(file_id: int) -> str:
+    """Analyze a text file with all its coded segments for rich context analysis.
+
+    This tool retrieves the complete text of a file along with all coding information,
+    enabling deep analysis that considers both coded segments and the full context.
+    Perfect for analyzing interview transcripts, documents, or any text where you need
+    to see both the structured coding and the complete narrative.
+
+    Use this when you want to:
+    - Answer questions that require understanding the full context
+    - Find passages that may not be directly coded but are relevant
+    - Analyze how a participant discusses multiple themes
+    - Understand the relationship between coded and uncoded text
+
+    Args:
+        file_id: The numeric ID of the file to analyze
+
+    Returns:
+        JSON object with:
+        - file_info: File metadata (name, type, date)
+        - full_text: Complete text of the file
+        - coded_segments: All coded segments with positions, codes, and memos
+        - codes_used: Summary of which codes appear in this file
+        - annotations: Any annotations on the file
+        - statistics: Coding coverage and density metrics
+
+    Example use case:
+        "What does Paul say that has relevance to the Wisdom of the Crowds argument?"
+        This requires seeing both coded segments AND the full transcript context.
+    """
+    result = get_db().get_file_with_coding(file_id)
+    if result is None:
+        return json.dumps({
+            "error": f"File with id {file_id} not found"
+        })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def list_attribute_types() -> str:
+    """List all attribute types defined in the project.
+
+    Attributes are used to store demographics, metadata, or other characteristics
+    about files or cases (e.g., age, gender, location, interview_type).
+
+    Returns:
+        JSON array of attribute types with:
+        - name: Attribute name
+        - value_type: Data type (character, numeric)
+        - applies_to: Whether it's for 'case' or 'file'
+        - memo: Description of the attribute
+    """
+    result = get_db().list_attribute_types()
+    return json.dumps({
+        "attribute_count": len(result),
+        "attributes": result
+    }, indent=2)
+
+
+@mcp.tool()
+def get_file_attributes(file_id: int) -> str:
+    """Get all attribute values for a specific file.
+
+    Retrieves demographics or metadata assigned to a file
+    (e.g., document_type, source, date_collected).
+
+    Args:
+        file_id: The numeric ID of the file
+
+    Returns:
+        JSON array of attributes with their values for this file
+    """
+    result = get_db().get_file_attributes(file_id)
+    return json.dumps({
+        "file_id": file_id,
+        "attribute_count": len(result),
+        "attributes": result
+    }, indent=2)
+
+
+@mcp.tool()
+def get_case_attributes(case_id: int) -> str:
+    """Get all attribute values for a specific case.
+
+    Retrieves demographics or metadata for a case/participant
+    (e.g., age, gender, education_level).
+
+    Args:
+        case_id: The numeric ID of the case
+
+    Returns:
+        JSON array of attributes with their values for this case
+    """
+    result = get_db().get_case_attributes(case_id)
+    return json.dumps({
+        "case_id": case_id,
+        "attribute_count": len(result),
+        "attributes": result
+    }, indent=2)
+
+
+@mcp.tool()
+def query_by_attribute(attr_name: str, attr_value: str, attr_type: str = "case") -> str:
+    """Find cases or files that have a specific attribute value.
+
+    This enables demographic or metadata-based queries like:
+    - "Find all participants over age 50"
+    - "Get files where interview_type is 'focus_group'"
+    - "Find cases with education_level 'graduate'"
+
+    Args:
+        attr_name: Name of the attribute to query
+        attr_value: Value to search for (exact match for numeric, substring for text)
+        attr_type: Either 'case' or 'file' (default: 'case')
+
+    Returns:
+        JSON object with:
+        - matches: Array of cases/files matching the criteria
+        - Each match includes the entity details plus all their attributes
+    """
+    result = get_db().query_by_attribute(attr_name, attr_value, attr_type)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
+    """Find codes that appear together with a specific code.
+
+    This tool identifies co-occurrence patterns - which codes tend to appear
+    in the same segments or nearby in the text. Essential for discovering
+    relationships between themes and concepts.
+
+    Args:
+        code_id: The numeric ID of the code to analyze
+        window_size: How to define "co-occurrence":
+                    - 0 (default): Codes that overlap the same text segment
+                    - N > 0: Codes within N characters of each other
+
+    Returns:
+        JSON object with:
+        - code_info: Details about the primary code
+        - cooccurring_codes: Array of codes that appear together, sorted by frequency
+        - Each includes overlap count and percentage
+
+    Example uses:
+    - "What themes appear together with 'workplace stress'?"
+    - "Find patterns of co-occurring codes"
+    - "Which codes never appear with 'job satisfaction'?"
+    """
+    result = get_db().find_code_cooccurrences(code_id, window_size)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def get_case_code_matrix() -> str:
+    """Get a matrix showing which codes appear in which cases.
+
+    This tool creates a cross-tabulation of all cases and codes, showing
+    which codes have been applied to text segments from each case. Essential
+    for comparative analysis across participants.
+
+    Returns:
+        JSON object with:
+        - matrix: 2D array where matrix[case][code] = segment count
+        - case_labels: Array of case names
+        - code_labels: Array of code names
+        - statistics: Row and column totals
+
+    Example uses:
+    - "Which cases mention 'job satisfaction'?"
+    - "Create a comparison table of themes by participant"
+    - "Find cases that never mention certain codes"
+    """
+    result = get_db().get_case_code_matrix()
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def get_codes_by_case(case_id: int) -> str:
+    """Get all codes that appear in a specific case.
+
+    Shows which themes/codes have been identified in a particular
+    case's text segments, with frequency counts.
+
+    Args:
+        case_id: The numeric ID of the case
+
+    Returns:
+        JSON object with:
+        - case_info: Case details
+        - codes: Array of codes used in this case with segment counts
+    """
+    result = get_db().get_codes_by_case(case_id)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def get_cases_by_code(code_id: int) -> str:
+    """Get all cases that contain a specific code.
+
+    Shows which cases/participants have text segments coded with
+    a particular theme or code.
+
+    Args:
+        code_id: The numeric ID of the code
+
+    Returns:
+        JSON object with:
+        - code_info: Code details
+        - cases: Array of cases containing this code with segment counts
+    """
+    result = get_db().get_cases_by_code(code_id)
+    return json.dumps(result, indent=2)
+
+
 # ============================================================================
 # PROMPTS - Interaction templates
 # ============================================================================

@@ -469,41 +469,197 @@ class QualcoderDatabase:
 
         Returns:
             File content and metadata
+
+        Raises:
+            TypeError: If file_id is not an integer
+            ValueError: If file_id is negative
+            RuntimeError: If database operation fails
         """
-        cursor = self.conn.execute("""
-            SELECT
-                id,
-                name,
-                fulltext,
-                memo,
-                owner,
-                date,
-                mediapath
-            FROM source
-            WHERE id = ?
-        """, (file_id,))
+        file_id = validate_id(file_id, "file_id")
 
-        row = cursor.fetchone()
-        if not row:
-            return None
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    id,
+                    name,
+                    fulltext,
+                    memo,
+                    owner,
+                    date,
+                    mediapath
+                FROM source
+                WHERE id = ?
+            """, (file_id,))
 
-        # Count codes in this file
-        code_count = self.conn.execute(
-            "SELECT COUNT(DISTINCT cid) as cnt FROM code_text WHERE fid = ?",
-            (file_id,)
-        ).fetchone()["cnt"]
+            row = cursor.fetchone()
+            if not row:
+                return None
 
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "content": row["fulltext"] or "",
-            "memo": row["memo"] or "",
-            "owner": row["owner"],
-            "date": row["date"],
-            "media_path": row["mediapath"],
-            "is_text": not row["mediapath"] or row["mediapath"] == "",
-            "code_count": code_count
-        }
+            # Count codes in this file
+            code_count = self.conn.execute(
+                "SELECT COUNT(DISTINCT cid) as cnt FROM code_text WHERE fid = ?",
+                (file_id,)
+            ).fetchone()["cnt"]
+
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "content": row["fulltext"] or "",
+                "memo": row["memo"] or "",
+                "owner": row["owner"],
+                "date": row["date"],
+                "media_path": row["mediapath"],
+                "is_text": not row["mediapath"] or row["mediapath"] == "",
+                "code_count": code_count
+            }
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_file_content: {e}")
+            raise RuntimeError("Failed to retrieve file content") from None
+
+    def get_file_with_coding(self, file_id: int) -> Optional[Dict[str, Any]]:
+        """Get a file with all its coded segments for rich context analysis.
+
+        This method retrieves the full text along with all coding information,
+        allowing AI analysis that considers both coded segments and full context.
+
+        Args:
+            file_id: The file ID
+
+        Returns:
+            Dictionary with:
+            - file_info: Basic file metadata
+            - full_text: Complete file text
+            - coded_segments: All coded segments with positions, codes, memos
+            - codes_used: Summary of codes applied to this file
+            - annotations: Any annotations on the file
+
+        Raises:
+            TypeError: If file_id is not an integer
+            ValueError: If file_id is negative
+            RuntimeError: If database operation fails
+        """
+        file_id = validate_id(file_id, "file_id")
+
+        try:
+            # Get file info
+            file_cursor = self.conn.execute("""
+                SELECT
+                    id,
+                    name,
+                    fulltext,
+                    memo,
+                    owner,
+                    date
+                FROM source
+                WHERE id = ?
+            """, (file_id,))
+
+            file_row = file_cursor.fetchone()
+            if not file_row:
+                return None
+
+            # Get all coded segments for this file
+            segments_cursor = self.conn.execute("""
+                SELECT
+                    ct.ctid,
+                    ct.pos0,
+                    ct.pos1,
+                    ct.seltext,
+                    ct.memo as segment_memo,
+                    ct.owner,
+                    ct.date,
+                    ct.important,
+                    c.cid,
+                    c.name as code_name,
+                    c.color as code_color,
+                    cat.name as category_name
+                FROM code_text ct
+                JOIN code_name c ON ct.cid = c.cid
+                LEFT JOIN code_cat cat ON c.catid = cat.catid
+                WHERE ct.fid = ?
+                ORDER BY ct.pos0
+            """, (file_id,))
+
+            coded_segments = []
+            codes_used = {}
+
+            for seg_row in segments_cursor.fetchall():
+                segment = {
+                    "segment_id": seg_row["ctid"],
+                    "position_start": seg_row["pos0"],
+                    "position_end": seg_row["pos1"],
+                    "text": seg_row["seltext"],
+                    "memo": seg_row["segment_memo"] or "",
+                    "owner": seg_row["owner"],
+                    "date": seg_row["date"],
+                    "important": bool(seg_row["important"]),
+                    "code": {
+                        "id": seg_row["cid"],
+                        "name": seg_row["code_name"],
+                        "color": seg_row["code_color"],
+                        "category": seg_row["category_name"]
+                    }
+                }
+                coded_segments.append(segment)
+
+                # Track codes used
+                code_name = seg_row["code_name"]
+                if code_name not in codes_used:
+                    codes_used[code_name] = {
+                        "count": 0,
+                        "category": seg_row["category_name"],
+                        "color": seg_row["code_color"]
+                    }
+                codes_used[code_name]["count"] += 1
+
+            # Get annotations
+            annotations_cursor = self.conn.execute("""
+                SELECT
+                    anid,
+                    pos0,
+                    pos1,
+                    memo,
+                    owner,
+                    date
+                FROM annotation
+                WHERE fid = ?
+                ORDER BY pos0
+            """, (file_id,))
+
+            annotations = []
+            for ann_row in annotations_cursor.fetchall():
+                annotations.append({
+                    "annotation_id": ann_row["anid"],
+                    "position_start": ann_row["pos0"],
+                    "position_end": ann_row["pos1"],
+                    "memo": ann_row["memo"],
+                    "owner": ann_row["owner"],
+                    "date": ann_row["date"]
+                })
+
+            return {
+                "file_info": {
+                    "id": file_row["id"],
+                    "name": file_row["name"],
+                    "memo": file_row["memo"] or "",
+                    "owner": file_row["owner"],
+                    "date": file_row["date"]
+                },
+                "full_text": file_row["fulltext"] or "",
+                "coded_segments": coded_segments,
+                "codes_used": codes_used,
+                "annotations": annotations,
+                "statistics": {
+                    "total_segments": len(coded_segments),
+                    "unique_codes": len(codes_used),
+                    "total_annotations": len(annotations),
+                    "text_length": len(file_row["fulltext"] or "")
+                }
+            }
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_file_with_coding: {e}")
+            raise RuntimeError("Failed to retrieve file with coding") from None
 
     def list_cases(self) -> List[Dict[str, Any]]:
         """Get all cases in the project.
@@ -855,3 +1011,422 @@ class QualcoderDatabase:
                 "owner": row["owner"]
             })
         return entries
+
+    # ============================================================================
+    # ATTRIBUTES - Demographics and metadata
+    # ============================================================================
+
+    def list_attribute_types(self) -> List[Dict[str, Any]]:
+        """Get all attribute type definitions.
+
+        Returns:
+            List of attribute types with their properties
+        """
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    name,
+                    date,
+                    owner,
+                    memo,
+                    caseOrFile,
+                    valuetype
+                FROM attribute_type
+                ORDER BY name
+            """)
+
+            attributes = []
+            for row in cursor.fetchall():
+                attributes.append({
+                    "name": row["name"],
+                    "date": row["date"],
+                    "owner": row["owner"],
+                    "memo": row["memo"] or "",
+                    "applies_to": row["caseOrFile"],  # 'case', 'file', or 'both'
+                    "value_type": row["valuetype"]  # 'character' or 'numeric'
+                })
+            return attributes
+        except sqlite3.Error as e:
+            logger.error(f"Database error in list_attribute_types: {e}")
+            raise RuntimeError("Failed to retrieve attribute types") from None
+
+    def get_file_attributes(self, file_id: int) -> List[Dict[str, Any]]:
+        """Get all attributes for a specific file.
+
+        Args:
+            file_id: The file ID
+
+        Returns:
+            List of attributes with names and values
+        """
+        file_id = validate_id(file_id, "file_id")
+
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    a.attrid,
+                    a.name,
+                    a.value,
+                    a.date,
+                    a.owner,
+                    at.valuetype,
+                    at.memo
+                FROM attribute a
+                JOIN attribute_type at ON a.name = at.name
+                WHERE a.attr_type = 'file' AND a.id = ?
+                ORDER BY a.name
+            """, (file_id,))
+
+            attributes = []
+            for row in cursor.fetchall():
+                attributes.append({
+                    "attribute_id": row["attrid"],
+                    "name": row["name"],
+                    "value": row["value"],
+                    "value_type": row["valuetype"],
+                    "memo": row["memo"] or "",
+                    "date": row["date"],
+                    "owner": row["owner"]
+                })
+            return attributes
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_file_attributes: {e}")
+            raise RuntimeError("Failed to retrieve file attributes") from None
+
+    def get_case_attributes(self, case_id: int) -> List[Dict[str, Any]]:
+        """Get all attributes for a specific case.
+
+        Args:
+            case_id: The case ID
+
+        Returns:
+            List of attributes with names and values
+        """
+        case_id = validate_id(case_id, "case_id")
+
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    a.attrid,
+                    a.name,
+                    a.value,
+                    a.date,
+                    a.owner,
+                    at.valuetype,
+                    at.memo
+                FROM attribute a
+                JOIN attribute_type at ON a.name = at.name
+                WHERE a.attr_type = 'case' AND a.id = ?
+                ORDER BY a.name
+            """, (case_id,))
+
+            attributes = []
+            for row in cursor.fetchall():
+                attributes.append({
+                    "attribute_id": row["attrid"],
+                    "name": row["name"],
+                    "value": row["value"],
+                    "value_type": row["valuetype"],
+                    "memo": row["memo"] or "",
+                    "date": row["date"],
+                    "owner": row["owner"]
+                })
+            return attributes
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_case_attributes: {e}")
+            raise RuntimeError("Failed to retrieve case attributes") from None
+
+    def query_by_attribute(self, attr_name: str, attr_value: str,
+                           attr_type: str = "case") -> List[Dict[str, Any]]:
+        """Query cases or files by attribute value.
+
+        Args:
+            attr_name: The attribute name to filter by
+            attr_value: The attribute value to match
+            attr_type: 'case' or 'file'
+
+        Returns:
+            List of cases or files matching the attribute criteria
+        """
+        if not isinstance(attr_name, str) or not isinstance(attr_value, str):
+            raise TypeError("attr_name and attr_value must be strings")
+
+        if attr_type not in ['case', 'file']:
+            raise ValueError("attr_type must be 'case' or 'file'")
+
+        try:
+            if attr_type == 'case':
+                cursor = self.conn.execute("""
+                    SELECT
+                        c.caseid,
+                        c.name,
+                        c.memo,
+                        a.value as attr_value
+                    FROM cases c
+                    JOIN attribute a ON c.caseid = a.id AND a.attr_type = 'case'
+                    WHERE a.name = ? AND a.value = ?
+                    ORDER BY c.name
+                """, (attr_name, attr_value))
+
+                results = []
+                for row in cursor.fetchall():
+                    results.append({
+                        "case_id": row["caseid"],
+                        "name": row["name"],
+                        "memo": row["memo"] or "",
+                        "attribute_value": row["attr_value"]
+                    })
+            else:  # file
+                cursor = self.conn.execute("""
+                    SELECT
+                        s.id,
+                        s.name,
+                        s.memo,
+                        a.value as attr_value
+                    FROM source s
+                    JOIN attribute a ON s.id = a.id AND a.attr_type = 'file'
+                    WHERE a.name = ? AND a.value = ?
+                    ORDER BY s.name
+                """, (attr_name, attr_value))
+
+                results = []
+                for row in cursor.fetchall():
+                    results.append({
+                        "file_id": row["id"],
+                        "name": row["name"],
+                        "memo": row["memo"] or "",
+                        "attribute_value": row["attr_value"]
+                    })
+
+            return results
+        except sqlite3.Error as e:
+            logger.error(f"Database error in query_by_attribute: {e}")
+            raise RuntimeError("Failed to query by attribute") from None
+
+    # ============================================================================
+    # CO-OCCURRENCE ANALYSIS - Codes appearing together
+    # ============================================================================
+
+    def find_code_cooccurrences(self, code_id: int, window_size: int = 0) -> List[Dict[str, Any]]:
+        """Find codes that appear together with a specific code.
+
+        Args:
+            code_id: The code ID to find co-occurrences for
+            window_size: If 0, finds codes in same segment (overlap).
+                        If > 0, finds codes within N characters
+
+        Returns:
+            List of codes that co-occur with counts
+        """
+        code_id = validate_id(code_id, "code_id")
+
+        if not isinstance(window_size, int) or window_size < 0:
+            raise ValueError("window_size must be a non-negative integer")
+
+        try:
+            if window_size == 0:
+                # Find overlapping segments
+                cursor = self.conn.execute("""
+                    SELECT
+                        c.cid,
+                        c.name as code_name,
+                        c.color,
+                        cat.name as category_name,
+                        COUNT(*) as cooccurrence_count
+                    FROM code_text ct1
+                    JOIN code_text ct2 ON ct1.fid = ct2.fid
+                        AND ct1.cid != ct2.cid
+                        AND (
+                            (ct2.pos0 >= ct1.pos0 AND ct2.pos0 <= ct1.pos1)
+                            OR (ct2.pos1 >= ct1.pos0 AND ct2.pos1 <= ct1.pos1)
+                            OR (ct2.pos0 <= ct1.pos0 AND ct2.pos1 >= ct1.pos1)
+                        )
+                    JOIN code_name c ON ct2.cid = c.cid
+                    LEFT JOIN code_cat cat ON c.catid = cat.catid
+                    WHERE ct1.cid = ?
+                    GROUP BY c.cid, c.name, c.color, cat.name
+                    ORDER BY cooccurrence_count DESC
+                """, (code_id,))
+            else:
+                # Find codes within window
+                cursor = self.conn.execute("""
+                    SELECT
+                        c.cid,
+                        c.name as code_name,
+                        c.color,
+                        cat.name as category_name,
+                        COUNT(*) as cooccurrence_count
+                    FROM code_text ct1
+                    JOIN code_text ct2 ON ct1.fid = ct2.fid
+                        AND ct1.cid != ct2.cid
+                        AND ABS(ct2.pos0 - ct1.pos0) <= ?
+                    JOIN code_name c ON ct2.cid = c.cid
+                    LEFT JOIN code_cat cat ON c.catid = cat.catid
+                    WHERE ct1.cid = ?
+                    GROUP BY c.cid, c.name, c.color, cat.name
+                    ORDER BY cooccurrence_count DESC
+                """, (window_size, code_id))
+
+            cooccurrences = []
+            for row in cursor.fetchall():
+                cooccurrences.append({
+                    "code_id": row["cid"],
+                    "code_name": row["code_name"],
+                    "color": row["color"],
+                    "category": row["category_name"],
+                    "cooccurrence_count": row["cooccurrence_count"]
+                })
+
+            return cooccurrences
+        except sqlite3.Error as e:
+            logger.error(f"Database error in find_code_cooccurrences: {e}")
+            raise RuntimeError("Failed to find co-occurrences") from None
+
+    # ============================================================================
+    # CASE-CODE MATRIX - Cross-tabulation
+    # ============================================================================
+
+    def get_case_code_matrix(self) -> Dict[str, Any]:
+        """Get a matrix showing which codes appear in which cases.
+
+        Returns:
+            Dictionary with cases, codes, and matrix data
+        """
+        try:
+            # Get all cases
+            cases_cursor = self.conn.execute("""
+                SELECT caseid, name
+                FROM cases
+                ORDER BY name
+            """)
+            cases = [{"id": row["caseid"], "name": row["name"]}
+                    for row in cases_cursor.fetchall()]
+
+            # Get all codes
+            codes_cursor = self.conn.execute("""
+                SELECT cid, name
+                FROM code_name
+                ORDER BY name
+            """)
+            codes = [{"id": row["cid"], "name": row["name"]}
+                    for row in codes_cursor.fetchall()]
+
+            # Get the matrix data
+            matrix_cursor = self.conn.execute("""
+                SELECT
+                    cs.caseid,
+                    ct.cid,
+                    COUNT(*) as count
+                FROM case_text cs
+                JOIN code_text ct ON cs.fid = ct.fid
+                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
+                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
+                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                GROUP BY cs.caseid, ct.cid
+            """)
+
+            matrix = {}
+            for row in matrix_cursor.fetchall():
+                case_id = row["caseid"]
+                code_id = row["cid"]
+                if case_id not in matrix:
+                    matrix[case_id] = {}
+                matrix[case_id][code_id] = row["count"]
+
+            return {
+                "cases": cases,
+                "codes": codes,
+                "matrix": matrix
+            }
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_case_code_matrix: {e}")
+            raise RuntimeError("Failed to generate case-code matrix") from None
+
+    def get_codes_by_case(self, case_id: int) -> List[Dict[str, Any]]:
+        """Get all codes that appear in a specific case.
+
+        Args:
+            case_id: The case ID
+
+        Returns:
+            List of codes with occurrence counts
+        """
+        case_id = validate_id(case_id, "case_id")
+
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    c.cid,
+                    c.name as code_name,
+                    c.color,
+                    cat.name as category_name,
+                    COUNT(*) as occurrence_count
+                FROM case_text cs
+                JOIN code_text ct ON cs.fid = ct.fid
+                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
+                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
+                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                JOIN code_name c ON ct.cid = c.cid
+                LEFT JOIN code_cat cat ON c.catid = cat.catid
+                WHERE cs.caseid = ?
+                GROUP BY c.cid, c.name, c.color, cat.name
+                ORDER BY occurrence_count DESC
+            """, (case_id,))
+
+            codes = []
+            for row in cursor.fetchall():
+                codes.append({
+                    "code_id": row["cid"],
+                    "code_name": row["code_name"],
+                    "color": row["color"],
+                    "category": row["category_name"],
+                    "occurrence_count": row["occurrence_count"]
+                })
+
+            return codes
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_codes_by_case: {e}")
+            raise RuntimeError("Failed to get codes by case") from None
+
+    def get_cases_by_code(self, code_id: int) -> List[Dict[str, Any]]:
+        """Get all cases that contain a specific code.
+
+        Args:
+            code_id: The code ID
+
+        Returns:
+            List of cases with occurrence counts
+        """
+        code_id = validate_id(code_id, "code_id")
+
+        try:
+            cursor = self.conn.execute("""
+                SELECT
+                    cs.caseid,
+                    c.name as case_name,
+                    c.memo,
+                    COUNT(*) as occurrence_count
+                FROM case_text cs
+                JOIN code_text ct ON cs.fid = ct.fid
+                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
+                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
+                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                JOIN cases c ON cs.caseid = c.caseid
+                WHERE ct.cid = ?
+                GROUP BY cs.caseid, c.name, c.memo
+                ORDER BY occurrence_count DESC
+            """, (code_id,))
+
+            cases = []
+            for row in cursor.fetchall():
+                cases.append({
+                    "case_id": row["caseid"],
+                    "case_name": row["case_name"],
+                    "memo": row["memo"] or "",
+                    "occurrence_count": row["occurrence_count"]
+                })
+
+            return cases
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_cases_by_code: {e}")
+            raise RuntimeError("Failed to get cases by code") from None

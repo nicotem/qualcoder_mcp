@@ -1,6 +1,6 @@
 [project]
 name = "qualcoder-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis"
 authors = [{name = "MCP Developer"}]
 readme = "README.md"

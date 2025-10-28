@@ -8,10 +8,14 @@ This MCP server allows Claude (via Claude Desktop) to directly access and analyz
 
 - 📊 Read your codes, categories, and coding structure
 - 📝 Access coded text segments and original source documents
+- 📖 **Analyze complete transcripts with coding context** (NEW!)
 - 🔍 Search through your qualitative data
 - 📈 Generate coding frequency reports
 - 💭 Analyze themes and patterns
+- 🔗 **Discover co-occurrence patterns between codes** (NEW!)
 - 📋 Compare codes and cases
+- 👥 **Query by demographics/attributes** (age, gender, etc.) (NEW!)
+- 🎯 **Create case-code matrices for comparative analysis** (NEW!)
 - 🗒️ Search through memos and annotations
 
 All data access is **read-only** to ensure your Qualcoder projects remain safe.
@@ -179,6 +183,58 @@ Compare the codes "job satisfaction" and "work-life balance"
 What are the main themes in case "Participant 5"?
 ```
 
+### NEW: Rich Transcript Analysis
+
+```
+Analyze the interview transcript for participant 3, showing me both the coded segments and the full context. What does this participant say that relates to the Wisdom of the Crowds argument?
+```
+
+```
+Review file ID 5 with all its coding. Help me understand how the participant discusses motivation throughout the entire interview.
+```
+
+### NEW: Demographic Analysis
+
+```
+Show me all participants over age 50
+```
+
+```
+Which cases have education level "graduate"?
+```
+
+```
+Find all interview files where the attribute "interview_type" is "focus_group"
+```
+
+### NEW: Co-occurrence & Pattern Discovery
+
+```
+What codes appear together with "workplace stress"?
+```
+
+```
+Find patterns of co-occurring themes in the data
+```
+
+```
+Which codes never appear with "job satisfaction"?
+```
+
+### NEW: Comparative Case Analysis
+
+```
+Create a case-code matrix showing which themes appear in which participants
+```
+
+```
+Which participants mention "work-life balance"?
+```
+
+```
+Show me all codes that appear in case "Participant 7"
+```
+
 ### Searching
 
 ```
@@ -212,13 +268,30 @@ Claude can use these tools to analyze your data:
 - `select_project(project_path)` - Open/switch to a different project
 - `get_current_project()` - Show which project is currently open
 
-**Data Analysis:**
+**Core Data Analysis:**
 - `search_coded_text(query, code_name, limit)` - Search coded segments
 - `get_coded_segments(code_id, limit)` - Get all segments for a code
 - `get_coding_frequencies()` - Coding statistics
 - `search_memos(query, limit)` - Search memos and annotations
 - `export_code_report(code_name)` - Generate detailed code report
 - `get_project_summary()` - Comprehensive project overview
+
+**NEW: Rich Transcript Analysis:**
+- `analyze_file_with_coding(file_id)` - Get complete file text with all coding context for deep analysis
+
+**NEW: Attributes & Demographics:**
+- `list_attribute_types()` - List all available attributes (age, gender, etc.)
+- `get_file_attributes(file_id)` - Get attributes for a specific file
+- `get_case_attributes(case_id)` - Get attributes for a specific case
+- `query_by_attribute(attr_name, attr_value, attr_type)` - Find cases/files by attribute values
+
+**NEW: Co-occurrence Analysis:**
+- `find_cooccurring_codes(code_id, window_size)` - Discover which codes appear together
+
+**NEW: Case-Code Matrix & Comparative Analysis:**
+- `get_case_code_matrix()` - Create cross-tabulation of cases vs codes
+- `get_codes_by_case(case_id)` - Get all codes used in a specific case
+- `get_cases_by_code(code_id)` - Get all cases containing a specific code
 
 ## Available Prompts
 
@@ -333,13 +406,21 @@ qualcoder_mcp/
 
 Contributions are welcome! Some ideas for enhancements:
 
-- [ ] Support for code-code relationships
-- [ ] Co-occurrence analysis
-- [ ] Network visualization data
-- [ ] More statistical reports
-- [ ] Support for attributes and queries
-- [ ] Export functionality
-- [ ] Support for multiple projects switching
+**Completed in v0.2.0:**
+- ✅ Co-occurrence analysis
+- ✅ Support for attributes and demographic queries
+- ✅ Case-code matrix for comparative analysis
+- ✅ Rich transcript analysis with full coding context
+- ✅ Support for multiple projects switching
+
+**Future Enhancements:**
+- [ ] Support for code-code relationships/links (graph data)
+- [ ] Network visualization data export
+- [ ] More statistical reports (Cohen's Kappa, inter-rater reliability)
+- [ ] Media segment access (images, audio, video)
+- [ ] Timeline analysis
+- [ ] Saved queries execution
+- [ ] Batch export functionality
 
 ## License
 
