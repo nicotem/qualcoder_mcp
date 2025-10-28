@@ -2,9 +2,11 @@
 
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import json
 import logging
+import hashlib
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -1430,3 +1432,94 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             logger.error(f"Database error in get_cases_by_code: {e}")
             raise RuntimeError("Failed to get cases by code") from None
+
+    # ============================================================================
+    # GUID Management for REFI-QDA Export
+    # ============================================================================
+
+    def generate_deterministic_guid(self, entity_type: str, entity_id: Union[int, str]) -> str:
+        """Generate consistent GUID for Qualcoder entities.
+
+        Uses UUID v5 (namespace-based) to generate deterministic GUIDs that
+        will be consistent across multiple exports for the same entity.
+
+        Args:
+            entity_type: Type of entity ("code", "file", "user", "coding", "case")
+            entity_id: The ID or name of the entity
+
+        Returns:
+            UUID string that will be consistent for this entity
+        """
+        # Create a namespace UUID from the project path
+        # This ensures GUIDs are unique to this project
+        project_hash = hashlib.sha256(str(self.db_path).encode()).hexdigest()[:32]
+
+        # Format as valid UUID
+        namespace_str = f"{project_hash[:8]}-{project_hash[8:12]}-{project_hash[12:16]}-{project_hash[16:20]}-{project_hash[20:32]}"
+        namespace = uuid.UUID(namespace_str)
+
+        # Generate UUID v5 based on entity type and ID
+        entity_string = f"{entity_type}_{entity_id}"
+        return str(uuid.uuid5(namespace, entity_string))
+
+    def get_code_guids(self) -> Dict[int, str]:
+        """Get mapping of code_id -> GUID for all codes.
+
+        Returns:
+            Dict mapping code_id (cid) to GUID (UUID string)
+        """
+        try:
+            cursor = self.conn.execute("SELECT cid FROM code_name")
+            guids = {}
+            for row in cursor.fetchall():
+                code_id = row["cid"]
+                guids[code_id] = self.generate_deterministic_guid("code", code_id)
+            return guids
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_code_guids: {e}")
+            raise RuntimeError("Failed to get code GUIDs") from None
+
+    def get_file_guids(self) -> Dict[int, str]:
+        """Get mapping of file_id -> GUID for all source files.
+
+        Returns:
+            Dict mapping file_id (id) to GUID (UUID string)
+        """
+        try:
+            cursor = self.conn.execute("SELECT id FROM source")
+            guids = {}
+            for row in cursor.fetchall():
+                file_id = row["id"]
+                guids[file_id] = self.generate_deterministic_guid("file", file_id)
+            return guids
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_file_guids: {e}")
+            raise RuntimeError("Failed to get file GUIDs") from None
+
+    def get_case_guids(self) -> Dict[int, str]:
+        """Get mapping of case_id -> GUID for all cases.
+
+        Returns:
+            Dict mapping case_id (caseid) to GUID (UUID string)
+        """
+        try:
+            cursor = self.conn.execute("SELECT caseid FROM cases")
+            guids = {}
+            for row in cursor.fetchall():
+                case_id = row["caseid"]
+                guids[case_id] = self.generate_deterministic_guid("case", case_id)
+            return guids
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_case_guids: {e}")
+            raise RuntimeError("Failed to get case GUIDs") from None
+
+    def get_or_create_user_guid(self, username: str) -> str:
+        """Get or create GUID for a user.
+
+        Args:
+            username: The coder name
+
+        Returns:
+            UUID string for this user
+        """
+        return self.generate_deterministic_guid("user", username)
