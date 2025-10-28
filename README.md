@@ -49,38 +49,60 @@ pip install -e .
 
 ### Step 3: Configure Claude Desktop
 
-You need to tell Claude Desktop about your MCP server and which Qualcoder project to use.
+You have **two options** for configuring project access:
 
-#### Find Your Qualcoder Project Path
+#### Option A: Dynamic Project Selection (Recommended for Multiple Projects)
 
-Your Qualcoder project is a `.qda` file. Typical locations:
-- `~/Documents/QualCoder_projects/MyProject/MyProject.qda`
-- `~/QualCoder/ProjectName/ProjectName.qda`
+If you work with multiple Qualcoder projects, this is the easiest approach - Claude will discover projects and let you switch between them.
 
-#### Edit Claude Desktop Configuration
-
-On Mac, the configuration file is located at:
-```
-~/Library/Application Support/Claude/claude_desktop_config.json
-```
-
-You can also access it via:
-1. Open Claude Desktop
-2. Go to **Settings** (Claude > Settings)
-3. Click the **Developer** tab
-4. Click **Edit Config**
-
-Add the Qualcoder MCP server to your configuration:
+**Configuration** (no project path needed):
 
 ```json
 {
   "mcpServers": {
     "qualcoder": {
       "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
-      "args": [
-        "-m",
-        "qualcoder_mcp.server"
-      ],
+      "args": ["-m", "qualcoder_mcp.server"]
+    }
+  }
+}
+```
+
+**Replace**: `YOUR_USERNAME` with your actual Mac username
+
+**Usage**: After restarting Claude Desktop:
+```
+List my available Qualcoder projects
+```
+Then select one:
+```
+Select the "My Research Project" project
+```
+
+Switch projects anytime:
+```
+Switch to "Different Project"
+```
+
+See [`PROJECT_SELECTION_GUIDE.md`](PROJECT_SELECTION_GUIDE.md) for full details.
+
+#### Option B: Fixed Project (Simpler for Single Project)
+
+If you work with one main project, you can hardcode the path for instant access.
+
+**Find Your Project Path**:
+Your Qualcoder project is a `.qda` file. Typical locations:
+- `~/Documents/QualCoder_projects/MyProject/MyProject.qda`
+- `~/QualCoder/ProjectName/ProjectName.qda`
+
+**Configuration**:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
+      "args": ["-m", "qualcoder_mcp.server"],
       "env": {
         "QUALCODER_PROJECT_PATH": "/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda"
       }
@@ -89,39 +111,19 @@ Add the Qualcoder MCP server to your configuration:
 }
 ```
 
-**Important**: Replace the following in the configuration above:
+**Replace**:
 - `YOUR_USERNAME` - your actual Mac username
-- `/Users/YOUR_USERNAME/Documents/qualcoder_mcp` - the actual path where you installed this repository
-- `/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda` - the actual path to your `.qda` file
+- `/Users/YOUR_USERNAME/Documents/qualcoder_mcp` - where you installed this
+- `/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda` - your `.qda` file path
 
-#### Multiple Projects
+**Editing the Config**:
 
-If you want to work with different Qualcoder projects, you can either:
-
-**Option 1**: Change the `QUALCODER_PROJECT_PATH` in the config and restart Claude Desktop
-
-**Option 2**: Create multiple server entries:
-
-```json
-{
-  "mcpServers": {
-    "qualcoder-project1": {
-      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
-      "args": ["-m", "qualcoder_mcp.server"],
-      "env": {
-        "QUALCODER_PROJECT_PATH": "/path/to/project1.qda"
-      }
-    },
-    "qualcoder-project2": {
-      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
-      "args": ["-m", "qualcoder_mcp.server"],
-      "env": {
-        "QUALCODER_PROJECT_PATH": "/path/to/project2.qda"
-      }
-    }
-  }
-}
-```
+1. Open Claude Desktop
+2. Go to **Settings** (Claude > Settings)
+3. Click the **Developer** tab
+4. Click **Edit Config**
+5. Paste your chosen configuration
+6. Save and restart Claude Desktop
 
 ### Step 4: Restart Claude Desktop
 
@@ -205,6 +207,12 @@ The MCP server exposes these resources (read-only data):
 
 Claude can use these tools to analyze your data:
 
+**Project Management:**
+- `list_available_projects(search_directories)` - Discover Qualcoder projects on your system
+- `select_project(project_path)` - Open/switch to a different project
+- `get_current_project()` - Show which project is currently open
+
+**Data Analysis:**
 - `search_coded_text(query, code_name, limit)` - Search coded segments
 - `get_coded_segments(code_id, limit)` - Get all segments for a code
 - `get_coding_frequencies()` - Coding statistics

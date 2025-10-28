@@ -5,7 +5,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
@@ -22,33 +22,134 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("Qualcoder")
 
-# Global database instance
+# Global database instance and current project path
 db: Optional[QualcoderDatabase] = None
+current_project_path: Optional[str] = None
+
+
+def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Discover .qda files in common locations.
+
+    Args:
+        search_paths: Optional list of paths to search. If None, uses defaults.
+
+    Returns:
+        List of discovered projects with path, name, and size info
+    """
+    if search_paths is None:
+        home = Path.home()
+        search_paths = [
+            str(home / "Documents" / "QualCoder_projects"),
+            str(home / "Documents" / "QualCoder"),
+            str(home / "QualCoder"),
+            str(home / "Documents"),
+        ]
+
+    projects = []
+    seen_paths = set()
+
+    for search_path in search_paths:
+        path = Path(search_path)
+        if not path.exists():
+            continue
+
+        # Search recursively for .qda files (max 3 levels deep)
+        try:
+            for qda_file in path.rglob("*.qda"):
+                # Avoid duplicates and limit depth
+                if qda_file in seen_paths:
+                    continue
+
+                # Check depth (don't go too deep)
+                try:
+                    relative = qda_file.relative_to(path)
+                    if len(relative.parts) > 3:
+                        continue
+                except ValueError:
+                    continue
+
+                seen_paths.add(qda_file)
+
+                try:
+                    stat = qda_file.stat()
+                    projects.append({
+                        "path": str(qda_file),
+                        "name": qda_file.stem,
+                        "directory": str(qda_file.parent),
+                        "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                        "modified": stat.st_mtime
+                    })
+                except (OSError, PermissionError) as e:
+                    logger.debug(f"Cannot access {qda_file}: {e}")
+                    continue
+
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Cannot search {search_path}: {e}")
+            continue
+
+    # Sort by most recently modified
+    projects.sort(key=lambda x: x["modified"], reverse=True)
+    return projects
+
+
+def switch_project(project_path: str) -> None:
+    """Switch to a different project.
+
+    Args:
+        project_path: Path to the .qda file
+
+    Raises:
+        ValueError: If path is invalid
+        FileNotFoundError: If file doesn't exist
+        RuntimeError: If database connection fails
+    """
+    global db, current_project_path
+
+    # Close existing connection
+    if db is not None:
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error closing previous connection: {e}")
+        finally:
+            db = None
+
+    # Connect to new project
+    db = QualcoderDatabase(project_path)
+    current_project_path = project_path
+    logger.info(f"Switched to project: {Path(project_path).name}")
 
 
 def get_db() -> QualcoderDatabase:
     """Get or initialize the database connection.
 
     Raises:
-        ValueError: If environment variable not set or invalid
+        ValueError: If no project specified or invalid
         FileNotFoundError: If database file doesn't exist
         RuntimeError: If database connection fails
     """
-    global db
+    global db, current_project_path
+
     if db is None:
+        # Try environment variable first
         db_path = os.environ.get("QUALCODER_PROJECT_PATH")
+
         if not db_path:
             raise ValueError(
-                "QUALCODER_PROJECT_PATH environment variable not set. "
-                "Please set it to the path of your .qda file."
+                "No Qualcoder project selected. Use 'list_available_projects' "
+                "to discover projects, then 'select_project' to choose one. "
+                "Or set QUALCODER_PROJECT_PATH environment variable."
             )
+
         try:
             db = QualcoderDatabase(db_path)
+            current_project_path = db_path
             # Log only filename, not full path (security best practice)
             logger.info(f"Connected to Qualcoder database: {Path(db_path).name}")
         except (ValueError, FileNotFoundError, RuntimeError) as e:
             logger.error(f"Failed to connect to database: {e}")
             raise
+
     return db
 
 
@@ -169,6 +270,116 @@ def get_journal_entries() -> str:
 # ============================================================================
 # TOOLS - Operations and queries
 # ============================================================================
+
+@mcp.tool()
+def list_available_projects(search_directories: Optional[List[str]] = None) -> str:
+    """Discover Qualcoder projects on your system.
+
+    This tool searches common locations for .qda files and returns a list
+    of available Qualcoder projects. By default, it searches:
+    - ~/Documents/QualCoder_projects
+    - ~/Documents/QualCoder
+    - ~/QualCoder
+    - ~/Documents
+
+    Args:
+        search_directories: Optional list of additional directories to search
+
+    Returns:
+        JSON array of discovered projects with name, path, size, and last modified date
+    """
+    try:
+        projects = discover_projects(search_directories)
+
+        if not projects:
+            return json.dumps({
+                "projects": [],
+                "message": "No Qualcoder projects found. Make sure you have created "
+                          "at least one project in Qualcoder, or specify search_directories.",
+                "default_search_paths": [
+                    "~/Documents/QualCoder_projects",
+                    "~/Documents/QualCoder",
+                    "~/QualCoder",
+                    "~/Documents"
+                ]
+            }, indent=2)
+
+        return json.dumps({
+            "project_count": len(projects),
+            "projects": projects,
+            "current_project": current_project_path
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error discovering projects: {e}")
+        return json.dumps({"error": f"Failed to discover projects: {str(e)}"})
+
+
+@mcp.tool()
+def select_project(project_path: str) -> str:
+    """Switch to a different Qualcoder project.
+
+    Use this tool to change which project you're working with. You can get
+    a list of available projects using 'list_available_projects' first.
+
+    Args:
+        project_path: Full path to the .qda file you want to open
+
+    Returns:
+        JSON with success status and project information
+    """
+    try:
+        switch_project(project_path)
+
+        # Get basic info about the newly opened project
+        project_info = get_db().get_project_info()
+
+        return json.dumps({
+            "success": True,
+            "message": f"Switched to project: {Path(project_path).stem}",
+            "project_path": project_path,
+            "project_name": Path(project_path).stem,
+            "project_info": project_info
+        }, indent=2)
+
+    except (ValueError, FileNotFoundError) as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid project: {str(e)}"
+        })
+    except RuntimeError as e:
+        return json.dumps({
+            "success": False,
+            "error": "Failed to open project database"
+        })
+
+
+@mcp.tool()
+def get_current_project() -> str:
+    """Get information about the currently open project.
+
+    Returns:
+        JSON with current project path and basic metadata
+    """
+    try:
+        if current_project_path is None:
+            return json.dumps({
+                "current_project": None,
+                "message": "No project currently open. Use 'list_available_projects' "
+                          "and 'select_project' to open one."
+            }, indent=2)
+
+        project_info = get_db().get_project_info()
+
+        return json.dumps({
+            "current_project": current_project_path,
+            "project_name": Path(current_project_path).stem,
+            "project_info": project_info
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": f"Failed to get project info: {str(e)}"})
+
 
 @mcp.tool()
 def search_coded_text(query: str, code_name: Optional[str] = None, limit: int = 50) -> str:
