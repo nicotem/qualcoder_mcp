@@ -27,7 +27,13 @@ db: Optional[QualcoderDatabase] = None
 
 
 def get_db() -> QualcoderDatabase:
-    """Get or initialize the database connection."""
+    """Get or initialize the database connection.
+
+    Raises:
+        ValueError: If environment variable not set or invalid
+        FileNotFoundError: If database file doesn't exist
+        RuntimeError: If database connection fails
+    """
     global db
     if db is None:
         db_path = os.environ.get("QUALCODER_PROJECT_PATH")
@@ -36,8 +42,13 @@ def get_db() -> QualcoderDatabase:
                 "QUALCODER_PROJECT_PATH environment variable not set. "
                 "Please set it to the path of your .qda file."
             )
-        db = QualcoderDatabase(db_path)
-        logger.info(f"Connected to Qualcoder database: {db_path}")
+        try:
+            db = QualcoderDatabase(db_path)
+            # Log only filename, not full path (security best practice)
+            logger.info(f"Connected to Qualcoder database: {Path(db_path).name}")
+        except (ValueError, FileNotFoundError, RuntimeError) as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
     return db
 
 
