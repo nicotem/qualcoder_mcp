@@ -1113,6 +1113,302 @@ class QualcoderDatabase:
             logger.error(f"Database error in search_memos: {e}")
             raise RuntimeError("Failed to search memos") from None
 
+    def search_file_content(
+        self,
+        query: str,
+        case_sensitive: bool = False,
+        limit: int = DEFAULT_LIMIT,
+        context_chars: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Search through full text content of all text files.
+
+        WARNING: This searches ALL file content and can be slow for large projects
+        with many files. Consider using more specific search methods if possible.
+
+        Args:
+            query: Text to search for
+            case_sensitive: Whether to perform case-sensitive search (default: False)
+            limit: Maximum number of files to return (default: DEFAULT_LIMIT)
+            context_chars: Number of characters of context around each match (default: 100)
+
+        Returns:
+            List of dictionaries containing:
+            - file_id: The file ID
+            - file_name: The file name
+            - file_type: The file type
+            - match_count: Number of matches in this file
+            - matches: List of match dictionaries with:
+                - position: Character position of match
+                - preview: Text snippet with context around match
+        """
+        limit = validate_limit(limit)
+
+        if not query:
+            return []
+
+        try:
+            # Search through text files only
+            cursor = self.conn.execute("""
+                SELECT
+                    id,
+                    name,
+                    fulltext,
+                    mediapath,
+                    memo,
+                    owner,
+                    date
+                FROM source
+                WHERE mediapath IS NULL OR mediapath = ''
+                ORDER BY name
+            """)
+
+            results = []
+            files_checked = 0
+
+            for row in cursor.fetchall():
+                files_checked += 1
+                file_text = row["fulltext"] or ""
+
+                # Perform search
+                search_text = file_text if case_sensitive else file_text.lower()
+                search_query = query if case_sensitive else query.lower()
+
+                # Find all matches
+                matches = []
+                start_pos = 0
+
+                while True:
+                    pos = search_text.find(search_query, start_pos)
+                    if pos == -1:
+                        break
+
+                    # Extract context around match
+                    context_start = max(0, pos - context_chars)
+                    context_end = min(len(file_text), pos + len(query) + context_chars)
+                    preview = file_text[context_start:context_end]
+
+                    # Add ellipsis if truncated
+                    if context_start > 0:
+                        preview = "..." + preview
+                    if context_end < len(file_text):
+                        preview = preview + "..."
+
+                    matches.append({
+                        "position": pos,
+                        "preview": preview
+                    })
+
+                    start_pos = pos + 1  # Continue searching
+
+                # If matches found, add to results
+                if matches:
+                    results.append({
+                        "file_id": row["id"],
+                        "file_name": row["name"],
+                        "file_type": "text",
+                        "memo": row["memo"] or "",
+                        "match_count": len(matches),
+                        "matches": matches[:10]  # Limit to first 10 matches per file
+                    })
+
+                # Stop if we've reached the limit
+                if len(results) >= limit:
+                    break
+
+            logger.info(f"Content search found {len(results)} files with matches "
+                       f"(searched {files_checked} files)")
+            return results
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error in search_file_content: {e}")
+            raise RuntimeError("Failed to search file content") from None
+
+    def search_files(
+        self,
+        pattern: str,
+        search_filename: bool = True,
+        search_content: bool = False,
+        search_memo: bool = False,
+        case_sensitive: bool = False,
+        limit: int = DEFAULT_LIMIT,
+        context_chars: int = 100
+    ) -> Dict[str, Any]:
+        """Search for files across multiple locations (filename, content, memo).
+
+        This is a comprehensive search method that can search in different parts
+        of the file data and aggregates results showing where matches were found.
+
+        Args:
+            pattern: Text to search for
+            search_filename: Search in file names (default: True)
+            search_content: Search in file content/fulltext (default: False)
+            search_memo: Search in file memos (default: False)
+            case_sensitive: Case-sensitive matching (default: False)
+            limit: Maximum number of files to return (default: DEFAULT_LIMIT)
+            context_chars: Characters of context around content matches (default: 100)
+
+        Returns:
+            Dictionary containing:
+            - search_parameters: Dict of search settings used
+            - performance_info: Dict with search performance details
+            - total_files_searched: Number of files examined
+            - total_matches: Number of files with matches
+            - results: List of matching files with detailed match information
+        """
+        limit = validate_limit(limit)
+
+        if not pattern:
+            return {
+                "search_parameters": {},
+                "total_matches": 0,
+                "results": []
+            }
+
+        try:
+            # Get all files
+            cursor = self.conn.execute("""
+                SELECT
+                    id,
+                    name,
+                    fulltext,
+                    mediapath,
+                    memo,
+                    owner,
+                    date
+                FROM source
+                ORDER BY name
+            """)
+
+            all_files = cursor.fetchall()
+            results = []
+            files_searched = 0
+
+            search_pattern = pattern if case_sensitive else pattern.lower()
+
+            for row in all_files:
+                files_searched += 1
+                matched_in = {
+                    "filename": False,
+                    "content": False,
+                    "memo": False
+                }
+                matches = []
+                match_count = 0
+
+                # Search filename
+                if search_filename:
+                    file_name = row["name"] if case_sensitive else row["name"].lower()
+                    if search_pattern in file_name:
+                        matched_in["filename"] = True
+                        matches.append({
+                            "location": "filename",
+                            "preview": row["name"]
+                        })
+                        match_count += 1
+
+                # Search content
+                if search_content and (row["mediapath"] is None or row["mediapath"] == ""):
+                    file_text = row["fulltext"] or ""
+                    search_text = file_text if case_sensitive else file_text.lower()
+
+                    # Find all content matches
+                    start_pos = 0
+                    content_matches = 0
+
+                    while True:
+                        pos = search_text.find(search_pattern, start_pos)
+                        if pos == -1 or content_matches >= 5:  # Limit to 5 content matches per file
+                            break
+
+                        matched_in["content"] = True
+
+                        # Extract context
+                        context_start = max(0, pos - context_chars)
+                        context_end = min(len(file_text), pos + len(pattern) + context_chars)
+                        preview = file_text[context_start:context_end]
+
+                        if context_start > 0:
+                            preview = "..." + preview
+                        if context_end < len(file_text):
+                            preview = preview + "..."
+
+                        matches.append({
+                            "location": "content",
+                            "position": pos,
+                            "preview": preview
+                        })
+
+                        content_matches += 1
+                        match_count += 1
+                        start_pos = pos + 1
+
+                # Search memo
+                if search_memo:
+                    memo_text = row["memo"] or ""
+                    search_memo_text = memo_text if case_sensitive else memo_text.lower()
+
+                    if search_pattern in search_memo_text:
+                        matched_in["memo"] = True
+                        matches.append({
+                            "location": "memo",
+                            "preview": memo_text[:200] + ("..." if len(memo_text) > 200 else "")
+                        })
+                        match_count += 1
+
+                # If any matches, add to results
+                if any(matched_in.values()):
+                    file_type = "text"
+                    if row["mediapath"]:
+                        if row["mediapath"].lower().endswith(('.mp3', '.wav', '.m4a')):
+                            file_type = "audio"
+                        elif row["mediapath"].lower().endswith(('.mp4', '.avi', '.mov')):
+                            file_type = "video"
+                        elif row["mediapath"].lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                            file_type = "image"
+                        elif row["mediapath"].lower().endswith('.pdf'):
+                            file_type = "pdf"
+
+                    results.append({
+                        "file_id": row["id"],
+                        "file_name": row["name"],
+                        "file_type": file_type,
+                        "matched_in": matched_in,
+                        "match_count": match_count,
+                        "matches": matches
+                    })
+
+                if len(results) >= limit:
+                    break
+
+            # Performance info
+            performance_info = {
+                "files_examined": files_searched,
+                "searched_content": search_content
+            }
+
+            if search_content:
+                performance_info["note"] = "Content search can be slow for many files"
+
+            logger.info(f"File search found {len(results)} matches (searched {files_searched} files)")
+
+            return {
+                "search_parameters": {
+                    "pattern": pattern,
+                    "searched_filename": search_filename,
+                    "searched_content": search_content,
+                    "searched_memo": search_memo,
+                    "case_sensitive": case_sensitive
+                },
+                "performance_info": performance_info,
+                "total_files_searched": files_searched,
+                "total_matches": len(results),
+                "results": results
+            }
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error in search_files: {e}")
+            raise RuntimeError("Failed to search files") from None
+
     def get_journal_entries(self) -> List[Dict[str, Any]]:
         """Get all journal entries.
 

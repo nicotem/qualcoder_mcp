@@ -158,6 +158,20 @@ What codes do I have in my project?
 List all the source files in my project
 ```
 
+### Finding Files
+
+```
+Find files with 'paul' in the name
+```
+
+```
+Search file content for 'workplace stress'
+```
+
+```
+Search for files containing motivation (in both filenames and content)
+```
+
 ### Analyzing Themes
 
 ```
@@ -353,6 +367,7 @@ Claude can use these tools to analyze your data:
 - `get_current_project()` - Show which project is currently open
 
 **Core Data Analysis:**
+- `search_files(pattern, search_filename, search_content, search_memo)` - **NEW**: Find files by name, content, or memo with smart clarification workflow
 - `search_coded_text(query, code_name, limit)` - Search coded segments
 - `get_coded_segments(code_id, limit)` - Get all segments for a code
 - `get_coding_frequencies()` - Coding statistics

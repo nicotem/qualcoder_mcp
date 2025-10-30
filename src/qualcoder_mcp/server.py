@@ -435,6 +435,114 @@ def get_coded_segments(code_id: int, limit: int = 100) -> str:
 
 
 @mcp.tool()
+def search_files(
+    pattern: str,
+    search_filename: bool = True,
+    search_content: bool = False,
+    search_memo: bool = False,
+    case_sensitive: bool = False,
+    limit: int = 50
+) -> str:
+    """Search for files by name, content, or memo.
+
+    This tool helps you find specific files in the project without searching
+    the entire filesystem. Perfect for locating interview transcripts by
+    participant name, finding files with specific content, or searching memos.
+
+    PERFORMANCE GUIDE:
+    - Filename search: Fast (milliseconds) - searches file names only
+    - Content search: Slower (can take seconds for 100+ files) - searches full text
+    - Memo search: Fast (milliseconds) - searches file memos
+
+    IMPORTANT - CLARIFICATION WORKFLOW:
+    When a user's request is ambiguous (e.g., "search for files containing paul"):
+
+    1. ASK THE USER for clarification:
+       "I can search for 'paul' in:
+        - File names only (fast)
+        - File content (slower, searches full transcript text)
+        - File memos
+        - All of the above
+
+        Which would you prefer?"
+
+    2. Wait for the user to clarify their preference
+
+    3. Then call this tool with the appropriate search flags
+
+    This ensures you search only what the user intends and provides the best
+    performance for their needs.
+
+    Args:
+        pattern: Text to search for (case-insensitive by default)
+        search_filename: Search in file names (default: True, fast)
+        search_content: Search in file content/fulltext (default: False, slower)
+        search_memo: Search in file memos (default: False, fast)
+        case_sensitive: Use case-sensitive matching (default: False)
+        limit: Maximum number of files to return (default: 50)
+
+    Returns:
+        JSON object with:
+        - search_parameters: Dictionary showing what was searched
+        - performance_info: Performance details and warnings
+        - total_files_searched: Number of files examined
+        - total_matches: Number of files with matches
+        - results: Array of matching files with:
+            - file_id: ID for use with other tools
+            - file_name: Name of the file
+            - file_type: Type (text, audio, video, image, pdf)
+            - matched_in: {filename: bool, content: bool, memo: bool}
+            - match_count: Total number of matches in this file
+            - matches: Array of match details with location and preview
+
+    Examples:
+        User says: "Find files with 'paul' in the name"
+        → search_files("paul", search_filename=True)
+
+        User says: "Search all file content for 'workplace stress'"
+        → search_files("workplace stress", search_content=True)
+
+        User says: "Search everywhere for 'motivation'"
+        → search_files("motivation", search_filename=True,
+                      search_content=True, search_memo=True)
+
+        User says: "Search for files containing paul" (AMBIGUOUS!)
+        → Ask user to clarify: filename, content, or both?
+        → Then call tool based on their answer
+
+    Tips:
+    - For finding a specific interview by participant name, use search_filename
+    - For finding specific quotes or themes, use search_content
+    - For searching your annotations, use search_memo
+    - You can combine multiple search locations
+    - Once you have file_id, use analyze_file_with_coding() to get full content
+    """
+    try:
+        result = get_db().search_files(
+            pattern=pattern,
+            search_filename=search_filename,
+            search_content=search_content,
+            search_memo=search_memo,
+            case_sensitive=case_sensitive,
+            limit=limit
+        )
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in search_files: {e}")
+        return json.dumps({
+            "error": f"Failed to search files: {str(e)}",
+            "search_parameters": {
+                "pattern": pattern,
+                "searched_filename": search_filename,
+                "searched_content": search_content,
+                "searched_memo": search_memo
+            }
+        }, indent=2)
+
+
+@mcp.tool()
 def get_coding_frequencies() -> str:
     """Get frequency statistics for all codes in the project.
 

@@ -5,6 +5,49 @@ All notable changes to the Qualcoder MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-10-30
+
+### Added - Enhanced File Search 🔍
+
+This release adds powerful file search capabilities to eliminate the need for filesystem-wide searches and improve the user experience when locating files.
+
+#### **New MCP Tool:**
+
+**`search_files(pattern, search_filename, search_content, search_memo, case_sensitive, limit)`**
+- Comprehensive file search across multiple locations
+- **Filename search** (fast): Find files by name - perfect for locating interview transcripts by participant name
+- **Content search** (slower): Full-text search across all file content - find specific quotes or themes
+- **Memo search** (fast): Search through file annotations and memos
+- Combine any or all search locations
+- Smart clarification workflow guides Claude to ask users which search scope they want
+- Returns rich results showing WHERE matches were found (filename, content, or memo)
+- Match preview with context snippets for content matches
+- Performance warnings for large content searches
+
+#### **New Database Methods:**
+
+**`search_file_content(query, case_sensitive, limit, context_chars)`**
+- Search through full text content of all files
+- Returns matches with context snippets
+- Performance-aware with warnings for large projects
+
+**`search_files(pattern, search_filename, search_content, search_memo, case_sensitive, limit, context_chars)`**
+- Multi-location search with aggregated results
+- Shows match locations and counts
+- File type detection (text, audio, video, image, pdf)
+- Context-aware previews for content matches
+
+### Fixed
+
+- **Dynamic project selection now works correctly** - Server no longer requires `QUALCODER_PROJECT_PATH` environment variable at startup, enabling users to select projects in conversation
+- Removed requirement for hardcoded project path in config - supports both Option A (dynamic selection) and Option B (fixed project)
+
+### Changed
+
+- File discovery workflow now uses dedicated MCP tools instead of filesystem commands
+- Improved tool descriptions to guide Claude toward correct tool usage
+- Better performance awareness with warnings for resource-intensive operations
+
 ## [0.3.0] - 2025-10-28
 
 ### Added - AI-Assisted Coding 🤖
