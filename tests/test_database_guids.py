@@ -8,7 +8,7 @@ from qualcoder_mcp.database import QualcoderDatabase
 
 
 # Path to the test project created earlier
-TEST_PROJECT_PATH = Path.home() / "Documents" / "qualcoder_mcp_test" / "test_project.qda"
+TEST_PROJECT_PATH = Path.home() / "Documents" / "QDA Projects" / "test_project.qda"
 
 
 @pytest.fixture

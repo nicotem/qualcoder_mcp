@@ -20,21 +20,21 @@ from qualcoder_mcp.refi_export import RefiQdaExporter
 def main():
     """Generate test export for manual import verification."""
 
-    # Path to test database
-    test_db_path = Path.home() / "Documents" / "qualcoder_mcp_test" / "test_project.qda"
+    # Path to test project (folder)
+    test_project_path = Path.home() / "Documents" / "QDA Projects" / "test_project.qda"
 
-    if not test_db_path.exists():
-        print(f"❌ Test database not found at: {test_db_path}")
+    if not test_project_path.exists():
+        print(f"❌ Test project not found at: {test_project_path}")
         print("\nPlease ensure the test project exists.")
         print("You can create it by running:")
         print("  python scripts/create_test_project.py")
         return 1
 
-    print(f"✓ Found test database: {test_db_path}")
+    print(f"✓ Found test project: {test_project_path}")
 
     # Open database
     print("\n📂 Opening database...")
-    db = QualcoderDatabase(str(test_db_path))
+    db = QualcoderDatabase(str(test_project_path))
 
     # Get files and codes
     files = db.list_files()
@@ -131,7 +131,7 @@ def main():
 
     print("\n1️⃣  Open Qualcoder on your Mac")
     print("    - Launch Qualcoder application")
-    print(f"    - Open the test project at: {test_db_path}")
+    print(f"    - Open the test project at: {test_project_path}")
 
     print("\n2️⃣  Navigate to Import function")
     print("    - Click: File > Import > REFI-QDA Project")

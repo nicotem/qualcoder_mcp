@@ -17,10 +17,11 @@ This MCP server allows Claude (via Claude Desktop) to directly access and analyz
 - 👥 **Query by demographics/attributes** (age, gender, etc.)
 - 🎯 **Create case-code matrices for comparative analysis**
 - 🗒️ Search through memos and annotations
-- 🤖 **AI-assisted coding: Automatically code your transcripts** (NEW in v0.3.0!)
-- ✨ **Suggest new codes from your data** (NEW in v0.3.0!)
+- 🤖 **AI-assisted coding: Conversational approval workflow** (NEW in v0.4.0!)
+- ✅ **Review and approve suggestions in chat before applying** (NEW in v0.4.0!)
+- 📥 **Direct database writes with automatic backups** (NEW in v0.4.0!)
 
-All data access is **read-only** to ensure your Qualcoder projects remain safe. AI coding suggestions are stored separately and reviewed before import.
+You can work with read-only analysis OR use write-enabled AI coding. All AI coding operations include automatic backups for safety.
 
 ## Prerequisites
 
@@ -97,9 +98,9 @@ See [`PROJECT_SELECTION_GUIDE.md`](PROJECT_SELECTION_GUIDE.md) for full details.
 If you work with one main project, you can hardcode the path for instant access.
 
 **Find Your Project Path**:
-Your Qualcoder project is a `.qda` file. Typical locations:
-- `~/Documents/QualCoder_projects/MyProject/MyProject.qda`
-- `~/QualCoder/ProjectName/ProjectName.qda`
+Your Qualcoder project is a **folder** with a `.qda` extension containing a `data.qda` database file. Typical locations:
+- `~/Documents/QualCoder_projects/MyProject/MyProject.qda/` (folder)
+- `~/QualCoder/ProjectName/ProjectName.qda/` (folder)
 
 **Configuration**:
 
@@ -120,7 +121,7 @@ Your Qualcoder project is a `.qda` file. Typical locations:
 **Replace**:
 - `YOUR_USERNAME` - your actual Mac username
 - `/Users/YOUR_USERNAME/Documents/qualcoder_mcp` - where you installed this
-- `/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda` - your `.qda` file path
+- `/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda` - path to your `.qda` project folder
 
 **Editing the Config**:
 
@@ -249,82 +250,84 @@ Find coded segments that mention "remote work" but only for the code "challenges
 
 ## AI-Assisted Coding 🤖
 
-**NEW in v0.3.0!** Claude can now help you code your qualitative data automatically using AI analysis.
+**NEW in v0.4.0!** Claude can now help you code your qualitative data with a conversational approval workflow. You chat with Claude, review suggestions together, and directly write approved codings to your database.
 
-### Quick Start
+### Conversational Workflow
 
-Simply ask Claude to code your files:
+**Important**: AI coding writes directly to the database. Always work on copies in the `~/Documents/Qualcoder MCP Projects/` workspace folder. Automatic backups are created before every write.
 
+### Quick Start Example
+
+**Step 1: Copy Project to Workspace**
 ```
-Analyze interview files 1-3 and suggest coding with the workplace stress codes
+Copy my project "Interview Study" to the workspace for AI coding
+```
+
+**Step 2: Analyze Files**
+```
+Analyze files 1-3 for WORKPLACE-STRESS and COPING-STRATEGIES codes
 ```
 
 Claude will:
-1. Read the files and codes you specify
-2. Analyze the content and identify relevant segments
-3. Create coding suggestions with confidence scores
-4. Save them in a review session
-5. Export to REFI-QDA format for import into Qualcoder
+- Create an analysis session
+- Examine the files
+- Identify relevant segments
+- Present suggestions with reasoning and confidence scores
 
-### Example Workflow
-
-**Step 1: AI Analysis**
+**Step 3: Review in Chat**
 ```
-Code files 1, 2, and 3 using codes "Workplace Stress - Causes", "Coping Strategies", and "Work-Life Balance"
+Show me details about suggestion 1
 ```
 
-**Step 2: Review Session**
+Claude shows you:
+- The text segment
+- Which code and file
+- Why it was selected (reasoning)
+- Confidence score
+- Surrounding context
+
+**Step 4: Approve/Reject**
 ```
-Show me the session statistics
+Approve suggestions 1, 2, and 5. Reject 3 and 4.
 ```
 
-**Step 3: Export for Import**
+**Step 5: Apply to Database**
 ```
-Export the coding suggestions as REFI-QDA to ~/Desktop/ai_coding.qdpx
-```
-
-**Step 4: Import into Qualcoder**
-- Open Qualcoder
-- Go to **File > Import > REFI-QDA Project**
-- Select the exported `.qdpx` file
-- Review and confirm the import
-- Your AI-coded segments appear in Qualcoder!
-
-### Code Discovery
-
-Claude can also suggest new codes based on your data:
-
-```
-Analyze my interview transcripts and suggest new codes I should consider
+Apply the approved codings to the project
 ```
 
-```
-What themes are emerging in files 4-6 that aren't captured by my existing codes?
-```
+Claude will:
+- Create automatic backup
+- Write approved codings to database
+- Report success with coding IDs
+- You can immediately open the project in Qualcoder to see results!
 
 ### Key Features
 
-- **Native AI Analysis**: Uses Claude's conversational abilities (no API key required)
-- **Confidence Scoring**: Each suggestion includes a 0.0-1.0 confidence score
+- **Conversational Review**: Discuss suggestions with Claude before applying
+- **Confidence Scoring**: Each suggestion includes a 0.0-1.0 confidence score with reasoning
 - **Session Persistence**: Resume work anytime, all sessions saved to disk
-- **Read-Only Safety**: Original database never modified, suggestions stored separately
-- **REFI-QDA Standard**: Industry-standard format for QDA software
-- **Review Workflow**: Approve/reject suggestions before import
-- **Comprehensive Help**: Built-in help system with examples
+- **Automatic Backups**: Every write creates a timestamped backup first
+- **Workspace Isolation**: Work on copies in dedicated workspace folder
+- **Direct Database Writes**: No import/export - codings appear instantly in Qualcoder
+- **Granular Control**: Approve/reject individual suggestions by GUID
+- **Full Context**: See surrounding text for each suggestion
 
-### AI Coding Tools
+### Workspace Safety
 
-Ask Claude to explain any tool:
-```
-Explain the AI coding tools
-```
+The AI coding workflow uses a workspace directory for safe modifications:
 
-Or get help with a specific tool:
 ```
-Explain how to use suggest_coding_for_files
+~/Documents/Qualcoder MCP Projects/
 ```
 
-For comprehensive documentation, see [INSTALL.md](INSTALL.md).
+Never work on your original projects with AI coding! Always:
+1. Copy project to workspace first
+2. Let Claude work on the workspace copy
+3. Review results in Qualcoder
+4. If good, replace original OR keep both versions
+
+For comprehensive workflow documentation, see [AI_CODING_WORKFLOW.md](AI_CODING_WORKFLOW.md).
 
 ## Available Resources
 
@@ -374,21 +377,24 @@ Claude can use these tools to analyze your data:
 - `get_codes_by_case(case_id)` - Get all codes used in a specific case
 - `get_cases_by_code(code_id)` - Get all cases containing a specific code
 
-**AI-Assisted Coding (NEW in v0.3.0):**
-- `suggest_coding_for_files(file_ids, code_names, instruction, min_confidence)` - Main AI coding tool that analyzes files and suggests coded segments
-- `export_coding_suggestions(session_id, output_format, output_path, include_rejected)` - Export suggestions in REFI-QDA, JSON, or CSV formats
-- `update_suggestion_status(session_id, updates)` - Approve or reject specific suggestions before export
+**AI-Assisted Coding (NEW in v0.4.0 - Conversational Workflow):**
+- `analyze_for_coding(file_ids, code_names, instruction, min_confidence)` - Prepare analysis session for Claude to perform coding suggestions
+- `review_suggestions(session_id, suggestion_guids, show_context)` - Show detailed information about specific suggestions
+- `update_suggestion_status(session_id, approve, reject)` - Approve or reject suggestions by GUID
+- `apply_codings(session_id, create_backup, owner)` - **WRITES TO DATABASE** - Apply approved suggestions with automatic backup
 - `get_coding_session_info(session_id)` - View all details of a coding session
 - `list_coding_sessions(project_path, days_old)` - List all saved coding sessions
 - `delete_coding_session(session_id)` - Delete a saved session
-- `cleanup_old_sessions(days_old)` - Automatically clean up old sessions
 
-**Code Discovery (NEW in v0.3.0):**
-- `suggest_new_codes(file_ids, instruction, existing_codes_context)` - AI analyzes files and suggests new codes to add
-- `export_new_codes_for_import(codes_json, output_path)` - Export approved codes as REFI-QDA codebook
+**Project Management (Write Operations):**
+- `copy_project_to_workspace(source_path, new_name)` - Copy a project to the safe workspace for AI coding
+- `backup_project(project_path)` - Create manual timestamped backup
 
-**Help System (NEW in v0.3.0):**
-- `explain_ai_coding_tools(tool_name)` - Comprehensive help for all AI coding tools
+**Legacy Tools (Deprecated - use conversational workflow above):**
+- `suggest_coding_for_files()` - Old REFI-QDA export approach
+- `export_coding_suggestions()` - Old export tool
+- `suggest_new_codes()` - Old code discovery
+- `export_new_codes_for_import()` - Old code export
 
 ## Available Prompts
 
@@ -405,7 +411,7 @@ Built-in prompt templates for common analysis tasks:
 
 1. **Check the configuration file path**: Make sure `claude_desktop_config.json` is in the right location
 2. **Verify Python path**: Run `which python` in your virtual environment to get the correct path
-3. **Check .qda file path**: Make sure the path to your Qualcoder project is correct and the file exists
+3. **Check .qda project path**: Make sure the path to your Qualcoder project folder is correct and exists
 4. **Look at logs**: Check Claude Desktop logs for errors
 
 ### Claude Can't Access Data
@@ -452,23 +458,36 @@ This will open a web interface where you can test resources and tools.
 
 ## Data Safety
 
-This MCP server operates in **read-only mode**:
-- ✅ The database connection is opened with read-only flag
-- ✅ No write operations are implemented
-- ✅ Your Qualcoder project files are never modified
+This MCP server operates in **two modes**:
+
+### Read-Only Mode (Default)
+For all standard analysis operations:
+- ✅ No writes to your project database
+- ✅ Your Qualcoder projects are never modified
 - ✅ All operations are queries only
+- ✅ Safe to use on original projects
 
-**AI Coding Safety:**
-- ✅ AI coding suggestions are stored in `~/.qualcoder_mcp/sessions/` (separate from your project)
-- ✅ Original database never modified by AI coding
-- ✅ Suggestions exported to REFI-QDA format for manual review
-- ✅ You control what gets imported into Qualcoder via the Qualcoder GUI
-- ✅ Full approval/rejection workflow before import
+### Write-Enabled Mode (AI Coding)
+For AI-assisted coding with direct database writes:
+- ⚠️ **WRITES TO DATABASE** - Can modify project files
+- ✅ **Automatic backups** created before every write
+- ✅ **Workspace isolation** - Work on copies only
+- ✅ **Conversational approval** - You control what gets written
+- ✅ **Session tracking** - All changes logged in `~/.qualcoder_mcp/sessions/`
+- ✅ **Rollback capability** - Backups allow full restoration
 
-However, as with any software:
-- 🔒 Always keep backups of your Qualcoder projects
-- 🔒 The server accesses your data on your local machine only
-- 🔒 Data is not sent anywhere except to Claude via MCP protocol
+**Best Practices for AI Coding:**
+1. 🔒 **NEVER work on original projects** - Always copy to workspace first
+2. 🔒 **Review backups** - Check backup was created before applying
+3. 🔒 **Test on copies** - Try workflow on test projects first
+4. 🔒 **Keep originals** - Maintain untouched versions of important projects
+5. 🔒 **Verify in Qualcoder** - Open project after AI coding to confirm results
+
+**General Safety:**
+- 🔒 Data stays local - never sent anywhere except to Claude via MCP
+- 🔒 Regular Qualcoder backups recommended
+- 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
+- 🔒 Session logs: `~/.qualcoder_mcp/sessions/`
 
 ## Architecture
 
@@ -523,14 +542,22 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Support for multiple projects switching
 
 **Completed in v0.3.0:**
-- ✅ AI-assisted coding with REFI-QDA export
+- ✅ AI-assisted coding with REFI-QDA export (deprecated in v0.4.0)
 - ✅ Code discovery and suggestion
 - ✅ Session persistence and management
 - ✅ Confidence scoring for suggestions
 - ✅ Comprehensive help system
 
-**Future Enhancements (v0.4.0+):**
+**Completed in v0.4.0:**
+- ✅ Conversational approval workflow for AI coding
+- ✅ Direct database writes with automatic backups
+- ✅ Workspace isolation for safe modifications
+- ✅ GUID-based suggestion approval/rejection
+- ✅ Context-aware suggestions with reasoning
+
+**Future Enhancements (v0.5.0+):**
 - [ ] HTML review interface for visual approval/rejection of suggestions
+- [ ] Batch operations for multiple files at once
 - [ ] Automatic chunking for large files
 - [ ] Support for code-code relationships/links (graph data)
 - [ ] Network visualization data export

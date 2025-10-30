@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class CodingSuggestion:
-    """Data class for AI-suggested coding."""
+    """Data class for AI-suggested coding with conversational review support."""
 
     def __init__(
         self,
@@ -22,9 +22,11 @@ class CodingSuggestion:
         start_pos: int,
         end_pos: int,
         segment_text: str,
-        ai_memo: str = "",
+        reasoning: str = "",
         confidence: float = 0.0,
         status: str = "pending",
+        context_before: str = "",
+        context_after: str = "",
         guid: Optional[str] = None
     ):
         self.file_id = file_id
@@ -34,10 +36,15 @@ class CodingSuggestion:
         self.start_pos = start_pos
         self.end_pos = end_pos
         self.segment_text = segment_text
-        self.ai_memo = ai_memo
+        self.reasoning = reasoning  # Why this segment was coded
         self.confidence = confidence
         self.status = status  # 'pending', 'approved', 'rejected'
+        self.context_before = context_before  # Text before for context
+        self.context_after = context_after  # Text after for context
         self.guid = guid or str(uuid.uuid4())
+
+        # For backwards compatibility with old ai_memo field
+        self.ai_memo = reasoning
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -49,15 +56,20 @@ class CodingSuggestion:
             "start_pos": self.start_pos,
             "end_pos": self.end_pos,
             "segment_text": self.segment_text,
-            "ai_memo": self.ai_memo,
+            "reasoning": self.reasoning,
             "confidence": self.confidence,
             "status": self.status,
+            "context_before": self.context_before,
+            "context_after": self.context_after,
             "guid": self.guid
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CodingSuggestion':
         """Create from dictionary."""
+        # Handle both old (ai_memo) and new (reasoning) formats
+        reasoning = data.get("reasoning") or data.get("ai_memo", "")
+
         return cls(
             file_id=data["file_id"],
             file_name=data["file_name"],
@@ -66,9 +78,11 @@ class CodingSuggestion:
             start_pos=data["start_pos"],
             end_pos=data["end_pos"],
             segment_text=data["segment_text"],
-            ai_memo=data.get("ai_memo", ""),
+            reasoning=reasoning,
             confidence=data.get("confidence", 0.0),
             status=data.get("status", "pending"),
+            context_before=data.get("context_before", ""),
+            context_after=data.get("context_after", ""),
             guid=data.get("guid")
         )
 
@@ -144,6 +158,13 @@ class AICodingSession:
             "by_code": by_code
         }
 
+    def get_suggestion_by_guid(self, guid: str) -> Optional[CodingSuggestion]:
+        """Get a suggestion by its GUID."""
+        for s in self.suggestions:
+            if s.guid == guid:
+                return s
+        return None
+
     def update_suggestion_status(self, index: int, status: str) -> bool:
         """Update the status of a suggestion by index.
 
@@ -159,6 +180,45 @@ class AICodingSession:
             self.last_modified = datetime.now().isoformat()
             return True
         return False
+
+    def update_suggestions_by_guid(
+        self,
+        approve: Optional[List[str]] = None,
+        reject: Optional[List[str]] = None
+    ) -> Dict[str, int]:
+        """Update multiple suggestions by GUID.
+
+        Args:
+            approve: List of GUIDs to approve
+            reject: List of GUIDs to reject
+
+        Returns:
+            Dictionary with counts of approved and rejected
+        """
+        approved_count = 0
+        rejected_count = 0
+
+        if approve:
+            for guid in approve:
+                sugg = self.get_suggestion_by_guid(guid)
+                if sugg:
+                    sugg.status = "approved"
+                    approved_count += 1
+
+        if reject:
+            for guid in reject:
+                sugg = self.get_suggestion_by_guid(guid)
+                if sugg:
+                    sugg.status = "rejected"
+                    rejected_count += 1
+
+        if approved_count > 0 or rejected_count > 0:
+            self.last_modified = datetime.now().isoformat()
+
+        return {
+            "approved": approved_count,
+            "rejected": rejected_count
+        }
 
     def to_dict(self) -> Dict[str, Any]:
         """Export session as dictionary for JSON export."""

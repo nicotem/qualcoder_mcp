@@ -91,7 +91,7 @@ def sample_suggestions():
             start_pos=0,
             end_pos=50,
             segment_text="I feel very stressed at work.",
-            ai_memo="Clear stress indicator",
+            reasoning="Clear stress indicator",
             confidence=0.9,
             status="approved",
             guid="suggestion-guid-001"
@@ -104,7 +104,7 @@ def sample_suggestions():
             start_pos=100,
             end_pos=150,
             segment_text="I try to meditate daily.",
-            ai_memo="Positive coping strategy",
+            reasoning="Positive coping strategy",
             confidence=0.85,
             status="approved",
             guid="suggestion-guid-002"
@@ -117,7 +117,7 @@ def sample_suggestions():
             start_pos=200,
             end_pos=250,
             segment_text="The deadlines are overwhelming.",
-            ai_memo="Stress from deadlines",
+            reasoning="Stress from deadlines",
             confidence=0.88,
             status="approved",
             guid="suggestion-guid-003"
@@ -554,7 +554,7 @@ class TestRefiQdaExporter:
             start_pos=0,
             end_pos=10,
             segment_text="text",
-            ai_memo="",  # Empty memo
+            reasoning="",  # Empty reasoning
             confidence=0.8
         )
 

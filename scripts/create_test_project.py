@@ -3,18 +3,40 @@
 
 import sqlite3
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
-def create_test_project(output_path: str):
-    """Create a test Qualcoder .qda database with sample data."""
+def create_test_project(project_folder: str):
+    """Create a test Qualcoder project with proper folder structure.
 
-    # Remove existing file
-    if os.path.exists(output_path):
-        os.remove(output_path)
+    Args:
+        project_folder: Path to the project folder (e.g., ~/Documents/QDA Projects/test_project.qda)
+    """
+
+    project_path = Path(project_folder).expanduser()
+
+    # Remove existing project folder if it exists
+    if project_path.exists():
+        print(f"Removing existing project at {project_path}")
+        shutil.rmtree(project_path)
+
+    # Create project folder structure
+    print(f"Creating project folder: {project_path}")
+    project_path.mkdir(parents=True, exist_ok=True)
+
+    # Create subdirectories
+    (project_path / "documents").mkdir(exist_ok=True)
+    (project_path / "images").mkdir(exist_ok=True)
+    (project_path / "audio").mkdir(exist_ok=True)
+    (project_path / "video").mkdir(exist_ok=True)
+
+    # Create the database file inside the folder
+    db_path = project_path / "data.qda"
+    print(f"Creating database: {db_path}")
 
     # Create database
-    conn = sqlite3.connect(output_path)
+    conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
 
     # Create schema
@@ -365,16 +387,21 @@ realistic about the future here. I'm building my network and keeping my options 
     conn.commit()
     conn.close()
 
-    print(f"✓ Test project created: {output_path}")
+    print(f"✓ Test project database created: {db_path}")
     print(f"  - 3 interview transcripts")
     print(f"  - 10 codes in 3 categories")
     print(f"  - 3 cases with attributes")
     print(f"  - 3 example coded segments")
-    return output_path
+    return str(project_path)
 
 
 if __name__ == "__main__":
-    output_path = os.path.expanduser("~/Documents/qualcoder_mcp_test/test_project.qda")
-    create_test_project(output_path)
-    print("\nTest project ready for use!")
-    print(f"Set QUALCODER_PROJECT_PATH={output_path}")
+    # Create project folder (not just the .qda file)
+    project_folder = os.path.expanduser("~/Documents/QDA Projects/test_project.qda")
+    create_test_project(project_folder)
+
+    db_path = os.path.join(project_folder, "data.qda")
+    print("\n✅ Test project created successfully!")
+    print(f"📁 Project folder: {project_folder}")
+    print(f"💾 Database file: {db_path}")
+    print(f"\nYou can now open this project in Qualcoder.")

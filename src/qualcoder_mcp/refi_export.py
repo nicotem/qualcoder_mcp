@@ -187,7 +187,7 @@ class RefiQdaExporter:
                     attrib={
                         "guid": file_guids[file_id],
                         "name": file_content["name"],
-                        "plainTextPath": f"internal://{file_content['name']}",
+                        "plainTextPath": f"Sources/{file_content['name']}",
                         "creatingUser": user_guid,
                         "creationDateTime": datetime.now().isoformat() + "Z"
                     }
@@ -319,6 +319,22 @@ class RefiQdaExporter:
             with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 # Add the project.qde file
                 zipf.writestr('project.qde', xml_string)
+
+                # Add source files to the archive
+                # Group suggestions by file to avoid duplicates
+                file_ids = set(s.file_id for s in suggestions)
+                logger.info(f"Adding {len(file_ids)} source files to archive...")
+
+                for file_id in file_ids:
+                    try:
+                        file_content = self.db.get_file_content(file_id)
+                        if file_content and file_content.get("content"):
+                            # Add file to Sources subdirectory
+                            file_path_in_zip = f"Sources/{file_content['name']}"
+                            zipf.writestr(file_path_in_zip, file_content["content"])
+                            logger.debug(f"Added source file: {file_path_in_zip}")
+                    except Exception as e:
+                        logger.warning(f"Could not add source file {file_id} to archive: {e}")
 
             logger.info(f"Successfully exported {len(suggestions)} suggestions to {output_file}")
             return str(output_file)

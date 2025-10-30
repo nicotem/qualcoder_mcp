@@ -129,17 +129,19 @@ Now we need to tell Claude Desktop about the MCP server. You have two options:
 
 **Best for**: People with one main Qualcoder project
 
-1. **Find your .qda file**:
+1. **Find your .qda project folder**:
    - Open Qualcoder
    - Look at your project - note its location
+   - **Important**: Qualcoder projects are **folders** with `.qda` extension, not single files
+   - Each project folder contains a `data.qda` database file inside
    - Common locations:
-     - `~/Documents/QualCoder_projects/MyProject/MyProject.qda`
-     - `~/QualCoder/ProjectName/ProjectName.qda`
+     - `~/Documents/QualCoder_projects/MyProject/MyProject.qda/` (folder)
+     - `~/QualCoder/ProjectName/ProjectName.qda/` (folder)
 
    Or in Terminal:
    ```bash
-   # Search for .qda files
-   find ~/Documents -name "*.qda" 2>/dev/null
+   # Search for .qda project folders
+   find ~/Documents -name "*.qda" -type d 2>/dev/null
    ```
 
 2. **Open Claude Desktop Configuration** (same as Option A, step 3)
@@ -229,8 +231,9 @@ Analyze the transcript for file 1 with all its coding
    - In Terminal with venv activated, type: `which python`
    - Use that full path in your Claude config
 
-2. **Check your .qda file path** (Option B only):
-   - Make sure the file exists: `ls -l /path/to/your/file.qda`
+2. **Check your .qda project path** (Option B only):
+   - Make sure the folder exists: `ls -ld /path/to/your/project.qda`
+   - Make sure the database file exists inside: `ls /path/to/your/project.qda/data.qda`
    - Make sure the path is absolute (starts with `/Users/...`)
 
 3. **Check Claude Desktop logs**:

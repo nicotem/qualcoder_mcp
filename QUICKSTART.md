@@ -32,13 +32,13 @@ pip install -e .
 
 ### 2. Find Your Qualcoder Project
 
-Locate your `.qda` file. Common locations:
-- `~/Documents/QualCoder_projects/MyProject/MyProject.qda`
-- `~/QualCoder/MyProject/MyProject.qda`
+Locate your `.qda` project folder (it's a folder with `.qda` extension, not a single file). Common locations:
+- `~/Documents/QualCoder_projects/MyProject/MyProject.qda/`
+- `~/QualCoder/MyProject/MyProject.qda/`
 
 You can find it by:
 - Opening Qualcoder and checking the recent projects list
-- Searching for `.qda` files: `find ~ -name "*.qda" 2>/dev/null`
+- Searching for `.qda` folders: `find ~ -name "*.qda" -type d 2>/dev/null`
 
 ### 3. Configure Claude Desktop
 
@@ -114,7 +114,7 @@ If Claude can't connect:
 1. **Check the config file syntax** - make sure JSON is valid (commas, quotes, brackets)
 2. **Verify paths** - make sure all paths are absolute and correct
 3. **Check Python path** - activate venv and run `which python`
-4. **Check .qda file** - make sure it exists: `ls -l /path/to/your/file.qda`
+4. **Check .qda project** - make sure the folder exists: `ls -ld /path/to/your/project.qda`
 5. **Restart Claude** - always restart after config changes
 
 ### Test the Server Manually
@@ -135,8 +135,9 @@ You should see it start without errors. Press Ctrl+C to stop.
 - Check for typos in the environment variable name
 
 **"Database file not found"**
-- Verify the `.qda` path is correct
-- Make sure you're using the full absolute path
+- Verify the `.qda` project folder path is correct
+- Make sure you're using the full absolute path to the folder
+- Ensure the folder contains a `data.qda` file inside
 
 **"Module not found"**
 - Make sure you ran `pip install -e .` in the virtual environment

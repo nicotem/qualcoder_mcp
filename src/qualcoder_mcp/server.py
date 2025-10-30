@@ -766,8 +766,352 @@ def get_cases_by_code(code_id: int) -> str:
 
 
 # ============================================================================
-# AI-ASSISTED CODING TOOLS
+# AI-ASSISTED CODING TOOLS (NEW CONVERSATIONAL WORKFLOW)
 # ============================================================================
+
+@mcp.tool()
+def analyze_for_coding(
+    file_ids: List[int],
+    code_names: Optional[List[str]] = None,
+    instruction: str = "Code all relevant segments",
+    min_confidence: float = 0.7
+) -> str:
+    """Analyze files and suggest codings for user review.
+
+    This tool performs AI analysis and returns suggestions in a conversational
+    format for the user to review in the chat. NO changes are made to the
+    database until the user explicitly approves and uses apply_codings.
+
+    WORKFLOW:
+    1. I analyze the files and identify relevant segments
+    2. I present suggestions to you in the chat with reasoning
+    3. You review and can ask questions about specific suggestions
+    4. You approve/reject suggestions using update_suggestion_status
+    5. You apply approved suggestions using apply_codings
+
+    Args:
+        file_ids: List of file IDs to analyze
+        code_names: Optional list of specific code names to apply
+        instruction: Guidance for what to look for in the analysis
+        min_confidence: Minimum confidence for suggestions (0.0-1.0)
+
+    Returns:
+        Formatted text presenting all suggestions with:
+        - File and segment information
+        - Code being applied
+        - Text excerpt
+        - AI reasoning
+        - Confidence score
+        - Unique GUID for each suggestion
+
+    Example:
+        "Analyze files 1-3 for DATA PRACTICES codes"
+    """
+    db = get_db()
+
+    # Get files and codes
+    all_files = db.list_files()
+    all_codes = db.list_codes()
+
+    # Filter to requested files
+    files_to_analyze = [f for f in all_files if f['id'] in file_ids]
+    if not files_to_analyze:
+        return json.dumps({"error": "No valid files found with those IDs"})
+
+    # Filter codes if specified
+    if code_names:
+        codes_to_use = [c for c in all_codes if c['name'] in code_names]
+        if not codes_to_use:
+            return json.dumps({"error": f"No codes found matching: {code_names}"})
+    else:
+        codes_to_use = all_codes
+
+    # Create analysis session
+    session = AICodingSession(
+        project_path=db.db_path,
+        description=f"Analysis of {len(files_to_analyze)} files with {len(codes_to_use)} codes",
+        file_ids=file_ids,
+        code_names=[c['name'] for c in codes_to_use],
+        instruction=instruction,
+        min_confidence=min_confidence
+    )
+
+    # NOTE: This is where YOU (Claude) would do the actual AI analysis
+    # For now, return the session info and instructions for the next step
+
+    # Save session
+    session_manager.save_session(session)
+
+    output = f"""
+📊 **ANALYSIS SESSION CREATED**
+
+Session ID: `{session.session_id}`
+
+**Analysis Parameters:**
+- Files: {len(files_to_analyze)} files ({', '.join(f['name'] for f in files_to_analyze)})
+- Codes: {len(codes_to_use)} codes ({', '.join(c['name'] for c in codes_to_use)})
+- Instruction: "{instruction}"
+- Min confidence: {min_confidence}
+
+**IMPORTANT - NEXT STEPS:**
+
+This session has been created and saved. Now YOU (Claude) need to:
+
+1. **Analyze each file** using your AI capabilities
+2. **Create CodingSuggestion objects** for each relevant segment you identify
+3. **Add them to the session** using session.add_suggestion()
+4. **Present them to the user** in a clear, reviewable format
+
+The session is stored at: `{session_manager.sessions_dir / f"session_{session.session_id}.json"}`
+
+**FOR THE USER:**
+Once Claude completes the analysis and presents suggestions, you can:
+- Review the suggestions in the chat
+- Use `review_suggestions` to see more details
+- Use `update_suggestion_status` to approve/reject specific suggestions
+- Use `apply_codings` to write approved suggestions to the database
+"""
+
+    return output
+
+
+@mcp.tool()
+def review_suggestions(
+    session_id: str,
+    suggestion_guids: Optional[List[str]] = None,
+    show_context: bool = False
+) -> str:
+    """Review coding suggestions in detail.
+
+    Shows detailed information about specific suggestions from an analysis session.
+    Use this to examine suggestions more closely before approving/rejecting.
+
+    Args:
+        session_id: The session ID from analyze_for_coding
+        suggestion_guids: Optional list of specific suggestion GUIDs to review
+        show_context: Include surrounding text context (default: False)
+
+    Returns:
+        Detailed formatted information about the requested suggestions
+
+    Example:
+        "Show me more details about suggestion abc-123-def"
+        "Review all pending suggestions with context"
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+
+    session = session_manager.load_session(session_id)
+
+    # Get suggestions to show
+    if suggestion_guids:
+        suggestions = [session.get_suggestion_by_guid(guid) for guid in suggestion_guids]
+        suggestions = [s for s in suggestions if s is not None]
+    else:
+        suggestions = session.suggestions
+
+    if not suggestions:
+        return "No suggestions found."
+
+    output = [f"**Review of {len(suggestions)} Suggestion(s)**\n"]
+
+    for i, sugg in enumerate(suggestions, 1):
+        output.append(f"\n{'='*70}")
+        output.append(f"**Suggestion {i}** (GUID: `{sugg.guid}`)")
+        output.append(f"Status: {sugg.status.upper()}")
+        output.append(f"\n📄 **File:** {sugg.file_name} (ID: {sugg.file_id})")
+        output.append(f"🏷️  **Code:** {sugg.code_name} (ID: {sugg.code_id})")
+        output.append(f"📍 **Position:** {sugg.start_pos}-{sugg.end_pos}")
+        output.append(f"💯 **Confidence:** {sugg.confidence:.2f}")
+        output.append(f"\n**Segment Text:**")
+        output.append(f"```\n{sugg.segment_text}\n```")
+        output.append(f"\n**AI Reasoning:**")
+        output.append(sugg.reasoning)
+
+        if show_context:
+            if sugg.context_before:
+                output.append(f"\n**Context Before:**")
+                output.append(f"```\n{sugg.context_before}\n```")
+            if sugg.context_after:
+                output.append(f"\n**Context After:**")
+                output.append(f"```\n{sugg.context_after}\n```")
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+def update_suggestion_status(
+    session_id: str,
+    approve: Optional[List[str]] = None,
+    reject: Optional[List[str]] = None
+) -> str:
+    """Approve or reject specific coding suggestions.
+
+    Use this to mark which suggestions should be applied to the database.
+    You can approve some, reject others, or approve/reject all at once.
+
+    Args:
+        session_id: The session ID from analyze_for_coding
+        approve: List of suggestion GUIDs to approve
+        reject: List of suggestion GUIDs to reject
+
+    Returns:
+        Confirmation of status updates
+
+    Example:
+        "Approve suggestions abc-123 and def-456"
+        "Reject suggestion xyz-789"
+        "Approve all pending suggestions"
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+
+    session = session_manager.load_session(session_id)
+
+    # Update statuses
+    result = session.update_suggestions_by_guid(approve=approve, reject=reject)
+
+    # Save updated session
+    session_manager.save_session(session)
+
+    # Get updated stats
+    stats = session.get_statistics()
+
+    output = f"""
+✅ **Updated Suggestion Statuses**
+
+Changed:
+- Approved: {result['approved']} suggestions
+- Rejected: {result['rejected']} suggestions
+
+Current Status:
+- Total: {stats['total_suggestions']} suggestions
+- Approved: {stats['approved']}
+- Rejected: {stats['rejected']}
+- Pending: {stats['pending']}
+
+**Next Step:**
+Use `apply_codings` with session ID `{session_id}` to write approved suggestions to the database.
+"""
+
+    return output
+
+
+@mcp.tool()
+def apply_codings(
+    session_id: str,
+    create_backup: bool = True,
+    owner: str = "AI Coding Assistant"
+) -> str:
+    """Apply approved coding suggestions to the project database.
+
+    THIS WRITES TO THE DATABASE. This is the final step that actually modifies
+    your project. Only approved suggestions will be applied. A backup is created
+    first by default for safety.
+
+    IMPORTANT: Make sure you're working on a copy of your project in the
+    MCP workspace (~/Documents/Qualcoder MCP Projects/)
+
+    Args:
+        session_id: The session ID with approved suggestions
+        create_backup: Create timestamped backup before writing (default: True)
+        owner: Coder name for attribution (default: "AI Coding Assistant")
+
+    Returns:
+        Detailed confirmation of what was written to the database
+
+    Example:
+        "Apply the approved codings to the project"
+        "Write these codings to the database"
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+
+    session = session_manager.load_session(session_id)
+    db = get_db()
+
+    # Get only approved suggestions
+    approved = session.filter_by_status("approved")
+
+    if not approved:
+        return "❌ No approved suggestions to apply. Use `update_suggestion_status` to approve suggestions first."
+
+    # Create backup
+    backup_path = None
+    if create_backup:
+        try:
+            backup_path = db.backup_before_write()
+        except Exception as e:
+            return f"❌ Failed to create backup: {e}\n\nAborting to protect your data."
+
+    # Apply each coding
+    results = []
+    errors = []
+
+    for sugg in approved:
+        try:
+            # Create memo with reasoning and confidence
+            memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
+
+            ctid = db.add_coding(
+                file_id=sugg.file_id,
+                code_id=sugg.code_id,
+                start_pos=sugg.start_pos,
+                end_pos=sugg.end_pos,
+                selected_text=sugg.segment_text,
+                owner=owner,
+                memo=memo
+            )
+
+            results.append({
+                "ctid": ctid,
+                "file": sugg.file_name,
+                "code": sugg.code_name,
+                "guid": sugg.guid
+            })
+
+        except Exception as e:
+            errors.append({
+                "guid": sugg.guid,
+                "error": str(e)
+            })
+
+    # Format output
+    output = ["\n✅ **CODINGS APPLIED TO DATABASE**\n"]
+
+    if backup_path:
+        output.append(f"🔒 Backup created: `{backup_path}`\n")
+
+    output.append(f"**Successfully Applied: {len(results)} codings**\n")
+
+    # Group by file
+    by_file = {}
+    for r in results:
+        if r['file'] not in by_file:
+            by_file[r['file']] = []
+        by_file[r['file']].append(r)
+
+    for file_name, file_results in by_file.items():
+        output.append(f"\n📄 **{file_name}**: {len(file_results)} codings")
+        for r in file_results:
+            output.append(f"  - {r['code']} (ctid={r['ctid']})")
+
+    if errors:
+        output.append(f"\n\n❌ **Errors: {len(errors)}**")
+        for e in errors:
+            output.append(f"  - {e['guid']}: {e['error']}")
+
+    output.append(f"\n\n**You can now open the project in Qualcoder to see the AI-coded segments.**")
+    output.append(f"All codings are attributed to '{owner}' with confidence scores in memos.")
+
+    return "\n".join(output)
+
+
+# ============================================================================
+# AI-ASSISTED CODING TOOLS (LEGACY - DEPRECATED)
+# ============================================================================
+# These tools use the old REFI-QDA export workflow and are kept for backwards
+# compatibility. New users should use the tools above.
 
 @mcp.tool()
 def suggest_coding_for_files(
@@ -1028,12 +1372,17 @@ def export_coding_suggestions(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
-def update_suggestion_status(
+# NOTE: This legacy version is disabled to prevent duplicate tool registration
+# The new conversational version (line 943) is the active one
+# @mcp.tool()
+def update_suggestion_status_legacy(
     session_id: str,
     updates: str
 ) -> str:
-    """Update the status of coding suggestions (approve/reject).
+    """[DEPRECATED] Update the status of coding suggestions (approve/reject).
+
+    This is the legacy REFI-QDA version. Use the new update_suggestion_status()
+    with GUID-based approval instead.
 
     Allows you to approve or reject specific suggestions before exporting.
     Useful for quality control - you can reject suggestions that don't seem right.
@@ -1662,19 +2011,19 @@ Provide a detailed case profile with specific examples from the data."""
 
 def main():
     """Main entry point for the MCP server."""
-    # Check for database path
-    if "QUALCODER_PROJECT_PATH" not in os.environ:
-        print("Error: QUALCODER_PROJECT_PATH environment variable not set", file=sys.stderr)
-        print("Please set it to the path of your .qda file", file=sys.stderr)
-        print("Example: export QUALCODER_PROJECT_PATH=/path/to/your/project.qda", file=sys.stderr)
-        sys.exit(1)
+    # Check for optional pre-configured project (Option B: Fixed Project)
+    db_path = os.environ.get("QUALCODER_PROJECT_PATH")
 
-    db_path = os.environ["QUALCODER_PROJECT_PATH"]
-    if not Path(db_path).exists():
-        print(f"Error: Database file not found: {db_path}", file=sys.stderr)
-        sys.exit(1)
-
-    logger.info(f"Starting Qualcoder MCP server for: {db_path}")
+    if db_path:
+        # Option B: Fixed project path provided
+        if not Path(db_path).exists():
+            print(f"Error: Database file not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
+        logger.info(f"Starting Qualcoder MCP server with pre-configured project: {Path(db_path).name}")
+    else:
+        # Option A: Dynamic project selection
+        logger.info("Starting Qualcoder MCP server in dynamic mode (no project pre-configured)")
+        logger.info("Use 'list_available_projects' and 'select_project' to open a project")
 
     # Run the server using stdio transport
     mcp.run(transport="stdio")

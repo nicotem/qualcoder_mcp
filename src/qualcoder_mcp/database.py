@@ -7,6 +7,8 @@ import json
 import logging
 import hashlib
 import uuid
+import shutil
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +17,27 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 5000
 SUPPORTED_DB_VERSIONS = ['v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13']
 
+# Workspace configuration
+# Users should work in this folder to keep MCP-modified projects separate from originals
+DEFAULT_WORKSPACE = Path.home() / "Documents" / "Qualcoder MCP Projects"
+
 
 def validate_qda_path(db_path: str) -> Path:
-    """Validate that the path is a legitimate .qda file.
+    """Validate that the path is a legitimate Qualcoder project.
+
+    Qualcoder projects can be either:
+    - A .qda folder containing data.qda file (standard structure)
+    - A direct path to data.qda file
 
     Args:
-        db_path: Path to validate
+        db_path: Path to validate (can be project folder or data.qda file)
 
     Returns:
-        Resolved Path object
+        Resolved Path object to the data.qda file
 
     Raises:
         ValueError: If path is invalid
-        FileNotFoundError: If file doesn't exist
+        FileNotFoundError: If database file doesn't exist
     """
     try:
         # Resolve to absolute path, following symlinks
@@ -35,19 +45,31 @@ def validate_qda_path(db_path: str) -> Path:
     except (OSError, RuntimeError) as e:
         raise ValueError(f"Invalid path: {e}")
 
-    # Check file extension
-    if path.suffix.lower() != '.qda':
-        raise ValueError(f"Invalid file extension: must be .qda, got {path.suffix}")
-
-    # Check file exists
+    # Check if path exists
     if not path.exists():
-        raise FileNotFoundError(f"Database file not found: {path}")
+        raise FileNotFoundError(f"Path not found: {path}")
 
-    # Check it's a regular file (not a directory or device)
-    if not path.is_file():
-        raise ValueError(f"Path is not a regular file: {path}")
+    # Handle different path formats
+    if path.is_dir():
+        # Path is a directory - look for data.qda inside
+        if path.suffix.lower() == '.qda':
+            # This is a .qda project folder
+            data_file = path / "data.qda"
+            if not data_file.exists():
+                raise FileNotFoundError(f"No data.qda file found in project folder: {path}")
+            if not data_file.is_file():
+                raise ValueError(f"data.qda exists but is not a file: {data_file}")
+            path = data_file
+        else:
+            raise ValueError(f"Directory must have .qda extension: {path}")
+    elif path.is_file():
+        # Path is a file - verify it's a .qda file
+        if path.name != "data.qda" and path.suffix.lower() != '.qda':
+            raise ValueError(f"Invalid file: must be data.qda or *.qda, got {path.name}")
+    else:
+        raise ValueError(f"Path is neither a file nor a directory: {path}")
 
-    # Basic SQLite validation
+    # Basic SQLite validation (read-only check)
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
@@ -108,6 +130,108 @@ def validate_id(id_value: int, param_name: str = "id") -> int:
     return id_value
 
 
+def backup_project(project_path: Union[str, Path]) -> Path:
+    """Create a timestamped backup of a Qualcoder project.
+
+    Args:
+        project_path: Path to the .qda project folder
+
+    Returns:
+        Path to the backup folder
+
+    Raises:
+        FileNotFoundError: If project doesn't exist
+        OSError: If backup fails
+    """
+    project_path = Path(project_path)
+
+    # If given path to data.qda, get the parent folder
+    if project_path.name == "data.qda":
+        project_path = project_path.parent
+
+    if not project_path.exists():
+        raise FileNotFoundError(f"Project not found: {project_path}")
+
+    if not project_path.is_dir():
+        raise ValueError(f"Project path must be a directory: {project_path}")
+
+    # Create backup with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"{project_path.stem}_backup_{timestamp}.qda"
+    backup_path = project_path.parent / backup_name
+
+    logger.info(f"Creating backup: {backup_path}")
+
+    try:
+        shutil.copytree(project_path, backup_path)
+        logger.info(f"Backup created successfully: {backup_path}")
+        return backup_path
+    except Exception as e:
+        logger.error(f"Failed to create backup: {e}")
+        raise OSError(f"Backup failed: {e}") from None
+
+
+def copy_project_to_workspace(
+    source_path: Union[str, Path],
+    workspace: Optional[Union[str, Path]] = None,
+    new_name: Optional[str] = None
+) -> Path:
+    """Copy a Qualcoder project to the MCP workspace for safe modification.
+
+    Args:
+        source_path: Path to the source .qda project
+        workspace: Workspace directory (defaults to DEFAULT_WORKSPACE)
+        new_name: Optional new name for the project
+
+    Returns:
+        Path to the copied project in workspace
+
+    Raises:
+        FileNotFoundError: If source doesn't exist
+        OSError: If copy fails
+    """
+    source_path = Path(source_path)
+
+    # If given path to data.qda, get the parent folder
+    if source_path.name == "data.qda":
+        source_path = source_path.parent
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source project not found: {source_path}")
+
+    # Setup workspace
+    if workspace is None:
+        workspace = DEFAULT_WORKSPACE
+    else:
+        workspace = Path(workspace)
+
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    # Determine destination name
+    if new_name:
+        dest_name = new_name if new_name.endswith('.qda') else f"{new_name}.qda"
+    else:
+        dest_name = source_path.name
+
+    dest_path = workspace / dest_name
+
+    # Check if destination already exists
+    if dest_path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_name = f"{dest_path.stem}_{timestamp}.qda"
+        dest_path = workspace / dest_name
+
+    logger.info(f"Copying project to workspace: {dest_path}")
+
+    try:
+        shutil.copytree(source_path, dest_path)
+        logger.info(f"Project copied successfully: {dest_path}")
+        return dest_path
+    except Exception as e:
+        logger.error(f"Failed to copy project: {e}")
+        raise OSError(f"Copy failed: {e}") from None
+
+
 def escape_like_pattern(pattern: str) -> str:
     """Escape SQLite LIKE wildcards in user input.
 
@@ -143,10 +267,13 @@ class QualcoderDatabase:
         # Validate path before opening
         self.db_path = validate_qda_path(db_path)
 
-        # Read-only connection to prevent accidental modifications
+        # Open database with write access
+        # IMPORTANT: Users should work on copies in the MCP workspace
         try:
-            self.conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            self.conn = sqlite3.connect(str(self.db_path), uri=False)
             self.conn.row_factory = sqlite3.Row  # Access columns by name
+            # Enable foreign key constraints
+            self.conn.execute("PRAGMA foreign_keys = ON")
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to open database: {e}") from e
 
@@ -1523,3 +1650,216 @@ class QualcoderDatabase:
             UUID string for this user
         """
         return self.generate_deterministic_guid("user", username)
+
+    # ============================================================================
+    # WRITE OPERATIONS
+    # ============================================================================
+    # These methods modify the database. Users should work on project copies
+    # in the MCP workspace (~/Documents/Qualcoder MCP Projects/)
+
+    def add_coding(
+        self,
+        file_id: int,
+        code_id: int,
+        start_pos: int,
+        end_pos: int,
+        selected_text: str,
+        owner: str,
+        memo: Optional[str] = None,
+        important: int = 0
+    ) -> int:
+        """Add a new coding to a text segment.
+
+        Args:
+            file_id: ID of the file being coded
+            code_id: ID of the code being applied
+            start_pos: Starting character position
+            end_pos: Ending character position
+            selected_text: The actual text being coded
+            owner: Name of the coder (e.g., "AI Coding Assistant")
+            memo: Optional memo explaining the coding
+            important: Importance flag (0 or 1)
+
+        Returns:
+            The ctid (coding ID) of the newly created coding
+
+        Raises:
+            ValueError: If validation fails
+            RuntimeError: If database operation fails
+        """
+        # Validate inputs
+        file_id = validate_id(file_id, "file_id")
+        code_id = validate_id(code_id, "code_id")
+
+        if not isinstance(start_pos, int) or start_pos < 0:
+            raise ValueError(f"start_pos must be non-negative integer, got {start_pos}")
+
+        if not isinstance(end_pos, int) or end_pos <= start_pos:
+            raise ValueError(f"end_pos must be greater than start_pos ({start_pos}), got {end_pos}")
+
+        if not owner or not isinstance(owner, str):
+            raise ValueError("owner must be a non-empty string")
+
+        # Verify file exists
+        file_check = self.conn.execute("SELECT id FROM source WHERE id = ?", (file_id,)).fetchone()
+        if not file_check:
+            raise ValueError(f"File ID {file_id} does not exist")
+
+        # Verify code exists
+        code_check = self.conn.execute("SELECT cid FROM code_name WHERE cid = ?", (code_id,)).fetchone()
+        if not code_check:
+            raise ValueError(f"Code ID {code_id} does not exist")
+
+        # Get file content and validate positions
+        file_content = self.get_file_content(file_id)
+        if file_content and file_content.get("content"):
+            content_length = len(file_content["content"])
+            if end_pos > content_length:
+                raise ValueError(f"end_pos ({end_pos}) exceeds file length ({content_length})")
+
+        # Current timestamp
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            cursor = self.conn.execute("""
+                INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo, important)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo or "", important))
+
+            self.conn.commit()
+
+            ctid = cursor.lastrowid
+            logger.info(f"Added coding: ctid={ctid}, file={file_id}, code={code_id}, pos={start_pos}-{end_pos}")
+            return ctid
+
+        except sqlite3.IntegrityError as e:
+            self.conn.rollback()
+            # Check for unique constraint violation
+            if "unique" in str(e).lower():
+                raise ValueError(f"Coding already exists at this position for this user") from None
+            raise RuntimeError(f"Failed to add coding: {e}") from None
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            logger.error(f"Database error in add_coding: {e}")
+            raise RuntimeError(f"Failed to add coding: {e}") from None
+
+    def add_code(
+        self,
+        name: str,
+        owner: str,
+        memo: Optional[str] = None,
+        category_id: Optional[int] = None,
+        color: str = "#FFFFFF"
+    ) -> int:
+        """Add a new code to the project.
+
+        Args:
+            name: Code name (must be unique)
+            owner: Name of the person creating the code
+            memo: Optional description/definition of the code
+            category_id: Optional category ID to place code in
+            color: Hex color code (default white)
+
+        Returns:
+            The cid (code ID) of the newly created code
+
+        Raises:
+            ValueError: If validation fails
+            RuntimeError: If database operation fails
+        """
+        if not name or not isinstance(name, str):
+            raise ValueError("name must be a non-empty string")
+
+        if not owner or not isinstance(owner, str):
+            raise ValueError("owner must be a non-empty string")
+
+        # Validate category if provided
+        if category_id is not None:
+            category_id = validate_id(category_id, "category_id")
+            cat_check = self.conn.execute(
+                "SELECT catid FROM code_cat WHERE catid = ?", (category_id,)
+            ).fetchone()
+            if not cat_check:
+                raise ValueError(f"Category ID {category_id} does not exist")
+
+        # Validate color format
+        if not color.startswith("#") or len(color) != 7:
+            raise ValueError(f"color must be hex format #RRGGBB, got {color}")
+
+        # Current timestamp
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            cursor = self.conn.execute("""
+                INSERT INTO code_name (name, memo, catid, owner, date, color)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (name, memo or "", category_id, owner, date_str, color))
+
+            self.conn.commit()
+
+            cid = cursor.lastrowid
+            logger.info(f"Added code: cid={cid}, name={name}, category={category_id}")
+            return cid
+
+        except sqlite3.IntegrityError as e:
+            self.conn.rollback()
+            if "unique" in str(e).lower():
+                raise ValueError(f"Code name '{name}' already exists") from None
+            raise RuntimeError(f"Failed to add code: {e}") from None
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            logger.error(f"Database error in add_code: {e}")
+            raise RuntimeError(f"Failed to add code: {e}") from None
+
+    def add_memo_to_coding(self, coding_id: int, memo: str, owner: str) -> None:
+        """Add or update memo on an existing coding.
+
+        Args:
+            coding_id: The ctid of the coding
+            memo: Memo text to add
+            owner: Name of person adding memo
+
+        Raises:
+            ValueError: If validation fails
+            RuntimeError: If database operation fails
+        """
+        coding_id = validate_id(coding_id, "coding_id")
+
+        if not isinstance(memo, str):
+            raise ValueError("memo must be a string")
+
+        # Verify coding exists
+        coding_check = self.conn.execute(
+            "SELECT ctid FROM code_text WHERE ctid = ?", (coding_id,)
+        ).fetchone()
+        if not coding_check:
+            raise ValueError(f"Coding ID {coding_id} does not exist")
+
+        # Update timestamp
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            self.conn.execute("""
+                UPDATE code_text
+                SET memo = ?, date = ?
+                WHERE ctid = ?
+            """, (memo, date_str, coding_id))
+
+            self.conn.commit()
+            logger.info(f"Updated memo for coding {coding_id}")
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            logger.error(f"Database error in add_memo_to_coding: {e}")
+            raise RuntimeError(f"Failed to update memo: {e}") from None
+
+    def backup_before_write(self) -> Path:
+        """Create a backup of the current project before making changes.
+
+        Returns:
+            Path to the backup folder
+
+        Raises:
+            OSError: If backup fails
+        """
+        return backup_project(self.db_path)

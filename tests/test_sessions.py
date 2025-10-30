@@ -52,13 +52,14 @@ class TestCodingSuggestion:
             start_pos=sample_suggestion_data["start_pos"],
             end_pos=sample_suggestion_data["end_pos"],
             segment_text=sample_suggestion_data["segment_text"],
-            ai_memo=sample_suggestion_data["ai_memo"],
+            reasoning=sample_suggestion_data["reasoning"],
             confidence=sample_suggestion_data["confidence"],
             status=sample_suggestion_data["status"],
             guid=guid
         )
 
-        assert suggestion.ai_memo == sample_suggestion_data["ai_memo"]
+        assert suggestion.reasoning == sample_suggestion_data["reasoning"]
+        assert suggestion.ai_memo == sample_suggestion_data["reasoning"]  # Test backwards compatibility
         assert suggestion.confidence == sample_suggestion_data["confidence"]
         assert suggestion.status == sample_suggestion_data["status"]
         assert suggestion.guid == guid
@@ -75,7 +76,7 @@ class TestCodingSuggestion:
         assert data["start_pos"] == sample_suggestion_data["start_pos"]
         assert data["end_pos"] == sample_suggestion_data["end_pos"]
         assert data["segment_text"] == sample_suggestion_data["segment_text"]
-        assert data["ai_memo"] == sample_suggestion_data["ai_memo"]
+        assert data["reasoning"] == sample_suggestion_data["reasoning"]
         assert data["confidence"] == sample_suggestion_data["confidence"]
         assert data["status"] == sample_suggestion_data["status"]
         assert "guid" in data

@@ -25,7 +25,7 @@ def sample_suggestion_data():
         "start_pos": 100,
         "end_pos": 250,
         "segment_text": "I often feel overwhelmed with the workload and tight deadlines.",
-        "ai_memo": "Clear expression of stress related to workload",
+        "reasoning": "Clear expression of stress related to workload",
         "confidence": 0.85,
         "status": "pending"
     }
