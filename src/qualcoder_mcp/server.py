@@ -136,6 +136,17 @@ def get_db() -> QualcoderDatabase:
     """
     global db, current_project_path
 
+    # If we have a project path set but db is None, try to reconnect
+    if db is None and current_project_path is not None:
+        logger.warning(f"Database connection lost but project path exists: {Path(current_project_path).name}. Attempting to reconnect...")
+        try:
+            db = QualcoderDatabase(current_project_path)
+            logger.info(f"Successfully reconnected to: {Path(current_project_path).name}")
+            return db
+        except Exception as e:
+            logger.error(f"Failed to reconnect to database: {e}")
+            # Fall through to normal error handling
+
     if db is None:
         # Try environment variable first
         db_path = os.environ.get("QUALCODER_PROJECT_PATH")
@@ -936,7 +947,7 @@ def analyze_for_coding(
 
     # Create analysis session
     session = AICodingSession(
-        project_path=db.db_path,
+        project_path=str(db.db_path),  # Convert Path to string for JSON serialization
         description=f"Analysis of {len(files_to_analyze)} files with {len(codes_to_use)} codes",
         file_ids=file_ids,
         code_names=[c['name'] for c in codes_to_use],
@@ -1300,6 +1311,10 @@ def suggest_coding_for_files(
             instruction=instruction,
             min_confidence=min_confidence
         )
+
+        # Save session to disk so it can be retrieved later
+        session_manager.save_session(session)
+        logger.info(f"Created and saved coding session: {session.session_id}")
 
         # Return instructions for user to provide coding analysis
         # Since we're using native Claude analysis (Option A), we return a structured

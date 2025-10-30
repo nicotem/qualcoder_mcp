@@ -101,7 +101,8 @@ class AICodingSession:
         min_confidence: float = 0.6
     ):
         self.session_id = session_id or str(uuid.uuid4())
-        self.project_path = project_path
+        # Ensure project_path is always a string for JSON serialization
+        self.project_path = str(project_path) if project_path else ""
         self.description = description
         self.file_ids = file_ids or []
         self.code_names = code_names or []
