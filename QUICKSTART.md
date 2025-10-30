@@ -17,7 +17,7 @@ This guide will get you up and running with the Qualcoder MCP server in 10 minut
 cd ~/Documents
 
 # Clone or download this repository
-git clone https://github.com/YOUR_USERNAME/qualcoder_mcp.git
+git clone https://github.com/nicotem/qualcoder_mcp.git
 cd qualcoder_mcp
 
 # Create virtual environment

@@ -36,7 +36,7 @@ You can work with read-only analysis OR use write-enabled AI coding. All AI codi
 
 ```bash
 cd ~/Documents  # or wherever you want to install
-git clone https://github.com/YOUR_USERNAME/qualcoder_mcp.git
+git clone https://github.com/nicotem/qualcoder_mcp.git
 cd qualcoder_mcp
 ```
 

@@ -35,13 +35,11 @@ Copy and paste these commands into Terminal, one at a time:
 cd ~/Documents
 
 # Download the repository
-git clone https://github.com/YOUR_USERNAME/qualcoder_mcp.git
+git clone https://github.com/nicotem/qualcoder_mcp.git
 
 # Go into the folder
 cd qualcoder_mcp
 ```
-
-**Note**: Replace `YOUR_USERNAME` with the actual GitHub username where this is hosted.
 
 **Don't have git?** You can also:
 - Download the ZIP file from GitHub
