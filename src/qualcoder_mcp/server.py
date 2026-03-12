@@ -979,7 +979,7 @@ This session has been created and saved. Now YOU (Claude) need to:
 3. **Add them to the session** using session.add_suggestion()
 4. **Present them to the user** in a clear, reviewable format
 
-The session is stored at: `{session_manager.sessions_dir / f"session_{session.session_id}.json"}`
+The session is stored at: `{session_manager.storage_dir / f"session_{session.session_id}.json"}`
 
 **FOR THE USER:**
 Once Claude completes the analysis and presents suggestions, you can:
