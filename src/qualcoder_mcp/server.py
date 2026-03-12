@@ -4,7 +4,6 @@ import os
 import sys
 import json
 import logging
-import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -13,7 +12,6 @@ from mcp.server.fastmcp import Context
 
 from .database import QualcoderDatabase
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
-from .refi_export import RefiQdaExporter
 
 # Set up logging
 logging.basicConfig(
@@ -1226,357 +1224,6 @@ def apply_codings(
     return "\n".join(output)
 
 
-# ============================================================================
-# AI-ASSISTED CODING TOOLS (LEGACY - DEPRECATED)
-# ============================================================================
-# These tools use the old REFI-QDA export workflow and are kept for backwards
-# compatibility. New users should use the tools above.
-
-@mcp.tool()
-def suggest_coding_for_files(
-    file_ids: List[int],
-    code_names: Optional[List[str]] = None,
-    instruction: str = "Code all relevant segments",
-    min_confidence: float = 0.6
-) -> str:
-    """AI analyzes files and suggests coded segments.
-
-    This is the main AI coding tool. I will read each file and identify
-    segments that should be coded with the specified codes. The suggestions
-    are stored in a session but NOT written to your database - they remain
-    as suggestions until you review and import them.
-
-    Args:
-        file_ids: List of file IDs to analyze and code
-        code_names: List of code names to apply (if None, I'll use all codes)
-        instruction: Specific guidance for the coding task
-        min_confidence: Minimum confidence threshold (0.0-1.0, default: 0.6)
-
-    Returns:
-        JSON with:
-        - session_id: Unique ID for this coding session (save this!)
-        - total_suggestions: Count of suggested coded segments
-        - by_file: Breakdown by file
-        - by_code: Breakdown by code
-        - next_steps: What to do next
-
-    Example usage:
-        "Code files 1, 2, and 3 with codes related to 'workplace stress'"
-        "Apply the 'motivation' and 'team dynamics' codes to interview transcripts"
-        "Code all files using all available codes"
-
-    Note: After this completes, use export_coding_suggestions to save
-    the results for review, and then import into Qualcoder.
-    """
-    try:
-        # Validate inputs
-        if not file_ids:
-            return json.dumps({"error": "file_ids cannot be empty"})
-
-        if min_confidence < 0.0 or min_confidence > 1.0:
-            return json.dumps({"error": "min_confidence must be between 0.0 and 1.0"})
-
-        # Get database
-        database = get_db()
-
-        # Validate files exist
-        all_files = database.list_files()
-        valid_file_ids = {f["id"] for f in all_files}
-        invalid_files = [fid for fid in file_ids if fid not in valid_file_ids]
-        if invalid_files:
-            return json.dumps({
-                "error": f"Invalid file IDs: {invalid_files}",
-                "available_files": [{"id": f["id"], "name": f["name"]} for f in all_files]
-            })
-
-        # Get codes
-        all_codes = database.list_codes()
-        if code_names:
-            # Filter to specified codes
-            codes_to_use = [c for c in all_codes if c["name"] in code_names]
-            if not codes_to_use:
-                return json.dumps({
-                    "error": f"No matching codes found for: {code_names}",
-                    "available_codes": [c["name"] for c in all_codes]
-                })
-        else:
-            codes_to_use = all_codes
-
-        # Create session
-        session = AICodingSession(
-            project_path=current_project_path or "",
-            description=f"AI coding of files {file_ids} with instruction: {instruction}",
-            file_ids=file_ids,
-            code_names=[c["name"] for c in codes_to_use],
-            instruction=instruction,
-            min_confidence=min_confidence
-        )
-
-        # Save session to disk so it can be retrieved later
-        session_manager.save_session(session)
-        logger.info(f"Created and saved coding session: {session.session_id}")
-
-        # Return instructions for user to provide coding analysis
-        # Since we're using native Claude analysis (Option A), we return a structured
-        # prompt that guides Claude to analyze and create suggestions
-        return json.dumps({
-            "status": "ready_for_analysis",
-            "session_id": session.session_id,
-            "message": "I'm ready to analyze these files. I will now read each file and suggest coded segments.",
-            "files_to_analyze": file_ids,
-            "codes_to_apply": [c["name"] for c in codes_to_use],
-            "instruction": instruction,
-            "min_confidence": min_confidence,
-            "next_step": "I will now analyze each file and create coding suggestions. Please wait..."
-        }, indent=2)
-
-    except Exception as e:
-        logger.error(f"Error in suggest_coding_for_files: {e}")
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-def export_coding_suggestions(
-    session_id: str,
-    output_format: str = "refi-qda",
-    output_path: Optional[str] = None,
-    include_rejected: bool = False
-) -> str:
-    """Export AI coding suggestions for review and import.
-
-    Exports the suggestions from a coding session in various formats.
-    The primary format is REFI-QDA XML for importing into Qualcoder.
-
-    Args:
-        session_id: The session ID from suggest_coding_for_files
-        output_format: Format to export ("refi-qda", "json", "csv")
-        output_path: Where to save (default: ~/Documents/coding_suggestions_DATE.*)
-        include_rejected: If True, includes rejected suggestions (default: False)
-
-    Returns:
-        JSON with:
-        - output_file: Path to generated file
-        - format: Format used
-        - segment_count: Number of coded segments included
-        - import_instructions: Next steps for importing
-
-    Formats:
-        - "refi-qda": Standard .qdpx file for Qualcoder import (recommended)
-        - "json": Machine-readable format for editing/review
-        - "csv": Spreadsheet format for documentation
-
-    Workflow:
-        1. Review suggestions (check the session info)
-        2. Optionally update_suggestion_status to approve/reject specific ones
-        3. Export with format="refi-qda"
-        4. Import the .qdpx file into Qualcoder
-
-    Example:
-        "Export session abc123 as REFI-QDA format"
-        "Export suggestions to JSON for review"
-    """
-    try:
-        # Load session
-        if not session_manager.session_exists(session_id):
-            return json.dumps({
-                "error": f"Session {session_id} not found",
-                "available_sessions": session_manager.list_sessions()
-            })
-
-        session = session_manager.load_session(session_id)
-
-        # Filter suggestions by status
-        if include_rejected:
-            suggestions = session.suggestions
-        else:
-            suggestions = [s for s in session.suggestions if s.status != "rejected"]
-
-        if not suggestions:
-            return json.dumps({
-                "error": "No suggestions to export",
-                "total_suggestions": len(session.suggestions),
-                "rejected_count": len([s for s in session.suggestions if s.status == "rejected"]),
-                "note": "All suggestions may have been rejected. Use include_rejected=true to export them anyway."
-            })
-
-        # Generate default output path if not specified
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-
-        if output_path is None:
-            home = Path.home()
-            if output_format == "refi-qda":
-                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.qdpx")
-            elif output_format == "json":
-                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.json")
-            elif output_format == "csv":
-                output_path = str(home / "Documents" / f"coding_suggestions_{timestamp}.csv")
-            else:
-                return json.dumps({"error": f"Unknown format: {output_format}"})
-
-        # Export based on format
-        if output_format == "refi-qda":
-            # Use REFI-QDA exporter
-            database = get_db()
-            exporter = RefiQdaExporter(database)
-
-            # Validate suggestions
-            warnings = exporter.validate_suggestions(suggestions)
-            if warnings:
-                logger.warning(f"Validation warnings: {warnings}")
-
-            # Export to .qdpx
-            output_file = exporter.export_to_qdpx(
-                suggestions,
-                output_path,
-                project_name=f"AI Coding Suggestions - {timestamp}"
-            )
-
-            return json.dumps({
-                "success": True,
-                "output_file": output_file,
-                "format": "refi-qda",
-                "segment_count": len(suggestions),
-                "validation_warnings": warnings if warnings else [],
-                "import_instructions": [
-                    "1. Open Qualcoder",
-                    "2. Go to: File > Import > REFI-QDA Project",
-                    f"3. Select: {output_file}",
-                    "4. Review the import preview",
-                    "5. Confirm the import",
-                    "6. Your coded segments will be added to the project!"
-                ]
-            }, indent=2)
-
-        elif output_format == "json":
-            # Export as JSON
-            output_file = Path(output_path).expanduser()
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(output_file, 'w') as f:
-                json.dump(session.to_dict(), f, indent=2)
-
-            return json.dumps({
-                "success": True,
-                "output_file": str(output_file),
-                "format": "json",
-                "segment_count": len(suggestions),
-                "note": "JSON file can be edited and re-imported as a session"
-            }, indent=2)
-
-        elif output_format == "csv":
-            # Export as CSV
-            import csv as csv_module
-            output_file = Path(output_path).expanduser()
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(output_file, 'w', newline='') as f:
-                writer = csv_module.writer(f)
-                writer.writerow([
-                    "file_name", "code_name", "start_pos", "end_pos",
-                    "segment_text", "ai_memo", "confidence", "status"
-                ])
-                for s in suggestions:
-                    writer.writerow([
-                        s.file_name, s.code_name, s.start_pos, s.end_pos,
-                        s.segment_text, s.ai_memo, s.confidence, s.status
-                    ])
-
-            return json.dumps({
-                "success": True,
-                "output_file": str(output_file),
-                "format": "csv",
-                "segment_count": len(suggestions),
-                "note": "CSV file is for documentation/review only, not for import"
-            }, indent=2)
-
-    except Exception as e:
-        logger.error(f"Error in export_coding_suggestions: {e}")
-        return json.dumps({"error": str(e)})
-
-
-# NOTE: This legacy version is disabled to prevent duplicate tool registration
-# The new conversational version (line 943) is the active one
-# @mcp.tool()
-def update_suggestion_status_legacy(
-    session_id: str,
-    updates: str
-) -> str:
-    """[DEPRECATED] Update the status of coding suggestions (approve/reject).
-
-    This is the legacy REFI-QDA version. Use the new update_suggestion_status()
-    with GUID-based approval instead.
-
-    Allows you to approve or reject specific suggestions before exporting.
-    Useful for quality control - you can reject suggestions that don't seem right.
-
-    Args:
-        session_id: The session ID from suggest_coding_for_files
-        updates: JSON array of updates, format:
-                 [{"index": 0, "status": "approved"}, {"index": 1, "status": "rejected"}, ...]
-
-    Returns:
-        JSON with updated statistics
-
-    Statuses:
-        - "approved": Include in export (default for new suggestions)
-        - "rejected": Exclude from export
-        - "pending": Not yet reviewed
-
-    Example:
-        updates = '[{"index": 0, "status": "approved"}, {"index": 2, "status": "rejected"}]'
-    """
-    try:
-        # Load session
-        if not session_manager.session_exists(session_id):
-            return json.dumps({"error": f"Session {session_id} not found"})
-
-        session = session_manager.load_session(session_id)
-
-        # Parse updates
-        try:
-            update_list = json.loads(updates)
-        except json.JSONDecodeError:
-            return json.dumps({"error": "updates must be valid JSON array"})
-
-        # Apply updates
-        updated_count = 0
-        errors = []
-
-        for update in update_list:
-            index = update.get("index")
-            status = update.get("status")
-
-            if index is None or status is None:
-                errors.append(f"Update missing index or status: {update}")
-                continue
-
-            if status not in ["approved", "rejected", "pending"]:
-                errors.append(f"Invalid status '{status}' for index {index}")
-                continue
-
-            if session.update_suggestion_status(index, status):
-                updated_count += 1
-            else:
-                errors.append(f"Invalid index: {index} (out of range)")
-
-        # Save updated session
-        session_manager.save_session(session)
-
-        # Return updated statistics
-        stats = session.get_statistics()
-
-        return json.dumps({
-            "success": True,
-            "updated_count": updated_count,
-            "errors": errors if errors else [],
-            "statistics": stats
-        }, indent=2)
-
-    except Exception as e:
-        logger.error(f"Error in update_suggestion_status: {e}")
-        return json.dumps({"error": str(e)})
-
 
 @mcp.tool()
 def get_coding_session_info(session_id: str) -> str:
@@ -1724,200 +1371,6 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
-def suggest_new_codes(
-    file_ids: List[int],
-    instruction: str = "Analyze and suggest relevant codes",
-    existing_codes_context: bool = True
-) -> str:
-    """AI analyzes files and suggests new codes to add to the codebook.
-
-    I will read the specified files and suggest codes based on themes,
-    patterns, and concepts found in the text. Useful when starting a
-    new project or discovering new themes.
-
-    Args:
-        file_ids: List of file IDs to analyze
-        instruction: Specific guidance for code suggestion
-        existing_codes_context: If True, I'll show existing codes to avoid duplicates
-
-    Returns:
-        JSON with suggested codes, each including:
-        - code_name: Proposed name for the code
-        - description: What this code represents
-        - category: Suggested category/hierarchy
-        - example_segments: 2-3 text examples
-        - rationale: Why this code is suggested
-
-    Example usage:
-        "Analyze files 1-5 and suggest codes for themes about workplace stress"
-        "Review all files and suggest codes I might be missing"
-        "Suggest codes for the interview transcripts"
-
-    Note: These are suggestions only - you'll need to manually add approved
-    codes to your Qualcoder project, or use export_new_codes_for_import to
-    generate a REFI-QDA file for import.
-    """
-    try:
-        # Validate inputs
-        if not file_ids:
-            return json.dumps({"error": "file_ids cannot be empty"})
-
-        # Get database
-        database = get_db()
-
-        # Validate files exist
-        all_files = database.list_files()
-        valid_file_ids = {f["id"] for f in all_files}
-        invalid_files = [fid for fid in file_ids if fid not in valid_file_ids]
-        if invalid_files:
-            return json.dumps({
-                "error": f"Invalid file IDs: {invalid_files}",
-                "available_files": [{"id": f["id"], "name": f["name"]} for f in all_files]
-            })
-
-        # Get existing codes for context
-        existing_codes = []
-        if existing_codes_context:
-            existing_codes = database.list_codes()
-
-        # Return structure to guide Claude's analysis
-        # Claude will analyze the files and provide code suggestions
-        return json.dumps({
-            "status": "ready_for_analysis",
-            "message": "I'm ready to analyze these files and suggest new codes. I will now read the files and identify themes.",
-            "files_to_analyze": file_ids,
-            "existing_codes": [c["name"] for c in existing_codes] if existing_codes_context else [],
-            "instruction": instruction,
-            "next_step": "I will analyze the files and suggest codes based on the themes I find..."
-        }, indent=2)
-
-    except Exception as e:
-        logger.error(f"Error in suggest_new_codes: {e}")
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-def export_new_codes_for_import(
-    codes_json: str,
-    output_path: Optional[str] = None
-) -> str:
-    """Export approved new codes as REFI-QDA Codebook for import.
-
-    Takes suggested codes (from suggest_new_codes) and creates a REFI-QDA
-    codebook file that can be imported into Qualcoder.
-
-    Args:
-        codes_json: JSON string with approved codes, format:
-                   [{"name": "Code Name", "description": "Description", "color": "#FF0000"}, ...]
-        output_path: Where to save (default: ~/Documents/new_codes_DATE.qdpx)
-
-    Returns:
-        JSON with:
-        - output_file: Path to generated .qdpx file
-        - code_count: Number of codes exported
-        - import_instructions: Step-by-step guide
-
-    Example:
-        codes = '[{"name": "Workplace Stress", "description": "Stress factors", "color": "#FF6B6B"}]'
-
-    Import process:
-        1. Open Qualcoder
-        2. File > Import > REFI-QDA Codebook
-        3. Select the generated .qdpx file
-        4. Review and confirm import
-        5. Codes will be added to your codebook
-    """
-    try:
-        # Parse codes JSON
-        try:
-            codes = json.loads(codes_json)
-        except json.JSONDecodeError:
-            return json.dumps({"error": "codes_json must be valid JSON array"})
-
-        if not codes:
-            return json.dumps({"error": "codes list cannot be empty"})
-
-        # Generate default output path if not specified
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-
-        if output_path is None:
-            output_path = str(Path.home() / "Documents" / f"new_codes_{timestamp}.qdpx")
-
-        # Create minimal REFI-QDA XML with just CodeBook
-        import xml.etree.ElementTree as ET
-        from xml.dom import minidom
-        import zipfile
-
-        # Register namespace
-        NAMESPACE = "urn:QDA-XML:project:1.0"
-        ET.register_namespace('', NAMESPACE)
-
-        # Create root
-        root = ET.Element(
-            f"{{{NAMESPACE}}}Project",
-            attrib={
-                "name": "New Codes",
-                "origin": "Qualcoder MCP AI Assistant",
-                "creatingUserGUID": str(uuid.uuid4()),
-                "creationDateTime": datetime.now().isoformat() + "Z"
-            }
-        )
-
-        # Add CodeBook
-        codebook_elem = ET.SubElement(root, f"{{{NAMESPACE}}}CodeBook")
-        codes_elem = ET.SubElement(codebook_elem, f"{{{NAMESPACE}}}Codes")
-
-        # Add each code
-        for code in codes:
-            code_elem = ET.SubElement(
-                codes_elem,
-                f"{{{NAMESPACE}}}Code",
-                attrib={
-                    "guid": str(uuid.uuid4()),
-                    "name": code.get("name", "Unnamed Code"),
-                    "isCodable": "true"
-                }
-            )
-
-            if code.get("color"):
-                code_elem.set("color", code["color"])
-
-            if code.get("description"):
-                desc_elem = ET.SubElement(code_elem, f"{{{NAMESPACE}}}Description")
-                desc_elem.text = code["description"]
-
-        # Prettify XML
-        rough_string = ET.tostring(root, encoding='utf-8')
-        reparsed = minidom.parseString(rough_string)
-        xml_string = reparsed.toprettyxml(indent="  ", encoding='utf-8').decode('utf-8')
-
-        # Create .qdpx file
-        output_file = Path(output_path).expanduser()
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.writestr('project.qde', xml_string)
-
-        return json.dumps({
-            "success": True,
-            "output_file": str(output_file),
-            "code_count": len(codes),
-            "import_instructions": [
-                "1. Open Qualcoder",
-                "2. Go to: File > Import > REFI-QDA Codebook",
-                f"3. Select: {output_file}",
-                "4. Review the codes to import",
-                "5. Confirm the import",
-                "6. New codes will be added to your codebook!"
-            ]
-        }, indent=2)
-
-    except Exception as e:
-        logger.error(f"Error in export_new_codes_for_import: {e}")
-        return json.dumps({"error": str(e)})
-
 
 @mcp.tool()
 def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
@@ -1936,30 +1389,29 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
 
     Example usage:
         "Explain the AI coding tools"
-        "How do I use suggest_coding_for_files?"
-        "Show me examples of export_coding_suggestions"
+        "How do I use analyze_for_coding?"
         "What's the workflow for AI coding?"
     """
     # Comprehensive help documentation
     tool_help = {
         "overview": {
             "title": "AI-Assisted Coding for Qualcoder",
-            "description": "Use Claude to help code your qualitative data. Claude can analyze interview transcripts, suggest codes, and create coded segments that you can review and import into Qualcoder.",
+            "description": "Use Claude to help code your qualitative data. Claude can analyze interview transcripts, suggest codes, and create coded segments that you can review and apply directly to your Qualcoder project.",
             "workflow": {
-                "phase_1": "Optional: Discover new codes (suggest_new_codes, export_new_codes_for_import)",
-                "phase_2": "AI Coding (suggest_coding_for_files)",
-                "phase_3": "Review & Export (get_coding_session_info, update_suggestion_status, export_coding_suggestions)",
-                "phase_4": "Import into Qualcoder (File > Import > REFI-QDA Project)"
+                "step_1": "Analyze files for coding (analyze_for_coding)",
+                "step_2": "Review suggestions (review_suggestions)",
+                "step_3": "Approve or reject suggestions (update_suggestion_status)",
+                "step_4": "Apply approved codings to database (apply_codings)"
             },
             "key_features": [
                 "Analyze complete transcripts with full context",
                 "Suggest coded segments with confidence scores",
-                "Review and approve/reject suggestions before import",
-                "Export to REFI-QDA format for Qualcoder import",
+                "Review and approve/reject suggestions before applying",
+                "Apply codings directly to Qualcoder database (with automatic backup)",
                 "Session persistence - resume work anytime"
             ]
         },
-        "suggest_coding_for_files": {
+        "analyze_for_coding": {
             "purpose": "Main AI coding tool - analyzes files and suggests coded segments",
             "when_to_use": "When you want to automatically code interview transcripts or documents",
             "parameters": {
@@ -1980,20 +1432,15 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "Save the session_id - you'll need it for all follow-up actions"
             ]
         },
-        "export_coding_suggestions": {
-            "purpose": "Export suggestions in various formats for review and import",
-            "when_to_use": "After coding session is complete and you want to review/import",
-            "formats": {
-                "refi-qda": "Standard .qdpx file for Qualcoder import (recommended)",
-                "json": "Machine-readable format for editing",
-                "csv": "Spreadsheet format for documentation"
-            },
+        "apply_codings": {
+            "purpose": "Apply approved coding suggestions directly to the Qualcoder database",
+            "when_to_use": "After reviewing suggestions and approving the ones you want",
             "workflow": [
-                "1. Complete suggest_coding_for_files",
-                "2. Review session with get_coding_session_info",
-                "3. Optionally approve/reject with update_suggestion_status",
-                "4. Export with format='refi-qda'",
-                "5. Import .qdpx file into Qualcoder"
+                "1. Run analyze_for_coding on your files",
+                "2. Review with review_suggestions",
+                "3. Approve/reject with update_suggestion_status",
+                "4. Apply approved codings with apply_codings",
+                "5. A backup is created automatically before writing"
             ]
         }
     }
@@ -2011,15 +1458,14 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
         return json.dumps({
             "error": f"Unknown tool: {tool_name}",
             "available_tools": [
-                "suggest_coding_for_files",
-                "export_coding_suggestions",
+                "analyze_for_coding",
+                "review_suggestions",
                 "update_suggestion_status",
+                "apply_codings",
                 "get_coding_session_info",
                 "list_coding_sessions",
                 "delete_coding_session",
-                "cleanup_old_sessions",
-                "suggest_new_codes",
-                "export_new_codes_for_import"
+                "cleanup_old_sessions"
             ],
             "tip": "Use explain_ai_coding_tools() with no arguments for an overview"
         }, indent=2)
