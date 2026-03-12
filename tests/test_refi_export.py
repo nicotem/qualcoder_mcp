@@ -462,13 +462,15 @@ class TestRefiQdaExporter:
             start_pos=0,
             end_pos=10,
             segment_text="text",
-            confidence=1.5  # Out of range
+            confidence=1.5  # Out of range -- clamped to 1.0 by constructor
         )
 
+        # Confidence is now clamped in the CodingSuggestion constructor,
+        # so the validator should not see out-of-range values
+        assert invalid_suggestion.confidence == 1.0
         warnings = exporter.validate_suggestions([invalid_suggestion])
-
-        assert len(warnings) > 0
-        assert any("Confidence" in w and "outside valid range" in w for w in warnings)
+        # No confidence warning since value is clamped
+        assert not any("Confidence" in w and "outside valid range" in w for w in warnings)
 
     def test_validate_suggestions_multiple_issues(self, exporter):
         """Test validation reports multiple issues."""
@@ -496,8 +498,9 @@ class TestRefiQdaExporter:
 
         warnings = exporter.validate_suggestions(invalid_suggestions)
 
-        # Should have multiple warnings
-        assert len(warnings) >= 4  # At least file, code, position, and confidence errors
+        # Should have multiple warnings (file, code, position).
+        # Confidence no longer triggers a warning as it's clamped in constructor.
+        assert len(warnings) >= 3  # At least file, code, and position errors
 
     def test_export_with_file_grouping(self, exporter, sample_suggestions, tmp_path):
         """Test that suggestions are correctly grouped by file."""

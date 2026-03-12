@@ -107,6 +107,36 @@ def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
     return limit
 
 
+MAX_STRING_LENGTH = 10000  # Maximum allowed string length for user inputs
+
+
+def validate_string(value: str, param_name: str = "value",
+                    max_length: int = MAX_STRING_LENGTH) -> str:
+    """Validate a string parameter.
+
+    Args:
+        value: The string to validate
+        param_name: Parameter name for error messages
+        max_length: Maximum allowed length (default: MAX_STRING_LENGTH)
+
+    Returns:
+        The validated (and possibly truncated) string
+
+    Raises:
+        TypeError: If not a string
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{param_name} must be a string, got {type(value).__name__}")
+
+    if len(value) > max_length:
+        logger.warning(
+            f"{param_name} length {len(value)} exceeds maximum {max_length}, truncating"
+        )
+        return value[:max_length]
+
+    return value
+
+
 def validate_id(id_value: int, param_name: str = "id") -> int:
     """Validate an ID parameter.
 
@@ -254,11 +284,13 @@ def escape_like_pattern(pattern: str) -> str:
 class QualcoderDatabase:
     """Interface to read data from a Qualcoder SQLite database."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, read_only: bool = True):
         """Initialize connection to Qualcoder database.
 
         Args:
-            db_path: Path to the .qda database file
+            db_path: Path to the .qda database file or project folder
+            read_only: Open in read-only mode (default: True).
+                      Write access requires explicit read_only=False.
 
         Raises:
             ValueError: If path validation fails
@@ -266,14 +298,20 @@ class QualcoderDatabase:
         """
         # Validate path before opening
         self.db_path = validate_qda_path(db_path)
+        self.read_only = read_only
 
-        # Open database with write access
-        # IMPORTANT: Users should work on copies in the MCP workspace
         try:
-            self.conn = sqlite3.connect(str(self.db_path), uri=False)
+            if read_only:
+                # Open in read-only mode via URI to prevent accidental writes
+                uri = f"file:{self.db_path}?mode=ro"
+                self.conn = sqlite3.connect(uri, uri=True)
+            else:
+                self.conn = sqlite3.connect(str(self.db_path), uri=False)
             self.conn.row_factory = sqlite3.Row  # Access columns by name
             # Enable foreign key constraints
             self.conn.execute("PRAGMA foreign_keys = ON")
+            # Set busy timeout for concurrent access (5 seconds)
+            self.conn.execute("PRAGMA busy_timeout = 5000")
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to open database: {e}") from e
 
@@ -904,13 +942,13 @@ class QualcoderDatabase:
             RuntimeError: If database operation fails
         """
         # Validate and escape inputs
+        query = validate_string(query, "query")
         escaped_query = escape_like_pattern(query)
         limit = validate_limit(limit)
 
         try:
             if code_name:
-                if not isinstance(code_name, str):
-                    raise TypeError(f"code_name must be a string, got {type(code_name).__name__}")
+                code_name = validate_string(code_name, "code_name")
 
                 cursor = self.conn.execute("""
                     SELECT
@@ -1023,6 +1061,7 @@ class QualcoderDatabase:
             ValueError: If parameters are invalid
             RuntimeError: If database operation fails
         """
+        query = validate_string(query, "query")
         escaped_query = escape_like_pattern(query)
         limit = validate_limit(limit)
 
@@ -1953,6 +1992,19 @@ class QualcoderDatabase:
     # These methods modify the database. Users should work on project copies
     # in the MCP workspace (~/Documents/Qualcoder MCP Projects/)
 
+    def _require_write_access(self) -> None:
+        """Check that database was opened with write access.
+
+        Raises:
+            RuntimeError: If database is in read-only mode
+        """
+        if self.read_only:
+            raise RuntimeError(
+                "Database is in read-only mode. To modify data, reopen with "
+                "read_only=False. Write operations should only be performed "
+                "on project copies in the MCP workspace."
+            )
+
     def add_coding(
         self,
         file_id: int,
@@ -1962,7 +2014,8 @@ class QualcoderDatabase:
         selected_text: str,
         owner: str,
         memo: Optional[str] = None,
-        important: int = 0
+        important: int = 0,
+        auto_commit: bool = True
     ) -> int:
         """Add a new coding to a text segment.
 
@@ -1975,14 +2028,16 @@ class QualcoderDatabase:
             owner: Name of the coder (e.g., "AI Coding Assistant")
             memo: Optional memo explaining the coding
             important: Importance flag (0 or 1)
+            auto_commit: Commit after insert (default True). Set False for batch operations.
 
         Returns:
             The ctid (coding ID) of the newly created coding
 
         Raises:
             ValueError: If validation fails
-            RuntimeError: If database operation fails
+            RuntimeError: If database is read-only or operation fails
         """
+        self._require_write_access()
         # Validate inputs
         file_id = validate_id(file_id, "file_id")
         code_id = validate_id(code_id, "code_id")
@@ -2022,7 +2077,8 @@ class QualcoderDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo or "", important))
 
-            self.conn.commit()
+            if auto_commit:
+                self.conn.commit()
 
             ctid = cursor.lastrowid
             logger.info(f"Added coding: ctid={ctid}, file={file_id}, code={code_id}, pos={start_pos}-{end_pos}")
@@ -2061,8 +2117,9 @@ class QualcoderDatabase:
 
         Raises:
             ValueError: If validation fails
-            RuntimeError: If database operation fails
+            RuntimeError: If database is read-only or operation fails
         """
+        self._require_write_access()
         if not name or not isinstance(name, str):
             raise ValueError("name must be a non-empty string")
 
@@ -2117,8 +2174,9 @@ class QualcoderDatabase:
 
         Raises:
             ValueError: If validation fails
-            RuntimeError: If database operation fails
+            RuntimeError: If database is read-only or operation fails
         """
+        self._require_write_access()
         coding_id = validate_id(coding_id, "coding_id")
 
         if not isinstance(memo, str):

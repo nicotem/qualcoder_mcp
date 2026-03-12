@@ -96,11 +96,12 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
     return projects
 
 
-def switch_project(project_path: str) -> None:
+def switch_project(project_path: str, read_only: bool = True) -> None:
     """Switch to a different project.
 
     Args:
         project_path: Path to the .qda file
+        read_only: Open in read-only mode (default: True)
 
     Raises:
         ValueError: If path is invalid
@@ -118,14 +119,18 @@ def switch_project(project_path: str) -> None:
         finally:
             db = None
 
-    # Connect to new project
-    db = QualcoderDatabase(project_path)
+    # Connect to new project (read-only by default)
+    db = QualcoderDatabase(project_path, read_only=read_only)
     current_project_path = project_path
-    logger.info(f"Switched to project: {Path(project_path).name}")
+    logger.info(f"Switched to project: {Path(project_path).name} (read_only={read_only})")
 
 
-def get_db() -> QualcoderDatabase:
+def get_db(read_only: bool = True) -> QualcoderDatabase:
     """Get or initialize the database connection.
+
+    Args:
+        read_only: If True (default), opens in read-only mode.
+                  Pass False only for write operations like apply_codings.
 
     Raises:
         ValueError: If no project specified or invalid
@@ -134,11 +139,21 @@ def get_db() -> QualcoderDatabase:
     """
     global db, current_project_path
 
+    # If we need write access but current connection is read-only, reopen
+    if db is not None and not read_only and db.read_only:
+        logger.info("Upgrading database connection to read-write mode")
+        try:
+            db.close()
+        except Exception:
+            pass
+        db = QualcoderDatabase(current_project_path, read_only=False)
+        return db
+
     # If we have a project path set but db is None, try to reconnect
     if db is None and current_project_path is not None:
         logger.warning(f"Database connection lost but project path exists: {Path(current_project_path).name}. Attempting to reconnect...")
         try:
-            db = QualcoderDatabase(current_project_path)
+            db = QualcoderDatabase(current_project_path, read_only=read_only)
             logger.info(f"Successfully reconnected to: {Path(current_project_path).name}")
             return db
         except Exception as e:
@@ -157,7 +172,7 @@ def get_db() -> QualcoderDatabase:
             )
 
         try:
-            db = QualcoderDatabase(db_path)
+            db = QualcoderDatabase(db_path, read_only=read_only)
             current_project_path = db_path
             # Log only filename, not full path (security best practice)
             logger.info(f"Connected to Qualcoder database: {Path(db_path).name}")
@@ -358,11 +373,15 @@ def select_project(project_path: str) -> str:
         }, indent=2)
 
     except (ValueError, FileNotFoundError) as e:
+        # Log full error for debugging, but don't expose internal paths to user
+        logger.error(f"Failed to select project: {e}")
         return json.dumps({
             "success": False,
-            "error": f"Invalid project: {str(e)}"
+            "error": "Invalid project path or project not found. "
+                     "Use 'list_available_projects' to find valid projects."
         })
     except RuntimeError as e:
+        logger.error(f"Failed to open project database: {e}")
         return json.dumps({
             "success": False,
             "error": "Failed to open project database"
@@ -1145,13 +1164,15 @@ def apply_codings(
         return json.dumps({"error": f"Session {session_id} not found"})
 
     session = session_manager.load_session(session_id)
-    db = get_db()
 
-    # Get only approved suggestions
+    # Get only approved suggestions (check before upgrading to write mode)
     approved = session.filter_by_status("approved")
 
     if not approved:
         return "❌ No approved suggestions to apply. Use `update_suggestion_status` to approve suggestions first."
+
+    # Upgrade to read-write mode for writing codings
+    db = get_db(read_only=False)
 
     # Create backup
     backup_path = None
@@ -1161,12 +1182,11 @@ def apply_codings(
         except Exception as e:
             return f"❌ Failed to create backup: {e}\n\nAborting to protect your data."
 
-    # Apply each coding
+    # Apply all codings in a single transaction (all-or-nothing)
     results = []
-    errors = []
 
-    for sugg in approved:
-        try:
+    try:
+        for sugg in approved:
             # Create memo with reasoning and confidence
             memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
 
@@ -1177,7 +1197,8 @@ def apply_codings(
                 end_pos=sugg.end_pos,
                 selected_text=sugg.segment_text,
                 owner=owner,
-                memo=memo
+                memo=memo,
+                auto_commit=False  # Batch: commit after all succeed
             )
 
             results.append({
@@ -1187,11 +1208,22 @@ def apply_codings(
                 "guid": sugg.guid
             })
 
-        except Exception as e:
-            errors.append({
-                "guid": sugg.guid,
-                "error": str(e)
-            })
+        # Commit all at once
+        db.conn.commit()
+
+    except Exception as e:
+        # Roll back all changes on any failure
+        try:
+            db.conn.rollback()
+        except Exception:
+            pass
+        logger.error(f"Failed to apply codings, rolled back: {e}")
+        return json.dumps({
+            "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
+            "applied_before_failure": len(results),
+            "total_approved": len(approved)
+        })
+    errors = []
 
     # Format output
     output = ["\n✅ **CODINGS APPLIED TO DATABASE**\n"]

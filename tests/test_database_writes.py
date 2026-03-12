@@ -213,7 +213,7 @@ def write_test_db_path(tmp_path):
 @pytest.fixture
 def write_db(write_test_db_path):
     """Create a QualcoderDatabase instance for write testing."""
-    database = QualcoderDatabase(write_test_db_path)
+    database = QualcoderDatabase(write_test_db_path, read_only=False)
     yield database
     database.close()
 
@@ -713,7 +713,7 @@ class TestTransactionHandling:
     def test_coding_persists_after_commit(self, write_test_db_path):
         """Test that successful writes persist after closing connection."""
         # Add coding in first connection
-        db1 = QualcoderDatabase(write_test_db_path)
+        db1 = QualcoderDatabase(write_test_db_path, read_only=False)
         ctid = db1.add_coding(
             file_id=1,
             code_id=1,
@@ -724,7 +724,7 @@ class TestTransactionHandling:
         )
         db1.close()
 
-        # Verify in new connection
+        # Verify in new connection (read-only is fine for verification)
         db2 = QualcoderDatabase(write_test_db_path)
         segments = db2.get_coded_text_segments(1)
         db2.close()

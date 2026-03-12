@@ -9,6 +9,8 @@ Tests for:
 - Very long strings
 - Unicode/special characters
 - Error message information leakage
+
+Shared fixtures (qualcoder_db_path, setup_server) are provided by conftest.py.
 """
 
 import pytest
@@ -28,82 +30,18 @@ from qualcoder_mcp.database import (
     escape_like_pattern,
     MAX_LIMIT,
 )
-from qualcoder_mcp.sessions import SessionManager
 
 
 # =============================================================================
-# FIXTURES
+# FIXTURES (security-specific only; shared fixtures come from conftest.py)
 # =============================================================================
-
-@pytest.fixture
-def qualcoder_db_path(tmp_path):
-    """Create a QualCoder database for security testing."""
-    project_folder = tmp_path / "test_project.qda"
-    project_folder.mkdir()
-    db_file = project_folder / "data.qda"
-
-    conn = sqlite3.connect(str(db_file))
-    cursor = conn.cursor()
-
-    cursor.execute("CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, codername TEXT)")
-    cursor.execute("INSERT INTO project VALUES ('v12', '2024-01-15', 'Test', 'About', 'TestCoder')")
-
-    cursor.execute("CREATE TABLE code_cat (catid INTEGER PRIMARY KEY, name TEXT UNIQUE, memo TEXT, owner TEXT, date TEXT, supercatid INTEGER)")
-
-    cursor.execute("CREATE TABLE code_name (cid INTEGER PRIMARY KEY, name TEXT UNIQUE, memo TEXT, catid INTEGER, owner TEXT, date TEXT, color TEXT)")
-    cursor.execute("INSERT INTO code_name VALUES (1, 'TestCode', 'memo', NULL, 'TestCoder', '2024-01-15', '#FF0000')")
-
-    cursor.execute("CREATE TABLE source (id INTEGER PRIMARY KEY, name TEXT, fulltext TEXT, memo TEXT, owner TEXT, date TEXT, mediapath TEXT)")
-    cursor.execute("INSERT INTO source VALUES (1, 'file.txt', 'Some text content for testing', '', 'TestCoder', '2024-01-15', NULL)")
-
-    cursor.execute("CREATE TABLE code_text (ctid INTEGER PRIMARY KEY, cid INTEGER, fid INTEGER, seltext TEXT, pos0 INTEGER, pos1 INTEGER, owner TEXT, date TEXT, memo TEXT, important INTEGER DEFAULT 0, UNIQUE(cid, fid, pos0, pos1, owner))")
-    cursor.execute("INSERT INTO code_text VALUES (1, 1, 1, 'Some text', 0, 9, 'TestCoder', '2024-01-15', '', 0)")
-
-    cursor.execute("CREATE TABLE cases (caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT)")
-    cursor.execute("CREATE TABLE case_text (id INTEGER PRIMARY KEY, caseid INTEGER, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
-    cursor.execute("CREATE TABLE annotation (anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
-    cursor.execute("CREATE TABLE journal (jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT)")
-    cursor.execute("CREATE TABLE attribute_type (name TEXT PRIMARY KEY, date TEXT, owner TEXT, memo TEXT, caseOrFile TEXT, valuetype TEXT)")
-    cursor.execute("INSERT INTO attribute_type VALUES ('TestAttr', '2024-01-15', 'TestCoder', '', 'case', 'character')")
-    cursor.execute("CREATE TABLE attribute (attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT, value TEXT, id INTEGER, date TEXT, owner TEXT)")
-    cursor.execute("CREATE TABLE code_image (imid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER, x1 REAL, y1 REAL, width REAL, height REAL, memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0)")
-    cursor.execute("CREATE TABLE code_av (avid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0)")
-
-    conn.commit()
-    conn.close()
-
-    yield str(project_folder)
-
 
 @pytest.fixture
 def db(qualcoder_db_path):
-    """Create database instance."""
-    database = QualcoderDatabase(qualcoder_db_path)
+    """Create a read-write database instance for security testing."""
+    database = QualcoderDatabase(qualcoder_db_path, read_only=False)
     yield database
     database.close()
-
-
-@pytest.fixture
-def setup_server(qualcoder_db_path, tmp_path):
-    """Set up server for security testing."""
-    original_db = server.db
-    original_path = server.current_project_path
-    original_sm = server.session_manager
-
-    server.db = QualcoderDatabase(qualcoder_db_path)
-    server.current_project_path = qualcoder_db_path
-    server.session_manager = SessionManager(str(tmp_path / "sessions"))
-
-    yield server
-
-    if server.db is not None:
-        try:
-            server.db.close()
-        except Exception:
-            pass
-    server.db = original_db
-    server.current_project_path = original_path
-    server.session_manager = original_sm
 
 
 # =============================================================================
@@ -196,7 +134,7 @@ class TestSqlInjectionDatabaseLayer:
             pass
         # Verify original code still exists
         codes = db.list_codes()
-        assert any(c["name"] == "TestCode" for c in codes)
+        assert any(c["name"] == "Stress" for c in codes)
 
     @pytest.mark.parametrize("payload", INJECTION_PAYLOADS)
     def test_add_coding_owner_injection(self, db, payload):

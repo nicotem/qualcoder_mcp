@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,7 +38,8 @@ class CodingSuggestion:
         self.end_pos = end_pos
         self.segment_text = segment_text
         self.reasoning = reasoning  # Why this segment was coded
-        self.confidence = confidence
+        # Clamp confidence to [0.0, 1.0]
+        self.confidence = max(0.0, min(1.0, float(confidence)))
         self.status = status  # 'pending', 'approved', 'rejected'
         self.context_before = context_before  # Text before for context
         self.context_after = context_after  # Text after for context
@@ -64,9 +66,26 @@ class CodingSuggestion:
             "guid": self.guid
         }
 
+    _REQUIRED_FIELDS = {
+        "file_id", "file_name", "code_id", "code_name",
+        "start_pos", "end_pos", "segment_text"
+    }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CodingSuggestion':
-        """Create from dictionary."""
+        """Create from dictionary.
+
+        Raises:
+            ValueError: If required fields are missing
+            TypeError: If data is not a dictionary
+        """
+        if not isinstance(data, dict):
+            raise TypeError("CodingSuggestion data must be a dictionary")
+
+        missing = cls._REQUIRED_FIELDS - set(data.keys())
+        if missing:
+            raise ValueError(f"Missing required fields: {missing}")
+
         # Handle both old (ai_memo) and new (reasoning) formats
         reasoning = data.get("reasoning") or data.get("ai_memo", "")
 
@@ -237,9 +256,25 @@ class AICodingSession:
             "statistics": self.get_statistics()
         }
 
+    _REQUIRED_FIELDS = {
+        "project_path", "session_id", "created_at", "last_modified"
+    }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AICodingSession':
-        """Create session from dictionary."""
+        """Create session from dictionary.
+
+        Raises:
+            ValueError: If required fields are missing
+            TypeError: If data is not a dictionary
+        """
+        if not isinstance(data, dict):
+            raise TypeError("AICodingSession data must be a dictionary")
+
+        missing = cls._REQUIRED_FIELDS - set(data.keys())
+        if missing:
+            raise ValueError(f"Missing required session fields: {missing}")
+
         session = cls(
             project_path=data["project_path"],
             session_id=data["session_id"],
@@ -263,17 +298,50 @@ class AICodingSession:
 class SessionManager:
     """Manage AI coding sessions with disk persistence."""
 
+    # Session IDs must be valid UUID4 strings (hex + hyphens only)
+    _SESSION_ID_PATTERN = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    )
+
     def __init__(self, storage_dir: str = "~/.qualcoder_mcp/sessions"):
         self.storage_dir = Path(storage_dir).expanduser()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"SessionManager initialized with storage: {self.storage_dir}")
+
+    @classmethod
+    def _validate_session_id(cls, session_id: str) -> str:
+        """Validate session ID to prevent path traversal.
+
+        Session IDs must be valid UUID4 format (lowercase hex with hyphens).
+
+        Args:
+            session_id: The session ID to validate
+
+        Returns:
+            The validated session ID
+
+        Raises:
+            ValueError: If session ID is not valid UUID4 format
+        """
+        if not isinstance(session_id, str):
+            raise ValueError("session_id must be a string")
+        if not cls._SESSION_ID_PATTERN.match(session_id):
+            raise ValueError(
+                f"Invalid session ID format: must be UUID4 "
+                f"(e.g., '550e8400-e29b-41d4-a716-446655440000')"
+            )
+        return session_id
 
     def save_session(self, session: AICodingSession) -> None:
         """Save session to disk as JSON.
 
         Args:
             session: The AICodingSession to save
+
+        Raises:
+            ValueError: If session ID is not valid UUID4 format
         """
+        self._validate_session_id(session.session_id)
         filepath = self.storage_dir / f"session_{session.session_id}.json"
         try:
             with open(filepath, 'w') as f:
@@ -293,8 +361,10 @@ class SessionManager:
             The loaded AICodingSession
 
         Raises:
+            ValueError: If session ID is not valid UUID4 format
             FileNotFoundError: If session file doesn't exist
         """
+        self._validate_session_id(session_id)
         filepath = self.storage_dir / f"session_{session_id}.json"
         if not filepath.exists():
             raise FileNotFoundError(f"Session {session_id} not found at {filepath}")
@@ -316,8 +386,13 @@ class SessionManager:
             session_id: The session ID to check
 
         Returns:
-            True if session file exists, False otherwise
+            True if session file exists, False otherwise.
+            Returns False for invalid session ID formats.
         """
+        try:
+            self._validate_session_id(session_id)
+        except ValueError:
+            return False
         filepath = self.storage_dir / f"session_{session_id}.json"
         return filepath.exists()
 
@@ -388,8 +463,13 @@ class SessionManager:
             session_id: The session ID to delete
 
         Returns:
-            True if deleted, False if not found
+            True if deleted, False if not found.
+            Returns False for invalid session ID formats.
         """
+        try:
+            self._validate_session_id(session_id)
+        except ValueError:
+            return False
         filepath = self.storage_dir / f"session_{session_id}.json"
         if filepath.exists():
             try:

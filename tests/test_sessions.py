@@ -402,6 +402,14 @@ class TestSessionManager:
         manager = SessionManager(temp_session_dir)
 
         with pytest.raises(FileNotFoundError):
+            # Use valid UUID4 format that doesn't correspond to any saved session
+            manager.load_session("00000000-0000-0000-0000-000000000000")
+
+    def test_load_session_invalid_id_format(self, temp_session_dir):
+        """Test loading with invalid session ID format raises ValueError."""
+        manager = SessionManager(temp_session_dir)
+
+        with pytest.raises(ValueError, match="Invalid session ID format"):
             manager.load_session("nonexistent_id")
 
     def test_session_exists(self, temp_session_dir, sample_session_data):
