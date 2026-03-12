@@ -183,6 +183,26 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
     return db
 
 
+def _downgrade_to_readonly():
+    """Downgrade the global database connection back to read-only mode.
+
+    Called after write operations complete (success or failure) to ensure
+    subsequent read operations don't accidentally hold a writable connection.
+    """
+    global db
+    if db is not None and not db.read_only:
+        logger.info("Downgrading database connection back to read-only mode")
+        try:
+            db.close()
+        except Exception:
+            pass
+        try:
+            db = QualcoderDatabase(current_project_path, read_only=True)
+        except Exception as e:
+            logger.error(f"Failed to downgrade to read-only: {e}")
+            db = None
+
+
 # ============================================================================
 # RESOURCES - Read-only data access
 # ============================================================================
@@ -1172,14 +1192,15 @@ def apply_codings(
         return "❌ No approved suggestions to apply. Use `update_suggestion_status` to approve suggestions first."
 
     # Upgrade to read-write mode for writing codings
-    db = get_db(read_only=False)
+    write_db = get_db(read_only=False)
 
     # Create backup
     backup_path = None
     if create_backup:
         try:
-            backup_path = db.backup_before_write()
+            backup_path = write_db.backup_before_write()
         except Exception as e:
+            _downgrade_to_readonly()
             return f"❌ Failed to create backup: {e}\n\nAborting to protect your data."
 
     # Apply all codings in a single transaction (all-or-nothing)
@@ -1190,7 +1211,7 @@ def apply_codings(
             # Create memo with reasoning and confidence
             memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
 
-            ctid = db.add_coding(
+            ctid = write_db.add_coding(
                 file_id=sugg.file_id,
                 code_id=sugg.code_id,
                 start_pos=sugg.start_pos,
@@ -1209,20 +1230,24 @@ def apply_codings(
             })
 
         # Commit all at once
-        db.conn.commit()
+        write_db.conn.commit()
 
     except Exception as e:
         # Roll back all changes on any failure
         try:
-            db.conn.rollback()
+            write_db.conn.rollback()
         except Exception:
             pass
         logger.error(f"Failed to apply codings, rolled back: {e}")
+        _downgrade_to_readonly()
         return json.dumps({
             "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
             "applied_before_failure": len(results),
             "total_approved": len(approved)
         })
+
+    # Downgrade back to read-only after successful write
+    _downgrade_to_readonly()
     errors = []
 
     # Format output

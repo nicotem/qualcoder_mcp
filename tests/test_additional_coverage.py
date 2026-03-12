@@ -20,7 +20,9 @@ from qualcoder_mcp.database import (
     QualcoderDatabase,
     validate_id,
     validate_limit,
+    validate_string,
     MAX_LIMIT,
+    MAX_STRING_LENGTH,
 )
 from qualcoder_mcp.sessions import (
     SessionManager,
@@ -543,6 +545,274 @@ class TestExpandedErrorLeakage:
         assert "error" in data
         # Error should describe the problem without leaking paths
         assert "Traceback" not in data.get("error", "")
+
+
+# =============================================================================
+# validate_string() direct unit tests
+# =============================================================================
+
+class TestValidateString:
+    """Direct unit tests for validate_string() in database.py."""
+
+    def test_non_string_int_raises_type_error(self):
+        with pytest.raises(TypeError, match="must be a string, got int"):
+            validate_string(42, "test_param")
+
+    def test_non_string_none_raises_type_error(self):
+        with pytest.raises(TypeError, match="must be a string, got NoneType"):
+            validate_string(None, "test_param")
+
+    def test_non_string_list_raises_type_error(self):
+        with pytest.raises(TypeError, match="must be a string, got list"):
+            validate_string([1, 2, 3], "test_param")
+
+    def test_truncation_at_max_string_length(self):
+        long_string = "a" * 15000
+        result = validate_string(long_string, "test_param")
+        assert len(result) == MAX_STRING_LENGTH
+        assert result == "a" * MAX_STRING_LENGTH
+
+    def test_string_at_exact_max_length_not_truncated(self):
+        exact_string = "b" * MAX_STRING_LENGTH
+        result = validate_string(exact_string, "test_param")
+        assert len(result) == MAX_STRING_LENGTH
+        assert result == exact_string
+
+    def test_normal_string_passes_through_unchanged(self):
+        result = validate_string("hello world", "test_param")
+        assert result == "hello world"
+
+    def test_empty_string_passes_through(self):
+        result = validate_string("", "test_param")
+        assert result == ""
+
+    def test_default_param_name_in_error(self):
+        with pytest.raises(TypeError, match="value must be a string"):
+            validate_string(123)
+
+
+# =============================================================================
+# apply_codings() rollback integration test
+# =============================================================================
+
+class TestApplyCodingsRollback:
+    """Test that apply_codings() rolls back ALL codings when one fails mid-batch."""
+
+    def test_rollback_on_invalid_code_id(self, setup_server, qualcoder_db_path):
+        """When a mid-batch suggestion has an invalid code_id, all codings
+        (including earlier successful ones) must be rolled back."""
+        # Count existing codings before the test
+        initial_count = setup_server.db.conn.execute(
+            "SELECT COUNT(*) FROM code_text"
+        ).fetchone()[0]
+
+        # Create a session with 2 approved suggestions:
+        #   - first is valid (code_id=1 exists)
+        #   - second has invalid code_id=99999 (does not exist)
+        session = AICodingSession(
+            project_path=qualcoder_db_path,
+            description="Rollback test session",
+            file_ids=[1],
+            code_names=["Stress"],
+            instruction="Test rollback",
+            min_confidence=0.5
+        )
+
+        valid_suggestion = CodingSuggestion(
+            file_id=1, file_name="interview.txt",
+            code_id=1, code_name="Stress",
+            start_pos=0, end_pos=10,
+            segment_text="This is in",
+            reasoning="Valid suggestion", confidence=0.9,
+            status="approved"
+        )
+        invalid_suggestion = CodingSuggestion(
+            file_id=1, file_name="interview.txt",
+            code_id=99999, code_name="NonexistentCode",
+            start_pos=20, end_pos=30,
+            segment_text="interview ",
+            reasoning="Invalid code_id", confidence=0.8,
+            status="approved"
+        )
+
+        session.add_suggestion(valid_suggestion)
+        session.add_suggestion(invalid_suggestion)
+        setup_server.session_manager.save_session(session)
+
+        # Call apply_codings -- should fail and roll back
+        result = server.apply_codings(
+            session_id=session.session_id,
+            create_backup=False,
+            owner="Rollback Tester"
+        )
+
+        # Verify the result indicates failure
+        data = json.loads(result)
+        assert "error" in data
+        assert "rolled back" in data["error"].lower()
+
+        # Verify ZERO new codings were inserted -- the valid one was also rolled back
+        # Check by owner to be precise (per security-eng recommendation)
+        ai_count = setup_server.db.conn.execute(
+            "SELECT COUNT(*) FROM code_text WHERE owner = ?",
+            ("Rollback Tester",)
+        ).fetchone()[0]
+        assert ai_count == 0, (
+            f"Expected 0 codings from 'Rollback Tester', but found {ai_count}"
+        )
+
+        # Also verify total count unchanged as a belt-and-suspenders check
+        final_count = setup_server.db.conn.execute(
+            "SELECT COUNT(*) FROM code_text"
+        ).fetchone()[0]
+        assert final_count == initial_count, (
+            f"Expected {initial_count} total codings (no new ones), but found {final_count}"
+        )
+
+        # Verify original rows are intact (no corruption from rollback)
+        original_rows = setup_server.db.conn.execute(
+            "SELECT ctid, cid, fid, owner FROM code_text WHERE owner = 'TestCoder' ORDER BY ctid"
+        ).fetchall()
+        assert len(original_rows) == 2
+        assert tuple(original_rows[0]) == (1, 1, 1, "TestCoder")
+        assert tuple(original_rows[1]) == (2, 2, 1, "TestCoder")
+
+
+# =============================================================================
+# RW connection downgrade after apply_codings()
+# =============================================================================
+
+class TestRWConnectionDowngrade:
+    """Test that the database is downgraded to read-only after apply_codings()."""
+
+    def test_downgrade_after_successful_apply(
+        self, setup_server, qualcoder_db_path
+    ):
+        """After a successful apply_codings(), the global db should be read-only."""
+        # Create a session with one valid approved suggestion
+        session = AICodingSession(
+            project_path=qualcoder_db_path,
+            description="Downgrade test session",
+            file_ids=[1],
+            code_names=["Stress"],
+            instruction="Test downgrade",
+            min_confidence=0.5
+        )
+        suggestion = CodingSuggestion(
+            file_id=1, file_name="interview.txt",
+            code_id=1, code_name="Stress",
+            start_pos=10, end_pos=20,
+            segment_text="interview ",
+            reasoning="Test", confidence=0.9,
+            status="approved"
+        )
+        session.add_suggestion(suggestion)
+        setup_server.session_manager.save_session(session)
+
+        # Apply codings (should succeed)
+        result = server.apply_codings(
+            session_id=session.session_id,
+            create_backup=False,
+            owner="Downgrade Tester"
+        )
+        assert "error" not in result.lower() or "rolled back" not in result.lower()
+
+        # The global db should now be read-only
+        assert server.db is not None
+        assert server.db.read_only is True
+
+    def test_downgrade_after_failed_apply(
+        self, setup_server, qualcoder_db_path
+    ):
+        """After a failed apply_codings(), the global db should be read-only."""
+        session = AICodingSession(
+            project_path=qualcoder_db_path,
+            description="Downgrade failure test",
+            file_ids=[1],
+            code_names=["Stress"],
+            instruction="Test downgrade on failure",
+            min_confidence=0.5
+        )
+        bad_suggestion = CodingSuggestion(
+            file_id=1, file_name="interview.txt",
+            code_id=99999, code_name="Nonexistent",
+            start_pos=0, end_pos=10,
+            segment_text="This is in",
+            reasoning="Bad code", confidence=0.9,
+            status="approved"
+        )
+        session.add_suggestion(bad_suggestion)
+        setup_server.session_manager.save_session(session)
+
+        # Apply codings (should fail)
+        result = server.apply_codings(
+            session_id=session.session_id,
+            create_backup=False,
+            owner="Downgrade Tester"
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+        # The global db should still be read-only after failure
+        assert server.db is not None
+        assert server.db.read_only is True
+
+    def test_write_rejected_after_downgrade(
+        self, setup_server, qualcoder_db_path
+    ):
+        """After downgrade, write operations should be rejected with RuntimeError."""
+        session = AICodingSession(
+            project_path=qualcoder_db_path,
+            description="Write rejection test",
+            file_ids=[1],
+            code_names=["Stress"],
+            instruction="Test write rejection",
+            min_confidence=0.5
+        )
+        suggestion = CodingSuggestion(
+            file_id=1, file_name="interview.txt",
+            code_id=1, code_name="Stress",
+            start_pos=10, end_pos=20,
+            segment_text="interview ",
+            reasoning="Test", confidence=0.9,
+            status="approved"
+        )
+        session.add_suggestion(suggestion)
+        setup_server.session_manager.save_session(session)
+
+        # Apply codings (should succeed and downgrade)
+        server.apply_codings(
+            session_id=session.session_id,
+            create_backup=False,
+            owner="Write Rejection Tester"
+        )
+
+        # Attempt a direct write on the downgraded connection -- must be rejected
+        assert server.db.read_only is True
+        with pytest.raises(RuntimeError, match="read-only mode"):
+            server.db.add_coding(
+                file_id=1, code_id=1, start_pos=0, end_pos=5,
+                selected_text="test", owner="should_fail"
+            )
+
+    def test_reconnect_after_downgrade_sets_db_none(
+        self, setup_server, qualcoder_db_path
+    ):
+        """If _downgrade_to_readonly() fails and sets db=None, the next get_db()
+        call should reconnect via current_project_path."""
+        # Simulate the edge case: force db to None while project path is set
+        if server.db is not None:
+            server.db.close()
+        server.db = None
+        assert server.current_project_path is not None
+
+        # get_db() should reconnect automatically
+        reconnected_db = server.get_db(read_only=True)
+        assert reconnected_db is not None
+        assert reconnected_db.read_only is True
+        # Verify it works by running a read operation
+        info = reconnected_db.get_project_info()
+        assert info is not None
 
 
 if __name__ == "__main__":
