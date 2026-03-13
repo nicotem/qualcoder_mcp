@@ -582,9 +582,13 @@ Contributions are welcome! Some ideas for enhancements:
 - [ ] Saved queries execution
 - [ ] Batch export functionality
 
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, express or implied. The authors accept no responsibility or liability for any damage, data loss, or other issues arising from the use of this software. Users are solely responsible for ensuring the integrity and backup of their QualCoder projects. Always work on copies of your data, not originals.
+
 ## License
 
-This project is licensed under the MIT License. See LICENSE file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 

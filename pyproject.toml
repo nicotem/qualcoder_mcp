@@ -2,7 +2,8 @@
 name = "qualcoder-mcp"
 version = "0.4.0"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
-authors = [{name = "MCP Developer"}]
+authors = [{name = "Niccolo Tempini", email = "n.tempini@exeter.ac.uk"}]
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
