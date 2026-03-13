@@ -46,7 +46,7 @@ def main():
     text = file_content["content"]
 
     # Get code ID
-    code_id = 11  # WORKPLACE-STRESS
+    code_id = 1  # WORKPLACE-STRESS
 
     # Create a few test suggestions (using unique positions)
     suggestions = [
