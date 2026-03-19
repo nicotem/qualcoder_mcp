@@ -1,6 +1,6 @@
 [project]
 name = "qualcoder-mcp"
-version = "0.4.0"
+version = "0.5.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
 authors = [{name = "Niccolo Tempini", email = "n.tempini@exeter.ac.uk"}]
 license = {text = "MIT"}
