@@ -56,3 +56,4 @@ local_config.json
 # Logs
 *.log
 .claude/
+.local/
