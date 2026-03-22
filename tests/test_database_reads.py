@@ -55,11 +55,15 @@ def qualcoder_db_path(tmp_path):
             date TEXT,
             memo TEXT,
             about TEXT,
-            codername TEXT
+            bookmarkfile INTEGER,
+            bookmarkpos INTEGER,
+            codername TEXT,
+            recently_used_codes TEXT
         )
     """)
     cursor.execute("""
-        INSERT INTO project VALUES ('v12', '2024-01-15',
+        INSERT INTO project (databaseversion, date, memo, about, codername)
+        VALUES ('v14', '2024-01-15',
             'Test project for MCP integration',
             'Qualitative research on workplace dynamics',
             'TestCoder')
@@ -113,10 +117,13 @@ def qualcoder_db_path(tmp_path):
             id INTEGER PRIMARY KEY,
             name TEXT,
             fulltext TEXT,
+            mediapath TEXT,
             memo TEXT,
             owner TEXT,
             date TEXT,
-            mediapath TEXT
+            av_text_id INTEGER,
+            risid INTEGER,
+            UNIQUE(name)
         )
     """)
     # Insert source files with realistic content
@@ -131,7 +138,7 @@ def qualcoder_db_path(tmp_path):
          Participant: I try to take breaks when I can. Sometimes I go for a walk during lunch. My colleagues are supportive, which helps a lot.
 
          The team dynamics are generally positive despite the stress.""",
-         "Interview conducted on Jan 10", "TestCoder", "2024-01-10", None),
+         None, "Interview conducted on Jan 10", "TestCoder", "2024-01-10", None, None),
 
         (2, "Interview_Participant_B.txt",
          """Interview B transcript.
@@ -141,7 +148,7 @@ def qualcoder_db_path(tmp_path):
          I feel satisfied when we complete projects on time. The team works well together.
 
          There are occasional conflicts but we resolve them through discussion.""",
-         "Interview conducted on Jan 12", "TestCoder", "2024-01-12", None),
+         None, "Interview conducted on Jan 12", "TestCoder", "2024-01-12", None, None),
 
         (3, "Interview_Participant_C.txt",
          """Participant C discusses their challenges.
@@ -151,13 +158,15 @@ def qualcoder_db_path(tmp_path):
          Taking regular breaks helps me stay focused. I also practice mindfulness.
 
          Team support is crucial for managing stress.""",
-         "Focuses on coping mechanisms", "TestCoder", "2024-01-14", None),
+         None, "Focuses on coping mechanisms", "TestCoder", "2024-01-14", None, None),
 
-        (4, "Audio_Recording_01.mp3", None, "Audio file", "TestCoder", "2024-01-15", "/audio/recording01.mp3"),
+        (4, "Audio_Recording_01.mp3", None, "/audio/recording01.mp3", "Audio file", "TestCoder", "2024-01-15", None, None),
 
-        (5, "Image_Chart.png", None, "Data visualization", "TestCoder", "2024-01-16", "/images/chart.png"),
+        (5, "Image_Chart.png", None, "/images/chart.png", "Data visualization", "TestCoder", "2024-01-16", None, None),
     ]
-    cursor.executemany("INSERT INTO source VALUES (?, ?, ?, ?, ?, ?, ?)", files)
+    cursor.executemany("""INSERT INTO source
+        (id, name, fulltext, mediapath, memo, owner, date, av_text_id, risid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", files)
 
     # Code text (coded segments) table
     cursor.execute("""
@@ -171,7 +180,9 @@ def qualcoder_db_path(tmp_path):
             owner TEXT,
             date TEXT,
             memo TEXT,
-            important INTEGER DEFAULT 0,
+            avid INTEGER,
+            important INTEGER,
+            UNIQUE(cid, fid, pos0, pos1, owner),
             FOREIGN KEY (cid) REFERENCES code_name(cid),
             FOREIGN KEY (fid) REFERENCES source(id)
         )
@@ -197,7 +208,9 @@ def qualcoder_db_path(tmp_path):
         (12, 2, 3, "Taking regular breaks helps me stay focused", 149, 192, "TestCoder", "2024-01-17", "", 0),
         (13, 3, 3, "Team support is crucial for managing stress", 248, 291, "TestCoder", "2024-01-17", "", 0),
     ]
-    cursor.executemany("INSERT INTO code_text VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", coded_segments)
+    cursor.executemany("""INSERT INTO code_text
+        (ctid, cid, fid, seltext, pos0, pos1, owner, date, memo, important)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", coded_segments)
 
     # Cases table
     cursor.execute("""
@@ -206,7 +219,8 @@ def qualcoder_db_path(tmp_path):
             name TEXT,
             memo TEXT,
             owner TEXT,
-            date TEXT
+            date TEXT,
+            CONSTRAINT ucm UNIQUE(name)
         )
     """)
     cases = [
@@ -325,16 +339,17 @@ def qualcoder_db_path(tmp_path):
     cursor.execute("""
         CREATE TABLE code_image (
             imid INTEGER PRIMARY KEY,
-            cid INTEGER,
             id INTEGER,
-            x1 REAL,
-            y1 REAL,
-            width REAL,
-            height REAL,
+            x1 INTEGER,
+            y1 INTEGER,
+            width INTEGER,
+            height INTEGER,
+            cid INTEGER,
             memo TEXT,
-            owner TEXT,
             date TEXT,
-            important INTEGER DEFAULT 0
+            owner TEXT,
+            important INTEGER,
+            pdf_page INTEGER
         )
     """)
 
@@ -459,7 +474,7 @@ class TestProjectOperations:
         """Test retrieving project metadata."""
         info = db.get_project_info()
 
-        assert info["database_version"] == "v12"
+        assert info["database_version"] == "v14"
         assert "Test project" in info["memo"]
         assert info["coder_name"] == "TestCoder"
         assert info["date"] == "2024-01-15"
@@ -468,7 +483,7 @@ class TestProjectOperations:
         """Test database works as context manager."""
         with QualcoderDatabase(qualcoder_db_path) as db:
             info = db.get_project_info()
-            assert info["database_version"] == "v12"
+            assert info["database_version"] == "v14"
         # Connection should be closed after context
         assert db.conn is None
 

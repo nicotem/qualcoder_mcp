@@ -15,11 +15,36 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 5000
-SUPPORTED_DB_VERSIONS = ['v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13']
+SUPPORTED_DB_VERSIONS = ['v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13', 'v14']
 
 # Workspace configuration
 # Users should work in this folder to keep MCP-modified projects separate from originals
 DEFAULT_WORKSPACE = Path.home() / "Documents" / "Qualcoder MCP Projects"
+
+
+def _detect_file_type(mediapath: str) -> str:
+    """Detect file type from QualCoder mediapath prefix convention.
+
+    QualCoder uses path prefixes to indicate file type:
+    - NULL/empty: text created in QualCoder
+    - /docs/ or docs: : imported/linked text document
+    - /images/ or images: : image file
+    - /audio/ or audio: : audio file
+    - /video/ or video: : video file
+    """
+    if not mediapath:
+        return "text"
+    if mediapath.startswith('/docs/') or mediapath.startswith('docs:'):
+        if mediapath.lower().endswith('.pdf'):
+            return "pdf"
+        return "text"
+    if mediapath.startswith('/images/') or mediapath.startswith('images:'):
+        return "image"
+    if mediapath.startswith('/audio/') or mediapath.startswith('audio:'):
+        return "audio"
+    if mediapath.startswith('/video/') or mediapath.startswith('video:'):
+        return "video"
+    return "media"
 
 
 def validate_qda_path(db_path: str) -> Path:
@@ -593,24 +618,7 @@ class QualcoderDatabase:
             List of files with metadata
         """
         cursor = self.conn.execute("""
-            SELECT
-                id,
-                name,
-                memo,
-                owner,
-                date,
-                mediapath,
-                CASE
-                    WHEN mediapath IS NULL OR mediapath = '' THEN 'text'
-                    WHEN mediapath LIKE '%.mp3' OR mediapath LIKE '%.wav'
-                         OR mediapath LIKE '%.m4a' THEN 'audio'
-                    WHEN mediapath LIKE '%.mp4' OR mediapath LIKE '%.avi'
-                         OR mediapath LIKE '%.mov' THEN 'video'
-                    WHEN mediapath LIKE '%.jpg' OR mediapath LIKE '%.png'
-                         OR mediapath LIKE '%.gif' THEN 'image'
-                    WHEN mediapath LIKE '%.pdf' THEN 'pdf'
-                    ELSE 'media'
-                END as file_type
+            SELECT id, name, memo, owner, date, mediapath
             FROM source
             ORDER BY name
         """)
@@ -623,7 +631,7 @@ class QualcoderDatabase:
                 "memo": row["memo"] or "",
                 "owner": row["owner"],
                 "date": row["date"],
-                "type": row["file_type"],
+                "type": _detect_file_type(row["mediapath"]),
                 "media_path": row["mediapath"]
             })
         return files
@@ -676,7 +684,7 @@ class QualcoderDatabase:
                 "owner": row["owner"],
                 "date": row["date"],
                 "media_path": row["mediapath"],
-                "is_text": not row["mediapath"] or row["mediapath"] == "",
+                "is_text": _detect_file_type(row["mediapath"]) in ("text", "pdf"),
                 "code_count": code_count
             }
         except sqlite3.Error as e:
@@ -1198,6 +1206,7 @@ class QualcoderDatabase:
                     date
                 FROM source
                 WHERE mediapath IS NULL OR mediapath = ''
+                    OR mediapath LIKE '/docs/%' OR mediapath LIKE 'docs:%'
                 ORDER BY name
             """)
 
@@ -1396,16 +1405,7 @@ class QualcoderDatabase:
 
                 # If any matches, add to results
                 if any(matched_in.values()):
-                    file_type = "text"
-                    if row["mediapath"]:
-                        if row["mediapath"].lower().endswith(('.mp3', '.wav', '.m4a')):
-                            file_type = "audio"
-                        elif row["mediapath"].lower().endswith(('.mp4', '.avi', '.mov')):
-                            file_type = "video"
-                        elif row["mediapath"].lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                            file_type = "image"
-                        elif row["mediapath"].lower().endswith('.pdf'):
-                            file_type = "pdf"
+                    file_type = _detect_file_type(row["mediapath"])
 
                     results.append({
                         "file_id": row["id"],

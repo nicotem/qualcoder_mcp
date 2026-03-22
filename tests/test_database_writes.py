@@ -48,10 +48,13 @@ def write_test_db_path(tmp_path):
             date TEXT,
             memo TEXT,
             about TEXT,
-            codername TEXT
+            bookmarkfile INTEGER,
+            bookmarkpos INTEGER,
+            codername TEXT,
+            recently_used_codes TEXT
         )
     """)
-    cursor.execute("INSERT INTO project VALUES ('v12', '2024-01-15', 'Test', 'About', 'TestCoder')")
+    cursor.execute("INSERT INTO project (databaseversion, date, memo, about, codername) VALUES ('v14', '2024-01-15', 'Test', 'About', 'TestCoder')")
 
     cursor.execute("""
         CREATE TABLE code_cat (
@@ -84,15 +87,18 @@ def write_test_db_path(tmp_path):
             id INTEGER PRIMARY KEY,
             name TEXT,
             fulltext TEXT,
+            mediapath TEXT,
             memo TEXT,
             owner TEXT,
             date TEXT,
-            mediapath TEXT
+            av_text_id INTEGER,
+            risid INTEGER,
+            UNIQUE(name)
         )
     """)
     # Insert a file with known content for position testing
     test_content = "This is a test file with some content. The content is used for testing coding positions."
-    cursor.execute(f"INSERT INTO source VALUES (1, 'test_file.txt', '{test_content}', '', 'TestCoder', '2024-01-15', NULL)")
+    cursor.execute(f"INSERT INTO source (id, name, fulltext, mediapath, memo, owner, date) VALUES (1, 'test_file.txt', '{test_content}', NULL, '', 'TestCoder', '2024-01-15')")
 
     cursor.execute("""
         CREATE TABLE code_text (
@@ -105,7 +111,8 @@ def write_test_db_path(tmp_path):
             owner TEXT,
             date TEXT,
             memo TEXT,
-            important INTEGER DEFAULT 0,
+            avid INTEGER,
+            important INTEGER,
             UNIQUE(cid, fid, pos0, pos1, owner),
             FOREIGN KEY (cid) REFERENCES code_name(cid),
             FOREIGN KEY (fid) REFERENCES source(id)
@@ -118,7 +125,8 @@ def write_test_db_path(tmp_path):
             name TEXT,
             memo TEXT,
             owner TEXT,
-            date TEXT
+            date TEXT,
+            CONSTRAINT ucm UNIQUE(name)
         )
     """)
 
@@ -187,10 +195,10 @@ def write_test_db_path(tmp_path):
     cursor.execute("""
         CREATE TABLE code_image (
             imid INTEGER PRIMARY KEY,
-            cid INTEGER,
             id INTEGER,
-            x1 REAL, y1 REAL, width REAL, height REAL,
-            memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0
+            x1 INTEGER, y1 INTEGER, width INTEGER, height INTEGER,
+            cid INTEGER, memo TEXT, date TEXT, owner TEXT,
+            important INTEGER, pdf_page INTEGER
         )
     """)
 

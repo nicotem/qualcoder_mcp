@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import qualcoder_mcp.server as server
 from qualcoder_mcp.database import (
     QualcoderDatabase,
+    _detect_file_type,
     validate_id,
     validate_limit,
     validate_string,
@@ -813,6 +814,91 @@ class TestRWConnectionDowngrade:
         # Verify it works by running a read operation
         info = reconnected_db.get_project_info()
         assert info is not None
+
+
+class TestDetectFileType:
+    """Direct unit tests for _detect_file_type() helper."""
+
+    # NULL and empty string → text (created in QualCoder)
+    def test_none_returns_text(self):
+        assert _detect_file_type(None) == "text"
+
+    def test_empty_string_returns_text(self):
+        assert _detect_file_type("") == "text"
+
+    # Imported docs → text
+    def test_imported_doc(self):
+        assert _detect_file_type("/docs/interview.txt") == "text"
+
+    def test_imported_docx(self):
+        assert _detect_file_type("/docs/report.docx") == "text"
+
+    def test_imported_odt(self):
+        assert _detect_file_type("/docs/notes.odt") == "text"
+
+    # Linked docs → text
+    def test_linked_doc(self):
+        assert _detect_file_type("docs:/home/user/interview.txt") == "text"
+
+    def test_linked_docx(self):
+        assert _detect_file_type("docs:/home/user/report.docx") == "text"
+
+    # Imported PDF → pdf (special case under /docs/)
+    def test_imported_pdf(self):
+        assert _detect_file_type("/docs/paper.pdf") == "pdf"
+
+    def test_imported_pdf_uppercase(self):
+        """QualCoder stores lowercase extensions, but test mixed case."""
+        assert _detect_file_type("/docs/paper.PDF") == "pdf"
+
+    # Linked PDF → pdf
+    def test_linked_pdf(self):
+        assert _detect_file_type("docs:/home/user/paper.pdf") == "pdf"
+
+    # Images
+    def test_imported_image(self):
+        assert _detect_file_type("/images/chart.png") == "image"
+
+    def test_imported_jpg(self):
+        assert _detect_file_type("/images/photo.jpg") == "image"
+
+    def test_linked_image(self):
+        assert _detect_file_type("images:/home/user/chart.png") == "image"
+
+    # Audio
+    def test_imported_audio(self):
+        assert _detect_file_type("/audio/recording.mp3") == "audio"
+
+    def test_imported_wav(self):
+        assert _detect_file_type("/audio/interview.wav") == "audio"
+
+    def test_linked_audio(self):
+        assert _detect_file_type("audio:/home/user/recording.mp3") == "audio"
+
+    # Video
+    def test_imported_video(self):
+        assert _detect_file_type("/video/interview.mp4") == "video"
+
+    def test_imported_mov(self):
+        assert _detect_file_type("/video/clip.mov") == "video"
+
+    def test_linked_video(self):
+        assert _detect_file_type("video:/home/user/interview.mp4") == "video"
+
+    # Unknown prefix → media fallback
+    def test_unknown_prefix(self):
+        assert _detect_file_type("/other/file.bin") == "media"
+
+    def test_bare_path(self):
+        assert _detect_file_type("/some/random/path.txt") == "media"
+
+    # Case sensitivity: QualCoder uses lowercase prefixes
+    def test_uppercase_prefix_falls_through(self):
+        """QualCoder always writes lowercase prefixes, so uppercase is unknown."""
+        assert _detect_file_type("/Images/chart.png") == "media"
+
+    def test_uppercase_docs_falls_through(self):
+        assert _detect_file_type("/Docs/file.txt") == "media"
 
 
 if __name__ == "__main__":

@@ -409,7 +409,7 @@ class TestDatabaseState:
             db = server.get_db()
             assert db is not None
             info = db.get_project_info()
-            assert info["database_version"] == "v12"
+            assert info["database_version"] == "v14"
         finally:
             if server.db is not None:
                 try:

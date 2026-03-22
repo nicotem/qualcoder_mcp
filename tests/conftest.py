@@ -77,10 +77,13 @@ def qualcoder_db_path(tmp_path):
 
     cursor.execute("""
         CREATE TABLE project (
-            databaseversion TEXT, date TEXT, memo TEXT, about TEXT, codername TEXT
+            databaseversion TEXT, date TEXT, memo TEXT, about TEXT,
+            bookmarkfile INTEGER, bookmarkpos INTEGER, codername TEXT,
+            recently_used_codes TEXT
         )
     """)
-    cursor.execute("INSERT INTO project VALUES ('v12', '2024-01-15', 'Test project', 'About', 'TestCoder')")
+    cursor.execute("""INSERT INTO project (databaseversion, date, memo, about, codername)
+        VALUES ('v14', '2024-01-15', 'Test project', 'About', 'TestCoder')""")
 
     cursor.execute("""
         CREATE TABLE code_cat (
@@ -104,33 +107,40 @@ def qualcoder_db_path(tmp_path):
 
     cursor.execute("""
         CREATE TABLE source (
-            id INTEGER PRIMARY KEY, name TEXT, fulltext TEXT,
-            memo TEXT, owner TEXT, date TEXT, mediapath TEXT
+            id INTEGER PRIMARY KEY, name TEXT, fulltext TEXT, mediapath TEXT,
+            memo TEXT, owner TEXT, date TEXT, av_text_id INTEGER, risid INTEGER,
+            UNIQUE(name)
         )
     """)
-    cursor.execute("""INSERT INTO source VALUES (1, 'interview.txt',
+    cursor.execute("""INSERT INTO source (id, name, fulltext, mediapath, memo, owner, date)
+        VALUES (1, 'interview.txt',
         'This is interview text. I feel stressed about deadlines. I cope by exercising.',
-        'Test memo', 'TestCoder', '2024-01-15', NULL)""")
-    cursor.execute("""INSERT INTO source VALUES (2, 'notes.txt',
+        NULL, 'Test memo', 'TestCoder', '2024-01-15')""")
+    cursor.execute("""INSERT INTO source (id, name, fulltext, mediapath, memo, owner, date)
+        VALUES (2, 'notes.txt',
         'Field notes from observation session.',
-        '', 'TestCoder', '2024-01-16', NULL)""")
+        NULL, '', 'TestCoder', '2024-01-16')""")
 
     cursor.execute("""
         CREATE TABLE code_text (
             ctid INTEGER PRIMARY KEY, cid INTEGER, fid INTEGER,
             seltext TEXT, pos0 INTEGER, pos1 INTEGER,
-            owner TEXT, date TEXT, memo TEXT, important INTEGER DEFAULT 0,
+            owner TEXT, date TEXT, memo TEXT, avid INTEGER,
+            important INTEGER,
             UNIQUE(cid, fid, pos0, pos1, owner)
         )
     """)
-    cursor.execute("""INSERT INTO code_text VALUES (1, 1, 1,
+    cursor.execute("""INSERT INTO code_text (ctid, cid, fid, seltext, pos0, pos1, owner, date, memo, important)
+        VALUES (1, 1, 1,
         'I feel stressed about deadlines', 24, 55, 'TestCoder', '2024-01-15', 'key passage', 1)""")
-    cursor.execute("""INSERT INTO code_text VALUES (2, 2, 1,
+    cursor.execute("""INSERT INTO code_text (ctid, cid, fid, seltext, pos0, pos1, owner, date, memo, important)
+        VALUES (2, 2, 1,
         'I cope by exercising', 57, 77, 'TestCoder', '2024-01-15', '', 0)""")
 
     cursor.execute("""
         CREATE TABLE cases (
-            caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT
+            caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT,
+            CONSTRAINT ucm UNIQUE(name)
         )
     """)
     cursor.execute("INSERT INTO cases VALUES (1, 'Case A', 'First case', 'TestCoder', '2024-01-15')")
@@ -175,9 +185,10 @@ def qualcoder_db_path(tmp_path):
 
     cursor.execute("""
         CREATE TABLE code_image (
-            imid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER,
-            x1 REAL, y1 REAL, width REAL, height REAL,
-            memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0
+            imid INTEGER PRIMARY KEY, id INTEGER,
+            x1 INTEGER, y1 INTEGER, width INTEGER, height INTEGER,
+            cid INTEGER, memo TEXT, date TEXT, owner TEXT,
+            important INTEGER, pdf_page INTEGER
         )
     """)
 
@@ -208,19 +219,19 @@ def empty_db_path(tmp_path):
     conn = sqlite3.connect(str(db_file))
     cursor = conn.cursor()
 
-    cursor.execute("CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, codername TEXT)")
-    cursor.execute("INSERT INTO project VALUES ('v12', '2024-01-15', '', '', 'TestCoder')")
+    cursor.execute("CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, bookmarkfile INTEGER, bookmarkpos INTEGER, codername TEXT, recently_used_codes TEXT)")
+    cursor.execute("INSERT INTO project (databaseversion, date, memo, about, codername) VALUES ('v14', '2024-01-15', '', '', 'TestCoder')")
     cursor.execute("CREATE TABLE code_cat (catid INTEGER PRIMARY KEY, name TEXT UNIQUE, memo TEXT, owner TEXT, date TEXT, supercatid INTEGER)")
     cursor.execute("CREATE TABLE code_name (cid INTEGER PRIMARY KEY, name TEXT UNIQUE, memo TEXT, catid INTEGER, owner TEXT, date TEXT, color TEXT)")
-    cursor.execute("CREATE TABLE source (id INTEGER PRIMARY KEY, name TEXT, fulltext TEXT, memo TEXT, owner TEXT, date TEXT, mediapath TEXT)")
-    cursor.execute("CREATE TABLE code_text (ctid INTEGER PRIMARY KEY, cid INTEGER, fid INTEGER, seltext TEXT, pos0 INTEGER, pos1 INTEGER, owner TEXT, date TEXT, memo TEXT, important INTEGER DEFAULT 0)")
-    cursor.execute("CREATE TABLE cases (caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT)")
+    cursor.execute("CREATE TABLE source (id INTEGER PRIMARY KEY, name TEXT, fulltext TEXT, mediapath TEXT, memo TEXT, owner TEXT, date TEXT, av_text_id INTEGER, risid INTEGER, UNIQUE(name))")
+    cursor.execute("CREATE TABLE code_text (ctid INTEGER PRIMARY KEY, cid INTEGER, fid INTEGER, seltext TEXT, pos0 INTEGER, pos1 INTEGER, owner TEXT, date TEXT, memo TEXT, avid INTEGER, important INTEGER, UNIQUE(cid, fid, pos0, pos1, owner))")
+    cursor.execute("CREATE TABLE cases (caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT, CONSTRAINT ucm UNIQUE(name))")
     cursor.execute("CREATE TABLE case_text (id INTEGER PRIMARY KEY, caseid INTEGER, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
     cursor.execute("CREATE TABLE annotation (anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
     cursor.execute("CREATE TABLE journal (jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT)")
     cursor.execute("CREATE TABLE attribute_type (name TEXT PRIMARY KEY, date TEXT, owner TEXT, memo TEXT, caseOrFile TEXT, valuetype TEXT)")
     cursor.execute("CREATE TABLE attribute (attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT, value TEXT, id INTEGER, date TEXT, owner TEXT)")
-    cursor.execute("CREATE TABLE code_image (imid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER, x1 REAL, y1 REAL, width REAL, height REAL, memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0)")
+    cursor.execute("CREATE TABLE code_image (imid INTEGER PRIMARY KEY, id INTEGER, x1 INTEGER, y1 INTEGER, width INTEGER, height INTEGER, cid INTEGER, memo TEXT, date TEXT, owner TEXT, important INTEGER, pdf_page INTEGER)")
     cursor.execute("CREATE TABLE code_av (avid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0)")
 
     conn.commit()

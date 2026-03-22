@@ -25,7 +25,7 @@ class TestProjectInfoResource:
     def test_returns_valid_json(self, setup_server):
         result = server.get_project_info()
         data = json.loads(result)
-        assert data["database_version"] == "v12"
+        assert data["database_version"] == "v14"
         assert data["coder_name"] == "TestCoder"
 
 
