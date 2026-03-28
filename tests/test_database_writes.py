@@ -812,5 +812,201 @@ class TestDataIntegrity:
         datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
 
 
+class TestImportTextFile:
+    """Test importing text content as new source files."""
+
+    def test_import_success(self, write_db):
+        result = write_db.import_text_file(
+            name="new_interview.txt",
+            content="This is the transcript content.",
+            owner="MCP Import"
+        )
+        assert result["id"] > 0
+        assert result["name"] == "new_interview.txt"
+        assert result["content_length"] == len("This is the transcript content.")
+        assert result["owner"] == "MCP Import"
+        # Verify via read
+        file_data = write_db.get_file_content(result["id"])
+        assert file_data["content"] == "This is the transcript content."
+        assert file_data["name"] == "new_interview.txt"
+
+    def test_import_with_memo(self, write_db):
+        result = write_db.import_text_file(
+            name="noted_file.txt",
+            content="Content here.",
+            owner="MCP Import",
+            memo="Transcribed from audio recording"
+        )
+        file_data = write_db.get_file_content(result["id"])
+        assert file_data["memo"] == "Transcribed from audio recording"
+
+    def test_import_custom_owner(self, write_db):
+        result = write_db.import_text_file(
+            name="owned_file.txt",
+            content="Content.",
+            owner="Researcher A"
+        )
+        assert result["owner"] == "Researcher A"
+
+    def test_import_mediapath_is_null(self, write_db):
+        result = write_db.import_text_file(
+            name="inline_file.txt",
+            content="Text content.",
+            owner="MCP Import"
+        )
+        file_data = write_db.get_file_content(result["id"])
+        assert file_data["media_path"] is None
+
+    def test_import_appears_in_list_files(self, write_db):
+        initial_count = len(write_db.list_files())
+        write_db.import_text_file(
+            name="listed.txt",
+            content="Content.",
+            owner="MCP Import"
+        )
+        assert len(write_db.list_files()) == initial_count + 1
+
+    def test_import_date_format(self, write_db):
+        result = write_db.import_text_file(
+            name="dated.txt",
+            content="Content.",
+            owner="MCP Import"
+        )
+        datetime.strptime(result["date"], "%Y-%m-%d %H:%M:%S")
+
+    def test_import_duplicate_name_rejected(self, write_db):
+        # 'test_file.txt' already exists in the fixture
+        with pytest.raises(ValueError, match="already exists"):
+            write_db.import_text_file(
+                name="test_file.txt",
+                content="Different content.",
+                owner="MCP Import"
+            )
+
+    def test_import_empty_filename_rejected(self, write_db):
+        with pytest.raises(ValueError, match="non-empty"):
+            write_db.import_text_file(
+                name="",
+                content="Content.",
+                owner="MCP Import"
+            )
+
+    def test_import_filename_no_extension_rejected(self, write_db):
+        with pytest.raises(ValueError, match="extension"):
+            write_db.import_text_file(
+                name="no_extension",
+                content="Content.",
+                owner="MCP Import"
+            )
+
+    def test_import_filename_with_slash_rejected(self, write_db):
+        with pytest.raises(ValueError, match="path separators"):
+            write_db.import_text_file(
+                name="sub/file.txt",
+                content="Content.",
+                owner="MCP Import"
+            )
+
+    def test_import_filename_with_backslash_rejected(self, write_db):
+        with pytest.raises(ValueError, match="path separators"):
+            write_db.import_text_file(
+                name="sub\\file.txt",
+                content="Content.",
+                owner="MCP Import"
+            )
+
+    def test_import_filename_with_dotdot_rejected(self, write_db):
+        with pytest.raises(ValueError, match="path separators"):
+            write_db.import_text_file(
+                name="../../evil.txt",
+                content="Content.",
+                owner="MCP Import"
+            )
+
+    def test_import_empty_content_rejected(self, write_db):
+        with pytest.raises(ValueError, match="content must not be empty"):
+            write_db.import_text_file(
+                name="empty.txt",
+                content="",
+                owner="MCP Import"
+            )
+
+    def test_import_whitespace_only_content_rejected(self, write_db):
+        with pytest.raises(ValueError, match="content must not be empty"):
+            write_db.import_text_file(
+                name="whitespace.txt",
+                content="   \n\t  ",
+                owner="MCP Import"
+            )
+
+    def test_import_empty_owner_rejected(self, write_db):
+        with pytest.raises(ValueError, match="owner must be a non-empty"):
+            write_db.import_text_file(
+                name="file.txt",
+                content="Content.",
+                owner=""
+            )
+
+    def test_import_creates_attribute_placeholders(self, write_db):
+        # Add a file-type attribute type
+        write_db.conn.execute(
+            "INSERT INTO attribute_type (name, date, owner, memo, caseOrFile, valuetype) "
+            "VALUES ('Source', '2024-01-15', 'TestCoder', '', 'file', 'character')"
+        )
+        write_db.conn.commit()
+        result = write_db.import_text_file(
+            name="attributed.txt",
+            content="Content.",
+            owner="MCP Import"
+        )
+        assert result["attributes_created"] == 1
+
+    def test_import_creates_both_type_attribute_placeholders(self, write_db):
+        # Add a 'both'-type attribute (applies to files AND cases)
+        write_db.conn.execute(
+            "INSERT INTO attribute_type (name, date, owner, memo, caseOrFile, valuetype) "
+            "VALUES ('SharedAttr', '2024-01-15', 'TestCoder', '', 'both', 'character')"
+        )
+        write_db.conn.commit()
+        result = write_db.import_text_file(
+            name="both_attr.txt",
+            content="Content.",
+            owner="MCP Import"
+        )
+        assert result["attributes_created"] == 1
+
+    def test_import_no_attribute_placeholders_when_none_exist(self, write_db):
+        result = write_db.import_text_file(
+            name="no_attrs.txt",
+            content="Content.",
+            owner="MCP Import"
+        )
+        assert result["attributes_created"] == 0
+
+    def test_import_persists_after_close(self, write_test_db_path):
+        db1 = QualcoderDatabase(write_test_db_path, read_only=False)
+        result = db1.import_text_file(
+            name="persistent.txt",
+            content="This should persist.",
+            owner="MCP Import"
+        )
+        db1.close()
+        db2 = QualcoderDatabase(write_test_db_path)
+        file_data = db2.get_file_content(result["id"])
+        db2.close()
+        assert file_data is not None
+        assert file_data["content"] == "This should persist."
+
+    def test_import_read_only_rejected(self, write_test_db_path):
+        ro_db = QualcoderDatabase(write_test_db_path, read_only=True)
+        with pytest.raises(RuntimeError, match="read-only"):
+            ro_db.import_text_file(
+                name="file.txt",
+                content="Content.",
+                owner="MCP Import"
+            )
+        ro_db.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

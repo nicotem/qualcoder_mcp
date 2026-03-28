@@ -1281,6 +1281,93 @@ def apply_codings(
     return "\n".join(output)
 
 
+@mcp.tool()
+def import_text_file(
+    filename: str,
+    content: str,
+    memo: str = "",
+    owner: str = "MCP Import",
+    create_backup: bool = True
+) -> str:
+    """Import text content as a new source file in the QualCoder project.
+
+    Creates a new text source file in the project database, similar to
+    QualCoder's "Create text file" feature. The file will be visible in
+    QualCoder's file manager and available for coding.
+
+    IMPORTANT: Make sure you're working on a copy of your project in the
+    MCP workspace (~/Documents/Qualcoder MCP Projects/)
+
+    Args:
+        filename: Name for the new file (must include extension, e.g., "interview_04.txt")
+        content: The full text content of the file
+        memo: Optional memo/description for the file
+        owner: Creator name for attribution (default: "MCP Import")
+        create_backup: Create timestamped backup before writing (default: True)
+
+    Returns:
+        JSON with the new file's ID, name, and confirmation details
+    """
+    # Early validation before upgrading connection
+    if not filename or not filename.strip():
+        return json.dumps({"error": "filename must not be empty"})
+    if not content or not content.strip():
+        return json.dumps({"error": "content must not be empty"})
+
+    # Upgrade to read-write mode
+    write_db = get_db(read_only=False)
+
+    # Create backup
+    backup_path = None
+    if create_backup:
+        try:
+            backup_path = write_db.backup_before_write()
+        except Exception as e:
+            _downgrade_to_readonly()
+            return json.dumps({
+                "error": f"Failed to create backup: {e}",
+                "message": "Aborting to protect your data."
+            })
+
+    # Perform the import
+    try:
+        result = write_db.import_text_file(
+            name=filename.strip(),
+            content=content,
+            owner=owner,
+            memo=memo,
+            auto_commit=True
+        )
+    except (ValueError, TypeError) as e:
+        _downgrade_to_readonly()
+        return json.dumps({"error": str(e)})
+    except RuntimeError as e:
+        try:
+            write_db.conn.rollback()
+        except Exception:
+            pass
+        _downgrade_to_readonly()
+        return json.dumps({"error": f"Database error: {str(e)}"})
+
+    # Downgrade back to read-only
+    _downgrade_to_readonly()
+
+    # Format success response
+    output = {
+        "success": True,
+        "message": f"Successfully imported '{result['name']}' as a new source file",
+        "file_id": result["id"],
+        "file_name": result["name"],
+        "content_length": result["content_length"],
+        "owner": result["owner"],
+        "date": result["date"],
+        "attributes_created": result["attributes_created"]
+    }
+    if backup_path:
+        output["backup_path"] = str(backup_path)
+
+    return json.dumps(output, indent=2)
+
 
 @mcp.tool()
 def get_coding_session_info(session_id: str) -> str:

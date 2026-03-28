@@ -133,6 +133,7 @@ def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
 
 
 MAX_STRING_LENGTH = 10000  # Maximum allowed string length for user inputs
+MAX_TEXT_CONTENT_LENGTH = 1_000_000  # Maximum text content for file import (approx 1MB)
 
 
 def validate_string(value: str, param_name: str = "value",
@@ -1253,7 +1254,7 @@ class QualcoderDatabase:
                     results.append({
                         "file_id": row["id"],
                         "file_name": row["name"],
-                        "file_type": "text",
+                        "file_type": _detect_file_type(row["mediapath"]),
                         "memo": row["memo"] or "",
                         "match_count": len(matches),
                         "matches": matches[:10]  # Limit to first 10 matches per file
@@ -2206,6 +2207,122 @@ class QualcoderDatabase:
             self.conn.rollback()
             logger.error(f"Database error in add_memo_to_coding: {e}")
             raise RuntimeError(f"Failed to update memo: {e}") from None
+
+    def import_text_file(
+        self,
+        name: str,
+        content: str,
+        owner: str,
+        memo: str = "",
+        auto_commit: bool = True
+    ) -> Dict[str, Any]:
+        """Import text content as a new source file in the QualCoder project.
+
+        Creates a new source record with mediapath=NULL, matching QualCoder's
+        "create text file" behavior. Also creates attribute placeholders for
+        any existing file-type attribute types.
+
+        Args:
+            name: Filename with extension (e.g., "interview_04.txt")
+            content: Full text content of the file
+            owner: Creator name for attribution
+            memo: Optional description/memo for the file
+            auto_commit: Whether to commit immediately (default True)
+
+        Returns:
+            Dict with id, name, content_length, owner, date, attributes_created
+
+        Raises:
+            RuntimeError: If database is read-only or write fails
+            ValueError: If inputs are invalid or filename already exists
+            TypeError: If content is not a string
+        """
+        self._require_write_access()
+
+        # Validate name
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        if '.' not in name:
+            raise ValueError("filename must have an extension (e.g., .txt)")
+        if '/' in name or '\\' in name or '..' in name:
+            raise ValueError("filename must not contain path separators or '..'")
+        validate_string(name, "name")
+
+        # Validate content
+        if not isinstance(content, str):
+            raise TypeError("content must be a string")
+        if not content.strip():
+            raise ValueError("content must not be empty")
+        if len(content) > MAX_TEXT_CONTENT_LENGTH:
+            raise ValueError(
+                f"content length {len(content)} exceeds maximum "
+                f"{MAX_TEXT_CONTENT_LENGTH}"
+            )
+
+        # Validate owner
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+
+        # Validate memo
+        if memo:
+            validate_string(memo, "memo")
+
+        # Check name uniqueness
+        existing = self.conn.execute(
+            "SELECT id FROM source WHERE name = ?", (name,)
+        ).fetchone()
+        if existing:
+            raise ValueError(
+                f"A file named '{name}' already exists (id={existing['id']})"
+            )
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            cursor = self.conn.execute("""
+                INSERT INTO source (name, fulltext, mediapath, memo, owner, date)
+                VALUES (?, ?, NULL, ?, ?, ?)
+            """, (name, content, memo, owner, date_str))
+            file_id = cursor.lastrowid
+
+            # Create attribute placeholders for file-type attribute types
+            attr_types = self.conn.execute(
+                "SELECT name FROM attribute_type WHERE caseOrFile IN ('file', 'both')"
+            ).fetchall()
+            for attr_type_row in attr_types:
+                self.conn.execute("""
+                    INSERT INTO attribute (name, attr_type, value, id, date, owner)
+                    VALUES (?, 'file', '', ?, ?, ?)
+                """, (attr_type_row["name"], file_id, date_str, owner))
+
+            if auto_commit:
+                self.conn.commit()
+
+            logger.info(
+                f"Imported text file: id={file_id}, name={name}, "
+                f"length={len(content)}"
+            )
+            return {
+                "id": file_id,
+                "name": name,
+                "content_length": len(content),
+                "owner": owner,
+                "date": date_str,
+                "attributes_created": len(attr_types)
+            }
+
+        except sqlite3.IntegrityError as e:
+            self.conn.rollback()
+            if "unique" in str(e).lower():
+                raise ValueError(
+                    f"A file named '{name}' already exists"
+                ) from None
+            raise RuntimeError(f"Failed to import text file: {e}") from None
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            logger.error(f"Database error in import_text_file: {e}")
+            raise RuntimeError(f"Failed to import text file: {e}") from None
 
     def backup_before_write(self) -> Path:
         """Create a backup of the current project before making changes.

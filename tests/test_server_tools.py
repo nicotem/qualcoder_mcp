@@ -603,5 +603,97 @@ class TestExplainAiCodingTools:
         assert "available_tools" in data
 
 
+class TestImportTextFile:
+    """Test import_text_file MCP tool."""
+
+    def test_import_success(self, setup_server):
+        result = server.import_text_file(
+            filename="new_document.txt",
+            content="This is imported content for analysis.",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["file_id"] > 0
+        assert data["file_name"] == "new_document.txt"
+        assert data["content_length"] == len("This is imported content for analysis.")
+
+    def test_import_with_memo(self, setup_server):
+        result = server.import_text_file(
+            filename="memo_file.txt",
+            content="Content here.",
+            memo="From audio recording",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert data["success"] is True
+
+    def test_import_custom_owner(self, setup_server):
+        result = server.import_text_file(
+            filename="custom_owner.txt",
+            content="Content.",
+            owner="Researcher A",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["owner"] == "Researcher A"
+
+    def test_import_with_backup(self, setup_server):
+        result = server.import_text_file(
+            filename="backed_up.txt",
+            content="Content to import.",
+            create_backup=True
+        )
+        data = json.loads(result)
+        assert data["success"] is True
+        assert "backup_path" in data
+
+    def test_import_duplicate_rejected(self, setup_server):
+        # 'interview.txt' exists in the conftest fixture
+        result = server.import_text_file(
+            filename="interview.txt",
+            content="Different content.",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert "error" in data
+        assert "already exists" in data["error"]
+
+    def test_import_empty_filename(self, setup_server):
+        result = server.import_text_file(
+            filename="",
+            content="Content.",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_import_empty_content(self, setup_server):
+        result = server.import_text_file(
+            filename="empty.txt",
+            content="",
+            create_backup=False
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_downgrade_after_success(self, setup_server):
+        server.import_text_file(
+            filename="downgrade_test.txt",
+            content="Content.",
+            create_backup=False
+        )
+        assert server.db.read_only is True
+
+    def test_downgrade_after_error(self, setup_server):
+        server.import_text_file(
+            filename="interview.txt",  # duplicate
+            content="Content.",
+            create_backup=False
+        )
+        assert server.db.read_only is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
