@@ -4,12 +4,15 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 import json
+import time
+import getpass
 import logging
 import hashlib
 import unicodedata
 import uuid
 import shutil
 from datetime import datetime
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,116 @@ def _is_locked_error(e: sqlite3.Error) -> bool:
     """Check whether a sqlite3 error indicates a locked/busy database."""
     msg = str(e).lower()
     return "locked" in msg or "busy" in msg
+
+
+# ----------------------------------------------------------------------------
+# QualCoder application-level lock protocol (project_in_use.lock)
+#
+# QualCoder holds NO SQLite lock while a project is merely open — its only
+# concurrency control is a lock file with a 5-second heartbeat, considered
+# stale after 30 seconds (QualCoder 3.8.2 __main__.py:131-171). SQLite-level
+# lock detection therefore says nothing about whether QualCoder has the
+# project open; writes into a live QualCoder session succeed at the SQLite
+# level and are then silently corrupted by QualCoder's snapshot-based text
+# editor or deleted by its open-time hygiene. Every MCP write must respect
+# this lock file.
+# ----------------------------------------------------------------------------
+
+QUALCODER_LOCK_FILENAME = "project_in_use.lock"
+QUALCODER_LOCK_TIMEOUT = 30.0  # seconds; QualCoder __main__.py:131 — do not change
+
+
+def qualcoder_open_message(holder: Optional[str]) -> str:
+    """Actionable message for a project currently open in QualCoder."""
+    return (
+        f"This project is open in QualCoder (user "
+        f"{holder or 'unknown'}). Close the project in QualCoder, then retry."
+    )
+
+
+def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
+    """Read QualCoder's project_in_use.lock heartbeat.
+
+    The lock file contains two lines: the username and an epoch timestamp,
+    refreshed every 5 seconds while QualCoder has the project open.
+
+    Returns:
+        (state, holder) where state is 'absent', 'active' (heartbeat within
+        30 s — QualCoder is running with this project open) or 'stale'
+        (QualCoder crashed or the file is unreadable).
+    """
+    lock = Path(project_dir) / QUALCODER_LOCK_FILENAME
+    if not lock.exists():
+        return "absent", None
+
+    def _read():
+        lines = lock.read_text(encoding="utf-8").splitlines()
+        return lines[0], time.time() - float(lines[1])
+
+    try:
+        holder, age = _read()
+    except Exception:
+        # QualCoder itself retries once after 0.5 s (__main__.py:2647-2651)
+        time.sleep(0.5)
+        try:
+            holder, age = _read()
+        except Exception:
+            # Unreadable lock = treated as a dead process, like QualCoder's
+            # own break-the-lock fallback (__main__.py:2652-2656)
+            return "stale", "unknown"
+
+    return ("active" if age <= QUALCODER_LOCK_TIMEOUT else "stale"), holder
+
+
+@contextmanager
+def hold_project_lock(project_dir: Union[str, Path]):
+    """Hold QualCoder's project lock for the duration of an MCP write.
+
+    Mirrors QualCoder's own protocol: refuse when the lock is active; when
+    it is absent, create it (username + epoch, mode 'x') so a QualCoder
+    launched mid-write politely refuses to open the project; delete it on
+    exit. A stale foreign lock is left alone (QualCoder's next open shows
+    its "not properly closed" prompt) and we proceed WITHOUT holding —
+    callers must re-check the lock state immediately before committing.
+
+    Yields:
+        True when the lock is held by us, False when proceeding over a
+        stale foreign lock.
+
+    Raises:
+        DatabaseLockedError: If QualCoder has the project open
+    """
+    project_dir = Path(project_dir)
+    lock = project_dir / QUALCODER_LOCK_FILENAME
+
+    state, holder = qualcoder_lock_state(project_dir)
+    if state == "active":
+        raise DatabaseLockedError(qualcoder_open_message(holder))
+
+    held = False
+    if state == "absent":
+        try:
+            with open(lock, "x", encoding="utf-8") as f:
+                # Same two-line format QualCoder writes (__main__.py:2546-2547)
+                f.write(f"{getpass.getuser()}\n{time.time()}")
+            held = True
+        except FileExistsError:
+            # Race: someone created the lock between check and create
+            state2, holder2 = qualcoder_lock_state(project_dir)
+            if state2 == "active":
+                raise DatabaseLockedError(qualcoder_open_message(holder2)) from None
+            # stale — leave the file alone and proceed unheld
+        except OSError as e:
+            logger.warning(f"Could not create project lock file: {e}")
+
+    try:
+        yield held
+    finally:
+        if held:
+            try:
+                lock.unlink()
+            except OSError as e:
+                logger.warning(f"Could not remove project lock file: {e}")
 
 
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
@@ -277,7 +390,13 @@ def backup_project(project_path: Union[str, Path]) -> Path:
     logger.info(f"Creating backup: {backup_path}")
 
     try:
-        shutil.copytree(project_path, backup_path)
+        # Never copy lock files into backups — QualCoder's own backups
+        # exclude *.lock too (__main__.py:1371,1378); a lock file inside a
+        # restored folder triggers its "not properly closed" prompt
+        shutil.copytree(
+            project_path, backup_path,
+            ignore=shutil.ignore_patterns("*.lock")
+        )
         logger.info(f"Backup created successfully: {backup_path}")
         return backup_path
     except Exception as e:
@@ -2381,7 +2500,7 @@ class QualcoderDatabase:
             "important": bool(row["important"]),
         }
 
-    def delete_coding(self, coding_id: int) -> Dict[str, Any]:
+    def delete_coding(self, coding_id: int, auto_commit: bool = True) -> Dict[str, Any]:
         """Delete a single coded segment (code_text row).
 
         This removes ONE coding (the assignment of a code to a text span),
@@ -2389,6 +2508,9 @@ class QualcoderDatabase:
 
         Args:
             coding_id: The ctid of the coding to delete
+            auto_commit: Commit immediately (default True). Pass False when
+                         the caller wants to re-check preconditions (e.g.
+                         the QualCoder lock file) before committing.
 
         Returns:
             The details of the deleted coding
@@ -2406,7 +2528,8 @@ class QualcoderDatabase:
             self.conn.execute(
                 "DELETE FROM code_text WHERE ctid = ?", (coding_id,)
             )
-            self.conn.commit()
+            if auto_commit:
+                self.conn.commit()
             logger.info(f"Deleted coding ctid={coding_id}")
         except sqlite3.Error as e:
             try:

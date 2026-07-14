@@ -21,6 +21,10 @@ from .database import (
     DB_LOCKED_MESSAGE,
     validate_qda_path,
     backup_project,
+    qualcoder_lock_state,
+    qualcoder_open_message,
+    hold_project_lock,
+    QUALCODER_LOCK_FILENAME,
 )
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
 
@@ -273,6 +277,43 @@ def _snippet(text: Optional[str], max_len: int = 80) -> str:
     if not text:
         return ""
     return text if len(text) <= max_len else text[:max_len] + "…"
+
+
+def _current_project_folder() -> Path:
+    """The .qda folder of the currently open project."""
+    return validate_qda_path(current_project_path).parent
+
+
+def _qualcoder_open_error() -> Optional[Dict[str, Any]]:
+    """Error dict when QualCoder currently has this project open.
+
+    QualCoder's only concurrency control is its project_in_use.lock
+    heartbeat file — it holds NO SQLite lock while idle, so writes would
+    succeed at the SQLite level and then be silently corrupted or deleted
+    by QualCoder (snapshot-based text editor, open-time orphan cleanup and
+    VACUUM). Every write path must call this before touching the database.
+    """
+    state, holder = qualcoder_lock_state(_current_project_folder())
+    if state == "active":
+        return {"error": qualcoder_open_message(holder)}
+    return None
+
+
+def _recheck_lock_before_commit(project_folder: Path, held: bool) -> None:
+    """Close the TOCTOU window between pre-write checks and commit.
+
+    When our own lock is held, QualCoder cannot have opened the project in
+    between (it refuses on a fresh lock). When we proceeded over a stale
+    foreign lock we hold nothing, so re-check right before committing.
+
+    Raises:
+        DatabaseLockedError: If QualCoder opened the project mid-write
+    """
+    if held:
+        return
+    state, holder = qualcoder_lock_state(project_folder)
+    if state == "active":
+        raise DatabaseLockedError(qualcoder_open_message(holder))
 
 
 def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]:
@@ -565,13 +606,26 @@ def select_project(project_path: str) -> str:
         # Get basic info about the newly opened project
         project_info = get_db().get_project_info()
 
-        return json.dumps({
+        result = {
             "success": True,
             "message": f"Switched to project: {Path(project_path).stem}",
             "project_path": project_path,
             "project_name": Path(project_path).stem,
             "project_info": project_info
-        }, indent=2)
+        }
+
+        # Reads are safe while QualCoder is open, but warn: data may change
+        # underneath, and writes will be refused until QualCoder closes it
+        state, holder = qualcoder_lock_state(_current_project_folder())
+        if state == "active":
+            result["warning"] = (
+                f"QualCoder currently has this project open (user "
+                f"{holder or 'unknown'}). Reads may return changing data, and "
+                f"all write operations will be refused until the project is "
+                f"closed in QualCoder."
+            )
+
+        return json.dumps(result, indent=2)
 
     except DatabaseLockedError as e:
         logger.error(f"Project locked during select: {e}")
@@ -1861,63 +1915,79 @@ def apply_codings(
             "total_approved": len(approved)
         }, indent=2)
 
+    # Refuse while QualCoder has the project open (heartbeat lock file —
+    # SQLite locks say nothing about an idle QualCoder session)
+    lock_error = _qualcoder_open_error()
+    if lock_error is not None:
+        return json.dumps(lock_error)
+
+    project_folder = _current_project_folder()
+
     # Upgrade to read-write mode for writing codings
     write_db = get_db(read_only=False)
 
-    # Create backup
-    backup_path = None
-    if create_backup:
-        try:
-            backup_path = write_db.backup_before_write()
-        except Exception as e:
-            _downgrade_to_readonly()
-            return json.dumps({
-                "error": f"Failed to create backup: {e}",
-                "message": "Aborting to protect your data — nothing was written."
-            })
-
-    # Apply all codings in a single transaction (all-or-nothing)
+    # Apply all codings in a single transaction (all-or-nothing), holding
+    # QualCoder's project lock so it cannot open the project mid-write
     results = []
+    backup_path = None
 
     try:
-        for sugg in approved:
-            # Create memo with reasoning and confidence
-            memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
+        with hold_project_lock(project_folder) as lock_held:
+            # Create backup
+            if create_backup:
+                try:
+                    backup_path = write_db.backup_before_write()
+                except Exception as e:
+                    _downgrade_to_readonly()
+                    return json.dumps({
+                        "error": f"Failed to create backup: {e}",
+                        "message": "Aborting to protect your data — nothing was written."
+                    })
 
-            ctid = write_db.add_coding(
-                file_id=sugg.file_id,
-                code_id=sugg.code_id,
-                start_pos=sugg.start_pos,
-                end_pos=sugg.end_pos,
-                selected_text=sugg.segment_text,
-                owner=owner,
-                memo=memo,
-                auto_commit=False  # Batch: commit after all succeed
-            )
+            try:
+                for sugg in approved:
+                    # Create memo with reasoning and confidence
+                    memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
 
-            results.append({
-                "ctid": ctid,
-                "file": sugg.file_name,
-                "code": sugg.code_name,
-                "guid": sugg.guid
-            })
+                    ctid = write_db.add_coding(
+                        file_id=sugg.file_id,
+                        code_id=sugg.code_id,
+                        start_pos=sugg.start_pos,
+                        end_pos=sugg.end_pos,
+                        selected_text=sugg.segment_text,
+                        owner=owner,
+                        memo=memo,
+                        auto_commit=False  # Batch: commit after all succeed
+                    )
 
-        # Commit all at once
-        write_db.conn.commit()
+                    results.append({
+                        "ctid": ctid,
+                        "file": sugg.file_name,
+                        "code": sugg.code_name,
+                        "guid": sugg.guid
+                    })
 
-    except Exception as e:
-        # Roll back all changes on any failure
-        try:
-            write_db.conn.rollback()
-        except Exception:
-            pass
-        logger.error(f"Failed to apply codings, rolled back: {e}")
+                # Close the TOCTOU window, then commit all at once
+                _recheck_lock_before_commit(project_folder, lock_held)
+                write_db.conn.commit()
+
+            except Exception as e:
+                # Roll back all changes on any failure
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to apply codings, rolled back: {e}")
+                _downgrade_to_readonly()
+                return json.dumps({
+                    "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
+                    "applied_before_failure": len(results),
+                    "total_approved": len(approved)
+                })
+    except DatabaseLockedError:
+        # QualCoder grabbed the project between our check and the write
         _downgrade_to_readonly()
-        return json.dumps({
-            "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
-            "applied_before_failure": len(results),
-            "total_approved": len(approved)
-        })
+        raise
 
     # Downgrade back to read-only after successful write
     _downgrade_to_readonly()
@@ -1997,40 +2067,65 @@ def import_text_file(
     except (ValueError, TypeError) as e:
         return json.dumps({"error": str(e)})
 
+    # Refuse while QualCoder has the project open (heartbeat lock file)
+    lock_error = _qualcoder_open_error()
+    if lock_error is not None:
+        return json.dumps(lock_error)
+
+    project_folder = _current_project_folder()
+
     # Upgrade to read-write mode
     write_db = get_db(read_only=False)
 
-    # Create backup
     backup_path = None
-    if create_backup:
-        try:
-            backup_path = write_db.backup_before_write()
-        except Exception as e:
-            _downgrade_to_readonly()
-            return json.dumps({
-                "error": f"Failed to create backup: {e}",
-                "message": "Aborting to protect your data."
-            })
-
-    # Perform the import (the database layer re-validates: defense in depth)
     try:
-        result = write_db.import_text_file(
-            name=filename.strip(),
-            content=content,
-            owner=owner,
-            memo=memo,
-            auto_commit=True
-        )
-    except (ValueError, TypeError) as e:
+        with hold_project_lock(project_folder) as lock_held:
+            # Create backup
+            if create_backup:
+                try:
+                    backup_path = write_db.backup_before_write()
+                except Exception as e:
+                    _downgrade_to_readonly()
+                    return json.dumps({
+                        "error": f"Failed to create backup: {e}",
+                        "message": "Aborting to protect your data."
+                    })
+
+            # Perform the import (the database layer re-validates: defense
+            # in depth); commit only after re-checking the QualCoder lock
+            try:
+                result = write_db.import_text_file(
+                    name=filename.strip(),
+                    content=content,
+                    owner=owner,
+                    memo=memo,
+                    auto_commit=False
+                )
+                _recheck_lock_before_commit(project_folder, lock_held)
+                write_db.conn.commit()
+            except DatabaseLockedError:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                raise
+            except (ValueError, TypeError) as e:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                _downgrade_to_readonly()
+                return json.dumps({"error": str(e)})
+            except RuntimeError as e:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                _downgrade_to_readonly()
+                return json.dumps({"error": f"Database error: {str(e)}"})
+    except DatabaseLockedError:
         _downgrade_to_readonly()
-        return json.dumps({"error": str(e)})
-    except RuntimeError as e:
-        try:
-            write_db.conn.rollback()
-        except Exception:
-            pass
-        _downgrade_to_readonly()
-        return json.dumps({"error": f"Database error: {str(e)}"})
+        raise
 
     # Downgrade back to read-only
     _downgrade_to_readonly()
@@ -2087,24 +2182,48 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     if existing is None:
         return json.dumps({"error": f"Coding ID {coding_id} does not exist"})
 
+    # Refuse while QualCoder has the project open (heartbeat lock file)
+    lock_error = _qualcoder_open_error()
+    if lock_error is not None:
+        return json.dumps(lock_error)
+
+    project_folder = _current_project_folder()
+
     write_db = get_db(read_only=False)
 
     backup_path = None
-    if create_backup:
-        try:
-            backup_path = write_db.backup_before_write()
-        except Exception as e:
-            _downgrade_to_readonly()
-            return json.dumps({
-                "error": f"Failed to create backup: {e}",
-                "message": "Aborting to protect your data — nothing was deleted."
-            })
-
     try:
-        deleted = write_db.delete_coding(coding_id)
-    except (ValueError, RuntimeError) as e:
+        with hold_project_lock(project_folder) as lock_held:
+            if create_backup:
+                try:
+                    backup_path = write_db.backup_before_write()
+                except Exception as e:
+                    _downgrade_to_readonly()
+                    return json.dumps({
+                        "error": f"Failed to create backup: {e}",
+                        "message": "Aborting to protect your data — nothing was deleted."
+                    })
+
+            try:
+                deleted = write_db.delete_coding(coding_id, auto_commit=False)
+                _recheck_lock_before_commit(project_folder, lock_held)
+                write_db.conn.commit()
+            except DatabaseLockedError:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                raise
+            except (ValueError, RuntimeError) as e:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                _downgrade_to_readonly()
+                return json.dumps({"error": str(e)})
+    except DatabaseLockedError:
         _downgrade_to_readonly()
-        return json.dumps({"error": str(e)})
+        raise
 
     _downgrade_to_readonly()
 
@@ -2256,7 +2375,12 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
             "hint": "Call restore_backup again with confirm=true to proceed."
         }, indent=2)
 
-    # Refuse while another process (QualCoder) holds a write lock
+    # Refuse while QualCoder has the project open (heartbeat lock file)
+    lock_error = _qualcoder_open_error()
+    if lock_error is not None:
+        return json.dumps(lock_error)
+
+    # Refuse while another process holds an SQLite write lock
     if _project_is_write_locked(project_data):
         return json.dumps({"error": DB_LOCKED_MESSAGE})
 
@@ -2281,8 +2405,20 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         db = None
 
     try:
-        shutil.rmtree(project_folder)
-        shutil.copytree(backup_folder, project_folder)
+        with hold_project_lock(project_folder):
+            shutil.rmtree(project_folder)
+            shutil.copytree(backup_folder, project_folder)
+            # Old backups may contain a copied lock file; QualCoder never
+            # puts lock files in backups and neither do we (anymore)
+            for stray_lock in project_folder.glob("*.lock"):
+                try:
+                    stray_lock.unlink()
+                except OSError:
+                    pass
+    except DatabaseLockedError:
+        # QualCoder opened the project between the check and the swap
+        switch_project(current_project_path)
+        raise
     except Exception as e:
         # Attempt recovery from the safety backup
         logger.error(f"Restore failed mid-swap: {e}")
