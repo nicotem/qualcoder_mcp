@@ -154,6 +154,7 @@ class AICodingSession:
         approved = len([s for s in self.suggestions if s.status == "approved"])
         rejected = len([s for s in self.suggestions if s.status == "rejected"])
         pending = len([s for s in self.suggestions if s.status == "pending"])
+        applied = len([s for s in self.suggestions if s.status == "applied"])
 
         # By file
         by_file = {}
@@ -174,9 +175,53 @@ class AICodingSession:
             "approved": approved,
             "rejected": rejected,
             "pending": pending,
+            "applied": applied,
             "by_file": by_file,
             "by_code": by_code
         }
+
+    def has_duplicate(self, file_id: int, code_id: int,
+                      start_pos: int, end_pos: int) -> bool:
+        """Check whether an equivalent suggestion is already in the session."""
+        for s in self.suggestions:
+            if (s.file_id == file_id and s.code_id == code_id
+                    and s.start_pos == start_pos and s.end_pos == end_pos):
+                return True
+        return False
+
+    def remove_pending_suggestions(self) -> int:
+        """Remove all pending suggestions (used by record_suggestions replace).
+
+        Approved, rejected, and applied suggestions are never removed.
+
+        Returns:
+            Number of suggestions removed
+        """
+        before = len(self.suggestions)
+        self.suggestions = [s for s in self.suggestions if s.status != "pending"]
+        removed = before - len(self.suggestions)
+        if removed:
+            self.last_modified = datetime.now().isoformat()
+        return removed
+
+    def mark_applied(self, guids: List[str]) -> int:
+        """Mark suggestions as applied (written to the database).
+
+        Args:
+            guids: GUIDs of the suggestions that were written
+
+        Returns:
+            Number of suggestions marked
+        """
+        count = 0
+        for guid in guids:
+            sugg = self.get_suggestion_by_guid(guid)
+            if sugg is not None:
+                sugg.status = "applied"
+                count += 1
+        if count:
+            self.last_modified = datetime.now().isoformat()
+        return count
 
     def get_suggestion_by_guid(self, guid: str) -> Optional[CodingSuggestion]:
         """Get a suggestion by its GUID."""

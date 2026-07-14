@@ -17,6 +17,7 @@ from .database import (
     DatabaseLockedError,
     UnsupportedSchemaError,
     DB_LOCKED_MESSAGE,
+    validate_qda_path,
 )
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
 
@@ -245,6 +246,120 @@ def _downgrade_to_readonly():
         except Exception as e:
             logger.error(f"Failed to downgrade to read-only: {e}")
             db = None
+
+
+def _snippet(text: Optional[str], max_len: int = 80) -> str:
+    """Truncate text for inclusion in error messages."""
+    if not text:
+        return ""
+    return text if len(text) <= max_len else text[:max_len] + "…"
+
+
+def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]:
+    """Verify a session belongs to the currently open project.
+
+    Session-consuming writes are bound to the project the session was
+    created in — applying a session to a different project would silently
+    corrupt it (cross-project write trapdoor).
+
+    Returns:
+        None if the session matches the current project, otherwise a dict
+        suitable for JSON error output.
+    """
+    if current_project_path is None:
+        return {
+            "error": "No Qualcoder project selected. Use 'list_available_projects' "
+                     "and 'select_project' to open one."
+        }
+    try:
+        session_db_path = validate_qda_path(session.project_path)
+    except DatabaseLockedError:
+        raise
+    except Exception:
+        return {
+            "error": "The project this session was created in could not be found "
+                     "(it may have been moved or deleted). Sessions can only be "
+                     "used with the project they were created in."
+        }
+    try:
+        current_db_path = validate_qda_path(current_project_path)
+    except DatabaseLockedError:
+        raise
+    except Exception:
+        return {"error": "The currently open project could not be resolved. "
+                         "Re-open it with select_project."}
+
+    if session_db_path != current_db_path:
+        return {
+            "error": "This session belongs to a different project than the one "
+                     "currently open. Writes are bound to the session's project — "
+                     "open it with select_project first.",
+            "session_project": session_db_path.parent.name,
+            "current_project": current_db_path.parent.name,
+        }
+    return None
+
+
+def _find_occurrences(text: str, needle: str, max_hits: int = 11) -> List[int]:
+    """Find start offsets of needle in text (including overlapping hits)."""
+    hits = []
+    pos = text.find(needle)
+    while pos != -1 and len(hits) < max_hits:
+        hits.append(pos)
+        pos = text.find(needle, pos + 1)
+    return hits
+
+
+def _resolve_segment_positions(
+    fulltext: str,
+    start_pos: Any,
+    end_pos: Any,
+    segment_text: str,
+):
+    """Verify (or recover) the positions of a suggested segment.
+
+    The invariant enforced on every write is fulltext[start:end] ==
+    segment_text (character/code-point offsets, matching how QualCoder and
+    this server store positions). Because language models frequently
+    miscount character offsets, a mismatch falls back to locating
+    segment_text in the file: exactly one occurrence -> positions are
+    corrected; zero or several -> the suggestion is rejected with an
+    explanatory error.
+
+    Returns:
+        (ok, start, end, corrected, error) where error is a dict with
+        'reason' and snippet context when ok is False.
+    """
+    n = len(fulltext)
+    have_positions = (
+        isinstance(start_pos, int) and not isinstance(start_pos, bool)
+        and isinstance(end_pos, int) and not isinstance(end_pos, bool)
+    )
+
+    if have_positions and 0 <= start_pos < end_pos <= n:
+        if fulltext[start_pos:end_pos] == segment_text:
+            return True, start_pos, end_pos, False, None
+
+    # Positions missing, out of range, or not matching: locate the text
+    hits = _find_occurrences(fulltext, segment_text)
+    if len(hits) == 1:
+        start = hits[0]
+        return True, start, start + len(segment_text), have_positions, None
+    if len(hits) == 0:
+        error = {
+            "reason": "segment_text was not found in the file — it must be an "
+                      "exact, verbatim excerpt of the file text",
+            "provided_snippet": _snippet(segment_text),
+        }
+        if have_positions and 0 <= start_pos < min(end_pos, n):
+            error["expected_snippet"] = _snippet(fulltext[start_pos:min(end_pos, n)])
+        return False, None, None, False, error
+    return False, None, None, False, {
+        "reason": f"segment_text occurs {'more than 10' if len(hits) > 10 else len(hits)} "
+                  f"times in the file and the given positions do not match any of "
+                  f"them exactly — provide the correct start_pos/end_pos",
+        "provided_snippet": _snippet(segment_text),
+    }
 
 
 # ============================================================================
@@ -1076,10 +1191,7 @@ def analyze_for_coding(
         min_confidence=min_confidence
     )
 
-    # NOTE: This is where YOU (Claude) would do the actual AI analysis
-    # For now, return the session info and instructions for the next step
-
-    # Save session
+    # Save session (Claude records its suggestions with record_suggestions)
     session_manager.save_session(session)
 
     output = f"""
@@ -1097,15 +1209,17 @@ Session ID: `{session.session_id}`
 
 This session has been created and saved. Now YOU (Claude) need to:
 
-1. **Analyze each file** using your AI capabilities
-2. **Create CodingSuggestion objects** for each relevant segment you identify
-3. **Add them to the session** using session.add_suggestion()
-4. **Present them to the user** in a clear, reviewable format
-
-The session is stored at: `{session_manager.storage_dir / f"session_{session.session_id}.json"}`
+1. **Read each file** (use `analyze_file_with_coding`) and identify segments
+   that match the requested codes and instruction
+2. **Record your suggestions** with the `record_suggestions` tool, passing this
+   session ID and a list of suggestion objects:
+   `{{"file_id": ..., "code_name": "...", "start_pos": ..., "end_pos": ...,
+   "segment_text": "<exact excerpt>", "reasoning": "...", "confidence": 0.0-1.0}}`
+   Each suggestion is verified against the file text before it is stored.
+3. **Present the recorded suggestions to the user** in a clear, reviewable format
 
 **FOR THE USER:**
-Once Claude completes the analysis and presents suggestions, you can:
+Once Claude records and presents suggestions, you can:
 - Review the suggestions in the chat
 - Use `review_suggestions` to see more details
 - Use `update_suggestion_status` to approve/reject specific suggestions
@@ -1113,6 +1227,207 @@ Once Claude completes the analysis and presents suggestions, you can:
 """
 
     return output
+
+
+@mcp.tool()
+@_tool_guard
+def record_suggestions(
+    session_id: str,
+    suggestions: List[Dict[str, Any]],
+    replace: bool = False
+) -> str:
+    """Record AI coding suggestions into an analysis session for user review.
+
+    This is step 2 of the AI coding workflow: after analyze_for_coding creates
+    a session, use this tool to persist the suggestions you (Claude) identified
+    by reading the files. Nothing is written to the QualCoder database — the
+    suggestions are stored in the session for the user to review, approve, and
+    apply.
+
+    Every suggestion is validated against the project before it is stored:
+    - the file must exist and be a text source
+    - the code must exist (give code_id, or code_name matched case-insensitively)
+    - segment_text must be an exact, verbatim excerpt of the file text
+    - positions are verified: if fulltext[start_pos:end_pos] != segment_text
+      but the text occurs exactly once in the file, positions are corrected
+      automatically (flagged as positions_corrected); otherwise the suggestion
+      is rejected with an explanation. start_pos/end_pos may be omitted when
+      the excerpt is unique in the file.
+
+    Args:
+        session_id: The session ID from analyze_for_coding
+        suggestions: List of suggestion objects with keys:
+            file_id (int, required), code_id (int) or code_name (str),
+            start_pos/end_pos (int, optional if the excerpt is unique),
+            segment_text (str, required — exact excerpt),
+            reasoning (str), confidence (float 0.0-1.0),
+            context_before/context_after (str, optional — auto-filled)
+        replace: If True, discard previously recorded PENDING suggestions
+                 first (approved/rejected/applied are always kept)
+
+    Returns:
+        JSON with recorded suggestions (GUIDs for approval), per-item
+        rejections with reasons, duplicate count, and session statistics
+
+    Example:
+        record_suggestions(session_id="...", suggestions=[
+            {"file_id": 4, "code_name": "Burnout", "start_pos": 96,
+             "end_pos": 129, "segment_text": "by Thursday I am running on fumes",
+             "reasoning": "Explicit exhaustion metaphor", "confidence": 0.9}])
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({
+            "error": f"Session {session_id} not found",
+            "available_sessions": session_manager.list_sessions()
+        })
+
+    session = session_manager.load_session(session_id)
+
+    # Suggestions may only be recorded against the project they were
+    # analyzed in (same binding as apply_codings)
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+
+    if not isinstance(suggestions, list) or not suggestions:
+        return json.dumps({
+            "error": "suggestions must be a non-empty list of suggestion objects"
+        })
+
+    ro_db = get_db()
+    codes = ro_db.list_codes()
+    codes_by_id = {c["id"]: c for c in codes}
+    codes_by_name = {c["name"].lower(): c for c in codes}
+
+    removed_pending = session.remove_pending_suggestions() if replace else 0
+
+    file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    recorded = []
+    rejected = []
+    skipped_duplicates = 0
+
+    for idx, item in enumerate(suggestions):
+        if not isinstance(item, dict):
+            rejected.append({"index": idx, "reason": "each suggestion must be an object"})
+            continue
+
+        # --- file ---
+        file_id = item.get("file_id")
+        if not isinstance(file_id, int) or isinstance(file_id, bool):
+            rejected.append({"index": idx, "reason": "file_id (integer) is required"})
+            continue
+        if file_id not in file_cache:
+            file_cache[file_id] = ro_db.get_file_content(file_id)
+        file_content = file_cache[file_id]
+        if file_content is None:
+            rejected.append({"index": idx, "reason": f"file_id {file_id} does not exist"})
+            continue
+        fulltext = file_content.get("content") or ""
+        if not file_content.get("is_text") or not fulltext:
+            rejected.append({
+                "index": idx,
+                "reason": f"file '{file_content['name']}' is not a text source — "
+                          f"text codings require a file with text content"
+            })
+            continue
+
+        # --- code ---
+        code = None
+        if item.get("code_id") is not None:
+            code_id = item["code_id"]
+            if not isinstance(code_id, int) or isinstance(code_id, bool):
+                rejected.append({"index": idx, "reason": "code_id must be an integer"})
+                continue
+            code = codes_by_id.get(code_id)
+            if code is None:
+                rejected.append({"index": idx, "reason": f"code_id {code_id} does not exist"})
+                continue
+        elif item.get("code_name"):
+            code = codes_by_name.get(str(item["code_name"]).lower())
+            if code is None:
+                rejected.append({
+                    "index": idx,
+                    "reason": f"code '{item['code_name']}' not found",
+                    "available_codes": sorted(c["name"] for c in codes)[:50]
+                })
+                continue
+        else:
+            rejected.append({"index": idx, "reason": "each suggestion needs code_id or code_name"})
+            continue
+
+        # --- segment text ---
+        segment_text = item.get("segment_text")
+        if not isinstance(segment_text, str) or not segment_text.strip():
+            rejected.append({"index": idx, "reason": "segment_text (non-empty string) is required"})
+            continue
+
+        # --- confidence ---
+        try:
+            confidence = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            rejected.append({"index": idx, "reason": "confidence must be a number between 0.0 and 1.0"})
+            continue
+
+        # --- positions (verified against the file text) ---
+        ok, start_pos, end_pos, corrected, pos_error = _resolve_segment_positions(
+            fulltext, item.get("start_pos"), item.get("end_pos"), segment_text
+        )
+        if not ok:
+            rejected.append({"index": idx, **pos_error})
+            continue
+
+        if session.has_duplicate(file_id, code["id"], start_pos, end_pos):
+            skipped_duplicates += 1
+            continue
+
+        context_before = item.get("context_before")
+        if not isinstance(context_before, str):
+            context_before = fulltext[max(0, start_pos - 100):start_pos]
+        context_after = item.get("context_after")
+        if not isinstance(context_after, str):
+            context_after = fulltext[end_pos:end_pos + 100]
+
+        suggestion = CodingSuggestion(
+            file_id=file_id,
+            file_name=file_content["name"],
+            code_id=code["id"],
+            code_name=code["name"],
+            start_pos=start_pos,
+            end_pos=end_pos,
+            segment_text=segment_text,
+            reasoning=str(item.get("reasoning", "")),
+            confidence=confidence,
+            status="pending",
+            context_before=context_before,
+            context_after=context_after,
+        )
+        session.add_suggestion(suggestion)
+        recorded.append({
+            "guid": suggestion.guid,
+            "file_id": file_id,
+            "file_name": file_content["name"],
+            "code_name": code["name"],
+            "start_pos": start_pos,
+            "end_pos": end_pos,
+            "positions_corrected": corrected,
+        })
+
+    session_manager.save_session(session)
+
+    result = {
+        "session_id": session_id,
+        "recorded_count": len(recorded),
+        "recorded": recorded,
+        "rejected_count": len(rejected),
+        "rejected": rejected,
+        "skipped_duplicates": skipped_duplicates,
+        "statistics": session.get_statistics(),
+        "next_step": "Present the suggestions to the user; approve/reject with "
+                     "update_suggestion_status, then write with apply_codings."
+    }
+    if replace:
+        result["replaced_pending"] = removed_pending
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
