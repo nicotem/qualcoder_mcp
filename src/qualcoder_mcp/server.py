@@ -62,6 +62,10 @@ def _tool_guard(fn):
         except FileNotFoundError as e:
             logger.error(f"Not found in {fn.__name__}: {e}")
             return json.dumps({"error": "File or project not found."})
+        except OSError as e:
+            logger.error(f"OS error in {fn.__name__}: {e}")
+            return json.dumps({"error": "File system operation failed — check "
+                                         "disk space and permissions."})
         except sqlite3.Error as e:
             logger.error(f"SQLite error in {fn.__name__}: {e}")
             return json.dumps({
@@ -618,6 +622,48 @@ def get_current_project() -> str:
 
     except Exception as e:
         return json.dumps({"error": f"Failed to get project info: {str(e)}"})
+
+
+@mcp.tool()
+@_tool_guard
+def copy_project_to_workspace(
+    source_path: str,
+    new_name: Optional[str] = None
+) -> str:
+    """Copy a QualCoder project to the MCP workspace for safe modification.
+
+    This is the recommended first step before any AI coding: work on a copy
+    in the workspace folder (~/Documents/Qualcoder MCP Projects/) so your
+    original project is never touched. If a project with the same name
+    already exists in the workspace, the copy gets a timestamped name.
+
+    The copy is NOT opened automatically — use select_project on the
+    returned path when you are ready to work on it.
+
+    Args:
+        source_path: Path to the source .qda project (folder or data.qda)
+        new_name: Optional new name for the workspace copy
+
+    Returns:
+        JSON with the workspace copy's path
+
+    Example:
+        "Copy my project 'Interview Study' to the workspace for AI coding"
+    """
+    from .database import copy_project_to_workspace as copy_to_workspace
+
+    # Validate that the source is a real QualCoder project before copying
+    validate_qda_path(source_path)
+
+    dest = copy_to_workspace(source_path, new_name=new_name)
+
+    return json.dumps({
+        "success": True,
+        "message": f"Copied project to workspace: {dest.name}",
+        "workspace_copy": str(dest),
+        "original_untouched": True,
+        "hint": f"Use select_project(\"{dest}\") to open the copy and work on it."
+    }, indent=2)
 
 
 @mcp.tool()
