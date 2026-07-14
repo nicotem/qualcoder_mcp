@@ -627,19 +627,24 @@ class QualcoderDatabase:
             if not row:
                 return None
 
-            # Count coded segments
+            # Count coded segments — joined to source so orphaned codings
+            # (deleted files) are excluded, consistent with
+            # get_coded_text_segments (QA F8)
             text_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_text WHERE cid = ?",
+                "SELECT COUNT(*) as cnt FROM code_text ct "
+                "JOIN source s ON ct.fid = s.id WHERE ct.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
             image_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_image WHERE cid = ?",
+                "SELECT COUNT(*) as cnt FROM code_image ci "
+                "JOIN source s ON ci.id = s.id WHERE ci.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
             av_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_av WHERE cid = ?",
+                "SELECT COUNT(*) as cnt FROM code_av ca "
+                "JOIN source s ON ca.id = s.id WHERE ca.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
@@ -1126,16 +1131,20 @@ class QualcoderDatabase:
         Returns:
             Dictionary with code frequencies
         """
+        # COUNT(s.id): orphaned codings (fid pointing at a deleted source)
+        # are excluded, consistent with get_coded_text_segments — previously
+        # counting and listing tools disagreed on the same code (QA F8)
         cursor = self.conn.execute("""
             SELECT
                 c.cid,
                 c.name,
                 c.color,
                 cat.name as category,
-                COUNT(ct.ctid) as text_count
+                COUNT(s.id) as text_count
             FROM code_name c
             LEFT JOIN code_cat cat ON c.catid = cat.catid
             LEFT JOIN code_text ct ON c.cid = ct.cid
+            LEFT JOIN source s ON ct.fid = s.id
             GROUP BY c.cid, c.name, c.color, cat.name
             ORDER BY text_count DESC, c.name
         """)
@@ -1431,6 +1440,7 @@ class QualcoderDatabase:
             all_files = cursor.fetchall()
             results = []
             files_searched = 0
+            files_skipped_no_text = 0
 
             search_pattern = pattern if case_sensitive else pattern.lower()
 
@@ -1444,20 +1454,28 @@ class QualcoderDatabase:
                 matches = []
                 match_count = 0
 
-                # Search filename
+                # Search filename (a NULL name must not abort the search;
+                # QA F5: one unnamed row previously killed every query)
+                raw_name = row["name"] or ""
                 if search_filename:
-                    file_name = row["name"] if case_sensitive else row["name"].lower()
+                    file_name = raw_name if case_sensitive else raw_name.lower()
                     if search_pattern in file_name:
                         matched_in["filename"] = True
                         matches.append({
                             "location": "filename",
-                            "preview": row["name"]
+                            "preview": raw_name
                         })
                         match_count += 1
 
-                # Search content
-                if search_content and (row["mediapath"] is None or row["mediapath"] == ""):
+                # Search content of ANY source that has text — this includes
+                # imported documents and PDFs (mediapath '/docs/...'), which
+                # were previously skipped silently, producing false negatives
+                # (QA F10). Sources without text (image/audio/video) are
+                # counted so the caller can see what was not searched.
+                if search_content:
                     file_text = row["fulltext"] or ""
+                    if not file_text:
+                        files_skipped_no_text += 1
                     search_text = file_text if case_sensitive else file_text.lower()
 
                     # Find all content matches
@@ -1528,6 +1546,12 @@ class QualcoderDatabase:
 
             if search_content:
                 performance_info["note"] = "Content search can be slow for many files"
+                performance_info["files_skipped_no_text"] = files_skipped_no_text
+                if files_skipped_no_text:
+                    performance_info["skip_note"] = (
+                        f"{files_skipped_no_text} source(s) without text content "
+                        f"(e.g. image/audio/video) were not content-searched"
+                    )
 
             logger.info(f"File search found {len(results)} matches (searched {files_searched} files)")
 

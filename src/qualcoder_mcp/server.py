@@ -120,6 +120,19 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
                 except ValueError:
                     continue
 
+                # Skip the data.qda INSIDE a .qda project folder — the folder
+                # itself is the project and is listed separately (previously
+                # every project appeared twice, once as "data")
+                if (qda_file.name == "data.qda"
+                        and qda_file.parent.suffix.lower() == ".qda"):
+                    continue
+
+                # Skip backup folders: this server's *_backup_* snapshots and
+                # QualCoder's own *_BKUP_* copies are not working projects
+                # (they polluted the list — 2 projects showed as 10 entries)
+                if "_backup_" in qda_file.stem or "_BKUP_" in qda_file.stem:
+                    continue
+
                 seen_paths.add(qda_file)
 
                 try:
