@@ -239,7 +239,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=20,
+            end_pos=19,
             selected_text="This is a test file",
             owner="AI Coder",
             memo="Test coding"
@@ -260,7 +260,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -276,7 +276,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder",
             important=1
@@ -388,7 +388,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -399,7 +399,7 @@ class TestAddCoding:
                 file_id=1,
                 code_id=1,
                 start_pos=0,
-                end_pos=10,
+                end_pos=9,
                 selected_text="This is a",
                 owner="AI Coder"
             )
@@ -410,7 +410,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -418,8 +418,8 @@ class TestAddCoding:
         ctid2 = write_db.add_coding(
             file_id=1,
             code_id=1,
-            start_pos=20,
-            end_pos=30,
+            start_pos=15,
+            end_pos=24,
             selected_text="file with",
             owner="AI Coder"
         )
@@ -435,7 +435,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="Coder1"
         )
@@ -444,7 +444,7 @@ class TestAddCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="Coder2"
         )
@@ -573,7 +573,7 @@ class TestAddMemoToCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -591,7 +591,7 @@ class TestAddMemoToCoding:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder",
             memo="Original memo"
@@ -726,7 +726,7 @@ class TestTransactionHandling:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -773,7 +773,7 @@ class TestDataIntegrity:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )
@@ -798,7 +798,7 @@ class TestDataIntegrity:
             file_id=1,
             code_id=1,
             start_pos=0,
-            end_pos=10,
+            end_pos=9,
             selected_text="This is a",
             owner="AI Coder"
         )

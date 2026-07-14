@@ -1567,8 +1567,16 @@ def apply_codings(
     your project. Only approved suggestions will be applied. A backup is created
     first by default for safety.
 
-    IMPORTANT: Make sure you're working on a copy of your project in the
-    MCP workspace (~/Documents/Qualcoder MCP Projects/)
+    Safety guarantees:
+    - The session must belong to the CURRENTLY OPEN project; applying a
+      session to a different project is refused.
+    - Every approved suggestion is re-validated BEFORE the backup and the
+      write: the file must exist and be a text source, the code must exist,
+      and the segment text must match the file text at the stored positions.
+      If anything fails validation, nothing is written and no backup is made.
+    - All codings are written in a single all-or-nothing transaction.
+    - Applied suggestions are marked "applied" so the session cannot be
+      double-applied by accident.
 
     Args:
         session_id: The session ID with approved suggestions
@@ -1587,11 +1595,79 @@ def apply_codings(
 
     session = session_manager.load_session(session_id)
 
+    # Writes are bound to the project the session was created in
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+
     # Get only approved suggestions (check before upgrading to write mode)
     approved = session.filter_by_status("approved")
 
     if not approved:
-        return "❌ No approved suggestions to apply. Use `update_suggestion_status` to approve suggestions first."
+        already_applied = len(session.filter_by_status("applied"))
+        message = ("No approved suggestions to apply. Use "
+                   "`update_suggestion_status` to approve suggestions first.")
+        if already_applied:
+            message = (f"No approved suggestions to apply — {already_applied} "
+                       f"suggestion(s) in this session were already applied to "
+                       f"the database in a previous run.")
+        return json.dumps({
+            "error": message,
+            "statistics": session.get_statistics()
+        }, indent=2)
+
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        return json.dumps({"error": "owner must be a non-empty string"})
+
+    # Pre-validate EVERY approved suggestion on the read-only connection,
+    # BEFORE upgrading and BEFORE creating a backup (SEC D-2). This catches
+    # missing files/codes, non-text sources (QA F6), and position/text
+    # mismatches (QA F7) without leaving backup litter or partial state.
+    ro_db = get_db()
+    codes_by_id = {c["id"] for c in ro_db.list_codes()}
+    file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    failures = []
+    for sugg in approved:
+        problem = None
+        if sugg.file_id not in file_cache:
+            file_cache[sugg.file_id] = ro_db.get_file_content(sugg.file_id)
+        file_content = file_cache[sugg.file_id]
+        fulltext = (file_content or {}).get("content") or ""
+        if file_content is None:
+            problem = {"reason": f"file_id {sugg.file_id} does not exist"}
+        elif not file_content.get("is_text") or not fulltext:
+            problem = {"reason": f"file '{file_content['name']}' is not a text "
+                                 f"source — text codings require text content"}
+        elif sugg.code_id not in codes_by_id:
+            problem = {"reason": f"code_id {sugg.code_id} does not exist"}
+        elif not (isinstance(sugg.start_pos, int) and isinstance(sugg.end_pos, int)
+                  and 0 <= sugg.start_pos < sugg.end_pos <= len(fulltext)):
+            problem = {"reason": f"positions {sugg.start_pos}-{sugg.end_pos} are "
+                                 f"out of range for the file (length {len(fulltext)})"}
+        elif fulltext[sugg.start_pos:sugg.end_pos] != sugg.segment_text:
+            problem = {
+                "reason": "segment text does not match the file text at the "
+                          "stored positions — re-record this suggestion with "
+                          "record_suggestions (it verifies and corrects positions)",
+                "expected_snippet": _snippet(fulltext[sugg.start_pos:sugg.end_pos]),
+                "provided_snippet": _snippet(sugg.segment_text),
+            }
+        if problem is not None:
+            failures.append({
+                "guid": sugg.guid,
+                "file_id": sugg.file_id,
+                "code_name": sugg.code_name,
+                **problem
+            })
+
+    if failures:
+        return json.dumps({
+            "error": f"{len(failures)} approved suggestion(s) failed validation — "
+                     f"nothing was written and no backup was created. Fix or "
+                     f"reject the listed suggestions, then apply again.",
+            "failures": failures,
+            "total_approved": len(approved)
+        }, indent=2)
 
     # Upgrade to read-write mode for writing codings
     write_db = get_db(read_only=False)
@@ -1603,7 +1679,10 @@ def apply_codings(
             backup_path = write_db.backup_before_write()
         except Exception as e:
             _downgrade_to_readonly()
-            return f"❌ Failed to create backup: {e}\n\nAborting to protect your data."
+            return json.dumps({
+                "error": f"Failed to create backup: {e}",
+                "message": "Aborting to protect your data — nothing was written."
+            })
 
     # Apply all codings in a single transaction (all-or-nothing)
     results = []
@@ -1650,7 +1729,10 @@ def apply_codings(
 
     # Downgrade back to read-only after successful write
     _downgrade_to_readonly()
-    errors = []
+
+    # Mark the written suggestions as applied so a re-run cannot double-apply
+    session.mark_applied([r["guid"] for r in results])
+    session_manager.save_session(session)
 
     # Format output
     output = ["\n✅ **CODINGS APPLIED TO DATABASE**\n"]
@@ -1672,13 +1754,9 @@ def apply_codings(
         for r in file_results:
             output.append(f"  - {r['code']} (ctid={r['ctid']})")
 
-    if errors:
-        output.append(f"\n\n❌ **Errors: {len(errors)}**")
-        for e in errors:
-            output.append(f"  - {e['guid']}: {e['error']}")
-
     output.append(f"\n\n**You can now open the project in Qualcoder to see the AI-coded segments.**")
     output.append(f"All codings are attributed to '{owner}' with confidence scores in memos.")
+    output.append(f"If one of these turns out to be wrong, `delete_coding(ctid)` removes it.")
 
     return "\n".join(output)
 

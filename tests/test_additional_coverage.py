@@ -663,10 +663,14 @@ class TestApplyCodingsRollback:
             owner="Rollback Tester"
         )
 
-        # Verify the result indicates failure
+        # Verify the result indicates failure: the invalid suggestion is now
+        # caught by pre-validation BEFORE any write or backup, so nothing is
+        # ever inserted (stronger than the old mid-batch rollback)
         data = json.loads(result)
         assert "error" in data
-        assert "rolled back" in data["error"].lower()
+        assert "failed validation" in data["error"]
+        assert "nothing was written" in data["error"]
+        assert any("code_id 99999" in f["reason"] for f in data["failures"])
 
         # Verify ZERO new codings were inserted -- the valid one was also rolled back
         # Check by owner to be precise (per security-eng recommendation)
@@ -718,7 +722,7 @@ class TestRWConnectionDowngrade:
         suggestion = CodingSuggestion(
             file_id=1, file_name="interview.txt",
             code_id=1, code_name="Stress",
-            start_pos=10, end_pos=20,
+            start_pos=8, end_pos=18,
             segment_text="interview ",
             reasoning="Test", confidence=0.9,
             status="approved"
@@ -789,7 +793,7 @@ class TestRWConnectionDowngrade:
         suggestion = CodingSuggestion(
             file_id=1, file_name="interview.txt",
             code_id=1, code_name="Stress",
-            start_pos=10, end_pos=20,
+            start_pos=8, end_pos=18,
             segment_text="interview ",
             reasoning="Test", confidence=0.9,
             status="approved"

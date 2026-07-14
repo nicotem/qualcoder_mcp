@@ -2150,12 +2150,31 @@ class QualcoderDatabase:
         if not code_check:
             raise ValueError(f"Code ID {code_id} does not exist")
 
-        # Get file content and validate positions
+        # Get file content and enforce write invariants:
+        # - text codings only on text sources that have text content (QA F6:
+        #   junk codings on image/audio/video sources were accepted silently)
+        # - positions in range, and selected_text must equal the file text at
+        #   [start_pos:end_pos] (QA F7): QualCoder renders highlights from the
+        #   positions, so a mismatch makes the project display the wrong text
         file_content = self.get_file_content(file_id)
-        if file_content and file_content.get("content"):
-            content_length = len(file_content["content"])
-            if end_pos > content_length:
-                raise ValueError(f"end_pos ({end_pos}) exceeds file length ({content_length})")
+        fulltext = (file_content or {}).get("content") or ""
+        if not fulltext or not (file_content or {}).get("is_text"):
+            raise ValueError(
+                f"File ID {file_id} is not a text source with text content - "
+                f"text codings can only be added to text files"
+            )
+        content_length = len(fulltext)
+        if end_pos > content_length:
+            raise ValueError(f"end_pos ({end_pos}) exceeds file length ({content_length})")
+        actual_text = fulltext[start_pos:end_pos]
+        if actual_text != selected_text:
+            def _snip(t: str) -> str:
+                return t if len(t) <= 80 else t[:80] + "…"
+            raise ValueError(
+                f"selected_text does not match the file text at positions "
+                f"{start_pos}-{end_pos}. File contains: '{_snip(actual_text)}' "
+                f"- provided: '{_snip(selected_text)}'"
+            )
 
         # Current timestamp
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
