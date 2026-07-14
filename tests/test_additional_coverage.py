@@ -56,12 +56,14 @@ class TestNoProjectLoaded:
                 os.environ["QUALCODER_PROJECT_PATH"] = original_env
 
     def test_search_coded_text_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.search_coded_text("test")
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.search_coded_text("test"))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_coded_segments_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_coded_segments(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_coded_segments(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_search_files_no_project(self):
         # search_files catches exceptions and returns JSON error
@@ -70,60 +72,74 @@ class TestNoProjectLoaded:
         assert "error" in data
 
     def test_get_coding_frequencies_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_coding_frequencies()
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_coding_frequencies())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_search_memos_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.search_memos("test")
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.search_memos("test"))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_export_code_report_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.export_code_report("Test")
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.export_code_report("Test"))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_project_summary_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_project_summary()
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_project_summary())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_analyze_file_with_coding_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.analyze_file_with_coding(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.analyze_file_with_coding(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_list_attribute_types_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.list_attribute_types()
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.list_attribute_types())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_file_attributes_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_file_attributes(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_file_attributes(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_case_attributes_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_case_attributes(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_case_attributes(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_query_by_attribute_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.query_by_attribute("Age", "30")
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.query_by_attribute("Age", "30"))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_find_cooccurring_codes_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.find_cooccurring_codes(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.find_cooccurring_codes(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_case_code_matrix_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_case_code_matrix()
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_case_code_matrix())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_codes_by_case_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_codes_by_case(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_codes_by_case(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_cases_by_code_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_cases_by_code(1)
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.get_cases_by_code(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_analyze_for_coding_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.analyze_for_coding(file_ids=[1])
+        # Tools are guarded: graceful JSON error instead of a raw exception
+        data = json.loads(server.analyze_for_coding(file_ids=[1]))
+        assert "No Qualcoder project selected" in data["error"]
 
     # Resources
     def test_get_project_info_no_project(self):

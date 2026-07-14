@@ -15,7 +15,47 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 5000
-SUPPORTED_DB_VERSIONS = ['v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13', 'v14']
+# Only v14 (QualCoder 3.8.x) is tested. Older versions log a warning; the
+# functional gate is the required-column check in _check_required_columns().
+SUPPORTED_DB_VERSIONS = ['v14']
+
+# Columns this server reads or writes that older QualCoder schemas lack.
+# If any are missing, the project must be opened and saved in QualCoder 3.8
+# (which migrates the schema) before this server can use it.
+REQUIRED_COLUMNS = {
+    "code_text": ["important"],
+}
+
+DB_LOCKED_MESSAGE = (
+    "The project database is locked — QualCoder may have it open. "
+    "Close the project in QualCoder (or wait a moment) and try again."
+)
+
+
+class DatabaseLockedError(RuntimeError):
+    """Raised when the SQLite database is locked by another process."""
+
+
+class UnsupportedSchemaError(RuntimeError):
+    """Raised when the project database schema is too old for this server."""
+
+
+def _is_locked_error(e: sqlite3.Error) -> bool:
+    """Check whether a sqlite3 error indicates a locked/busy database."""
+    msg = str(e).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
+    """Convert a sqlite3 error from a query into a typed, sanitized error.
+
+    Locked databases get a distinct, actionable error; everything else is
+    logged in full and re-raised as a generic sanitized RuntimeError.
+    """
+    if isinstance(e, sqlite3.OperationalError) and _is_locked_error(e):
+        raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+    logger.error(f"Database error in {where}: {e}")
+    raise RuntimeError(message) from None
 
 # Workspace configuration
 # Users should work in this folder to keep MCP-modified projects separate from originals
@@ -95,13 +135,24 @@ def validate_qda_path(db_path: str) -> Path:
         raise ValueError(f"Path is neither a file nor a directory: {path}")
 
     # Basic SQLite validation (read-only check)
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
         cursor.fetchone()
-        conn.close()
+    except sqlite3.OperationalError as e:
+        # A locked database is NOT corrupted — report it distinctly
+        if _is_locked_error(e):
+            raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+        raise ValueError(f"Cannot open SQLite database: {e}")
     except sqlite3.DatabaseError as e:
         raise ValueError(f"Invalid or corrupted SQLite database: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return path
 
@@ -338,6 +389,10 @@ class QualcoderDatabase:
             self.conn.execute("PRAGMA foreign_keys = ON")
             # Set busy timeout for concurrent access (5 seconds)
             self.conn.execute("PRAGMA busy_timeout = 5000")
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            raise RuntimeError(f"Failed to open database: {e}") from e
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to open database: {e}") from e
 
@@ -346,6 +401,9 @@ class QualcoderDatabase:
 
         # Check database version
         self._check_version()
+
+        # Gate on required columns (older QualCoder schemas lack them)
+        self._check_required_columns()
 
     def __enter__(self):
         """Context manager entry."""
@@ -384,16 +442,22 @@ class QualcoderDatabase:
                 raise ValueError(
                     f"Invalid Qualcoder database: missing tables {missing_tables}"
                 )
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            raise RuntimeError(f"Failed to validate database schema: {e}") from e
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to validate database schema: {e}") from e
 
     def _check_version(self):
         """Check database version and log warnings if unsupported."""
+        self.db_version = None
         try:
             cursor = self.conn.execute("SELECT databaseversion FROM project")
             row = cursor.fetchone()
             if row:
                 version = row[0]
+                self.db_version = version
                 if version not in SUPPORTED_DB_VERSIONS:
                     logger.warning(
                         f"Untested database version: {version}. "
@@ -401,8 +465,44 @@ class QualcoderDatabase:
                     )
                 else:
                     logger.info(f"Connected to Qualcoder database version {version}")
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.warning(f"Could not determine database version: {e}")
         except sqlite3.Error as e:
             logger.warning(f"Could not determine database version: {e}")
+
+    def _check_required_columns(self):
+        """Ensure the schema has the columns this server reads and writes.
+
+        Older QualCoder schemas (pre-3.8 / pre-v14) lack columns such as
+        code_text.important, which every coding read and write here uses.
+        Rather than crashing mid-operation (or half-working), refuse the
+        connection with instructions to upgrade the project in QualCoder.
+
+        Raises:
+            UnsupportedSchemaError: If any required column is missing
+        """
+        try:
+            for table, columns in REQUIRED_COLUMNS.items():
+                cursor = self.conn.execute(f"PRAGMA table_info({table})")
+                existing = {row[1] for row in cursor.fetchall()}
+                missing = [c for c in columns if c not in existing]
+                if missing:
+                    version = self.db_version or "unknown"
+                    raise UnsupportedSchemaError(
+                        f"This project was created with an older QualCoder "
+                        f"(database schema {version}; missing column(s) "
+                        f"{', '.join(table + '.' + c for c in missing)}). "
+                        f"Open and save the project in QualCoder 3.8 to "
+                        f"upgrade it, then try again."
+                    )
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            raise RuntimeError(f"Failed to check database schema: {e}") from e
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to check database schema: {e}") from e
 
     def get_project_info(self) -> Dict[str, Any]:
         """Get project metadata."""
@@ -552,8 +652,7 @@ class QualcoderDatabase:
                 }
             }
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_code_details: {e}")
-            raise RuntimeError("Failed to retrieve code details") from None
+            _raise_query_error(e, "get_code_details", "Failed to retrieve code details")
 
     def get_coded_text_segments(self, code_id: int, limit: int = 100) -> List[Dict[str, Any]]:
         """Get text segments coded with a specific code.
@@ -609,8 +708,7 @@ class QualcoderDatabase:
                 })
             return segments
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_coded_text_segments: {e}")
-            raise RuntimeError("Failed to retrieve coded text segments") from None
+            _raise_query_error(e, "get_coded_text_segments", "Failed to retrieve coded text segments")
 
     def list_files(self) -> List[Dict[str, Any]]:
         """Get all source files in the project.
@@ -689,8 +787,7 @@ class QualcoderDatabase:
                 "code_count": code_count
             }
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_file_content: {e}")
-            raise RuntimeError("Failed to retrieve file content") from None
+            _raise_query_error(e, "get_file_content", "Failed to retrieve file content")
 
     def get_file_with_coding(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get a file with all its coded segments for rich context analysis.
@@ -834,8 +931,7 @@ class QualcoderDatabase:
             }
 
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_file_with_coding: {e}")
-            raise RuntimeError("Failed to retrieve file with coding") from None
+            _raise_query_error(e, "get_file_with_coding", "Failed to retrieve file with coding")
 
     def list_cases(self) -> List[Dict[str, Any]]:
         """Get all cases in the project.
@@ -1015,8 +1111,7 @@ class QualcoderDatabase:
                 })
             return results
         except sqlite3.Error as e:
-            logger.error(f"Database error in search_coded_text: {e}")
-            raise RuntimeError("Failed to search coded text") from None
+            _raise_query_error(e, "search_coded_text", "Failed to search coded text")
 
     def get_coding_frequencies(self) -> Dict[str, Any]:
         """Get frequency counts for all codes.
@@ -1158,8 +1253,7 @@ class QualcoderDatabase:
 
             return results
         except sqlite3.Error as e:
-            logger.error(f"Database error in search_memos: {e}")
-            raise RuntimeError("Failed to search memos") from None
+            _raise_query_error(e, "search_memos", "Failed to search memos")
 
     def search_file_content(
         self,
@@ -1269,8 +1363,7 @@ class QualcoderDatabase:
             return results
 
         except sqlite3.Error as e:
-            logger.error(f"Database error in search_file_content: {e}")
-            raise RuntimeError("Failed to search file content") from None
+            _raise_query_error(e, "search_file_content", "Failed to search file content")
 
     def search_files(
         self,
@@ -1446,8 +1539,7 @@ class QualcoderDatabase:
             }
 
         except sqlite3.Error as e:
-            logger.error(f"Database error in search_files: {e}")
-            raise RuntimeError("Failed to search files") from None
+            _raise_query_error(e, "search_files", "Failed to search files")
 
     def get_journal_entries(self) -> List[Dict[str, Any]]:
         """Get all journal entries.
@@ -1512,8 +1604,7 @@ class QualcoderDatabase:
                 })
             return attributes
         except sqlite3.Error as e:
-            logger.error(f"Database error in list_attribute_types: {e}")
-            raise RuntimeError("Failed to retrieve attribute types") from None
+            _raise_query_error(e, "list_attribute_types", "Failed to retrieve attribute types")
 
     def get_file_attributes(self, file_id: int) -> List[Dict[str, Any]]:
         """Get all attributes for a specific file.
@@ -1555,8 +1646,7 @@ class QualcoderDatabase:
                 })
             return attributes
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_file_attributes: {e}")
-            raise RuntimeError("Failed to retrieve file attributes") from None
+            _raise_query_error(e, "get_file_attributes", "Failed to retrieve file attributes")
 
     def get_case_attributes(self, case_id: int) -> List[Dict[str, Any]]:
         """Get all attributes for a specific case.
@@ -1598,8 +1688,7 @@ class QualcoderDatabase:
                 })
             return attributes
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_case_attributes: {e}")
-            raise RuntimeError("Failed to retrieve case attributes") from None
+            _raise_query_error(e, "get_case_attributes", "Failed to retrieve case attributes")
 
     def query_by_attribute(self, attr_name: str, attr_value: str,
                            attr_type: str = "case") -> List[Dict[str, Any]]:
@@ -1665,8 +1754,7 @@ class QualcoderDatabase:
 
             return results
         except sqlite3.Error as e:
-            logger.error(f"Database error in query_by_attribute: {e}")
-            raise RuntimeError("Failed to query by attribute") from None
+            _raise_query_error(e, "query_by_attribute", "Failed to query by attribute")
 
     # ============================================================================
     # CO-OCCURRENCE ANALYSIS - Codes appearing together
@@ -1744,8 +1832,7 @@ class QualcoderDatabase:
 
             return cooccurrences
         except sqlite3.Error as e:
-            logger.error(f"Database error in find_code_cooccurrences: {e}")
-            raise RuntimeError("Failed to find co-occurrences") from None
+            _raise_query_error(e, "find_code_cooccurrences", "Failed to find co-occurrences")
 
     # ============================================================================
     # CASE-CODE MATRIX - Cross-tabulation
@@ -1804,8 +1891,7 @@ class QualcoderDatabase:
                 "matrix": matrix
             }
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_case_code_matrix: {e}")
-            raise RuntimeError("Failed to generate case-code matrix") from None
+            _raise_query_error(e, "get_case_code_matrix", "Failed to generate case-code matrix")
 
     def get_codes_by_case(self, case_id: int) -> List[Dict[str, Any]]:
         """Get all codes that appear in a specific case.
@@ -1850,8 +1936,7 @@ class QualcoderDatabase:
 
             return codes
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_codes_by_case: {e}")
-            raise RuntimeError("Failed to get codes by case") from None
+            _raise_query_error(e, "get_codes_by_case", "Failed to get codes by case")
 
     def get_cases_by_code(self, code_id: int) -> List[Dict[str, Any]]:
         """Get all cases that contain a specific code.
@@ -1893,8 +1978,7 @@ class QualcoderDatabase:
 
             return cases
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_cases_by_code: {e}")
-            raise RuntimeError("Failed to get cases by code") from None
+            _raise_query_error(e, "get_cases_by_code", "Failed to get cases by code")
 
     # ============================================================================
     # GUID Management for REFI-QDA Export
@@ -1939,8 +2023,7 @@ class QualcoderDatabase:
                 guids[code_id] = self.generate_deterministic_guid("code", code_id)
             return guids
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_code_guids: {e}")
-            raise RuntimeError("Failed to get code GUIDs") from None
+            _raise_query_error(e, "get_code_guids", "Failed to get code GUIDs")
 
     def get_file_guids(self) -> Dict[int, str]:
         """Get mapping of file_id -> GUID for all source files.
@@ -1956,8 +2039,7 @@ class QualcoderDatabase:
                 guids[file_id] = self.generate_deterministic_guid("file", file_id)
             return guids
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_file_guids: {e}")
-            raise RuntimeError("Failed to get file GUIDs") from None
+            _raise_query_error(e, "get_file_guids", "Failed to get file GUIDs")
 
     def get_case_guids(self) -> Dict[int, str]:
         """Get mapping of case_id -> GUID for all cases.
@@ -1973,8 +2055,7 @@ class QualcoderDatabase:
                 guids[case_id] = self.generate_deterministic_guid("case", case_id)
             return guids
         except sqlite3.Error as e:
-            logger.error(f"Database error in get_case_guids: {e}")
-            raise RuntimeError("Failed to get case GUIDs") from None
+            _raise_query_error(e, "get_case_guids", "Failed to get case GUIDs")
 
     def get_or_create_user_guid(self, username: str) -> str:
         """Get or create GUID for a user.

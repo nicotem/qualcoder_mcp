@@ -4,13 +4,20 @@ import os
 import sys
 import json
 import logging
+import sqlite3
+import functools
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
 
-from .database import QualcoderDatabase
+from .database import (
+    QualcoderDatabase,
+    DatabaseLockedError,
+    UnsupportedSchemaError,
+    DB_LOCKED_MESSAGE,
+)
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
 
 # Set up logging
@@ -29,6 +36,39 @@ current_project_path: Optional[str] = None
 
 # Global session manager for AI coding
 session_manager = SessionManager()
+
+
+def _tool_guard(fn):
+    """Convert anticipated exceptions into sanitized error JSON.
+
+    Applied to every MCP tool so that failures (no project selected, locked
+    database, old schema, validation errors, corruption) reach the client as
+    actionable error JSON instead of raw tracebacks.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except DatabaseLockedError as e:
+            return json.dumps({"error": str(e)})
+        except UnsupportedSchemaError as e:
+            return json.dumps({"error": str(e)})
+        except (ValueError, TypeError) as e:
+            return json.dumps({"error": str(e)})
+        except FileNotFoundError as e:
+            logger.error(f"Not found in {fn.__name__}: {e}")
+            return json.dumps({"error": "File or project not found."})
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in {fn.__name__}: {e}")
+            return json.dumps({
+                "error": "Database error — the project file may be locked or "
+                         "corrupted. If QualCoder is open, close it and retry; "
+                         "otherwise consider restoring a backup (see list_backups)."
+            })
+        except RuntimeError as e:
+            logger.error(f"Runtime error in {fn.__name__}: {e}")
+            return json.dumps({"error": str(e)})
+    return wrapper
 
 
 def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -139,14 +179,18 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
     """
     global db, current_project_path
 
-    # If we need write access but current connection is read-only, reopen
+    # If we need write access but current connection is read-only, reopen.
+    # IMPORTANT: open the new connection BEFORE closing the old one — if the
+    # upgrade fails (e.g. QualCoder holds a lock), the existing read-only
+    # connection must remain usable rather than leaving a dead global (F1).
     if db is not None and not read_only and db.read_only:
         logger.info("Upgrading database connection to read-write mode")
+        new_db = QualcoderDatabase(current_project_path, read_only=False)
+        old_db, db = db, new_db
         try:
-            db.close()
+            old_db.close()
         except Exception:
             pass
-        db = QualcoderDatabase(current_project_path, read_only=False)
         return db
 
     # If we have a project path set but db is None, try to reconnect
@@ -322,6 +366,7 @@ def get_journal_entries() -> str:
 # ============================================================================
 
 @mcp.tool()
+@_tool_guard
 def list_available_projects(search_directories: Optional[List[str]] = None) -> str:
     """Discover Qualcoder projects on your system.
 
@@ -366,6 +411,7 @@ def list_available_projects(search_directories: Optional[List[str]] = None) -> s
 
 
 @mcp.tool()
+@_tool_guard
 def select_project(project_path: str) -> str:
     """Switch to a different Qualcoder project.
 
@@ -392,6 +438,18 @@ def select_project(project_path: str) -> str:
             "project_info": project_info
         }, indent=2)
 
+    except DatabaseLockedError as e:
+        logger.error(f"Project locked during select: {e}")
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
+    except UnsupportedSchemaError as e:
+        logger.error(f"Unsupported schema during select: {e}")
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
     except (ValueError, FileNotFoundError) as e:
         # Log full error for debugging, but don't expose internal paths to user
         logger.error(f"Failed to select project: {e}")
@@ -399,6 +457,14 @@ def select_project(project_path: str) -> str:
             "success": False,
             "error": "Invalid project path or project not found. "
                      "Use 'list_available_projects' to find valid projects."
+        })
+    except sqlite3.Error as e:
+        # e.g. "database disk image is malformed" surfacing mid-read (F3)
+        logger.error(f"SQLite error while opening project: {e}")
+        return json.dumps({
+            "success": False,
+            "error": "The project database appears to be damaged or unreadable. "
+                     "Try opening it in QualCoder, or restore a backup."
         })
     except RuntimeError as e:
         logger.error(f"Failed to open project database: {e}")
@@ -409,6 +475,7 @@ def select_project(project_path: str) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_current_project() -> str:
     """Get information about the currently open project.
 
@@ -436,6 +503,7 @@ def get_current_project() -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def search_coded_text(query: str, code_name: Optional[str] = None, limit: int = 50) -> str:
     """Search for text segments that contain specific keywords.
 
@@ -460,6 +528,7 @@ def search_coded_text(query: str, code_name: Optional[str] = None, limit: int = 
 
 
 @mcp.tool()
+@_tool_guard
 def get_coded_segments(code_id: int, limit: int = 100) -> str:
     """Get all text segments that have been coded with a specific code.
 
@@ -483,6 +552,7 @@ def get_coded_segments(code_id: int, limit: int = 100) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def search_files(
     pattern: str,
     search_filename: bool = True,
@@ -591,6 +661,7 @@ def search_files(
 
 
 @mcp.tool()
+@_tool_guard
 def get_coding_frequencies() -> str:
     """Get frequency statistics for all codes in the project.
 
@@ -607,6 +678,7 @@ def get_coding_frequencies() -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def search_memos(query: str, limit: int = 50) -> str:
     """Search through all memos and annotations in the project.
 
@@ -629,6 +701,7 @@ def search_memos(query: str, limit: int = 50) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def export_code_report(code_name: str) -> str:
     """Generate a comprehensive report for a specific code.
 
@@ -668,6 +741,7 @@ def export_code_report(code_name: str) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_project_summary() -> str:
     """Get a comprehensive summary of the entire project.
 
@@ -706,6 +780,7 @@ def get_project_summary() -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def analyze_file_with_coding(file_id: int) -> str:
     """Analyze a text file with all its coded segments for rich context analysis.
 
@@ -745,6 +820,7 @@ def analyze_file_with_coding(file_id: int) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def list_attribute_types() -> str:
     """List all attribute types defined in the project.
 
@@ -766,6 +842,7 @@ def list_attribute_types() -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_file_attributes(file_id: int) -> str:
     """Get all attribute values for a specific file.
 
@@ -787,6 +864,7 @@ def get_file_attributes(file_id: int) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_case_attributes(case_id: int) -> str:
     """Get all attribute values for a specific case.
 
@@ -808,6 +886,7 @@ def get_case_attributes(case_id: int) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def query_by_attribute(attr_name: str, attr_value: str, attr_type: str = "case") -> str:
     """Find cases or files that have a specific attribute value.
 
@@ -831,6 +910,7 @@ def query_by_attribute(attr_name: str, attr_value: str, attr_type: str = "case")
 
 
 @mcp.tool()
+@_tool_guard
 def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
     """Find codes that appear together with a specific code.
 
@@ -860,6 +940,7 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_case_code_matrix() -> str:
     """Get a matrix showing which codes appear in which cases.
 
@@ -884,6 +965,7 @@ def get_case_code_matrix() -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_codes_by_case(case_id: int) -> str:
     """Get all codes that appear in a specific case.
 
@@ -903,6 +985,7 @@ def get_codes_by_case(case_id: int) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def get_cases_by_code(code_id: int) -> str:
     """Get all cases that contain a specific code.
 
@@ -926,6 +1009,7 @@ def get_cases_by_code(code_id: int) -> str:
 # ============================================================================
 
 @mcp.tool()
+@_tool_guard
 def analyze_for_coding(
     file_ids: List[int],
     code_names: Optional[List[str]] = None,
@@ -1032,6 +1116,7 @@ Once Claude completes the analysis and presents suggestions, you can:
 
 
 @mcp.tool()
+@_tool_guard
 def review_suggestions(
     session_id: str,
     suggestion_guids: Optional[List[str]] = None,
@@ -1096,6 +1181,7 @@ def review_suggestions(
 
 
 @mcp.tool()
+@_tool_guard
 def update_suggestion_status(
     session_id: str,
     approve: Optional[List[str]] = None,
@@ -1154,6 +1240,7 @@ Use `apply_codings` with session ID `{session_id}` to write approved suggestions
 
 
 @mcp.tool()
+@_tool_guard
 def apply_codings(
     session_id: str,
     create_backup: bool = True,
@@ -1282,6 +1369,7 @@ def apply_codings(
 
 
 @mcp.tool()
+@_tool_guard
 def import_text_file(
     filename: str,
     content: str,
@@ -1370,6 +1458,7 @@ def import_text_file(
 
 
 @mcp.tool()
+@_tool_guard
 def get_coding_session_info(session_id: str) -> str:
     """Get detailed information about a coding session.
 
@@ -1405,6 +1494,7 @@ def get_coding_session_info(session_id: str) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def list_coding_sessions(
     project_path: Optional[str] = None,
     days_old: int = 30
@@ -1450,6 +1540,7 @@ def list_coding_sessions(
 
 
 @mcp.tool()
+@_tool_guard
 def delete_coding_session(session_id: str) -> str:
     """Delete a saved coding session.
 
@@ -1485,6 +1576,7 @@ def delete_coding_session(session_id: str) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def cleanup_old_sessions(days_old: int = 30) -> str:
     """Clean up old coding sessions.
 
@@ -1517,6 +1609,7 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
 
 
 @mcp.tool()
+@_tool_guard
 def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
     """Get help and examples for AI coding tools.
 
