@@ -2021,9 +2021,11 @@ class QualcoderDatabase:
                     COUNT(*) as count
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
-                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
-                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
-                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                    -- full CONTAINMENT, matching QualCoder's own reports
+                    -- (report_codes.py:1640); note QualCoder's whole-file
+                    -- case links end at len(fulltext)-1, so a coding that
+                    -- includes the file's last character is excluded there
+                    AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 GROUP BY cs.caseid, ct.cid
             """)
 
@@ -2064,9 +2066,11 @@ class QualcoderDatabase:
                     COUNT(*) as occurrence_count
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
-                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
-                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
-                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                    -- full CONTAINMENT, matching QualCoder's own reports
+                    -- (report_codes.py:1640); note QualCoder's whole-file
+                    -- case links end at len(fulltext)-1, so a coding that
+                    -- includes the file's last character is excluded there
+                    AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN code_name c ON ct.cid = c.cid
                 LEFT JOIN code_cat cat ON c.catid = cat.catid
                 WHERE cs.caseid = ?
@@ -2108,9 +2112,11 @@ class QualcoderDatabase:
                     COUNT(*) as occurrence_count
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
-                    AND ((ct.pos0 >= cs.pos0 AND ct.pos0 <= cs.pos1)
-                         OR (ct.pos1 >= cs.pos0 AND ct.pos1 <= cs.pos1)
-                         OR (ct.pos0 <= cs.pos0 AND ct.pos1 >= cs.pos1))
+                    -- full CONTAINMENT, matching QualCoder's own reports
+                    -- (report_codes.py:1640); note QualCoder's whole-file
+                    -- case links end at len(fulltext)-1, so a coding that
+                    -- includes the file's last character is excluded there
+                    AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN cases c ON cs.caseid = c.caseid
                 WHERE ct.cid = ?
                 GROUP BY cs.caseid, c.name, c.memo
