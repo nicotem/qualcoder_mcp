@@ -1402,6 +1402,16 @@ def import_text_file(
     if not content or not content.strip():
         return json.dumps({"error": "content must not be empty"})
 
+    # Full validation on the read-only connection BEFORE upgrading and
+    # before any backup, so rejected imports never copy the whole project
+    # (SEC D-2). Also rejects control-char/NUL filenames (SEC D-1).
+    try:
+        get_db().validate_text_file_import(
+            name=filename.strip(), content=content, owner=owner, memo=memo
+        )
+    except (ValueError, TypeError) as e:
+        return json.dumps({"error": str(e)})
+
     # Upgrade to read-write mode
     write_db = get_db(read_only=False)
 
@@ -1417,7 +1427,7 @@ def import_text_file(
                 "message": "Aborting to protect your data."
             })
 
-    # Perform the import
+    # Perform the import (the database layer re-validates: defense in depth)
     try:
         result = write_db.import_text_file(
             name=filename.strip(),

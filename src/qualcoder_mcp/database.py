@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any, Union
 import json
 import logging
 import hashlib
+import unicodedata
 import uuid
 import shutil
 from datetime import datetime
@@ -262,10 +263,16 @@ def backup_project(project_path: Union[str, Path]) -> Path:
     if not project_path.is_dir():
         raise ValueError(f"Project path must be a directory: {project_path}")
 
-    # Create backup with timestamp
+    # Create backup with timestamp; uniquify on collision so two writes in
+    # the same second cannot abort each other (QA F2 / SEC D-3)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{project_path.stem}_backup_{timestamp}.qda"
     backup_path = project_path.parent / backup_name
+    counter = 2
+    while backup_path.exists():
+        backup_name = f"{project_path.stem}_backup_{timestamp}_{counter}.qda"
+        backup_path = project_path.parent / backup_name
+        counter += 1
 
     logger.info(f"Creating backup: {backup_path}")
 
@@ -2289,6 +2296,82 @@ class QualcoderDatabase:
             logger.error(f"Database error in add_memo_to_coding: {e}")
             raise RuntimeError(f"Failed to update memo: {e}") from None
 
+    def validate_text_file_import(
+        self,
+        name: str,
+        content: str,
+        owner: str,
+        memo: str = ""
+    ) -> str:
+        """Validate inputs for import_text_file without writing anything.
+
+        Safe to call on a read-only connection. The server calls this BEFORE
+        upgrading to read-write and creating a backup, so rejected imports
+        never produce a full-project backup copy (SEC D-2).
+
+        Args:
+            name: Filename with extension
+            content: Full text content
+            owner: Creator name
+            memo: Optional file memo
+
+        Returns:
+            The normalized (NFC, stripped) filename to store
+
+        Raises:
+            ValueError: If any input is invalid or the filename exists
+            TypeError: If content is not a string
+        """
+        # Validate name
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        # Normalize so visually identical names compare equal (SEC D-1)
+        name = unicodedata.normalize("NFC", name.strip())
+        # Reject NUL and other control characters: they bypass both the
+        # duplicate pre-check and the UNIQUE(name) constraint while
+        # displaying as an existing filename (SEC D-1)
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in name):
+            raise ValueError("filename must not contain control characters")
+        if '.' not in name:
+            raise ValueError("filename must have an extension (e.g., .txt)")
+        if '/' in name or '\\' in name or '..' in name:
+            raise ValueError("filename must not contain path separators or '..'")
+        validate_string(name, "name")
+
+        # Validate content
+        if not isinstance(content, str):
+            raise TypeError("content must be a string")
+        if not content.strip():
+            raise ValueError("content must not be empty")
+        if len(content) > MAX_TEXT_CONTENT_LENGTH:
+            raise ValueError(
+                f"content length {len(content)} exceeds maximum "
+                f"{MAX_TEXT_CONTENT_LENGTH}"
+            )
+
+        # Validate owner
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+
+        # Validate memo
+        if memo:
+            validate_string(memo, "memo")
+
+        # Check name uniqueness
+        try:
+            existing = self.conn.execute(
+                "SELECT id FROM source WHERE name = ?", (name,)
+            ).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "validate_text_file_import",
+                               "Failed to validate import")
+        if existing:
+            raise ValueError(
+                f"A file named '{name}' already exists (id={existing['id']})"
+            )
+
+        return name
+
     def import_text_file(
         self,
         name: str,
@@ -2320,43 +2403,8 @@ class QualcoderDatabase:
         """
         self._require_write_access()
 
-        # Validate name
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("name must be a non-empty string")
-        name = name.strip()
-        if '.' not in name:
-            raise ValueError("filename must have an extension (e.g., .txt)")
-        if '/' in name or '\\' in name or '..' in name:
-            raise ValueError("filename must not contain path separators or '..'")
-        validate_string(name, "name")
-
-        # Validate content
-        if not isinstance(content, str):
-            raise TypeError("content must be a string")
-        if not content.strip():
-            raise ValueError("content must not be empty")
-        if len(content) > MAX_TEXT_CONTENT_LENGTH:
-            raise ValueError(
-                f"content length {len(content)} exceeds maximum "
-                f"{MAX_TEXT_CONTENT_LENGTH}"
-            )
-
-        # Validate owner
-        if not isinstance(owner, str) or not owner.strip():
-            raise ValueError("owner must be a non-empty string")
-
-        # Validate memo
-        if memo:
-            validate_string(memo, "memo")
-
-        # Check name uniqueness
-        existing = self.conn.execute(
-            "SELECT id FROM source WHERE name = ?", (name,)
-        ).fetchone()
-        if existing:
-            raise ValueError(
-                f"A file named '{name}' already exists (id={existing['id']})"
-            )
+        # Full validation (raises on any problem); returns the normalized name
+        name = self.validate_text_file_import(name, content, owner, memo)
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
