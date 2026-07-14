@@ -3,10 +3,12 @@
 import os
 import sys
 import json
+import shutil
 import logging
 import sqlite3
 import functools
 from pathlib import Path
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +20,7 @@ from .database import (
     UnsupportedSchemaError,
     DB_LOCKED_MESSAGE,
     validate_qda_path,
+    backup_project,
 )
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
 
@@ -1858,6 +1861,271 @@ def import_text_file(
         output["backup_path"] = str(backup_path)
 
     return json.dumps(output, indent=2)
+
+
+# ============================================================================
+# ERROR-RECOVERY TOOLS — delete a coding, list and restore backups
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def delete_coding(coding_id: int, create_backup: bool = True) -> str:
+    """Delete a single coded segment from the project database.
+
+    THIS WRITES TO THE DATABASE. Use it to remove a coding that was applied
+    by mistake (e.g. an approved AI suggestion that turned out to be wrong).
+    It removes ONE coding — the assignment of a code to a text span — never
+    the code itself, the source file, or any other coding.
+
+    A backup is created first by default, so the deletion can be undone with
+    restore_backup if needed.
+
+    Args:
+        coding_id: The ctid of the coding to delete. You can find ctids in
+                   the output of apply_codings, get_coded_segments, or
+                   analyze_file_with_coding (segment_id).
+        create_backup: Create timestamped backup before deleting (default: True)
+
+    Returns:
+        JSON with the deleted coding's details (code, file, positions, text)
+        and the backup path
+
+    Example:
+        "Delete coding 42 — that segment was coded wrongly"
+    """
+    # Validate on the read-only connection BEFORE upgrading/backup
+    existing = get_db().get_coding(coding_id)
+    if existing is None:
+        return json.dumps({"error": f"Coding ID {coding_id} does not exist"})
+
+    write_db = get_db(read_only=False)
+
+    backup_path = None
+    if create_backup:
+        try:
+            backup_path = write_db.backup_before_write()
+        except Exception as e:
+            _downgrade_to_readonly()
+            return json.dumps({
+                "error": f"Failed to create backup: {e}",
+                "message": "Aborting to protect your data — nothing was deleted."
+            })
+
+    try:
+        deleted = write_db.delete_coding(coding_id)
+    except (ValueError, RuntimeError) as e:
+        _downgrade_to_readonly()
+        return json.dumps({"error": str(e)})
+
+    _downgrade_to_readonly()
+
+    output = {
+        "success": True,
+        "message": f"Deleted coding {coding_id} "
+                   f"('{deleted['code_name']}' on '{deleted['file_name']}')",
+        "deleted_coding": deleted,
+    }
+    if backup_path:
+        output["backup_path"] = str(backup_path)
+    return json.dumps(output, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def list_backups() -> str:
+    """List the automatic backups of the currently open project.
+
+    Every write operation (apply_codings, import_text_file, delete_coding,
+    restore_backup) creates a timestamped backup folder next to the project,
+    named '<project>_backup_<timestamp>.qda'. This tool lists them, newest
+    first, so you can pick one for restore_backup.
+
+    Returns:
+        JSON with the project name and an array of backups
+        (name, path, created, size_mb)
+    """
+    if current_project_path is None:
+        return json.dumps({
+            "error": "No Qualcoder project selected. Use 'list_available_projects' "
+                     "and 'select_project' to open one."
+        })
+
+    project_folder = validate_qda_path(current_project_path).parent
+    prefix = f"{project_folder.stem}_backup_"
+
+    backups = []
+    for entry in project_folder.parent.glob(f"{prefix}*.qda"):
+        if not entry.is_dir():
+            continue
+        try:
+            size_bytes = sum(
+                f.stat().st_size for f in entry.rglob("*") if f.is_file()
+            )
+            created = datetime.fromtimestamp(entry.stat().st_mtime)
+            backups.append({
+                "name": entry.name,
+                "path": str(entry),
+                "created": created.strftime("%Y-%m-%d %H:%M:%S"),
+                "size_mb": round(size_bytes / (1024 * 1024), 2),
+            })
+        except OSError as e:
+            logger.debug(f"Cannot stat backup {entry}: {e}")
+            continue
+
+    backups.sort(key=lambda b: b["name"], reverse=True)
+
+    return json.dumps({
+        "project": project_folder.stem,
+        "backup_count": len(backups),
+        "backups": backups,
+        "hint": "Use restore_backup(backup_path) to roll the project back "
+                "to one of these snapshots."
+    }, indent=2)
+
+
+def _project_is_write_locked(data_qda: Path) -> bool:
+    """Probe whether another process holds a write lock on the database."""
+    conn = None
+    try:
+        conn = sqlite3.connect(str(data_qda), timeout=0.5)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.rollback()
+        return False
+    except sqlite3.OperationalError:
+        return True
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@mcp.tool()
+@_tool_guard
+def restore_backup(backup_path: str, confirm: bool = False) -> str:
+    """Restore the currently open project from one of its backups.
+
+    THIS REPLACES THE CURRENT PROJECT STATE with the chosen backup snapshot.
+    Everything done since that backup is removed from the project — which is
+    why this tool:
+    1. does nothing until called with confirm=true (the default call returns
+       a preview of what would happen),
+    2. only accepts backups of the currently open project (created by this
+       server, sitting next to the project folder),
+    3. creates a safety backup of the CURRENT state first, so even a restore
+       can be undone,
+    4. refuses to run while the project database is locked (QualCoder open).
+
+    Args:
+        backup_path: Path to the backup folder (from list_backups)
+        confirm: Must be true to actually restore. When false (default),
+                 returns a preview and makes no changes.
+
+    Returns:
+        JSON describing the restore (or the preview when confirm is false)
+
+    Example:
+        "Restore the project from the backup made this morning"
+    """
+    if current_project_path is None:
+        return json.dumps({
+            "error": "No Qualcoder project selected. Use 'list_available_projects' "
+                     "and 'select_project' to open one."
+        })
+
+    project_data = validate_qda_path(current_project_path)
+    project_folder = project_data.parent
+    prefix = f"{project_folder.stem}_backup_"
+
+    # The backup must be a sibling backup of the CURRENT project
+    try:
+        backup_folder = Path(backup_path).expanduser().resolve(strict=True)
+    except OSError:
+        return json.dumps({"error": "Backup path not found. Use list_backups "
+                                    "to see the available backups."})
+    if (not backup_folder.is_dir()
+            or backup_folder.parent != project_folder.parent
+            or not backup_folder.name.startswith(prefix)
+            or backup_folder.suffix.lower() != ".qda"):
+        return json.dumps({
+            "error": "Not a backup of the currently open project. Only backups "
+                     "created next to this project (see list_backups) can be "
+                     "restored."
+        })
+
+    # The backup itself must be a valid QualCoder project
+    validate_qda_path(str(backup_folder))
+
+    if not confirm:
+        return json.dumps({
+            "requires_confirmation": True,
+            "would_restore_from": backup_folder.name,
+            "would_overwrite": project_folder.name,
+            "safety": "A safety backup of the current state will be created "
+                      "first, so the restore itself can be undone.",
+            "hint": "Call restore_backup again with confirm=true to proceed."
+        }, indent=2)
+
+    # Refuse while another process (QualCoder) holds a write lock
+    if _project_is_write_locked(project_data):
+        return json.dumps({"error": DB_LOCKED_MESSAGE})
+
+    # Safety backup of the current state (rename to mark it as pre-restore)
+    safety_backup = backup_project(project_folder)
+    marked = safety_backup.with_name(
+        safety_backup.name[:-len(".qda")] + "_prerestore.qda"
+    )
+    try:
+        safety_backup.rename(marked)
+        safety_backup = marked
+    except OSError:
+        pass  # keep the unmarked name if rename fails
+
+    # Close the connection, swap the folder, reopen read-only
+    global db
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+        db = None
+
+    try:
+        shutil.rmtree(project_folder)
+        shutil.copytree(backup_folder, project_folder)
+    except Exception as e:
+        # Attempt recovery from the safety backup
+        logger.error(f"Restore failed mid-swap: {e}")
+        try:
+            if not project_folder.exists():
+                shutil.copytree(safety_backup, project_folder)
+                switch_project(current_project_path)
+                return json.dumps({
+                    "error": "Restore failed, but the project was recovered "
+                             "from the safety backup — nothing was lost.",
+                    "safety_backup": str(safety_backup)
+                })
+        except Exception as recovery_error:
+            logger.error(f"Recovery also failed: {recovery_error}")
+        return json.dumps({
+            "error": "Restore failed. The pre-restore state is preserved in "
+                     "the safety backup — copy it back over the project folder "
+                     "to recover.",
+            "safety_backup": str(safety_backup)
+        })
+
+    switch_project(current_project_path)
+
+    return json.dumps({
+        "success": True,
+        "message": f"Project '{project_folder.stem}' restored from "
+                   f"'{backup_folder.name}'",
+        "restored_from": str(backup_folder),
+        "safety_backup": str(safety_backup),
+        "hint": "The pre-restore state is kept in the safety backup in case "
+                "you change your mind."
+    }, indent=2)
 
 
 @mcp.tool()

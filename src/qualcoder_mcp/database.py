@@ -2315,6 +2315,84 @@ class QualcoderDatabase:
             logger.error(f"Database error in add_memo_to_coding: {e}")
             raise RuntimeError(f"Failed to update memo: {e}") from None
 
+    def get_coding(self, coding_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single coded segment (code_text row) by its ctid.
+
+        Args:
+            coding_id: The ctid of the coding
+
+        Returns:
+            Coding details with code and file names, or None if not found
+        """
+        coding_id = validate_id(coding_id, "coding_id")
+        try:
+            row = self.conn.execute("""
+                SELECT
+                    ct.ctid, ct.cid, ct.fid, ct.seltext, ct.pos0, ct.pos1,
+                    ct.owner, ct.date, ct.memo, ct.important,
+                    c.name as code_name,
+                    s.name as file_name
+                FROM code_text ct
+                LEFT JOIN code_name c ON ct.cid = c.cid
+                LEFT JOIN source s ON ct.fid = s.id
+                WHERE ct.ctid = ?
+            """, (coding_id,)).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "get_coding", "Failed to retrieve coding")
+
+        if not row:
+            return None
+        return {
+            "coding_id": row["ctid"],
+            "code_id": row["cid"],
+            "code_name": row["code_name"],
+            "file_id": row["fid"],
+            "file_name": row["file_name"],
+            "text": row["seltext"],
+            "position_start": row["pos0"],
+            "position_end": row["pos1"],
+            "memo": row["memo"] or "",
+            "owner": row["owner"],
+            "date": row["date"],
+            "important": bool(row["important"]),
+        }
+
+    def delete_coding(self, coding_id: int) -> Dict[str, Any]:
+        """Delete a single coded segment (code_text row).
+
+        This removes ONE coding (the assignment of a code to a text span),
+        never the code itself or the source file.
+
+        Args:
+            coding_id: The ctid of the coding to delete
+
+        Returns:
+            The details of the deleted coding
+
+        Raises:
+            ValueError: If the coding does not exist
+            RuntimeError: If database is read-only or the delete fails
+        """
+        self._require_write_access()
+        existing = self.get_coding(coding_id)
+        if existing is None:
+            raise ValueError(f"Coding ID {coding_id} does not exist")
+
+        try:
+            self.conn.execute(
+                "DELETE FROM code_text WHERE ctid = ?", (coding_id,)
+            )
+            self.conn.commit()
+            logger.info(f"Deleted coding ctid={coding_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "delete_coding", "Failed to delete coding")
+
+        return existing
+
     def validate_text_file_import(
         self,
         name: str,
