@@ -22,6 +22,30 @@ NAMESPACE = "urn:QDA-XML:project:1.0"
 SCHEMA_LOCATION = "urn:QDA-XML:project:1.0 Project.xsd"
 
 
+def _xml_safe(text) -> str:
+    """Strip characters that are invalid in XML 1.0 from a string.
+
+    ElementTree will happily serialize C0 control characters, but the
+    result is not well-formed XML: minidom (and any conformant parser,
+    including the QDA tools importing the .qdpx) rejects it. Database
+    content (code names, memos, file names) is user-authored and may
+    contain such characters, so every DB-derived string is filtered
+    before it enters the XML tree.
+
+    Valid XML 1.0 chars: #x9 #xA #xD, #x20-#xD7FF, #xE000-#xFFFD,
+    #x10000-#x10FFFF.
+    """
+    if text is None:
+        return ""
+    return "".join(
+        ch for ch in str(text)
+        if ch in ("\t", "\n", "\r")
+        or 0x20 <= ord(ch) <= 0xD7FF
+        or 0xE000 <= ord(ch) <= 0xFFFD
+        or 0x10000 <= ord(ch) <= 0x10FFFF
+    )
+
+
 class RefiQdaExporter:
     """Generate REFI-QDA XML files from coding suggestions."""
 
@@ -56,7 +80,7 @@ class RefiQdaExporter:
         root = ET.Element(
             f"{{{NAMESPACE}}}Project",
             attrib={
-                f"{{{NAMESPACE}}}name": project_name,
+                f"{{{NAMESPACE}}}name": _xml_safe(project_name),
                 "origin": origin,
                 "creatingUserGUID": self.db.get_or_create_user_guid("ai_coder"),
                 "creationDateTime": datetime.now().isoformat() + "Z"
@@ -124,19 +148,19 @@ class RefiQdaExporter:
                         f"{{{NAMESPACE}}}Code",
                         attrib={
                             "guid": code_guids[code_id],
-                            "name": code_details["name"],
+                            "name": _xml_safe(code_details["name"]),
                             "isCodable": "true"
                         }
                     )
 
                     # Add color if available
                     if code_details.get("color"):
-                        code_elem.set("color", code_details["color"])
+                        code_elem.set("color", _xml_safe(code_details["color"]))
 
                     # Add description (memo)
                     if code_details.get("memo"):
                         desc_elem = ET.SubElement(code_elem, f"{{{NAMESPACE}}}Description")
-                        desc_elem.text = code_details["memo"]
+                        desc_elem.text = _xml_safe(code_details["memo"])
 
             except Exception as e:
                 logger.warning(f"Could not export code {code_id}: {e}")
@@ -186,8 +210,8 @@ class RefiQdaExporter:
                     f"{{{NAMESPACE}}}TextSource",
                     attrib={
                         "guid": file_guids[file_id],
-                        "name": file_content["name"],
-                        "plainTextPath": f"Sources/{file_content['name']}",
+                        "name": _xml_safe(file_content["name"]),
+                        "plainTextPath": _xml_safe(f"Sources/{file_content['name']}"),
                         "creatingUser": user_guid,
                         "creationDateTime": datetime.now().isoformat() + "Z"
                     }
@@ -196,7 +220,7 @@ class RefiQdaExporter:
                 # Add description (memo) if available
                 desc_elem = ET.SubElement(source_elem, f"{{{NAMESPACE}}}Description")
                 if file_content.get("memo"):
-                    desc_elem.text = file_content["memo"]
+                    desc_elem.text = _xml_safe(file_content["memo"])
 
                 # Add PlainTextSelection elements for each suggestion
                 for suggestion in file_sug_list:
@@ -239,13 +263,15 @@ class RefiQdaExporter:
             }
         )
 
-        # Add description (AI memo)
+        # Add description (memo / AI reasoning)
         desc_elem = ET.SubElement(selection_elem, f"{{{NAMESPACE}}}Description")
         if suggestion.ai_memo:
             memo_text = suggestion.ai_memo
-            # Add confidence score to memo
-            memo_text += f" [AI confidence: {suggestion.confidence:.2f}]"
-            desc_elem.text = memo_text
+            # Tag the AI confidence only when one was assigned (project
+            # exports of human codings carry confidence 0.0)
+            if suggestion.confidence > 0:
+                memo_text += f" [AI confidence: {suggestion.confidence:.2f}]"
+            desc_elem.text = _xml_safe(memo_text)
 
         # Add Coding element
         coding_elem = ET.SubElement(

@@ -860,6 +860,136 @@ def export_code_report(code_name: str) -> str:
 
 @mcp.tool()
 @_tool_guard
+def export_refi_qda(
+    output_path: str,
+    session_id: Optional[str] = None,
+    overwrite: bool = False
+) -> str:
+    """Export codings as a REFI-QDA .qdpx file for other QDA software.
+
+    REFI-QDA is the interchange standard supported by QualCoder, NVivo,
+    ATLAS.ti, MAXQDA and others. The export contains the referenced codes,
+    the text sources, and the coded selections (with coding memos as
+    descriptions).
+
+    Two modes:
+    - Default (no session_id): exports ALL text codings of the currently
+      open project.
+    - With session_id: exports that AI coding session's suggestions
+      (all statuses) — useful for reviewing suggestions in another tool
+      before applying them.
+
+    Known limitations (documented): code categories, cases, annotations and
+    journals are not included; all selections are attributed to a single
+    export user rather than the original coders.
+
+    Args:
+        output_path: Where to write the .qdpx file (must end in .qdpx; the
+                     directory must already exist)
+        session_id: Optional AI coding session to export instead of the
+                    project's codings
+        overwrite: Allow replacing an existing file (default: False)
+
+    Returns:
+        JSON with the output path and export counts
+
+    Example:
+        "Export my codings as REFI-QDA to ~/Desktop/study.qdpx"
+    """
+    from .refi_export import RefiQdaExporter
+
+    ro_db = get_db()
+
+    # --- output path validation (consistent with the security posture) ---
+    try:
+        out_file = Path(output_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return json.dumps({"error": "Invalid output path"})
+    if out_file.suffix.lower() != ".qdpx":
+        return json.dumps({"error": "output_path must end in .qdpx"})
+    if not out_file.parent.is_dir():
+        return json.dumps({
+            "error": "The output directory does not exist — create it first "
+                     "or choose an existing folder (e.g. ~/Documents)"
+        })
+    if out_file.exists() and not overwrite:
+        return json.dumps({
+            "error": f"'{out_file.name}' already exists. Pass overwrite=true "
+                     f"to replace it."
+        })
+    project_folder = validate_qda_path(current_project_path).parent
+    if project_folder in out_file.parents or out_file.parent == project_folder:
+        return json.dumps({
+            "error": "Refusing to write the export inside the project folder — "
+                     "choose a location outside it."
+        })
+
+    # --- collect what to export ---
+    skipped_non_text = 0
+    if session_id is not None:
+        if not session_manager.session_exists(session_id):
+            return json.dumps({
+                "error": f"Session {session_id} not found",
+                "available_sessions": session_manager.list_sessions()
+            })
+        session = session_manager.load_session(session_id)
+        mismatch = _check_session_project(session)
+        if mismatch is not None:
+            return json.dumps(mismatch, indent=2)
+        suggestions = list(session.suggestions)
+        project_name = f"AI Coding Suggestions ({Path(current_project_path).stem})"
+        if not suggestions:
+            return json.dumps({"error": "The session has no suggestions to export"})
+    else:
+        # Whole-project export: every text coding, built via the same
+        # CodingSuggestion structures the exporter understands
+        suggestions = []
+        file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+        for code in ro_db.list_codes():
+            for seg in ro_db.get_coded_text_segments(code["id"], limit=5000):
+                fid = seg["file_id"]
+                if fid not in file_cache:
+                    file_cache[fid] = ro_db.get_file_content(fid)
+                fc = file_cache[fid]
+                if fc is None or not (fc.get("content") or ""):
+                    skipped_non_text += 1
+                    continue
+                suggestions.append(CodingSuggestion(
+                    file_id=fid,
+                    file_name=seg["file_name"],
+                    code_id=code["id"],
+                    code_name=code["name"],
+                    start_pos=seg["position_start"],
+                    end_pos=seg["position_end"],
+                    segment_text=seg["text"] or "",
+                    reasoning=seg["memo"] or "",
+                    confidence=0.0,  # human codings carry no AI confidence
+                ))
+        project_name = Path(current_project_path).stem
+        if not suggestions:
+            return json.dumps({"error": "The project has no text codings to export"})
+
+    exporter = RefiQdaExporter(ro_db)
+    result_path = exporter.export_to_qdpx(
+        suggestions, str(out_file), project_name=project_name
+    )
+
+    output = {
+        "success": True,
+        "output_path": result_path,
+        "codings_exported": len(suggestions),
+        "codes_exported": len({s.code_id for s in suggestions}),
+        "files_exported": len({s.file_id for s in suggestions}),
+        "note": "Export includes codes, text sources and coded selections. "
+                "Categories, cases, annotations and journals are not included."
+    }
+    if skipped_non_text:
+        output["skipped_codings_on_non_text_sources"] = skipped_non_text
+    return json.dumps(output, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
 def get_project_summary() -> str:
     """Get a comprehensive summary of the entire project.
 
