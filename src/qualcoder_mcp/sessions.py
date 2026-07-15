@@ -253,20 +253,30 @@ class AICodingSession:
     ) -> Dict[str, int]:
         """Update multiple suggestions by GUID.
 
+        Suggestions that were already APPLIED to the database are immutable
+        here: re-approving one would undo the double-apply bookkeeping and
+        make the next apply_codings fail wholesale on the duplicate
+        constraint (QA2-2). They are skipped and counted.
+
         Args:
             approve: List of GUIDs to approve
             reject: List of GUIDs to reject
 
         Returns:
-            Dictionary with counts of approved and rejected
+            Dictionary with counts of approved, rejected, and
+            skipped_applied
         """
         approved_count = 0
         rejected_count = 0
+        skipped_applied = 0
 
         if approve:
             for guid in approve:
                 sugg = self.get_suggestion_by_guid(guid)
                 if sugg:
+                    if sugg.status == "applied":
+                        skipped_applied += 1
+                        continue
                     sugg.status = "approved"
                     approved_count += 1
 
@@ -274,6 +284,9 @@ class AICodingSession:
             for guid in reject:
                 sugg = self.get_suggestion_by_guid(guid)
                 if sugg:
+                    if sugg.status == "applied":
+                        skipped_applied += 1
+                        continue
                     sugg.status = "rejected"
                     rejected_count += 1
 
@@ -282,7 +295,8 @@ class AICodingSession:
 
         return {
             "approved": approved_count,
-            "rejected": rejected_count
+            "rejected": rejected_count,
+            "skipped_applied": skipped_applied
         }
 
     def to_dict(self) -> Dict[str, Any]:

@@ -502,12 +502,6 @@ class TestRound2NewFindings:
                                                  create_backup=False))
         assert "error" in out
 
-    @pytest.mark.xfail(reason="QA2-2 (LOW): update_suggestion_status happily "
-                       "re-approves an already-APPLIED suggestion, undoing "
-                       "the double-apply bookkeeping; the next apply then "
-                       "fails wholesale on the duplicate constraint and "
-                       "blocks any new suggestions batched with it.",
-                       strict=True)
     def test_qa2_2_applied_suggestions_not_reapprovable(self, setup_server):
         sid = _apply_one()
         session = server.session_manager.load_session(sid)

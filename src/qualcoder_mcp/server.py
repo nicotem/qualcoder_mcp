@@ -1928,18 +1928,27 @@ def update_suggestion_status(
     # Get updated stats
     stats = session.get_statistics()
 
+    skipped_note = ""
+    if result.get("skipped_applied"):
+        skipped_note = (
+            f"- Already applied (left unchanged): {result['skipped_applied']} — "
+            f"applied suggestions are already in the database; to remove one, "
+            f"use delete_coding\n"
+        )
+
     output = f"""
 ✅ **Updated Suggestion Statuses**
 
 Changed:
 - Approved: {result['approved']} suggestions
 - Rejected: {result['rejected']} suggestions
-
+{skipped_note}
 Current Status:
 - Total: {stats['total_suggestions']} suggestions
 - Approved: {stats['approved']}
 - Rejected: {stats['rejected']}
 - Pending: {stats['pending']}
+- Applied: {stats.get('applied', 0)}
 
 **Next Step:**
 Use `apply_codings` with session ID `{session_id}` to write approved suggestions to the database.
