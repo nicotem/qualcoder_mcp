@@ -268,7 +268,7 @@ Find coded segments that mention "remote work" but only for the code "challenges
 
 ### Conversational Workflow
 
-**Important**: AI coding writes directly to the database. Always work on copies in the `~/Documents/Qualcoder MCP Projects/` workspace folder. Automatic backups are created before every write.
+**Important**: AI coding writes directly to the database. Always work on copies in the `~/Documents/Qualcoder MCP Projects/` workspace folder. Automatic backups are created before every write, and **writes are refused while the project is open in QualCoder** — close it there first.
 
 ### Quick Start Example
 
@@ -277,15 +277,18 @@ Find coded segments that mention "remote work" but only for the code "challenges
 Copy my project "Interview Study" to the workspace for AI coding
 ```
 
+(the `copy_project_to_workspace` tool does this; then open the copy with `select_project`)
+
 **Step 2: Analyze Files**
 ```
 Analyze files 1-3 for WORKPLACE-STRESS and COPING-STRATEGIES codes
 ```
 
 Claude will:
-- Create an analysis session
+- Create an analysis session (`analyze_for_coding`)
 - Examine the files
-- Identify relevant segments
+- Record its suggestions into the session (`record_suggestions` — every
+  suggestion is verified against the file text before it is stored)
 - Present suggestions with reasoning and confidence scores
 
 **Step 3: Review in Chat**
@@ -311,10 +314,15 @@ Apply the approved codings to the project
 ```
 
 Claude will:
+- Verify every approved suggestion against the project (right project,
+  files/codes exist, text matches positions)
 - Create automatic backup
-- Write approved codings to database
+- Write approved codings to database (all-or-nothing)
 - Report success with coding IDs
 - You can immediately open the project in Qualcoder to see results!
+
+**If something went wrong**: `delete_coding(ctid)` removes a single coding;
+`list_backups` + `restore_backup` roll the whole project back to a snapshot.
 
 ### Key Features
 
@@ -326,6 +334,12 @@ Claude will:
 - **Direct Database Writes**: No import/export - codings appear instantly in Qualcoder
 - **Granular Control**: Approve/reject individual suggestions by GUID
 - **Full Context**: See surrounding text for each suggestion
+- **Verified Writes**: Suggestions are checked against the file text when
+  recorded AND before writing; sessions only apply to the project they
+  were created in
+- **QualCoder-Aware**: Writes are refused while QualCoder has the project
+  open (its `project_in_use.lock` heartbeat is respected)
+- **Recovery Tools**: `delete_coding`, `list_backups`, `restore_backup`
 
 ### Workspace Safety
 
@@ -392,24 +406,30 @@ Claude can use these tools to analyze your data:
 - `get_codes_by_case(case_id)` - Get all codes used in a specific case
 - `get_cases_by_code(code_id)` - Get all cases containing a specific code
 
-**AI-Assisted Coding (NEW in v0.4.0 - Conversational Workflow):**
-- `analyze_for_coding(file_ids, code_names, instruction, min_confidence)` - Prepare analysis session for Claude to perform coding suggestions
+**AI-Assisted Coding (Conversational Workflow):**
+- `analyze_for_coding(file_ids, code_names, instruction, min_confidence)` - Create an analysis session for Claude to perform coding suggestions
+- `record_suggestions(session_id, suggestions, replace)` - Record Claude's suggestions into the session (each verified against the file text; positions auto-corrected when the excerpt is unique)
 - `review_suggestions(session_id, suggestion_guids, show_context)` - Show detailed information about specific suggestions
 - `update_suggestion_status(session_id, approve, reject)` - Approve or reject suggestions by GUID
-- `apply_codings(session_id, create_backup, owner)` - **WRITES TO DATABASE** - Apply approved suggestions with automatic backup
+- `apply_codings(session_id, create_backup, owner)` - **WRITES TO DATABASE** - Apply approved suggestions (bound to the session's project, validated before backup, all-or-nothing)
 - `get_coding_session_info(session_id)` - View all details of a coding session
 - `list_coding_sessions(project_path, days_old)` - List all saved coding sessions
-- `delete_coding_session(session_id)` - Delete a saved session
+- `delete_coding_session(session_id)` - Delete a saved session file (not the codings)
+- `cleanup_old_sessions(days_old)` - Delete session files older than N days (N >= 1)
+- `explain_ai_coding_tools(tool_name)` - Built-in help for this workflow
 
-**Project Management (Write Operations):**
+**Data Import & Cases (Write Operations):**
+- `import_text_file(filename, content, memo, owner, create_backup, case_name)` - **WRITES TO DATABASE** - Add a new text source, optionally linked to a case
+- `link_file_to_case(file_id, case_id, case_name, create_backup)` - **WRITES TO DATABASE** - Make a file visible to case-based analyses
+
+**Recovery & Safety:**
 - `copy_project_to_workspace(source_path, new_name)` - Copy a project to the safe workspace for AI coding
-- `backup_project(project_path)` - Create manual timestamped backup
+- `delete_coding(coding_id, create_backup)` - **WRITES TO DATABASE** - Remove one coded segment
+- `list_backups()` - List this project's backup snapshots (both this server's `_backup_` and QualCoder's `_BKUP_` families)
+- `restore_backup(backup_path, confirm)` - Guarded project restore (previews first; safety backup of the current state)
 
-**Legacy Tools (Deprecated - use conversational workflow above):**
-- `suggest_coding_for_files()` - Old REFI-QDA export approach
-- `export_coding_suggestions()` - Old export tool
-- `suggest_new_codes()` - Old code discovery
-- `export_new_codes_for_import()` - Old code export
+**Interchange:**
+- `export_refi_qda(output_path, session_id, overwrite)` - Export codings (or a session's suggestions) as a REFI-QDA .qdpx for QualCoder/NVivo/ATLAS.ti/MAXQDA
 
 ## Available Prompts
 
@@ -516,7 +536,8 @@ For AI-assisted coding with direct database writes:
 │   MCP Server    │  (This package)
 │  qualcoder_mcp  │
 └────────┬────────┘
-         │ Read-only SQLite connection
+         │ SQLite connection (read-only by default;
+         │  guarded writes with backup + lock checks)
          │
 ┌────────▼────────┐
 │   Qualcoder     │
@@ -535,8 +556,8 @@ qualcoder_mcp/
 │       ├── __init__.py
 │       ├── server.py        # Main MCP server with resources, tools, prompts
 │       ├── database.py      # SQLite database interface
-│       ├── sessions.py      # AI coding session management (NEW)
-│       └── refi_export.py   # REFI-QDA XML export (NEW)
+│       ├── sessions.py      # AI coding session management
+│       └── refi_export.py   # REFI-QDA XML export
 ├── scripts/
 │   └── create_test_project.py  # Test project generator (NEW)
 ├── pyproject.toml           # Package configuration
@@ -569,6 +590,16 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Workspace isolation for safe modifications
 - ✅ GUID-based suggestion approval/rejection
 - ✅ Context-aware suggestions with reasoning
+
+**Completed in v0.5.0 (this release):**
+- ✅ `record_suggestions` — the AI coding loop works end-to-end via MCP tools
+- ✅ Session-project binding and text/position verification on every write
+- ✅ QualCoder lock-file protocol: writes refuse while QualCoder is open
+- ✅ Recovery tooling: `delete_coding`, `list_backups`, guarded `restore_backup`
+- ✅ REFI-QDA export revived and made importable (`export_refi_qda`)
+- ✅ Case linkage for imported files (`link_file_to_case`)
+- ✅ Attribute queries with operators (contains, gt/gte/lt/lte)
+- ✅ Old-schema/corrupt/locked projects fail with clear, actionable errors
 
 **Future Enhancements (v0.5.0+):**
 - [ ] HTML review interface for visual approval/rejection of suggestions

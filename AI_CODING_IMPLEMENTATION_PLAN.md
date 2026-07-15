@@ -1,4 +1,13 @@
 # AI-Assisted Coding Implementation Plan
+
+> **HISTORICAL DOCUMENT (v0.3.0 design).** This plan describes the
+> original REFI-QDA export/import approach, which was replaced in v0.4.0
+> by the conversational direct-write workflow and further hardened in
+> v0.5.0. Tools named here (`suggest_coding_for_files`,
+> `export_coding_suggestions`, `suggest_new_codes`,
+> `export_new_codes_for_import`) no longer exist. See
+> AI_CODING_WORKFLOW.md and AI_CODING_GUIDE.md for the current system.
+
 ## REFI-QDA XML Approach
 
 **Status**: Design Phase - Awaiting Approval to Proceed

@@ -1,5 +1,11 @@
 # REFI-QDA Import Instructions
 
+> **HISTORICAL DOCUMENT.** These instructions belong to the removed
+> v0.3.0 export/import workflow. Since v0.4.0 approved codings are
+> written directly to the project database (see AI_CODING_WORKFLOW.md);
+> REFI-QDA files produced by `export_refi_qda` are for OTHER QDA
+> software, not for re-importing into the same project.
+
 Step-by-step guide for importing AI coding suggestions into Qualcoder.
 
 ## Table of Contents

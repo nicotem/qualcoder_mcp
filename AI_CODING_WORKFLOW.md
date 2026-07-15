@@ -40,6 +40,14 @@ The AI coding system uses a dedicated workspace folder:
 2. Work only on the workspace copy
 3. Verify results in Qualcoder before replacing original
 
+### Close QualCoder First
+
+QualCoder marks an open project with a `project_in_use.lock` heartbeat
+file, and this server respects it: **every write operation is refused
+while QualCoder has the project open** ("This project is open in
+QualCoder — close the project in QualCoder, then retry"). Reads still
+work, with a warning that data may change underneath.
+
 ### Automatic Backups
 
 Every write operation creates a timestamped backup:
@@ -48,7 +56,11 @@ Every write operation creates a timestamped backup:
 your_project_backup_20251029_143045.qda
 ```
 
-These backups allow complete rollback if needed.
+Use `list_backups` to see them (QualCoder's own `_BKUP_` snapshots are
+listed too) and `restore_backup` to roll the project back — it previews
+first, requires explicit confirmation, and saves a safety backup of the
+current state so even a restore can be undone. A single wrong coding can
+be removed with `delete_coding(ctid)` instead.
 
 ## Workflow Steps
 
@@ -94,13 +106,16 @@ Use a minimum confidence threshold of 0.7
 ```
 
 **What Claude does:**
-1. Creates a new analysis session with unique ID
+1. Creates a new analysis session with unique ID (`analyze_for_coding`)
 2. Reads the specified files
 3. Examines content for relevant segments
 4. Identifies text that matches the codes
 5. Assigns confidence scores (0.0-1.0)
 6. Generates reasoning for each suggestion
-7. Saves session to disk
+7. Records the suggestions into the session with `record_suggestions` —
+   every suggestion is verified against the file text before it is
+   stored (positions are corrected automatically when the excerpt is
+   unique in the file; mismatches are rejected with an explanation)
 
 **What you'll see:**
 ```
@@ -538,20 +553,33 @@ Backups are in the same folder as your workspace projects:
 ```
 
 **Restore from backup:**
-1. Delete or rename the current project
-2. Rename the backup to remove `_backup_TIMESTAMP`
-3. Open in Qualcoder
+```
+Show me the backups for this project        (list_backups)
+Restore the project from <backup name>      (restore_backup — previews
+                                             first, then confirm=true)
+```
+The restore keeps a safety backup of the pre-restore state, so it can
+itself be undone.
 
 ## Troubleshooting
 
-### "Coding already exists at this position"
+### "No approved suggestions to apply — N already applied"
 
-**Problem:** Trying to apply a coding where one already exists for that user.
+**Problem:** Re-running apply_codings on a session that was already
+written. Applied suggestions are marked and never double-applied.
 
 **Solutions:**
-- Check if you already ran this session
-- Change position slightly if intentional duplicate
-- Skip that suggestion and apply others
+- This is the expected protection; nothing to fix
+- To code more segments, record new suggestions or start a new session
+
+### "Coding already exists at this position"
+
+**Problem:** A coding with the same code/file/span/owner already exists
+in the database (e.g. created in QualCoder).
+
+**Solutions:**
+- Reject that suggestion and apply the others
+- Check the existing coding with get_coded_segments
 
 ### "File ID X does not exist"
 
@@ -616,11 +644,10 @@ Reload the current project to see my latest changes
 **Problem:** Applied codings but want to revert.
 
 **Solution:**
-1. Note the backup file path (shown when applying)
-2. Close project in Qualcoder
-3. Delete current workspace project folder
-4. Rename backup to remove `_backup_TIMESTAMP`
-5. Reopen in Qualcoder
+- One wrong coding: `Delete coding 42` (`delete_coding` — the ctid is in
+  the apply output and in get_coded_segments)
+- Whole batch: `restore_backup` with the backup created by the apply
+  (see `list_backups`); it previews first and keeps a safety backup
 
 Or manually in Qualcoder:
 - Open project
