@@ -141,6 +141,10 @@ REFI-QDA revival).
 
 ### Documentation
 
+- Support policy: new SUPPORT.md and a "Support & Feedback" README
+  section — all bug reports, questions and feature requests go through
+  GitHub Issues; the author's email in the package metadata/LICENSE is
+  an authorship signature, not a support channel.
 - Truth pass over README, AI_CODING_WORKFLOW and AI_CODING_GUIDE: only
   tools that exist are described, the workflow includes the
   `record_suggestions` step and the close-QualCoder-first rule, and the

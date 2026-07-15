@@ -23,6 +23,24 @@ This MCP server allows Claude (via Claude Desktop) to directly access and analyz
 
 You can work with read-only analysis OR use write-enabled AI coding. All AI coding operations include automatic backups for safety.
 
+## Support & Feedback
+
+This is an experimental alpha built by one researcher — feedback, bug
+reports, and feature ideas are genuinely wanted and actively shape what
+gets built next.
+
+**Everything goes through [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues)**:
+bug reports, questions, and feature requests alike. Issues are public
+and searchable, so every answer helps the next researcher who hits the
+same thing.
+
+**Please don't email support requests.** The author's email address in
+the package metadata and LICENSE is an authorship signature, not a
+support channel — support requests sent by email will not receive a
+reply. GitHub Issues is where everything is read and tracked.
+
+See [SUPPORT.md](SUPPORT.md) for the full policy.
+
 ## Prerequisites
 
 - **macOS** (or Linux/Windows with appropriate paths)
@@ -633,7 +651,10 @@ If you encounter issues:
 1. Check the Troubleshooting section above
 2. Review the [MCP documentation](https://modelcontextprotocol.io/)
 3. Check [Qualcoder documentation](https://github.com/ccbogel/QualCoder/wiki)
-4. Open an issue on GitHub
+4. Open an issue on [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues)
+
+All support goes through GitHub Issues — not email. See
+[Support & Feedback](#support--feedback) above and [SUPPORT.md](SUPPORT.md).
 
 ## See Also
 

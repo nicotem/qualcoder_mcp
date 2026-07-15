@@ -157,5 +157,7 @@ Once it's working:
 - Check the [README troubleshooting section](README.md#troubleshooting)
 - Review [MCP documentation](https://modelcontextprotocol.io/)
 - Check [Qualcoder documentation](https://github.com/ccbogel/QualCoder/wiki)
+- Bug reports, questions and feature ideas: [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues)
+  (the only support channel — support requests by email will not receive a reply; see [SUPPORT.md](SUPPORT.md))
 
 Happy analyzing! 🎉
