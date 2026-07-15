@@ -71,6 +71,15 @@ REFI-QDA revival).
   immediately before commit when proceeding over a stale foreign lock,
   and `select_project` warns when QualCoder has the project open.
   Backups no longer include `*.lock` files.
+- **Session-start QualCoder check**: `analyze_for_coding` detects an
+  open QualCoder at the START of a coding session and instructs the
+  assistant to ask the user to close it before continuing
+  (`qualcoder_open: true` + `action_required` in the response), instead
+  of letting the whole suggest → review → approve flow run only to hit
+  the write refusal at apply time. `get_current_project` now reports
+  `qualcoder_open` so the state can be cheaply re-checked after the
+  user confirms. The concurrency story: warn at select, ask at session
+  start, refuse at write.
 - **`apply_codings` is bound to its session's project** — applying a
   session while a different project is open (cross-project corruption)
   is refused; `record_suggestions` enforces the same binding.

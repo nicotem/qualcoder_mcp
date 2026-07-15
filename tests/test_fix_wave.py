@@ -138,6 +138,82 @@ class TestSecurityFixes:
 
 
 # =============================================================================
+# Session-start QualCoder check ("ask the user to close it")
+# =============================================================================
+
+class TestSessionStartQualcoderCheck:
+
+    def test_fresh_lock_flags_session_start(self, setup_server, qualcoder_db_path):
+        """Active heartbeat: session still created (reads are safe) but the
+        response carries the flag and the explicit ask-the-user instruction."""
+        lock = _lock_file(qualcoder_db_path)
+        lock.write_text(f"gemma\n{time.time()}")
+        try:
+            out = server.analyze_for_coding([1])
+            assert "qualcoder_open: true" in out
+            assert "action_required" in out
+            assert "close QualCoder" in out
+            assert "get_current_project" in out
+            assert "gemma" in out
+            # the session was still created
+            sid = out.split("Session ID: `")[1].split("`")[0]
+            assert server.session_manager.session_exists(sid)
+        finally:
+            lock.unlink()
+
+    def test_absent_lock_no_flag_noise(self, setup_server, qualcoder_db_path):
+        out = server.analyze_for_coding([1])
+        assert "qualcoder_open" not in out
+        assert "action_required" not in out
+        assert "ANALYSIS SESSION CREATED" in out
+
+    def test_stale_lock_no_flag_noise(self, setup_server, qualcoder_db_path):
+        lock = _lock_file(qualcoder_db_path)
+        lock.write_text(f"gemma\n{time.time() - 60}")
+        try:
+            out = server.analyze_for_coding([1])
+            assert "qualcoder_open" not in out
+            assert "ANALYSIS SESSION CREATED" in out
+        finally:
+            lock.unlink()
+
+    def test_get_current_project_reflects_open_state(self, setup_server,
+                                                     qualcoder_db_path):
+        lock = _lock_file(qualcoder_db_path)
+        lock.write_text(f"gemma\n{time.time()}")
+        try:
+            out = json.loads(server.get_current_project())
+            assert out["qualcoder_open"] is True
+            assert out["qualcoder_lock"]["holder"] == "gemma"
+            assert "writes will be refused" in out["qualcoder_lock"]["note"]
+        finally:
+            lock.unlink()
+
+    def test_get_current_project_reflects_closed_state(self, setup_server,
+                                                       qualcoder_db_path):
+        out = json.loads(server.get_current_project())
+        assert out["qualcoder_open"] is False
+        assert "qualcoder_lock" not in out
+
+    def test_get_current_project_stale_lock_detail(self, setup_server,
+                                                   qualcoder_db_path):
+        lock = _lock_file(qualcoder_db_path)
+        lock.write_text(f"gemma\n{time.time() - 60}")
+        try:
+            out = json.loads(server.get_current_project())
+            assert out["qualcoder_open"] is False
+            assert out["qualcoder_lock"]["state"] == "stale"
+        finally:
+            lock.unlink()
+
+    def test_docstring_mandates_the_stop(self):
+        doc = server.analyze_for_coding.__doc__ or ""
+        assert "qualcoder_open" in doc
+        assert "STOP" in doc
+        assert "get_current_project" in doc
+
+
+# =============================================================================
 # record_suggestions
 # =============================================================================
 

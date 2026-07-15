@@ -716,8 +716,16 @@ def select_project(project_path: str) -> str:
 def get_current_project() -> str:
     """Get information about the currently open project.
 
+    Also reports whether QualCoder currently has this project open
+    (`qualcoder_open`, from its project_in_use.lock heartbeat). Use this
+    to re-check after asking the user to close QualCoder: proceed with
+    coding workflows only when `qualcoder_open` is false — all database
+    writes are refused while it is true.
+
     Returns:
-        JSON with current project path and basic metadata
+        JSON with current project path, basic metadata, and the
+        QualCoder-open state (qualcoder_open boolean; qualcoder_lock
+        detail when a lock file is present)
     """
     try:
         if current_project_path is None:
@@ -729,11 +737,33 @@ def get_current_project() -> str:
 
         project_info = get_db().get_project_info()
 
-        return json.dumps({
+        result = {
             "current_project": current_project_path,
             "project_name": Path(current_project_path).stem,
             "project_info": project_info
-        }, indent=2)
+        }
+
+        # QualCoder-open state, cheap to re-check after the user says
+        # they have closed it (heartbeat refreshes every 5 s, stale > 30 s)
+        state, holder = qualcoder_lock_state(_current_project_folder())
+        result["qualcoder_open"] = (state == "active")
+        if state == "active":
+            result["qualcoder_lock"] = {
+                "state": "active",
+                "holder": holder or "unknown",
+                "note": "QualCoder has this project open — all database "
+                        "writes will be refused until it is closed there. "
+                        "Ask the user to close it, then re-check."
+            }
+        elif state == "stale":
+            result["qualcoder_lock"] = {
+                "state": "stale",
+                "holder": holder or "unknown",
+                "note": "A leftover lock file from a QualCoder session that "
+                        "did not close cleanly — writes proceed normally."
+            }
+
+        return json.dumps(result, indent=2)
 
     except Exception as e:
         return json.dumps({"error": f"Failed to get project info: {str(e)}"})
@@ -1540,6 +1570,16 @@ def analyze_for_coding(
     format for the user to review in the chat. NO changes are made to the
     database until the user explicitly approves and uses apply_codings.
 
+    MANDATORY QUALCODER CHECK: if the result contains `qualcoder_open: true`,
+    STOP and ask the user to close QualCoder (or close this project inside
+    it) before proceeding with ANY part of the coding workflow — do not read
+    files for coding, do not record suggestions, do not continue until the
+    user confirms it is closed. All database writes are refused while
+    QualCoder has the project open, so continuing would waste the whole
+    suggest -> review -> approve flow only to fail at apply time. After the
+    user confirms, re-check with get_current_project (its `qualcoder_open`
+    field) and proceed only when it is false.
+
     WORKFLOW:
     1. I analyze the files and identify relevant segments
     2. I present suggestions to you in the chat with reasoning
@@ -1604,7 +1644,28 @@ def analyze_for_coding(
     # Save session (Claude records its suggestions with record_suggestions)
     session_manager.save_session(session)
 
-    output = f"""
+    # Session-start QualCoder check: reads are safe, so the session is
+    # still created — but the whole suggest -> review -> approve flow would
+    # dead-end at apply time (writes are refused while QualCoder has the
+    # project open). Surface it NOW and instruct the client to check with
+    # the user before continuing.
+    qualcoder_banner = ""
+    state, holder = qualcoder_lock_state(_current_project_folder())
+    if state == "active":
+        qualcoder_banner = f"""
+⚠️ **STOP — QUALCODER HAS THIS PROJECT OPEN**
+
+qualcoder_open: true
+action_required: QualCoder appears to have this project open (user
+{holder or 'unknown'}). Ask the user to close QualCoder (or close this
+project in it) before continuing — all database writes will be refused
+while it is open, so the review-and-approve work would be wasted. Once
+they confirm it is closed, re-check via get_current_project (the
+`qualcoder_open` field must be false) and only then proceed with the
+coding workflow.
+"""
+
+    output = f"""{qualcoder_banner}
 📊 **ANALYSIS SESSION CREATED**
 
 Session ID: `{session.session_id}`
