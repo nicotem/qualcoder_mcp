@@ -25,6 +25,7 @@ from .database import (
     qualcoder_open_message,
     hold_project_lock,
     QUALCODER_LOCK_FILENAME,
+    position_safe as db_position_safe,
 )
 from .sessions import SessionManager, AICodingSession, CodingSuggestion
 
@@ -431,7 +432,11 @@ def _resolve_segment_positions(
     hits = _find_occurrences(fulltext, needle)
     if len(hits) == 1:
         start = hits[0]
-        return True, start, start + len(segment_text), have_positions, None
+        # End is computed from the NEEDLE (the string actually located).
+        # Today the U+2029 normalization is length-preserving, but any
+        # future normalization that is not 1:1 must not corrupt the end
+        # offset (text-positions.md RISK-TP3).
+        return True, start, start + len(needle), have_positions, None
     if len(hits) == 0:
         error = {
             "reason": "segment_text was not found in the file — it must be an "
@@ -1606,6 +1611,7 @@ def record_suggestions(
     recorded = []
     rejected = []
     skipped_duplicates = 0
+    unsafe_files: Dict[int, str] = {}
 
     for idx, item in enumerate(suggestions):
         if not isinstance(item, dict):
@@ -1631,6 +1637,8 @@ def record_suggestions(
                           f"text codings require a file with text content"
             })
             continue
+        if file_id not in unsafe_files and not db_position_safe(fulltext):
+            unsafe_files[file_id] = file_content["name"]
 
         # --- code ---
         code = None
@@ -1733,6 +1741,15 @@ def record_suggestions(
     }
     if replace:
         result["replaced_pending"] = removed_pending
+    if unsafe_files:
+        result["position_safety_warning"] = (
+            f"File(s) {sorted(unsafe_files.values())} contain \r\n sequences "
+            f"or characters beyond U+FFFF (e.g. emoji). QualCoder's GUI uses "
+            f"a different position system for such files (its documented "
+            f"emoji bug), so codings on them may render shifted or "
+            f"unhighlighted in the QualCoder editor, and GUI-created codings "
+            f"there may not verify. Reports and exports are unaffected."
+        )
     return json.dumps(result, indent=2)
 
 

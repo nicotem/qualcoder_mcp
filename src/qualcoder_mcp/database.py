@@ -183,6 +183,21 @@ def hold_project_lock(project_dir: Union[str, Path]):
                 logger.warning(f"Could not remove project lock file: {e}")
 
 
+def position_safe(fulltext: str) -> bool:
+    """Check whether Qt (GUI) and code-point positions coincide for a text.
+
+    QualCoder stores offsets from two coordinate systems into the same
+    pos0/pos1 columns: code-point offsets (every programmatic path, all
+    reports, this server) and Qt document offsets (manual GUI coding).
+    They coincide iff the text contains no \r\n sequences and no astral
+    code points (> U+FFFF, e.g. most emoji). On "unsafe" files,
+    GUI-created rows drift and MCP-written rows may render shifted or
+    unhighlighted in the QualCoder GUI (upstream-documented emoji bug;
+    ground truth: text-positions.md §7).
+    """
+    return "\r\n" not in fulltext and all(ord(c) <= 0xFFFF for c in fulltext)
+
+
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
     """Convert a sqlite3 error from a query into a typed, sanitized error.
 
@@ -2754,6 +2769,16 @@ class QualcoderDatabase:
 
         # Full validation (raises on any problem); returns the normalized name
         name = self.validate_text_file_import(name, content, owner, memo)
+
+        # Normalize the text the way QualCoder's own import pipeline leaves
+        # it: strip one leading BOM (manage_files.py:2015-2016) and store
+        # LF-only newlines (every converter path emits \n, and QualCoder's
+        # editor rewrites CRLF to \n on any in-app edit). CRLF content
+        # would otherwise create a file where GUI and code-point positions
+        # diverge from birth (text-positions.md RISK-TP2).
+        if content.startswith("\ufeff"):
+            content = content[1:]
+        content = content.replace("\r\n", "\n")
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
