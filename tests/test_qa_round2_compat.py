@@ -496,11 +496,6 @@ class TestBackupAndExportPolicy:
 
 class TestRound2NewFindings:
 
-    @pytest.mark.xfail(reason="QA2-1 (LOW): U+FEFF-only content passes the "
-                       "emptiness check (str.strip() keeps BOM), then "
-                       "normalization empties it — an empty, uncodable text "
-                       "source is created. Validate emptiness AFTER "
-                       "normalization.", strict=True)
     def test_qa2_1_bom_only_content_rejected(self, setup_server,
                                              qualcoder_db_path):
         out = json.loads(server.import_text_file("bomonly.txt", "﻿",

@@ -2707,6 +2707,16 @@ class QualcoderDatabase:
             raise TypeError("content must be a string")
         if not content.strip():
             raise ValueError("content must not be empty")
+        # Emptiness must also hold AFTER the BOM/CRLF normalization the
+        # write path applies: U+FEFF is not stripped by str.strip(), so
+        # BOM-only content previously passed validation and produced an
+        # empty, uncodable source (QA2-1)
+        normalized = content[1:] if content.startswith("\ufeff") else content
+        if not normalized.strip():
+            raise ValueError(
+                "content must not be empty (it contains only a byte-order "
+                "mark and/or whitespace)"
+            )
         if len(content) > MAX_TEXT_CONTENT_LENGTH:
             raise ValueError(
                 f"content length {len(content)} exceeds maximum "
