@@ -971,6 +971,9 @@ class QualcoderDatabase:
                 "date": row["date"],
                 "media_path": row["mediapath"],
                 "is_text": _detect_file_type(row["mediapath"]) in ("text", "pdf"),
+                # False when the text contains \r\n or astral characters:
+                # QualCoder's GUI positions diverge on such files (QA2-4)
+                "position_safe": position_safe(row["fulltext"] or ""),
                 "code_count": code_count
             }
         except sqlite3.Error as e:

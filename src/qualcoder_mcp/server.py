@@ -1285,6 +1285,22 @@ def analyze_file_with_coding(file_id: int) -> str:
         return json.dumps({
             "error": f"File with id {file_id} not found"
         })
+
+    # Read-side position-safety notice (QA2-4): researchers should learn
+    # that a file is position-unsafe when EXPLORING it, not only when
+    # coding it. On unsafe files QualCoder's GUI uses a divergent position
+    # system, so GUI-created codings there may not match code-point slices
+    # and MCP codings may render shifted in the GUI editor.
+    full_text = result.get("full_text") or ""
+    if full_text and not db_position_safe(full_text):
+        result["position_safety_warning"] = (
+            "This file contains \r\n sequences or characters beyond U+FFFF "
+            "(e.g. emoji), so QualCoder's GUI uses a different position "
+            "system for it (its documented emoji bug). GUI-created codings "
+            "here may not align with the text slices shown by this server, "
+            "and codings written here may render shifted or unhighlighted "
+            "in the QualCoder editor. Reports and exports are unaffected."
+        )
     return json.dumps(result, indent=2)
 
 

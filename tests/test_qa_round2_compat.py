@@ -526,11 +526,6 @@ class TestRound2NewFindings:
         total = 5010 + 2  # + the two fixture codings
         assert out["codings_exported"] == total or "truncated" in json.dumps(out)
 
-    @pytest.mark.xfail(reason="QA2-4 (LOW, COMPAT P5 partial): the "
-                       "position-safety warning only appears in "
-                       "record_suggestions output; get_file_content / "
-                       "analyze_file_with_coding read output carries no "
-                       "warning for unsafe (emoji/CRLF) files.", strict=True)
     def test_qa2_4_read_output_warns_on_unsafe_files(self, setup_server,
                                                      qualcoder_db_path):
         _exec(qualcoder_db_path,
