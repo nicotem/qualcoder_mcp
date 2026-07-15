@@ -88,6 +88,7 @@ def _is_locked_error(e: sqlite3.Error) -> bool:
 
 QUALCODER_LOCK_FILENAME = "project_in_use.lock"
 QUALCODER_LOCK_TIMEOUT = 30.0  # seconds; QualCoder __main__.py:131 — do not change
+LOCK_READ_MAX_BYTES = 4096  # a real lock is two short lines; cap the read
 
 
 def qualcoder_open_message(holder: Optional[str]) -> str:
@@ -114,7 +115,12 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
         return "absent", None
 
     def _read():
-        lines = lock.read_text(encoding="utf-8").splitlines()
+        # Read only a bounded prefix: a real lock is two short lines
+        # (username + epoch). A crafted/corrupt multi-gigabyte lock in a
+        # shared project must not be slurped into memory (SEC S-3).
+        with open(lock, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(LOCK_READ_MAX_BYTES)
+        lines = head.splitlines()
         return lines[0], time.time() - float(lines[1])
 
     try:
@@ -477,6 +483,7 @@ def copy_project_to_workspace(
 
     Raises:
         FileNotFoundError: If source doesn't exist
+        ValueError: If new_name is not a plain filename
         OSError: If copy fails
     """
     source_path = Path(source_path)
@@ -496,9 +503,23 @@ def copy_project_to_workspace(
 
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Determine destination name
+    # Determine destination name. new_name is untrusted (model-supplied):
+    # it must be a plain filename, never a path that escapes the workspace
+    # (SEC S-1 — separators/'..'/absolute/control chars all rejected, the
+    # same confinement every other file-writing tool in this server uses).
     if new_name:
-        dest_name = new_name if new_name.endswith('.qda') else f"{new_name}.qda"
+        if not isinstance(new_name, str) or not new_name.strip():
+            raise ValueError("new_name must be a non-empty string")
+        candidate = unicodedata.normalize("NFC", new_name.strip())
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in candidate):
+            raise ValueError("new_name must not contain control characters")
+        if ('/' in candidate or '\\' in candidate or '..' in candidate
+                or candidate != Path(candidate).name):
+            raise ValueError(
+                "new_name must be a plain filename without path separators "
+                "or '..'"
+            )
+        dest_name = candidate if candidate.endswith('.qda') else f"{candidate}.qda"
     else:
         dest_name = source_path.name
 
@@ -509,6 +530,14 @@ def copy_project_to_workspace(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_name = f"{dest_path.stem}_{timestamp}.qda"
         dest_path = workspace / dest_name
+
+    # Defense in depth: the resolved destination MUST stay inside the
+    # workspace, whatever new_name was
+    workspace_resolved = workspace.resolve()
+    dest_resolved = dest_path.resolve()
+    if workspace_resolved != dest_resolved.parent and \
+            workspace_resolved not in dest_resolved.parents:
+        raise ValueError("refusing to copy the project outside the workspace")
 
     logger.info(f"Copying project to workspace: {dest_path}")
 

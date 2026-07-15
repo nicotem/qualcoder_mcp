@@ -19,10 +19,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import qualcoder_mcp.database as dbmod
 from qualcoder_mcp.database import (
     QualcoderDatabase,
     validate_qda_path,
     qualcoder_lock_state,
+    copy_project_to_workspace,
     QUALCODER_LOCK_FILENAME,
     backup_project,
 )
@@ -39,6 +41,100 @@ def _make_session(setup_server, qualcoder_db_path, **kwargs):
 
 def _lock_file(project_path) -> Path:
     return validate_qda_path(project_path).parent / QUALCODER_LOCK_FILENAME
+
+
+# =============================================================================
+# Security fixes (S-1/S-2/S-3)
+# =============================================================================
+
+class TestSecurityFixes:
+
+    @pytest.mark.parametrize("evil_name", [
+        "../OUTSIDE/exfil",
+        "../../tmp/exfil",
+        "/tmp/abs_evil",
+        "sub/dir/name",
+        "back\\slash",
+        "dots/../../escape",
+        "nul\x00name",
+    ])
+    def test_s1_copy_rejects_escaping_names(self, qualcoder_db_path, tmp_path,
+                                            monkeypatch, evil_name):
+        """S-1: new_name must never write outside the workspace."""
+        workspace = tmp_path / "workspace"
+        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        # Snapshot the whole tmp tree so we can prove nothing escaped
+        before = set(tmp_path.rglob("*"))
+        with pytest.raises(ValueError):
+            copy_project_to_workspace(qualcoder_db_path, new_name=evil_name)
+        # Nothing was created anywhere under tmp_path outside the workspace
+        after = set(tmp_path.rglob("*"))
+        new_paths = after - before
+        for p in new_paths:
+            assert workspace in p.parents or p == workspace, (
+                f"escape: {p} created outside workspace")
+
+    def test_s1_copy_rejects_escape_via_tool(self, setup_server,
+                                             qualcoder_db_path, tmp_path,
+                                             monkeypatch):
+        """S-1 through the registered MCP tool (the reported attack path)."""
+        workspace = tmp_path / "ws"
+        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        outside = tmp_path / "OUTSIDE"
+        for evil in ["../OUTSIDE/exfil", "/tmp/qc_abs_evil_test"]:
+            out = json.loads(server.copy_project_to_workspace(
+                qualcoder_db_path, new_name=evil))
+            assert "error" in out
+        assert not outside.exists()
+        assert not Path("/tmp/qc_abs_evil_test.qda").exists()
+
+    def test_s1_plain_name_still_works(self, qualcoder_db_path, tmp_path,
+                                       monkeypatch):
+        workspace = tmp_path / "workspace"
+        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        dest = copy_project_to_workspace(qualcoder_db_path, new_name="My Copy")
+        assert dest.parent == workspace.resolve() or dest.parent == workspace
+        assert dest.name == "My Copy.qda"
+        assert (dest / "data.qda").exists()
+
+    def test_s2_backup_failure_message_is_sanitized(self, setup_server,
+                                                    qualcoder_db_path,
+                                                    monkeypatch):
+        """S-2: backup-failure JSON must not leak absolute paths/username."""
+        secret = "/Users/realname/secret/path"
+
+        def boom(self):
+            raise OSError(f"Backup failed: [Errno 13] Permission denied: "
+                          f"'{secret}/proj_backup.qda'")
+
+        monkeypatch.setattr(QualcoderDatabase, "backup_before_write", boom)
+        out = server.import_text_file("s2.txt", "content body",
+                                      create_backup=True)
+        assert secret not in out
+        assert "realname" not in out
+        data = json.loads(out)
+        assert "error" in data
+
+    def test_s3_oversized_lock_file_is_capped(self, qualcoder_db_path):
+        """S-3: a huge lock file must not be read whole into memory."""
+        lock = _lock_file(qualcoder_db_path)
+        # 20 MB of garbage before any parseable content
+        lock.write_text("x" * (20 * 1024 * 1024))
+        try:
+            state, holder = qualcoder_lock_state(lock.parent)
+            # unparseable within the capped prefix -> treated as stale
+            assert state == "stale"
+        finally:
+            lock.unlink()
+
+    def test_s3_normal_lock_still_parsed(self, qualcoder_db_path):
+        lock = _lock_file(qualcoder_db_path)
+        lock.write_text(f"alice\n{time.time()}")
+        try:
+            state, holder = qualcoder_lock_state(lock.parent)
+            assert state == "active" and holder == "alice"
+        finally:
+            lock.unlink()
 
 
 # =============================================================================

@@ -2129,9 +2129,11 @@ def apply_codings(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
+                    logger.error(f"Failed to create backup: {e}")
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": f"Failed to create backup: {e}",
+                        "error": "Failed to create a backup — check disk space "
+                                 "and permissions. Nothing was written.",
                         "message": "Aborting to protect your data — nothing was written."
                     })
 
@@ -2305,9 +2307,11 @@ def import_text_file(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
+                    logger.error(f"Failed to create backup: {e}")
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": f"Failed to create backup: {e}",
+                        "error": "Failed to create a backup — check disk space "
+                                 "and permissions. Nothing was written.",
                         "message": "Aborting to protect your data."
                     })
 
@@ -2446,9 +2450,11 @@ def link_file_to_case(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
+                    logger.error(f"Failed to create backup: {e}")
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": f"Failed to create backup: {e}",
+                        "error": "Failed to create a backup — check disk space "
+                                 "and permissions. Nothing was written.",
                         "message": "Aborting to protect your data — nothing was linked."
                     })
 
@@ -2541,9 +2547,11 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
+                    logger.error(f"Failed to create backup: {e}")
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": f"Failed to create backup: {e}",
+                        "error": "Failed to create a backup — check disk space "
+                                 "and permissions. Nothing was written.",
                         "message": "Aborting to protect your data — nothing was deleted."
                     })
 
