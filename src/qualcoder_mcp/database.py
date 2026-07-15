@@ -2764,6 +2764,107 @@ class QualcoderDatabase:
             logger.error(f"Database error in import_text_file: {e}")
             raise RuntimeError(f"Failed to import text file: {e}") from None
 
+    def link_file_to_case(
+        self,
+        case_id: int,
+        file_id: int,
+        owner: str,
+        auto_commit: bool = True
+    ) -> Dict[str, Any]:
+        """Link a whole source file to a case (QualCoder case_text row).
+
+        Matches QualCoder's own "Case file manager" whole-file link exactly
+        (case_file_manager.py:197-236): one case_text row with pos0=0 and
+        pos1=len(fulltext)-1 for text sources (QualCoder's GUI convention -
+        note the -1), or pos0=pos1=0 for non-text sources. Without this row
+        the file is invisible to every case-based analysis.
+
+        case_text has NO unique constraint, so the duplicate check here is
+        the only protection against double-linking (matching QualCoder's
+        app-side check).
+
+        Args:
+            case_id: The case to link to
+            file_id: The source file to link
+            owner: Coder name for attribution
+            auto_commit: Commit immediately (default True)
+
+        Returns:
+            Dict with case/file names and the linked span
+
+        Raises:
+            ValueError: If the case or file doesn't exist, or the link
+                        already exists
+            RuntimeError: If database is read-only or the insert fails
+        """
+        self._require_write_access()
+        case_id = validate_id(case_id, "case_id")
+        file_id = validate_id(file_id, "file_id")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+
+        try:
+            case_row = self.conn.execute(
+                "SELECT caseid, name FROM cases WHERE caseid = ?", (case_id,)
+            ).fetchone()
+            file_row = self.conn.execute(
+                "SELECT id, name, fulltext FROM source WHERE id = ?", (file_id,)
+            ).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "link_file_to_case", "Failed to link file to case")
+
+        if not case_row:
+            raise ValueError(f"Case ID {case_id} does not exist")
+        if not file_row:
+            raise ValueError(f"File ID {file_id} does not exist")
+
+        # Whole-file span, QualCoder GUI convention
+        fulltext = file_row["fulltext"]
+        pos0 = 0
+        pos1 = len(fulltext) - 1 if fulltext else 0
+        if pos1 < 0:
+            pos1 = 0
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            existing = self.conn.execute(
+                "SELECT id FROM case_text WHERE caseid = ? AND fid = ? "
+                "AND pos0 = ? AND pos1 = ?",
+                (case_id, file_id, pos0, pos1)
+            ).fetchone()
+            if existing:
+                raise ValueError(
+                    f"File '{file_row['name']}' is already linked to case "
+                    f"'{case_row['name']}'"
+                )
+
+            self.conn.execute(
+                "INSERT INTO case_text (caseid, fid, pos0, pos1, owner, date, memo) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (case_id, file_id, pos0, pos1, owner, date_str, "")
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Linked file {file_id} to case {case_id} ({pos0}-{pos1})")
+        except ValueError:
+            raise
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "link_file_to_case", "Failed to link file to case")
+
+        return {
+            "case_id": case_id,
+            "case_name": case_row["name"],
+            "file_id": file_id,
+            "file_name": file_row["name"],
+            "position_start": pos0,
+            "position_end": pos1,
+        }
+
     def backup_before_write(self) -> Path:
         """Create a backup of the current project before making changes.
 

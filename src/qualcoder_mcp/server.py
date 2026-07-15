@@ -2074,13 +2074,19 @@ def import_text_file(
     content: str,
     memo: str = "",
     owner: str = "MCP Import",
-    create_backup: bool = True
+    create_backup: bool = True,
+    case_name: Optional[str] = None
 ) -> str:
     """Import text content as a new source file in the QualCoder project.
 
     Creates a new text source file in the project database, similar to
     QualCoder's "Create text file" feature. The file will be visible in
     QualCoder's file manager and available for coding.
+
+    Optionally links the new file to an existing case (participant) in the
+    same transaction — without a case link the file is invisible to every
+    case-based analysis (matrices, case reports). You can also link later
+    with link_file_to_case.
 
     IMPORTANT: Make sure you're working on a copy of your project in the
     MCP workspace (~/Documents/Qualcoder MCP Projects/)
@@ -2091,6 +2097,8 @@ def import_text_file(
         memo: Optional memo/description for the file
         owner: Creator name for attribution (default: "MCP Import")
         create_backup: Create timestamped backup before writing (default: True)
+        case_name: Optional existing case to link the new file to
+                   (matched case-insensitively)
 
     Returns:
         JSON with the new file's ID, name, and confirmation details
@@ -2110,6 +2118,21 @@ def import_text_file(
         )
     except (ValueError, TypeError) as e:
         return json.dumps({"error": str(e)})
+
+    # Resolve the target case (if any) before upgrading — an unknown case
+    # must not cost a backup copy
+    case = None
+    if case_name is not None:
+        cases = get_db().list_cases()
+        case = next(
+            (c for c in cases if c["name"].lower() == str(case_name).lower()),
+            None
+        )
+        if case is None:
+            return json.dumps({
+                "error": f"Case '{case_name}' not found",
+                "available_cases": sorted(c["name"] for c in cases)[:50]
+            })
 
     # Refuse on pre-v14 schemas and while QualCoder has the project open
     lock_error = _write_gate_error()
@@ -2145,6 +2168,14 @@ def import_text_file(
                     memo=memo,
                     auto_commit=False
                 )
+                case_link = None
+                if case is not None:
+                    case_link = write_db.link_file_to_case(
+                        case_id=case["id"],
+                        file_id=result["id"],
+                        owner=owner,
+                        auto_commit=False
+                    )
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
             except DatabaseLockedError:
@@ -2185,9 +2216,124 @@ def import_text_file(
         "date": result["date"],
         "attributes_created": result["attributes_created"]
     }
+    if case_link is not None:
+        output["linked_to_case"] = case_link
     if backup_path:
         output["backup_path"] = str(backup_path)
 
+    return json.dumps(output, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def link_file_to_case(
+    file_id: int,
+    case_id: Optional[int] = None,
+    case_name: Optional[str] = None,
+    create_backup: bool = True
+) -> str:
+    """Link a source file to a case so it appears in case-based analyses.
+
+    THIS WRITES TO THE DATABASE. Creates the whole-file case_text link that
+    QualCoder's own "Case file manager" would create — without it, a file
+    is invisible to get_codes_by_case, get_case_code_matrix, case reports
+    and every other case-based analysis. Files imported with
+    import_text_file are NOT linked to any case by default.
+
+    Args:
+        file_id: The source file to link
+        case_id: The case to link to (or use case_name)
+        case_name: Case name, matched case-insensitively (or use case_id)
+        create_backup: Create timestamped backup before writing (default: True)
+
+    Returns:
+        JSON with the created link (case, file, covered span)
+
+    Example:
+        "Link interview_dana.txt to the case Dana"
+    """
+    ro_db = get_db()
+
+    # Resolve the case
+    if case_id is None and case_name is None:
+        return json.dumps({"error": "Provide case_id or case_name"})
+    cases = ro_db.list_cases()
+    if case_id is not None:
+        case = next((c for c in cases if c["id"] == case_id), None)
+        if case is None:
+            return json.dumps({"error": f"Case ID {case_id} does not exist"})
+    else:
+        case = next(
+            (c for c in cases if c["name"].lower() == str(case_name).lower()),
+            None
+        )
+        if case is None:
+            return json.dumps({
+                "error": f"Case '{case_name}' not found",
+                "available_cases": sorted(c["name"] for c in cases)[:50]
+            })
+
+    # Validate the file on the read-only connection
+    if ro_db.get_file_content(file_id) is None:
+        return json.dumps({"error": f"File ID {file_id} does not exist"})
+
+    # Refuse on pre-v14 schemas and while QualCoder has the project open
+    lock_error = _write_gate_error()
+    if lock_error is not None:
+        return json.dumps(lock_error)
+
+    project_folder = _current_project_folder()
+
+    write_db = get_db(read_only=False)
+
+    backup_path = None
+    try:
+        with hold_project_lock(project_folder) as lock_held:
+            if create_backup:
+                try:
+                    backup_path = write_db.backup_before_write()
+                except Exception as e:
+                    _downgrade_to_readonly()
+                    return json.dumps({
+                        "error": f"Failed to create backup: {e}",
+                        "message": "Aborting to protect your data — nothing was linked."
+                    })
+
+            try:
+                link = write_db.link_file_to_case(
+                    case_id=case["id"],
+                    file_id=file_id,
+                    owner="MCP Import",
+                    auto_commit=False
+                )
+                _recheck_lock_before_commit(project_folder, lock_held)
+                write_db.conn.commit()
+            except DatabaseLockedError:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                raise
+            except (ValueError, RuntimeError) as e:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                _downgrade_to_readonly()
+                return json.dumps({"error": str(e)})
+    except DatabaseLockedError:
+        _downgrade_to_readonly()
+        raise
+
+    _downgrade_to_readonly()
+
+    output = {
+        "success": True,
+        "message": f"Linked '{link['file_name']}' to case '{link['case_name']}'",
+        "link": link,
+    }
+    if backup_path:
+        output["backup_path"] = str(backup_path)
     return json.dumps(output, indent=2)
 
 
