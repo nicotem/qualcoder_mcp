@@ -1881,14 +1881,32 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "get_case_attributes", "Failed to retrieve case attributes")
 
+    # Operator -> SQL condition over the attribute value. The SQL text is
+    # selected from this FIXED mapping (never user input); values are bound
+    # as parameters. Numeric operators cast the stored text value to REAL,
+    # so non-numeric attribute values simply never match them.
+    _ATTRIBUTE_OPERATORS = {
+        "equals": "a.value = ?",
+        "contains": "a.value LIKE ? ESCAPE '\\'",
+        "gt": "CAST(a.value AS REAL) > ?",
+        "gte": "CAST(a.value AS REAL) >= ?",
+        "lt": "CAST(a.value AS REAL) < ?",
+        "lte": "CAST(a.value AS REAL) <= ?",
+    }
+
     def query_by_attribute(self, attr_name: str, attr_value: str,
-                           attr_type: str = "case") -> List[Dict[str, Any]]:
+                           attr_type: str = "case",
+                           operator: str = "equals") -> List[Dict[str, Any]]:
         """Query cases or files by attribute value.
 
         Args:
             attr_name: The attribute name to filter by
-            attr_value: The attribute value to match
+            attr_value: The attribute value to match (a number for the
+                        gt/gte/lt/lte operators)
             attr_type: 'case' or 'file'
+            operator: 'equals' (exact match, default), 'contains'
+                      (case-insensitive substring), or 'gt'/'gte'/'lt'/'lte'
+                      (numeric comparison)
 
         Returns:
             List of cases or files matching the attribute criteria
@@ -1899,9 +1917,29 @@ class QualcoderDatabase:
         if attr_type not in ['case', 'file']:
             raise ValueError("attr_type must be 'case' or 'file'")
 
+        if operator not in self._ATTRIBUTE_OPERATORS:
+            raise ValueError(
+                f"operator must be one of: "
+                f"{', '.join(sorted(self._ATTRIBUTE_OPERATORS))}"
+            )
+        condition = self._ATTRIBUTE_OPERATORS[operator]
+
+        if operator == "contains":
+            bound_value: Any = f"%{escape_like_pattern(attr_value)}%"
+        elif operator in ("gt", "gte", "lt", "lte"):
+            try:
+                bound_value = float(attr_value)
+            except ValueError:
+                raise ValueError(
+                    f"attr_value must be a number for operator '{operator}', "
+                    f"got '{attr_value}'"
+                ) from None
+        else:
+            bound_value = attr_value
+
         try:
             if attr_type == 'case':
-                cursor = self.conn.execute("""
+                cursor = self.conn.execute(f"""
                     SELECT
                         c.caseid,
                         c.name,
@@ -1909,9 +1947,9 @@ class QualcoderDatabase:
                         a.value as attr_value
                     FROM cases c
                     JOIN attribute a ON c.caseid = a.id AND a.attr_type = 'case'
-                    WHERE a.name = ? AND a.value = ?
+                    WHERE a.name = ? AND {condition}
                     ORDER BY c.name
-                """, (attr_name, attr_value))
+                """, (attr_name, bound_value))
 
                 results = []
                 for row in cursor.fetchall():
@@ -1922,7 +1960,7 @@ class QualcoderDatabase:
                         "attribute_value": row["attr_value"]
                     })
             else:  # file
-                cursor = self.conn.execute("""
+                cursor = self.conn.execute(f"""
                     SELECT
                         s.id,
                         s.name,
@@ -1930,9 +1968,9 @@ class QualcoderDatabase:
                         a.value as attr_value
                     FROM source s
                     JOIN attribute a ON s.id = a.id AND a.attr_type = 'file'
-                    WHERE a.name = ? AND a.value = ?
+                    WHERE a.name = ? AND {condition}
                     ORDER BY s.name
-                """, (attr_name, attr_value))
+                """, (attr_name, bound_value))
 
                 results = []
                 for row in cursor.fetchall():

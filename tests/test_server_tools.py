@@ -572,10 +572,25 @@ class TestCleanupOldSessions:
     """Test cleanup_old_sessions tool."""
 
     def test_cleanup(self, setup_server):
-        result = server.cleanup_old_sessions(days_old=0)
+        result = server.cleanup_old_sessions(days_old=30)
         data = json.loads(result)
         assert data["success"] is True
         assert "deleted_count" in data
+
+    def test_cleanup_rejects_zero_days(self, setup_server, session_with_suggestions):
+        """days_old=0 used to silently wipe ALL sessions (QA F9)."""
+        result = server.cleanup_old_sessions(days_old=0)
+        data = json.loads(result)
+        assert "error" in data
+        # the session must still exist
+        assert setup_server.session_manager.session_exists(
+            session_with_suggestions.session_id
+        )
+
+    def test_cleanup_rejects_negative_days(self, setup_server):
+        result = server.cleanup_old_sessions(days_old=-5)
+        data = json.loads(result)
+        assert "error" in data
 
 
 # =============================================================================

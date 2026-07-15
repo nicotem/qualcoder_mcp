@@ -1280,25 +1280,35 @@ def get_case_attributes(case_id: int) -> str:
 
 @mcp.tool()
 @_tool_guard
-def query_by_attribute(attr_name: str, attr_value: str, attr_type: str = "case") -> str:
-    """Find cases or files that have a specific attribute value.
+def query_by_attribute(
+    attr_name: str,
+    attr_value: str,
+    attr_type: str = "case",
+    operator: str = "equals"
+) -> str:
+    """Find cases or files by attribute value.
 
-    This enables demographic or metadata-based queries like:
+    Enables demographic or metadata-based queries like:
     - "Find all participants over age 50"
+      -> query_by_attribute("Age", "50", operator="gt")
     - "Get files where interview_type is 'focus_group'"
-    - "Find cases with education_level 'graduate'"
+      -> query_by_attribute("interview_type", "focus_group", "file")
+    - "Find cases whose Sector mentions health"
+      -> query_by_attribute("Sector", "health", operator="contains")
 
     Args:
         attr_name: Name of the attribute to query
-        attr_value: Value to search for (exact match for numeric, substring for text)
+        attr_value: Value to compare against (a number for gt/gte/lt/lte)
         attr_type: Either 'case' or 'file' (default: 'case')
+        operator: 'equals' (exact match, default), 'contains'
+                  (case-insensitive substring), or 'gt'/'gte'/'lt'/'lte'
+                  (numeric comparisons; non-numeric values never match)
 
     Returns:
-        JSON object with:
-        - matches: Array of cases/files matching the criteria
-        - Each match includes the entity details plus all their attributes
+        JSON array of matching cases/files, each with id, name, memo and
+        the matched attribute value
     """
-    result = get_db().query_by_attribute(attr_name, attr_value, attr_type)
+    result = get_db().query_by_attribute(attr_name, attr_value, attr_type, operator)
     return json.dumps(result, indent=2)
 
 
@@ -1318,10 +1328,8 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
                     - N > 0: Codes within N characters of each other
 
     Returns:
-        JSON object with:
-        - code_info: Details about the primary code
-        - cooccurring_codes: Array of codes that appear together, sorted by frequency
-        - Each includes overlap count and percentage
+        JSON array of co-occurring codes, sorted by frequency; each entry
+        has code_id, code_name, color, category, cooccurrence_count
 
     Example uses:
     - "What themes appear together with 'workplace stress'?"
@@ -1341,12 +1349,16 @@ def get_case_code_matrix() -> str:
     which codes have been applied to text segments from each case. Essential
     for comparative analysis across participants.
 
+    Only codings fully CONTAINED in a case's text interval are counted,
+    matching QualCoder's own report semantics.
+
     Returns:
         JSON object with:
-        - matrix: 2D array where matrix[case][code] = segment count
-        - case_labels: Array of case names
-        - code_labels: Array of code names
-        - statistics: Row and column totals
+        - cases: Array of {id, name}
+        - codes: Array of {id, name}
+        - matrix: Nested object keyed by case id then code id (keys are
+          strings, since this is JSON), value = coding count; absent keys
+          mean zero
 
     Example uses:
     - "Which cases mention 'job satisfaction'?"
@@ -1368,10 +1380,12 @@ def get_codes_by_case(case_id: int) -> str:
     Args:
         case_id: The numeric ID of the case
 
+    Only codings fully contained in the case's text intervals are counted
+    (QualCoder report semantics).
+
     Returns:
-        JSON object with:
-        - case_info: Case details
-        - codes: Array of codes used in this case with segment counts
+        JSON array of codes used in this case; each entry has code_id,
+        code_name, color, category, occurrence_count
     """
     result = get_db().get_codes_by_case(case_id)
     return json.dumps(result, indent=2)
@@ -1388,10 +1402,12 @@ def get_cases_by_code(code_id: int) -> str:
     Args:
         code_id: The numeric ID of the code
 
+    Only codings fully contained in a case's text intervals are counted
+    (QualCoder report semantics).
+
     Returns:
-        JSON object with:
-        - code_info: Code details
-        - cases: Array of cases containing this code with segment counts
+        JSON array of cases containing this code; each entry has case_id,
+        case_name, memo, occurrence_count
     """
     result = get_db().get_cases_by_code(code_id)
     return json.dumps(result, indent=2)
@@ -1441,6 +1457,13 @@ def analyze_for_coding(
         "Analyze files 1-3 for DATA PRACTICES codes"
     """
     db = get_db()
+
+    # Clamp the confidence threshold to the same [0,1] range suggestion
+    # confidences are clamped to (a threshold > 1 would filter everything)
+    try:
+        min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    except (TypeError, ValueError):
+        min_confidence = 0.7
 
     # Get files and codes
     all_files = db.list_files()
@@ -2798,6 +2821,13 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
         "Delete coding sessions older than 60 days"
     """
     try:
+        if not isinstance(days_old, int) or days_old < 1:
+            return json.dumps({
+                "error": "days_old must be a positive integer (>= 1) — "
+                         "refusing to delete recent or all sessions. To remove "
+                         "a specific session use delete_coding_session."
+            })
+
         deleted_count = session_manager.cleanup_old_sessions(days_old)
 
         return json.dumps({
@@ -2840,17 +2870,28 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             "title": "AI-Assisted Coding for Qualcoder",
             "description": "Use Claude to help code your qualitative data. Claude can analyze interview transcripts, suggest codes, and create coded segments that you can review and apply directly to your Qualcoder project.",
             "workflow": {
-                "step_1": "Analyze files for coding (analyze_for_coding)",
-                "step_2": "Review suggestions (review_suggestions)",
-                "step_3": "Approve or reject suggestions (update_suggestion_status)",
-                "step_4": "Apply approved codings to database (apply_codings)"
+                "step_1": "Create an analysis session (analyze_for_coding)",
+                "step_2": "Claude reads the files and records its suggestions "
+                          "(record_suggestions - each one is verified against "
+                          "the file text)",
+                "step_3": "Review suggestions (review_suggestions)",
+                "step_4": "Approve or reject suggestions (update_suggestion_status)",
+                "step_5": "Apply approved codings to database (apply_codings - "
+                          "bound to the session's project, all-or-nothing, "
+                          "automatic backup)",
+                "step_6": "Recover if needed: delete_coding removes a single "
+                          "coding; list_backups + restore_backup roll the "
+                          "whole project back"
             },
             "key_features": [
                 "Analyze complete transcripts with full context",
                 "Suggest coded segments with confidence scores",
+                "Every suggestion verified against the file text before storage",
                 "Review and approve/reject suggestions before applying",
                 "Apply codings directly to Qualcoder database (with automatic backup)",
-                "Session persistence - resume work anytime"
+                "Writes refuse to run while QualCoder has the project open",
+                "Session persistence - resume work anytime",
+                "Full recovery tools: delete_coding, list_backups, restore_backup"
             ]
         },
         "analyze_for_coding": {
@@ -2879,10 +2920,12 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             "when_to_use": "After reviewing suggestions and approving the ones you want",
             "workflow": [
                 "1. Run analyze_for_coding on your files",
-                "2. Review with review_suggestions",
-                "3. Approve/reject with update_suggestion_status",
-                "4. Apply approved codings with apply_codings",
-                "5. A backup is created automatically before writing"
+                "2. Record the suggestions with record_suggestions",
+                "3. Review with review_suggestions",
+                "4. Approve/reject with update_suggestion_status",
+                "5. Apply approved codings with apply_codings",
+                "6. A backup is created automatically before writing; "
+                "delete_coding / restore_backup undo mistakes"
             ]
         }
     }
@@ -2901,9 +2944,17 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             "error": f"Unknown tool: {tool_name}",
             "available_tools": [
                 "analyze_for_coding",
+                "record_suggestions",
                 "review_suggestions",
                 "update_suggestion_status",
                 "apply_codings",
+                "delete_coding",
+                "list_backups",
+                "restore_backup",
+                "export_refi_qda",
+                "copy_project_to_workspace",
+                "import_text_file",
+                "link_file_to_case",
                 "get_coding_session_info",
                 "list_coding_sessions",
                 "delete_coding_session",
