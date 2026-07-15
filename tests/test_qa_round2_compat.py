@@ -521,10 +521,6 @@ class TestRound2NewFindings:
         session = server.session_manager.load_session(sid)
         assert session.suggestions[0].status == "applied"  # must stay applied
 
-    @pytest.mark.xfail(reason="QA2-3 (LOW): whole-project REFI export reads "
-                       "at most 5000 codings per code (MAX_LIMIT cap) and "
-                       "silently drops the rest — no truncation notice in "
-                       "the response.", strict=True)
     def test_qa2_3_export_truncation_is_disclosed(self, setup_server,
                                                   qualcoder_db_path, tmp_path):
         conn = sqlite3.connect(str(_data_qda(qualcoder_db_path)))
@@ -555,12 +551,6 @@ class TestRound2NewFindings:
         out = json.loads(server.analyze_file_with_coding(86))
         assert "position_safety_warning" in json.dumps(out)
 
-    @pytest.mark.xfail(reason="QA2-5 (MEDIUM): whole-project REFI export is "
-                       "all-or-nothing — ONE invalid legacy row (e.g. a "
-                       "GUI-drifted coding with pos1 beyond the text, which "
-                       "real emoji/CRLF projects contain by design) blocks "
-                       "exporting everything else. Whole-project mode should "
-                       "skip-and-disclose invalid rows instead.", strict=True)
     def test_qa2_5_whole_project_export_skips_invalid_legacy_rows(
             self, setup_server, qualcoder_db_path, tmp_path):
         # a GUI-drifted legacy row: pos1 beyond the file text
@@ -573,11 +563,6 @@ class TestRound2NewFindings:
         assert out.get("success") is True          # valid codings still export
         assert out.get("skipped_invalid_codings", 0) >= 1
 
-    @pytest.mark.xfail(reason="QA2-6 (LOW): a code_text row with NULL "
-                       "positions makes export_refi_qda return the raw "
-                       "Python message \"'<' not supported between instances "
-                       "of 'NoneType' and 'int'\" instead of an actionable "
-                       "validation error.", strict=True)
     def test_qa2_6_null_position_rows_get_actionable_export_error(
             self, setup_server, qualcoder_db_path, tmp_path):
         _exec(qualcoder_db_path,

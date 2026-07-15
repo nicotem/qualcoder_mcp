@@ -566,7 +566,19 @@ class RefiQdaExporter:
                         f"beyond the file text (length {length})"
                     )
 
-            # Check positions are valid
+            # Check positions are valid. Damaged projects can carry rows with
+            # NULL positions (QA2-6) — report them, never TypeError on them.
+            if (not isinstance(suggestion.start_pos, int)
+                    or isinstance(suggestion.start_pos, bool)
+                    or not isinstance(suggestion.end_pos, int)
+                    or isinstance(suggestion.end_pos, bool)):
+                warnings.append(
+                    f"Suggestion {i}: missing or non-integer positions "
+                    f"(start={suggestion.start_pos!r}, end={suggestion.end_pos!r}) "
+                    f"— the coding row may be damaged"
+                )
+                continue
+
             if suggestion.start_pos < 0:
                 warnings.append(
                     f"Suggestion {i}: Invalid start position {suggestion.start_pos}"

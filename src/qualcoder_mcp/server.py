@@ -1092,32 +1092,84 @@ def export_refi_qda(
             return json.dumps({"error": "The session has no suggestions to export"})
     else:
         # Whole-project export: every text coding, built via the same
-        # CodingSuggestion structures the exporter understands
+        # CodingSuggestion structures the exporter understands.
+        #
+        # Skip-and-disclose (QA2-5): real legacy projects legitimately
+        # contain rows this server would never write — GUI-created codings
+        # on emoji/CRLF files whose positions overrun the text in
+        # code-point space, or damaged rows with NULL positions. Strict
+        # all-or-nothing is right for explicit session exports, but "export
+        # my project" must export everything valid and report the rest.
         suggestions = []
+        skipped_invalid = []
+        truncated_codes = []
         file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+        code_frequencies: Optional[Dict[int, int]] = None
         for code in ro_db.list_codes():
-            for seg in ro_db.get_coded_text_segments(code["id"], limit=5000):
+            segments = ro_db.get_coded_text_segments(code["id"], limit=5000)
+            if len(segments) == 5000:
+                # The read is capped at 5000 per code — disclose when the
+                # project actually holds more (QA2-3)
+                if code_frequencies is None:
+                    code_frequencies = {
+                        c["code_id"]: c["frequency"]
+                        for c in ro_db.get_coding_frequencies()["codes"]
+                    }
+                total = code_frequencies.get(code["id"], len(segments))
+                if total > 5000:
+                    truncated_codes.append({
+                        "code_name": code["name"],
+                        "exported": 5000,
+                        "total_codings": total,
+                    })
+            for seg in segments:
                 fid = seg["file_id"]
                 if fid not in file_cache:
                     file_cache[fid] = ro_db.get_file_content(fid)
                 fc = file_cache[fid]
-                if fc is None or not (fc.get("content") or ""):
+                fulltext = (fc or {}).get("content") or ""
+                if fc is None or not fulltext:
                     skipped_non_text += 1
+                    continue
+                pos0, pos1 = seg["position_start"], seg["position_end"]
+                if (not isinstance(pos0, int) or isinstance(pos0, bool)
+                        or not isinstance(pos1, int) or isinstance(pos1, bool)):
+                    skipped_invalid.append({
+                        "coding_id": seg["id"],
+                        "code_name": code["name"],
+                        "file_name": seg["file_name"],
+                        "reason": "missing positions — the coding row may be damaged",
+                    })
+                    continue
+                if pos0 < 0 or pos1 <= pos0 or pos1 > len(fulltext):
+                    skipped_invalid.append({
+                        "coding_id": seg["id"],
+                        "code_name": code["name"],
+                        "file_name": seg["file_name"],
+                        "reason": f"positions {pos0}-{pos1} invalid for the file "
+                                  f"text (length {len(fulltext)}) — likely a "
+                                  f"GUI-created coding on a position-unsafe "
+                                  f"(emoji/CRLF) file",
+                    })
                     continue
                 suggestions.append(CodingSuggestion(
                     file_id=fid,
                     file_name=seg["file_name"],
                     code_id=code["id"],
                     code_name=code["name"],
-                    start_pos=seg["position_start"],
-                    end_pos=seg["position_end"],
+                    start_pos=pos0,
+                    end_pos=pos1,
                     segment_text=seg["text"] or "",
                     reasoning=seg["memo"] or "",
                     confidence=0.0,  # human codings carry no AI confidence
                 ))
         project_name = Path(current_project_path).stem
         if not suggestions:
-            return json.dumps({"error": "The project has no text codings to export"})
+            result = {"error": "The project has no exportable text codings"}
+            if skipped_invalid:
+                result["skipped_invalid_codings"] = len(skipped_invalid)
+                result["skipped_details"] = skipped_invalid[:20]
+            return json.dumps(result, indent=2)
 
     exporter = RefiQdaExporter(ro_db)
     result_path = exporter.export_to_qdpx(
@@ -1135,6 +1187,21 @@ def export_refi_qda(
     }
     if skipped_non_text:
         output["skipped_codings_on_non_text_sources"] = skipped_non_text
+    if session_id is None:
+        if skipped_invalid:
+            output["skipped_invalid_codings"] = len(skipped_invalid)
+            output["skipped_details"] = skipped_invalid[:20]
+            output["skip_note"] = (
+                "Codings with invalid or missing positions were not exported "
+                "(their positions cannot be represented against the exported "
+                "text). They remain untouched in the project."
+            )
+        if truncated_codes:
+            output["truncated_codes"] = truncated_codes
+            output["warning"] = (
+                f"Export truncated for {len(truncated_codes)} code(s): only "
+                f"the first 5000 codings per code are exported."
+            )
     return json.dumps(output, indent=2)
 
 
