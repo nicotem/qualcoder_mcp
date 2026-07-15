@@ -4,7 +4,9 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 import json
+import re
 import time
+import random
 import getpass
 import logging
 import hashlib
@@ -26,9 +28,30 @@ SUPPORTED_DB_VERSIONS = ['v14']
 # Columns this server reads or writes that older QualCoder schemas lack.
 # If any are missing, the project must be opened and saved in QualCoder 3.8
 # (which migrates the schema) before this server can use it.
+# code_text.important: added in schema v3; project.codername: added in v5
+# and selected unconditionally by get_project_info.
 REQUIRED_COLUMNS = {
     "code_text": ["important"],
+    "project": ["codername"],
 }
+
+# QualCoder's code color palette (color_selector.py:53-65, QualCoder 3.8.2).
+# New codes get a random pick from this palette, exactly like codes created
+# in the QualCoder GUI.
+QUALCODER_COLORS = [
+    "#F5F6CE", "#F2F5A9", "#F4FA58", "#F7FE2E", "#DDE600", "#F8ECE0", "#F6E3CE", "#F5D0A9", "#F7BE81", "#FAAC58",
+    "#F5ECCE", "#F3E2A9", "#F5DA81", "#F7D358", "#FACC2E", "#FFE2CC", "#FFC599", "#FFA866", "#FF8B33", "#FF6F00",
+    "#F8E6E0", "#F6D8CE", "#F5BCA9", "#F79F81", "#FA8258", "#FADCCC", "#F5B999", "#F09666", "#EB7333", "#E65100",
+    "#F8E0E0", "#F6CECE", "#F5A9A9", "#F78181", "#FA5858", "#F0D1D1", "#E2A4A4", "#D37676", "#C54949", "#B71C1C",
+    "#F2D6CE", "#E5AE9D", "#D8866D", "#CB5E3C", "#BF360C", "#E7CEDB", "#CF9EB8", "#B76E95", "#9F3E72", "#880E4F",
+    "#F8E0E6", "#F6CED8", "#F5A9BC", "#F7819F", "#FA5882", "#F8E0F7", "#F6CEF5", "#F5A9F2", "#F781F3", "#FA58F4",
+    "#D1DED2", "#A3BEA5", "#769E78", "#487E4B", "#1B5E20", "#DEE9E4", "#BED3C9", "#9EBDAE", "#7EA793", "#5E9179",
+    "#CEF6E3", "#A9F5D0", "#81F7BE", "#58FAAC", "#00FF7F", "#E0F8E0", "#CEF6CE", "#A9F5A9", "#81F781", "#58FA58",
+    "#D0F5A9", "#BEF781", "#ACFA58", "#9AFE2E", "#80FF00", "#CEF6F5", "#A9F5F2", "#81F7F3", "#58FAF4", "#00F0F0",
+    "#E4D3F5", "#CAA8EB", "#B07CE1", "#9651D7", "#7D26CD", "#ECE0F8", "#E3CEF6", "#D0A9F5", "#BE81F7", "#AC58FA",
+    "#DADAF5", "#B5B5EC", "#9090E3", "#6B6BDA", "#4646D1", "#CEE3F6", "#A9D0F5", "#81BEF7", "#3498DB", "#5882FA",
+    "#CEDAEC", "#9EB5D9", "#6D91C6", "#3D6CB3", "#0D47A1", "#E8E8E8", "#D8D8D8", "#C8C8C8", "#B8B8B8", "#A8A8A8",
+]
 
 DB_LOCKED_MESSAGE = (
     "The project database is locked — QualCoder may have it open. "
@@ -2231,11 +2254,24 @@ class QualcoderDatabase:
     # in the MCP workspace (~/Documents/Qualcoder MCP Projects/)
 
     def _require_write_access(self) -> None:
-        """Check that database was opened with write access.
+        """Check that database was opened with write access on a v14 schema.
+
+        Writes are only supported against the tested v14 schema (QualCoder
+        3.8.x). Older versions may connect for reading, but pre-v14 schemas
+        differ in ways that make writes unsafe (e.g. pre-v4 lacks the
+        code_text unique constraint, silently losing duplicate protection).
 
         Raises:
             RuntimeError: If database is in read-only mode
+            UnsupportedSchemaError: If the schema is older than v14
         """
+        if getattr(self, "db_version", None) != "v14":
+            raise UnsupportedSchemaError(
+                f"This project uses database schema "
+                f"{getattr(self, 'db_version', None) or 'unknown'}; writes "
+                f"require schema v14. Open and save the project in QualCoder "
+                f"3.8 to upgrade it, then try again."
+            )
         if self.read_only:
             raise RuntimeError(
                 "Database is in read-only mode. To modify data, reopen with "
@@ -2252,7 +2288,7 @@ class QualcoderDatabase:
         selected_text: str,
         owner: str,
         memo: Optional[str] = None,
-        important: int = 0,
+        important: Optional[int] = None,
         auto_commit: bool = True
     ) -> int:
         """Add a new coding to a text segment.
@@ -2265,7 +2301,8 @@ class QualcoderDatabase:
             selected_text: The actual text being coded
             owner: Name of the coder (e.g., "AI Coding Assistant")
             memo: Optional memo explaining the coding
-            important: Importance flag (0 or 1)
+            important: Importance flag - stored as 1 or NULL
+                       (QualCoder's domain is {NULL, 1}, never 0)
             auto_commit: Commit after insert (default True). Set False for batch operations.
 
         Returns:
@@ -2332,7 +2369,8 @@ class QualcoderDatabase:
             cursor = self.conn.execute("""
                 INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo, important)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo or "", important))
+            """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo or "",
+                  1 if important else None))
 
             if auto_commit:
                 self.conn.commit()
@@ -2358,7 +2396,7 @@ class QualcoderDatabase:
         owner: str,
         memo: Optional[str] = None,
         category_id: Optional[int] = None,
-        color: str = "#FFFFFF"
+        color: Optional[str] = None
     ) -> int:
         """Add a new code to the project.
 
@@ -2367,7 +2405,8 @@ class QualcoderDatabase:
             owner: Name of the person creating the code
             memo: Optional description/definition of the code
             category_id: Optional category ID to place code in
-            color: Hex color code (default white)
+            color: Hex color code #RRGGBB (default: random pick from
+                   QualCoder's own palette, like GUI-created codes)
 
         Returns:
             The cid (code ID) of the newly created code
@@ -2392,8 +2431,12 @@ class QualcoderDatabase:
             if not cat_check:
                 raise ValueError(f"Category ID {category_id} does not exist")
 
-        # Validate color format
-        if not color.startswith("#") or len(color) != 7:
+        # Default to a random QualCoder palette color (what the GUI does);
+        # validate strictly - '#zzzzzz' passed the old prefix/length check
+        # but renders black/undefined in QualCoder's QColor/luminance math
+        if color is None:
+            color = random.choice(QUALCODER_COLORS)
+        if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
             raise ValueError(f"color must be hex format #RRGGBB, got {color}")
 
         # Current timestamp

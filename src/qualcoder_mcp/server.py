@@ -299,6 +299,26 @@ def _qualcoder_open_error() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _write_gate_error() -> Optional[Dict[str, Any]]:
+    """Combined pre-write gate: schema version + QualCoder lock file.
+
+    Returns an error dict when the project's schema is older than v14
+    (writes are only supported against the tested schema) or when
+    QualCoder currently has the project open. The database layer enforces
+    the same schema gate in _require_write_access (defense in depth); the
+    early check here produces a clean error before any backup is made.
+    """
+    version = getattr(get_db(), "db_version", None)
+    if version != "v14":
+        return {
+            "error": f"This project uses database schema "
+                     f"{version or 'unknown'}; writes require schema v14. "
+                     f"Open and save the project in QualCoder 3.8 to upgrade "
+                     f"it, then try again."
+        }
+    return _qualcoder_open_error()
+
+
 def _recheck_lock_before_commit(project_folder: Path, held: bool) -> None:
     """Close the TOCTOU window between pre-write checks and commit.
 
@@ -397,12 +417,18 @@ def _resolve_segment_positions(
         and isinstance(end_pos, int) and not isinstance(end_pos, bool)
     )
 
+    # Qt's selectedText() stores U+2029 (paragraph separator) where the
+    # fulltext has \n, and QualCoder never normalizes (code_text.py:3763) —
+    # so text copied from GUI-created codings may carry U+2029. Positions
+    # are authoritative; tolerate the substitution when comparing.
+    needle = segment_text.replace("\u2029", "\n")
+
     if have_positions and 0 <= start_pos < end_pos <= n:
-        if fulltext[start_pos:end_pos] == segment_text:
+        if fulltext[start_pos:end_pos] in (segment_text, needle):
             return True, start_pos, end_pos, False, None
 
     # Positions missing, out of range, or not matching: locate the text
-    hits = _find_occurrences(fulltext, segment_text)
+    hits = _find_occurrences(fulltext, needle)
     if len(hits) == 1:
         start = hits[0]
         return True, start, start + len(segment_text), have_positions, None
@@ -1626,6 +1652,11 @@ def record_suggestions(
             skipped_duplicates += 1
             continue
 
+        # Store the authoritative fulltext slice: positions are the record
+        # of truth, and the apply-time write requires seltext to equal the
+        # slice exactly (provided text may differ by U+2029 vs newline)
+        segment_text = fulltext[start_pos:end_pos]
+
         context_before = item.get("context_before")
         if not isinstance(context_before, str):
             context_before = fulltext[max(0, start_pos - 100):start_pos]
@@ -1890,7 +1921,8 @@ def apply_codings(
                   and 0 <= sugg.start_pos < sugg.end_pos <= len(fulltext)):
             problem = {"reason": f"positions {sugg.start_pos}-{sugg.end_pos} are "
                                  f"out of range for the file (length {len(fulltext)})"}
-        elif fulltext[sugg.start_pos:sugg.end_pos] != sugg.segment_text:
+        elif fulltext[sugg.start_pos:sugg.end_pos] not in (
+                sugg.segment_text, sugg.segment_text.replace("\u2029", "\n")):
             problem = {
                 "reason": "segment text does not match the file text at the "
                           "stored positions — re-record this suggestion with "
@@ -1915,9 +1947,9 @@ def apply_codings(
             "total_approved": len(approved)
         }, indent=2)
 
-    # Refuse while QualCoder has the project open (heartbeat lock file —
-    # SQLite locks say nothing about an idle QualCoder session)
-    lock_error = _qualcoder_open_error()
+    # Refuse on pre-v14 schemas and while QualCoder has the project open
+    # (heartbeat lock file — SQLite locks say nothing about an idle session)
+    lock_error = _write_gate_error()
     if lock_error is not None:
         return json.dumps(lock_error)
 
@@ -1949,12 +1981,18 @@ def apply_codings(
                     # Create memo with reasoning and confidence
                     memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
 
+                    # Write the authoritative fulltext slice (validated above)
+                    # so seltext always equals fulltext[pos0:pos1] on disk
+                    slice_text = (
+                        (file_cache[sugg.file_id] or {}).get("content") or ""
+                    )[sugg.start_pos:sugg.end_pos]
+
                     ctid = write_db.add_coding(
                         file_id=sugg.file_id,
                         code_id=sugg.code_id,
                         start_pos=sugg.start_pos,
                         end_pos=sugg.end_pos,
-                        selected_text=sugg.segment_text,
+                        selected_text=slice_text,
                         owner=owner,
                         memo=memo,
                         auto_commit=False  # Batch: commit after all succeed
@@ -2067,8 +2105,8 @@ def import_text_file(
     except (ValueError, TypeError) as e:
         return json.dumps({"error": str(e)})
 
-    # Refuse while QualCoder has the project open (heartbeat lock file)
-    lock_error = _qualcoder_open_error()
+    # Refuse on pre-v14 schemas and while QualCoder has the project open
+    lock_error = _write_gate_error()
     if lock_error is not None:
         return json.dumps(lock_error)
 
@@ -2182,8 +2220,8 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     if existing is None:
         return json.dumps({"error": f"Coding ID {coding_id} does not exist"})
 
-    # Refuse while QualCoder has the project open (heartbeat lock file)
-    lock_error = _qualcoder_open_error()
+    # Refuse on pre-v14 schemas and while QualCoder has the project open
+    lock_error = _write_gate_error()
     if lock_error is not None:
         return json.dumps(lock_error)
 

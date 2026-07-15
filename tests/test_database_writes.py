@@ -548,7 +548,9 @@ class TestAddCode:
             )
 
     def test_add_code_default_color(self, write_db):
-        """Test that default color is applied."""
+        """Default color is a random pick from QualCoder's own palette."""
+        from qualcoder_mcp.database import QUALCODER_COLORS
+
         cid = write_db.add_code(
             name="Default Color Code",
             owner="AI Coder"
@@ -556,7 +558,7 @@ class TestAddCode:
 
         codes = write_db.list_codes()
         new_code = next(c for c in codes if c["id"] == cid)
-        assert new_code["color"] == "#FFFFFF"
+        assert new_code["color"] in QUALCODER_COLORS
 
 
 # =============================================================================
