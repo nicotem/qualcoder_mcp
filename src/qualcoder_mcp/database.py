@@ -251,10 +251,14 @@ def validate_qda_path(db_path: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Path not found: {path}")
 
-    # Handle different path formats
+    # Handle different path formats. QualCoder can ONLY open a directory
+    # whose name ends in lowercase '.qda' and that contains a 'data.qda'
+    # SQLite file (QualCoder 3.8.2 __main__.py:306, 2635) — accepting
+    # anything else (bare .qda files, uppercase .QDA) produces "projects"
+    # QualCoder can never open.
     if path.is_dir():
         # Path is a directory - look for data.qda inside
-        if path.suffix.lower() == '.qda':
+        if path.suffix == '.qda':
             # This is a .qda project folder
             data_file = path / "data.qda"
             if not data_file.exists():
@@ -262,12 +266,26 @@ def validate_qda_path(db_path: str) -> Path:
             if not data_file.is_file():
                 raise ValueError(f"data.qda exists but is not a file: {data_file}")
             path = data_file
+        elif path.suffix.lower() == '.qda':
+            raise ValueError(
+                f"Project folder must have a lowercase .qda extension "
+                f"(QualCoder cannot open '{path.name}')"
+            )
         else:
             raise ValueError(f"Directory must have .qda extension: {path}")
     elif path.is_file():
-        # Path is a file - verify it's a .qda file
-        if path.name != "data.qda" and path.suffix.lower() != '.qda':
-            raise ValueError(f"Invalid file: must be data.qda or *.qda, got {path.name}")
+        # Path is a file - only the data.qda inside a .qda project folder
+        # is a valid QualCoder database
+        if path.name != "data.qda":
+            raise ValueError(
+                f"Invalid file: must be the data.qda inside a .qda project "
+                f"folder, got {path.name}"
+            )
+        if path.parent.suffix != '.qda':
+            raise ValueError(
+                f"data.qda must live inside a project folder ending in "
+                f"lowercase .qda (got '{path.parent.name}')"
+            )
     else:
         raise ValueError(f"Path is neither a file nor a directory: {path}")
 

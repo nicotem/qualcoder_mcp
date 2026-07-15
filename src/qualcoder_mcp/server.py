@@ -2303,33 +2303,45 @@ def list_backups() -> str:
         })
 
     project_folder = validate_qda_path(current_project_path).parent
-    prefix = f"{project_folder.stem}_backup_"
 
     backups = []
-    for entry in project_folder.parent.glob(f"{prefix}*.qda"):
-        if not entry.is_dir():
-            continue
-        try:
-            size_bytes = sum(
-                f.stat().st_size for f in entry.rglob("*") if f.is_file()
-            )
-            created = datetime.fromtimestamp(entry.stat().st_mtime)
-            backups.append({
-                "name": entry.name,
-                "path": str(entry),
-                "created": created.strftime("%Y-%m-%d %H:%M:%S"),
-                "size_mb": round(size_bytes / (1024 * 1024), 2),
-            })
-        except OSError as e:
-            logger.debug(f"Cannot stat backup {entry}: {e}")
-            continue
+    # Two backup families exist side by side: this server's
+    # {name}_backup_{YYYYMMDD_HHMMSS}.qda and QualCoder's own
+    # {name}_BKUP_{YYYYMMDD_HH}[suffix].qda open-time backups.
+    for prefix, kind in ((f"{project_folder.stem}_backup_", "mcp"),
+                         (f"{project_folder.stem}_BKUP_", "qualcoder")):
+        for entry in project_folder.parent.glob(f"{prefix}*.qda"):
+            if not entry.is_dir():
+                continue
+            try:
+                size_bytes = sum(
+                    f.stat().st_size for f in entry.rglob("*") if f.is_file()
+                )
+                created = datetime.fromtimestamp(entry.stat().st_mtime)
+                backups.append({
+                    "name": entry.name,
+                    "path": str(entry),
+                    "kind": kind,
+                    "created": created.strftime("%Y-%m-%d %H:%M:%S"),
+                    "size_mb": round(size_bytes / (1024 * 1024), 2),
+                })
+            except OSError as e:
+                logger.debug(f"Cannot stat backup {entry}: {e}")
+                continue
 
-    backups.sort(key=lambda b: b["name"], reverse=True)
+    backups.sort(key=lambda b: b["created"], reverse=True)
 
     return json.dumps({
         "project": project_folder.stem,
         "backup_count": len(backups),
         "backups": backups,
+        "notes": [
+            "kind='qualcoder' backups are made by QualCoder itself on "
+            "project open; they may exclude audio/video files and QualCoder "
+            "deletes them again when a session made no changes.",
+            "QualCoder may also store its backups in its settings "
+            "'directory' — only backups next to the project are listed here."
+        ],
         "hint": "Use restore_backup(backup_path) to roll the project back "
                 "to one of these snapshots."
     }, indent=2)
@@ -2388,7 +2400,8 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
 
     project_data = validate_qda_path(current_project_path)
     project_folder = project_data.parent
-    prefix = f"{project_folder.stem}_backup_"
+    # Both families are restorable: ours and QualCoder's own _BKUP_ copies
+    prefixes = (f"{project_folder.stem}_backup_", f"{project_folder.stem}_BKUP_")
 
     # The backup must be a sibling backup of the CURRENT project
     try:
@@ -2398,7 +2411,7 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
                                     "to see the available backups."})
     if (not backup_folder.is_dir()
             or backup_folder.parent != project_folder.parent
-            or not backup_folder.name.startswith(prefix)
+            or not backup_folder.name.startswith(prefixes)
             or backup_folder.suffix.lower() != ".qda"):
         return json.dumps({
             "error": "Not a backup of the currently open project. Only backups "
@@ -2410,14 +2423,20 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     validate_qda_path(str(backup_folder))
 
     if not confirm:
-        return json.dumps({
+        preview = {
             "requires_confirmation": True,
             "would_restore_from": backup_folder.name,
             "would_overwrite": project_folder.name,
             "safety": "A safety backup of the current state will be created "
                       "first, so the restore itself can be undone.",
             "hint": "Call restore_backup again with confirm=true to proceed."
-        }, indent=2)
+        }
+        if "_BKUP_" in backup_folder.name:
+            preview["note"] = (
+                "This is a QualCoder-made backup: depending on QualCoder's "
+                "settings it may not contain audio/video media files."
+            )
+        return json.dumps(preview, indent=2)
 
     # Refuse while QualCoder has the project open (heartbeat lock file)
     lock_error = _qualcoder_open_error()
