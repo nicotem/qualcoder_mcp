@@ -436,10 +436,6 @@ class TestValiditySemantics:
         # 24..55 counts; 60..79 (== len) does NOT (79 > 78 = len-1)
         assert stress is not None and stress["occurrence_count"] == 1
 
-    @pytest.mark.xfail(reason="COMPAT V3 unmet: project.about is never "
-                       "checked, so the MCP accepts DBs QualCoder itself "
-                       "would refuse ('This is not a QualCoder database'). "
-                       "LOW: MCP never creates project rows.", strict=True)
     def test_v3_non_qualcoder_about_flagged(self, setup_server,
                                             qualcoder_db_path, tmp_path):
         dest = tmp_path / "notqc_about.qda"

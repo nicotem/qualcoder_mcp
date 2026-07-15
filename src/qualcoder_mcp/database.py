@@ -632,14 +632,22 @@ class QualcoderDatabase:
             raise RuntimeError(f"Failed to validate database schema: {e}") from e
 
     def _check_version(self):
-        """Check database version and log warnings if unsupported."""
+        """Check database version and log warnings if unsupported.
+
+        Also records whether project.about identifies the database as a
+        QualCoder project — QualCoder's own open check requires the
+        substring "QualCoder" in about and refuses otherwise with "This is
+        not a QualCoder database" (__main__.py:2698-2709, COMPAT V3).
+        """
         self.db_version = None
+        self.qualcoder_about_ok = True
         try:
-            cursor = self.conn.execute("SELECT databaseversion FROM project")
+            cursor = self.conn.execute("SELECT databaseversion, about FROM project")
             row = cursor.fetchone()
             if row:
                 version = row[0]
                 self.db_version = version
+                self.qualcoder_about_ok = "QualCoder" in (row[1] or "")
                 if version not in SUPPORTED_DB_VERSIONS:
                     logger.warning(
                         f"Untested database version: {version}. "

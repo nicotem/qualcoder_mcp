@@ -645,16 +645,33 @@ def select_project(project_path: str) -> str:
             "project_info": project_info
         }
 
+        warnings = []
+
         # Reads are safe while QualCoder is open, but warn: data may change
         # underneath, and writes will be refused until QualCoder closes it
         state, holder = qualcoder_lock_state(_current_project_folder())
         if state == "active":
-            result["warning"] = (
+            warnings.append(
                 f"QualCoder currently has this project open (user "
                 f"{holder or 'unknown'}). Reads may return changing data, and "
                 f"all write operations will be refused until the project is "
                 f"closed in QualCoder."
             )
+
+        # QualCoder's own open check requires "QualCoder" in project.about
+        # and refuses otherwise ("This is not a QualCoder database") —
+        # warn so the user knows QualCoder itself will not open this
+        # project (COMPAT V3)
+        if not getattr(get_db(), "qualcoder_about_ok", True):
+            warnings.append(
+                "This database does not identify itself as a QualCoder "
+                "project (project.about does not contain 'QualCoder'). "
+                "QualCoder itself would refuse to open it with 'This is "
+                "not a QualCoder database'."
+            )
+
+        if warnings:
+            result["warning"] = " | ".join(warnings)
 
         return json.dumps(result, indent=2)
 
