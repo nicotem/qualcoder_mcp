@@ -5,6 +5,146 @@ All notable changes to the Qualcoder MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — targeting 0.5.0-alpha
+
+Everything since 0.4.0: the QualCoder v14 schema alignment, the
+`import_text_file` tool, and the pre-release fix wave (write-path
+blockers, QualCoder-3.8.2 ground-truth reconciliation, recovery tooling,
+REFI-QDA revival).
+
+### Added — the AI coding loop now works end-to-end
+
+- **`record_suggestions(session_id, suggestions, replace)`** — the
+  previously missing middle step of the workflow. `analyze_for_coding`
+  created an empty session and instructed Claude to call a Python API no
+  MCP client can reach, so no coding could ever be written through the
+  advertised workflow. Suggestions are now recorded through a real tool;
+  each one is validated (file exists and is a text source, code exists
+  by id or case-insensitive name) and **verified against the file text**:
+  positions are auto-corrected when the excerpt occurs exactly once,
+  mismatches are rejected with expected/provided snippets, and the
+  authoritative fulltext slice is stored so `seltext ==
+  fulltext[pos0:pos1]` always holds for MCP-written rows.
+
+### Added — error recovery (full restore tooling)
+
+- **`delete_coding(coding_id, create_backup)`** — remove one coded
+  segment (never the code or the file), backup-first.
+- **`list_backups()`** — lists both backup families next to the project:
+  this server's `*_backup_*` snapshots and QualCoder's own `*_BKUP_*`
+  open-time backups (flagged: those may exclude A/V media).
+- **`restore_backup(backup_path, confirm)`** — guarded restore: previews
+  until `confirm=true`, only accepts sibling backups of the open
+  project, refuses while QualCoder has the project open, creates a
+  `_prerestore` safety backup first, and strips stray lock files.
+
+### Added — other new tools
+
+- **`copy_project_to_workspace(source_path, new_name)`** — the
+  documented "work on a copy" safety step is now a real tool (it was
+  listed in the README but never registered).
+- **`link_file_to_case(file_id, case_id|case_name)`** and an optional
+  `case_name` parameter on `import_text_file` — imported files were
+  invisible to every case-based analysis because no case_text row was
+  ever written. The link replicates QualCoder's own Case file manager
+  row exactly (pos0=0, pos1=len(fulltext)-1, app-side duplicate check —
+  the table has no unique constraint).
+- **`export_refi_qda(output_path, session_id, overwrite)`** — REFI-QDA
+  export revived (dead code since the v0.4.0 tool removals) and made
+  actually importable: `internal://{guid}.txt` source references and
+  GUID-named members per spec §8.3/8.4 (QualCoder's importer
+  hard-depends on the `internal:/` scheme), unqualified Project `name`
+  attribute, XML-1.0 character sanitization (control characters in
+  memos/code names crashed the exporter), validate-before-export (stale
+  references and empty-content files fail loudly instead of producing
+  archives that crash importers), per-document GUID uniqueness, category
+  hierarchy as nested `isCodable="false"` codes, real-UTC timestamps,
+  documented position convention, UTF-8 without BOM.
+
+### Changed — write-path safety (QualCoder 3.8.2 ground truth)
+
+- **Writes respect QualCoder's `project_in_use.lock` heartbeat.**
+  QualCoder holds no SQLite lock while idle — its lock file is its only
+  concurrency control. Every write tool now refuses with "This project
+  is open in QualCoder (user X)…" while the heartbeat is fresh (≤30 s),
+  holds the lock itself during its own write window, re-checks
+  immediately before commit when proceeding over a stale foreign lock,
+  and `select_project` warns when QualCoder has the project open.
+  Backups no longer include `*.lock` files.
+- **`apply_codings` is bound to its session's project** — applying a
+  session while a different project is open (cross-project corruption)
+  is refused; `record_suggestions` enforces the same binding.
+- **Every approved suggestion is re-validated before the backup and the
+  write**: file exists and is a text source (junk codings on
+  image/A/V sources were accepted silently), code exists, positions in
+  range, segment text matches the stored positions. Failures return a
+  per-GUID list; nothing is written and no backup is created.
+- **Applied suggestions are marked `applied`** — re-running
+  `apply_codings` explains the batch was already applied instead of
+  failing wholesale on the duplicate constraint.
+- **Writes match QualCoder's value contract**: `important` stored as
+  1/NULL (never 0), new-code colors drawn from QualCoder's own palette
+  with strict `#RRGGBB` validation, and writes hard-require schema v14
+  (older projects: "open and save in QualCoder 3.8 to upgrade").
+- **Position semantics documented and enforced** (code-point offsets,
+  0-based, end-exclusive — what SQLite substr, all QualCoder reports and
+  its own AI pipeline use). One-way U+2029→`\n` tolerance for text
+  copied from GUI-created codings; per-file `position_safe` warnings on
+  texts where QualCoder's GUI diverges (its documented emoji/CRLF bug);
+  `import_text_file` strips a leading BOM and normalizes CRLF so new
+  files are position-safe from birth.
+
+### Changed — robustness and correctness
+
+- Locked databases are reported as locked (previously mislabeled
+  "Invalid or corrupted SQLite database"), and a failed read-write
+  upgrade no longer leaves the server with a dead connection that broke
+  every subsequent call.
+- Old-schema projects (pre-v14 columns) and corrupted databases are
+  refused at connect/select with clear guidance instead of raw
+  tracebacks; all 30+ tools return sanitized `{"error": ...}` JSON for
+  anticipated failures.
+- Backup names get a uniquifying suffix — two writes in the same second
+  no longer abort with "File exists".
+- Imports are fully validated (including NUL/control-character filenames
+  that bypassed both duplicate guards, now rejected with NFC
+  normalization) BEFORE the read-write upgrade and backup, so rejected
+  calls no longer litter full-project backup copies.
+- `validate_qda_path` accepts only what QualCoder can open: a lowercase
+  `.qda` directory containing `data.qda` (bare `.qda` files and
+  uppercase variants are rejected).
+- Case-code analyses (`get_case_code_matrix`, `get_codes_by_case`,
+  `get_cases_by_code`) use full containment, matching QualCoder's own
+  report semantics (previously overlap, which over-counted).
+- Orphaned codings (deleted files) are excluded from all counting tools,
+  consistently with segment listings.
+- Project discovery no longer double-lists projects (inner `data.qda`)
+  or lists backup folders (`_backup_`/`_BKUP_`) as projects.
+- `search_files`: a NULL filename no longer aborts every search; content
+  search covers imported documents/PDFs (previously silently skipped)
+  and reports how many textless sources were not searched.
+- `query_by_attribute` gained real operators (`equals`, `contains`,
+  `gt/gte/lt/lte`) — the docstring had promised substring and numeric
+  queries the implementation couldn't do.
+- `cleanup_old_sessions` refuses `days_old < 1` (0 silently deleted ALL
+  sessions); `analyze_for_coding` clamps `min_confidence` to [0,1];
+  stale docstrings corrected to actual return shapes.
+
+### Documentation
+
+- Truth pass over README, AI_CODING_WORKFLOW and AI_CODING_GUIDE: only
+  tools that exist are described, the workflow includes the
+  `record_suggestions` step and the close-QualCoder-first rule, and the
+  v0.3.0 export/import guide content is replaced (historical plan docs
+  are marked as such).
+
+### From earlier on this development line
+
+- **Schema v14 alignment** (QualCoder 3.8.x): schema fixtures and file
+  type detection aligned with QualCoder's mediapath conventions.
+- **`import_text_file` tool**: create new text sources with validation,
+  attribute placeholders and automatic backup.
+
 ## [0.4.0] - 2025-10-30
 
 ### Added - Enhanced File Search 🔍
