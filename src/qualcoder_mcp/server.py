@@ -1165,8 +1165,12 @@ def export_refi_qda(
                 ))
         project_name = Path(current_project_path).stem
         if not suggestions:
-            result = {"error": "The project has no exportable text codings"}
+            result = {"error": "The project has no text codings to export"}
             if skipped_invalid:
+                result["error"] = (
+                    "The project has no text codings to export — all its "
+                    "codings were skipped as invalid (see skipped_details)"
+                )
                 result["skipped_invalid_codings"] = len(skipped_invalid)
                 result["skipped_details"] = skipped_invalid[:20]
             return json.dumps(result, indent=2)
