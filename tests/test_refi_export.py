@@ -15,14 +15,24 @@ class MockQualcoderDatabase:
 
     def __init__(self):
         self.codes = [
-            {"id": 1, "name": "Workplace Stress", "color": "#FF5733", "memo": "Stress related themes"},
-            {"id": 2, "name": "Coping Strategies", "color": "#33FF57", "memo": "Ways people cope"}
+            {"id": 1, "name": "Workplace Stress", "color": "#FF5733",
+             "memo": "Stress related themes", "category_id": None, "category": None},
+            {"id": 2, "name": "Coping Strategies", "color": "#33FF57",
+             "memo": "Ways people cope", "category_id": None, "category": None}
         ]
 
+        # Text long enough for the sample positions (export now bounds-checks
+        # positions against the actual payload text)
+        _text_1 = ("Sample interview text here. " * 12).strip()
+        _text_2 = ("Another interview text goes on. " * 12).strip()
         self.files = [
-            {"id": 1, "name": "interview_01.txt", "fulltext": "Sample interview text here.", "memo": "First interview"},
-            {"id": 2, "name": "interview_02.txt", "fulltext": "Another interview text.", "memo": "Second interview"}
+            {"id": 1, "name": "interview_01.txt", "content": _text_1,
+             "is_text": True, "memo": "First interview"},
+            {"id": 2, "name": "interview_02.txt", "content": _text_2,
+             "is_text": True, "memo": "Second interview"}
         ]
+
+        self.categories = []
 
         self.code_guids = {
             1: "code-guid-0001",
@@ -41,6 +51,9 @@ class MockQualcoderDatabase:
 
     def list_files(self):
         return self.files
+
+    def list_categories(self):
+        return self.categories
 
     def get_code_details(self, code_id: int):
         for code in self.codes:
@@ -94,7 +107,7 @@ def sample_suggestions():
             reasoning="Clear stress indicator",
             confidence=0.9,
             status="approved",
-            guid="suggestion-guid-001"
+            guid="11111111-1111-4111-8111-111111111111"
         ),
         CodingSuggestion(
             file_id=1,
@@ -107,7 +120,7 @@ def sample_suggestions():
             reasoning="Positive coping strategy",
             confidence=0.85,
             status="approved",
-            guid="suggestion-guid-002"
+            guid="22222222-2222-4222-8222-222222222222"
         ),
         CodingSuggestion(
             file_id=2,
@@ -120,7 +133,7 @@ def sample_suggestions():
             reasoning="Stress from deadlines",
             confidence=0.88,
             status="approved",
-            guid="suggestion-guid-003"
+            guid="33333333-3333-4333-8333-333333333333"
         )
     ]
 
@@ -140,9 +153,10 @@ class TestRefiQdaExporter:
         # Check root element
         assert root.tag == f"{{{NAMESPACE}}}Project"
 
-        # Check root attributes
-        assert f"{{{NAMESPACE}}}name" in root.attrib
-        assert root.attrib[f"{{{NAMESPACE}}}name"] == "Test Project"
+        # Check root attributes: 'name' is UNQUALIFIED per the schema
+        # (attributeFormDefault="unqualified")
+        assert "name" in root.attrib
+        assert root.attrib["name"] == "Test Project"
         assert "origin" in root.attrib
         assert "creatingUserGUID" in root.attrib
         assert "creationDateTime" in root.attrib

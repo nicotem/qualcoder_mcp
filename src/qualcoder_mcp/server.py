@@ -1018,9 +1018,15 @@ def export_refi_qda(
       (all statuses) — useful for reviewing suggestions in another tool
       before applying them.
 
-    Known limitations (documented): code categories, cases, annotations and
-    journals are not included; all selections are attributed to a single
-    export user rather than the original coders.
+    Position convention (QualCoder's): selections are character offsets
+    into the plain text exactly as exported (verbatim, UTF-8, no BOM,
+    newlines as single \\n), 0-based, end-exclusive. Tools that count \\r\\n
+    as two characters (e.g. NVivo) may show shifted boundaries.
+
+    Known limitations (documented): cases, annotations and journals are not
+    included (code categories ARE preserved as nested codes); all
+    selections are attributed to a single export user rather than the
+    original coders.
 
     Args:
         output_path: Where to write the .qdpx file (must end in .qdpx; the
