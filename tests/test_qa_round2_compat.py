@@ -478,12 +478,21 @@ class TestBackupAndExportPolicy:
         assert "\\r\\n" in doc or "\\n" in doc
         assert "NVivo" in doc
 
-    @pytest.mark.skip(reason="COMPAT X11 unverifiable here: no vendored "
-                      "Project.xsd and no xmlschema/lxml in the venv; needs "
-                      "a developer/owner decision to vendor the schema. "
-                      "Flagged in the QA report.")
-    def test_x11_xsd_validation(self):
-        pass
+    def test_x11_xsd_validation(self, setup_server, qualcoder_db_path,
+                                tmp_path):
+        """X11: now verifiable — the official Project.xsd is vendored
+        (tests/fixtures/refi_qda/, provenance in its README) and xmlschema
+        is a dev dependency. The full fixture matrix lives in
+        test_refi_xsd_validation.py; this is the compat-checklist pin."""
+        xmlschema = pytest.importorskip("xmlschema")
+        schema = xmlschema.XMLSchema(
+            str(Path(__file__).parent / "fixtures" / "refi_qda" / "Project.xsd"))
+        out_file = tmp_path / "x11.qdpx"
+        result = json.loads(server.export_refi_qda(str(out_file)))
+        assert result.get("success") is True
+        import zipfile
+        xml_text = zipfile.ZipFile(out_file).read("project.qde").decode("utf-8")
+        schema.validate(xml_text)  # raises on any schema violation
 
 
 # =============================================================================
