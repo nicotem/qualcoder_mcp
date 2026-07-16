@@ -52,6 +52,13 @@ EXPECTED_TOOLS = {
     # sessions & help (5)
     "get_coding_session_info", "list_coding_sessions",
     "delete_coding_session", "cleanup_old_sessions", "explain_ai_coding_tools",
+    # memo writing (2)
+    "set_memo", "add_journal_entry",
+    # codebook editing — non-destructive (7)
+    "create_code", "rename_code", "recolor_code", "move_code_to_category",
+    "create_category", "rename_category", "move_category",
+    # codebook editing — destructive, preview->confirm (3)
+    "merge_codes", "delete_code", "delete_category",
 }
 
 
@@ -73,11 +80,11 @@ def _rows(project_path, sql, args=()):
 
 class TestToolSurfaceRegistration:
 
-    def test_all_36_tools_registered(self):
+    def test_all_tools_registered(self):
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 36
+        assert len(names) == 48
 
 
 class TestEndToEndLoop:

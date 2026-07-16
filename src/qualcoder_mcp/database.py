@@ -361,6 +361,25 @@ def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
 
 MAX_STRING_LENGTH = 10000  # Maximum allowed string length for user inputs
 MAX_TEXT_CONTENT_LENGTH = 1_000_000  # Maximum text content for file import (approx 1MB)
+# Journal titles: QualCoder restricts to letters/digits/underscore/space/hyphen
+# (journals.py:607, ^[\ \w-]+$) and unique(name).
+JOURNAL_NAME_RE = re.compile(r"^[ \w-]+$")
+
+
+def _reject_if_too_long(value: str, param_name: str,
+                        max_length: int = MAX_TEXT_CONTENT_LENGTH) -> None:
+    """Reject an over-length write instead of silently truncating it.
+
+    validate_string() truncates at MAX_STRING_LENGTH, which is fine for
+    short identifiers but would silently corrupt a long memo/journal on
+    round-trip (QualCoder imposes no length limit). Memo/journal WRITES use
+    this to fail loudly instead (memos-journals.md §6.7).
+    """
+    if len(value) > max_length:
+        raise ValueError(
+            f"{param_name} is too long ({len(value)} characters; limit "
+            f"{max_length}). Shorten it rather than have it silently truncated."
+        )
 
 
 def validate_string(value: str, param_name: str = "value",
@@ -2507,7 +2526,8 @@ class QualcoderDatabase:
         owner: str,
         memo: Optional[str] = None,
         category_id: Optional[int] = None,
-        color: Optional[str] = None
+        color: Optional[str] = None,
+        auto_commit: bool = True
     ) -> int:
         """Add a new code to the project.
 
@@ -2518,6 +2538,8 @@ class QualcoderDatabase:
             category_id: Optional category ID to place code in
             color: Hex color code #RRGGBB (default: random pick from
                    QualCoder's own palette, like GUI-created codes)
+            auto_commit: Commit immediately (default True). Pass False to
+                         defer the commit to the caller (batch/lock recheck).
 
         Returns:
             The cid (code ID) of the newly created code
@@ -2559,7 +2581,8 @@ class QualcoderDatabase:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (name, memo or "", category_id, owner, date_str, color))
 
-            self.conn.commit()
+            if auto_commit:
+                self.conn.commit()
 
             cid = cursor.lastrowid
             logger.info(f"Added code: cid={cid}, name={name}, category={category_id}")
@@ -2600,15 +2623,16 @@ class QualcoderDatabase:
         if not coding_check:
             raise ValueError(f"Coding ID {coding_id} does not exist")
 
-        # Update timestamp
-        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         try:
-            self.conn.execute("""
-                UPDATE code_text
-                SET memo = ?, date = ?
-                WHERE ctid = ?
-            """, (memo, date_str, coding_id))
+            # Content-only: QualCoder's coded-text memo edit updates ONLY
+            # memo, never date or owner (code_text.py:1636 /
+            # code_in_all_files.py:399; memos-journals.md §2.4, gotcha #1).
+            # The previous version stamped date — a fingerprint that mutated
+            # the coding's "coded on" timestamp.
+            self.conn.execute(
+                "UPDATE code_text SET memo = ? WHERE ctid = ?",
+                (memo, coding_id)
+            )
 
             self.conn.commit()
             logger.info(f"Updated memo for coding {coding_id}")
@@ -2977,6 +3001,664 @@ class QualcoderDatabase:
             "position_start": pos0,
             "position_end": pos1,
         }
+
+    # ========================================================================
+    # MEMO WRITE OPERATIONS
+    # ========================================================================
+    # Memo-bearing objects and their (table, id column, name column). Every
+    # target row uses a `memo TEXT` column that QualCoder stores as '' (empty
+    # string), never NULL, on creation (schema-writes.md §2.1/§3). Clearing a
+    # memo therefore stores '' to match.
+    _MEMO_TARGETS = {
+        "code": ("code_name", "cid", "name"),
+        "category": ("code_cat", "catid", "name"),
+        "file": ("source", "id", "name"),
+        "coding": ("code_text", "ctid", None),
+        "case": ("cases", "caseid", "name"),
+    }
+
+    def set_memo(
+        self,
+        target_type: str,
+        target_id: int,
+        memo: str,
+        auto_commit: bool = True
+    ) -> Dict[str, Any]:
+        """Set (or clear) the memo on a memo-bearing object.
+
+        Args:
+            target_type: One of 'code', 'category', 'file', 'coding', 'case'
+            target_id: The row id (cid/catid/source id/ctid/caseid)
+            memo: The memo text. '' clears it (QualCoder's empty-string
+                  convention — memos are never NULL).
+            auto_commit: Commit immediately (default True)
+
+        Returns:
+            Dict describing the updated object
+
+        Raises:
+            ValueError: If target_type/id is invalid or the row doesn't exist
+            RuntimeError: If database is read-only or the update fails
+        """
+        self._require_write_access()
+        if target_type not in self._MEMO_TARGETS:
+            raise ValueError(
+                f"target_type must be one of: "
+                f"{', '.join(sorted(self._MEMO_TARGETS))}"
+            )
+        target_id = validate_id(target_id, "target_id")
+        if not isinstance(memo, str):
+            raise ValueError("memo must be a string")
+        # Reject over-length rather than silently truncate (memos have no
+        # length limit in QualCoder; validate_string would truncate — a
+        # silent corruption of the user's note, memos-journals.md §6.7/#8)
+        _reject_if_too_long(memo, "memo")
+
+        table, id_col, name_col = self._MEMO_TARGETS[target_type]
+
+        # Verify the row exists and capture a label for the confirmation
+        select_cols = f"{name_col}" if name_col else id_col
+        try:
+            row = self.conn.execute(
+                f"SELECT {select_cols} FROM {table} WHERE {id_col} = ?",
+                (target_id,)
+            ).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "set_memo", "Failed to set memo")
+        if not row:
+            raise ValueError(
+                f"{target_type} with id {target_id} does not exist"
+            )
+        label = row[0] if name_col else f"{target_type} {target_id}"
+
+        # Content-only: QualCoder's memo edits for code_name/code_cat/source/
+        # code_text/cases touch ONLY the memo column — never date, never
+        # owner (memos-journals.md §2, §5.1; the summary table). '' clears
+        # the memo, matching QualCoder's empty-string convention (never NULL).
+        # (code_av is the one date-on-edit exception upstream, but it is not
+        # one of these targets.)
+        try:
+            self.conn.execute(
+                f"UPDATE {table} SET memo = ? WHERE {id_col} = ?",
+                (memo, target_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Set memo on {target_type} {target_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "set_memo", "Failed to set memo")
+
+        return {
+            "target_type": target_type,
+            "target_id": target_id,
+            "label": label,
+            "memo": memo,
+            "cleared": memo == "",
+        }
+
+    def add_journal_entry(
+        self,
+        name: str,
+        entry: str,
+        owner: str,
+        auto_commit: bool = True
+    ) -> Dict[str, Any]:
+        """Add a research journal entry.
+
+        Args:
+            name: Journal entry name/title (must be unique — journal has
+                  unique(name))
+            entry: The journal text (jentry)
+            owner: Coder name for attribution
+            auto_commit: Commit immediately (default True)
+
+        Returns:
+            Dict with the new entry's id, name and date
+
+        Raises:
+            ValueError: If validation fails or the name already exists
+            RuntimeError: If database is read-only or the insert fails
+        """
+        self._require_write_access()
+        if not name or not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        # QualCoder's journal-name charset: letters, digits, underscore,
+        # space, hyphen (journals.py:607; memos-journals.md §6.4). Enforce it
+        # so MCP journals are GUI-editable.
+        if not JOURNAL_NAME_RE.match(name):
+            raise ValueError(
+                "journal name may contain only letters, digits, spaces, "
+                "underscores and hyphens"
+            )
+        _reject_if_too_long(name, "name", max_length=MAX_STRING_LENGTH)
+        if not isinstance(entry, str):
+            raise ValueError("entry must be a string")
+        # Journals routinely exceed 10k chars; reject over-length rather than
+        # silently truncate (memos-journals.md §6.7)
+        _reject_if_too_long(entry, "entry")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+
+        # App-side duplicate pre-check (journal has unique(name) in the real
+        # v14 schema; this also protects on schemas that lack the constraint)
+        try:
+            existing = self.conn.execute(
+                "SELECT jid FROM journal WHERE name = ?", (name,)
+            ).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "add_journal_entry",
+                               "Failed to add journal entry")
+        if existing:
+            raise ValueError(f"A journal entry named '{name}' already exists")
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            cursor = self.conn.execute(
+                "INSERT INTO journal (name, jentry, date, owner) "
+                "VALUES (?, ?, ?, ?)",
+                (name, entry, date_str, owner)
+            )
+            if auto_commit:
+                self.conn.commit()
+            jid = cursor.lastrowid
+            logger.info(f"Added journal entry: jid={jid}, name={name}")
+        except sqlite3.IntegrityError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "unique" in str(e).lower():
+                raise ValueError(
+                    f"A journal entry named '{name}' already exists"
+                ) from None
+            raise RuntimeError(f"Failed to add journal entry: {e}") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "add_journal_entry",
+                               "Failed to add journal entry")
+
+        return {"id": jid, "name": name, "date": date_str, "owner": owner}
+
+    # ========================================================================
+    # CODEBOOK WRITE OPERATIONS (non-destructive)
+    # ========================================================================
+
+    def _get_code_row(self, code_id: int):
+        row = self.conn.execute(
+            "SELECT cid, name, catid, color FROM code_name WHERE cid = ?",
+            (code_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Code ID {code_id} does not exist")
+        return row
+
+    def _get_category_row(self, category_id: int):
+        row = self.conn.execute(
+            "SELECT catid, name, supercatid FROM code_cat WHERE catid = ?",
+            (category_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Category ID {category_id} does not exist")
+        return row
+
+    def rename_code(self, code_id: int, new_name: str,
+                    auto_commit: bool = True) -> Dict[str, Any]:
+        """Rename a code (code_name.name — unique among codes)."""
+        self._require_write_access()
+        code_id = validate_id(code_id, "code_id")
+        if not new_name or not isinstance(new_name, str) or not new_name.strip():
+            raise ValueError("new_name must be a non-empty string")
+        new_name = new_name.strip()
+        validate_string(new_name, "new_name")
+        try:
+            old = self._get_code_row(code_id)
+            # Pre-check the unique(name) collision (code-edits.md gotcha #14):
+            # QualCoder relies on an app-side pre-check, not the DB exception.
+            clash = self.conn.execute(
+                "SELECT cid FROM code_name WHERE name = ? AND cid <> ?",
+                (new_name, code_id)
+            ).fetchone()
+            if clash:
+                raise ValueError(f"A code named '{new_name}' already exists")
+            self.conn.execute(
+                "UPDATE code_name SET name = ? WHERE cid = ?",
+                (new_name, code_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Renamed code {code_id}: '{old['name']}' -> '{new_name}'")
+        except sqlite3.IntegrityError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "unique" in str(e).lower():
+                raise ValueError(f"A code named '{new_name}' already exists") from None
+            raise RuntimeError(f"Failed to rename code: {e}") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "rename_code", "Failed to rename code")
+        return {"code_id": code_id, "old_name": old["name"], "new_name": new_name}
+
+    def recolor_code(self, code_id: int, color: str,
+                     auto_commit: bool = True) -> Dict[str, Any]:
+        """Set a code's color (strict #RRGGBB, QualCoder's format)."""
+        self._require_write_access()
+        code_id = validate_id(code_id, "code_id")
+        if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+            raise ValueError(f"color must be hex format #RRGGBB, got {color}")
+        try:
+            old = self._get_code_row(code_id)
+            self.conn.execute(
+                "UPDATE code_name SET color = ? WHERE cid = ?", (color, code_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Recolored code {code_id} -> {color}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "recolor_code", "Failed to recolor code")
+        return {"code_id": code_id, "name": old["name"],
+                "old_color": old["color"], "new_color": color}
+
+    def move_code_to_category(self, code_id: int,
+                              category_id: Optional[int],
+                              auto_commit: bool = True) -> Dict[str, Any]:
+        """Move a code into a category (or None = uncategorised)."""
+        self._require_write_access()
+        code_id = validate_id(code_id, "code_id")
+        if category_id is not None:
+            category_id = validate_id(category_id, "category_id")
+        try:
+            old = self._get_code_row(code_id)
+            if category_id is not None:
+                self._get_category_row(category_id)  # existence check
+            self.conn.execute(
+                "UPDATE code_name SET catid = ? WHERE cid = ?",
+                (category_id, code_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Moved code {code_id} to category {category_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "move_code_to_category",
+                               "Failed to move code")
+        return {"code_id": code_id, "name": old["name"],
+                "old_category_id": old["catid"], "new_category_id": category_id}
+
+    def add_category(self, name: str, owner: str,
+                     supercatid: Optional[int] = None,
+                     memo: Optional[str] = None,
+                     auto_commit: bool = True) -> Dict[str, Any]:
+        """Create a code category (code_cat)."""
+        self._require_write_access()
+        if not name or not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        validate_string(name, "name")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+        if memo:
+            validate_string(memo, "memo")
+        if supercatid is not None:
+            supercatid = validate_id(supercatid, "supercatid")
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            if supercatid is not None:
+                self._get_category_row(supercatid)  # parent must exist
+            cursor = self.conn.execute(
+                "INSERT INTO code_cat (name, owner, date, memo, supercatid) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, owner, date_str, memo or "", supercatid)
+            )
+            if auto_commit:
+                self.conn.commit()
+            catid = cursor.lastrowid
+            logger.info(f"Added category: catid={catid}, name={name}")
+        except sqlite3.IntegrityError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "unique" in str(e).lower():
+                raise ValueError(f"A category named '{name}' already exists") from None
+            raise RuntimeError(f"Failed to add category: {e}") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "add_category", "Failed to add category")
+        return {"id": catid, "name": name, "supercatid": supercatid}
+
+    def rename_category(self, category_id: int, new_name: str,
+                        auto_commit: bool = True) -> Dict[str, Any]:
+        """Rename a category (code_cat.name — unique among categories)."""
+        self._require_write_access()
+        category_id = validate_id(category_id, "category_id")
+        if not new_name or not isinstance(new_name, str) or not new_name.strip():
+            raise ValueError("new_name must be a non-empty string")
+        new_name = new_name.strip()
+        validate_string(new_name, "new_name")
+        try:
+            old = self._get_category_row(category_id)
+            # Pre-check the global, case-sensitive unique(name) collision
+            # (category-tree.md §2, gotcha #3)
+            clash = self.conn.execute(
+                "SELECT catid FROM code_cat WHERE name = ? AND catid <> ?",
+                (new_name, category_id)
+            ).fetchone()
+            if clash:
+                raise ValueError(f"A category named '{new_name}' already exists")
+            self.conn.execute(
+                "UPDATE code_cat SET name = ? WHERE catid = ?",
+                (new_name, category_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Renamed category {category_id}: "
+                        f"'{old['name']}' -> '{new_name}'")
+        except sqlite3.IntegrityError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "unique" in str(e).lower():
+                raise ValueError(f"A category named '{new_name}' already exists") from None
+            raise RuntimeError(f"Failed to rename category: {e}") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "rename_category", "Failed to rename category")
+        return {"category_id": category_id, "old_name": old["name"],
+                "new_name": new_name}
+
+    def would_create_category_cycle(self, category_id: int,
+                                    new_supercatid: Optional[int]) -> bool:
+        """Check whether reparenting category_id under new_supercatid cycles.
+
+        QualCoder's coding-tree move guards only the direct self-loop and its
+        open-time hygiene never detects cycles (category-tree.md §3a/§5), so a
+        reparent can silently make categories and all their codes vanish from
+        the tree. This is the full id-based ancestor walk QualCoder lacks
+        (category-tree.md §7).
+        """
+        if new_supercatid is None:
+            return False  # top level is always safe
+        if new_supercatid == category_id:
+            return True  # direct self-loop
+        ancestor = new_supercatid
+        seen: set = set()
+        while ancestor is not None:
+            if ancestor == category_id:
+                return True  # walking up reaches the moved node -> cycle
+            if ancestor in seen:
+                return True  # already-corrupt data: treat as unsafe
+            seen.add(ancestor)
+            row = self.conn.execute(
+                "SELECT supercatid FROM code_cat WHERE catid = ?", (ancestor,)
+            ).fetchone()
+            if row is None:
+                return False  # dangling parent -> not a cycle
+            ancestor = row[0]
+        return False
+
+    def move_category(self, category_id: int,
+                      new_supercatid: Optional[int],
+                      auto_commit: bool = True) -> Dict[str, Any]:
+        """Reparent a category (set supercatid), refusing any cycle.
+
+        new_supercatid=None moves the category to the top level.
+        """
+        self._require_write_access()
+        category_id = validate_id(category_id, "category_id")
+        if new_supercatid is not None:
+            new_supercatid = validate_id(new_supercatid, "new_supercatid")
+        try:
+            old = self._get_category_row(category_id)
+            if new_supercatid is not None:
+                self._get_category_row(new_supercatid)  # parent must exist
+            if self.would_create_category_cycle(category_id, new_supercatid):
+                raise ValueError(
+                    "That move would make the category its own ancestor "
+                    "(a cycle), which would hide it and its codes from "
+                    "QualCoder's tree — refusing."
+                )
+            self.conn.execute(
+                "UPDATE code_cat SET supercatid = ? WHERE catid = ?",
+                (new_supercatid, category_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Moved category {category_id} under {new_supercatid}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "move_category", "Failed to move category")
+        return {"category_id": category_id, "name": old["name"],
+                "old_supercatid": old["supercatid"],
+                "new_supercatid": new_supercatid}
+
+    # ---- Destructive codebook ops (preview counts + guarded mutations) ----
+
+    def preview_merge_codes(self, from_code_id: int,
+                            into_code_id: int) -> Dict[str, Any]:
+        """Count what a merge would move/discard (read-only preview)."""
+        from_code_id = validate_id(from_code_id, "from_code_id")
+        into_code_id = validate_id(into_code_id, "into_code_id")
+        if from_code_id == into_code_id:
+            raise ValueError("Cannot merge a code into itself")
+        src = self._get_code_row(from_code_id)
+        dest = self._get_code_row(into_code_id)
+        text_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_text WHERE cid = ?", (from_code_id,)
+        ).fetchone()[0]
+        av_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_av WHERE cid = ?", (from_code_id,)
+        ).fetchone()[0]
+        img_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_image WHERE cid = ?", (from_code_id,)
+        ).fetchone()[0]
+        # Collisions: source text codings the destination already has at the
+        # same (fid,pos0,pos1,owner) — these source rows are DISCARDED
+        collisions = self.conn.execute(
+            "SELECT COUNT(*) FROM code_text s WHERE s.cid = ? AND EXISTS ("
+            "  SELECT 1 FROM code_text d WHERE d.cid = ? AND d.fid = s.fid "
+            "  AND d.pos0 = s.pos0 AND d.pos1 = s.pos1 AND d.owner = s.owner)",
+            (from_code_id, into_code_id)
+        ).fetchone()[0]
+        return {
+            "from_code": {"id": from_code_id, "name": src["name"]},
+            "into_code": {"id": into_code_id, "name": dest["name"]},
+            "text_codings_reassigned": text_n - collisions,
+            "text_codings_discarded_as_duplicates": collisions,
+            "av_codings_reassigned": av_n,
+            "image_codings_reassigned": img_n,
+        }
+
+    def merge_codes(self, from_code_id: int, into_code_id: int,
+                    auto_commit: bool = True) -> Dict[str, Any]:
+        """Merge one code into another (code-edits.md §6).
+
+        Lossy BY DESIGN, matching QualCoder exactly: on a code_text UNIQUE
+        (cid,fid,pos0,pos1,owner) collision the destination row wins untouched
+        and the source row is DELETED (no memo-concat, no important OR-ing).
+        code_av/code_image have no unique constraint and are reassigned
+        unconditionally (no dedup — true duplicates can result, as upstream).
+        The source code_name row is deleted last. One atomic transaction.
+        """
+        self._require_write_access()
+        preview = self.preview_merge_codes(from_code_id, into_code_id)
+        try:
+            # 1. code_text: pre-delete colliders (destination wins), then
+            #    bulk-reassign the survivors. Set-based equivalent of
+            #    QualCoder's per-row try/except loop (code-edits.md §6.8).
+            self.conn.execute(
+                "DELETE FROM code_text WHERE cid = ? AND EXISTS ("
+                "  SELECT 1 FROM code_text d WHERE d.cid = ? "
+                "  AND d.fid = code_text.fid AND d.pos0 = code_text.pos0 "
+                "  AND d.pos1 = code_text.pos1 AND d.owner = code_text.owner)",
+                (from_code_id, into_code_id)
+            )
+            self.conn.execute(
+                "UPDATE code_text SET cid = ? WHERE cid = ?",
+                (into_code_id, from_code_id)
+            )
+            # 2 & 3. code_av / code_image: no unique constraint -> reassign
+            #        unconditionally (no dedup, matching QualCoder)
+            self.conn.execute(
+                "UPDATE code_av SET cid = ? WHERE cid = ?",
+                (into_code_id, from_code_id)
+            )
+            self.conn.execute(
+                "UPDATE code_image SET cid = ? WHERE cid = ?",
+                (into_code_id, from_code_id)
+            )
+            # 4. delete the merged-away code definition
+            self.conn.execute(
+                "DELETE FROM code_name WHERE cid = ?", (from_code_id,)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Merged code {from_code_id} into {into_code_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "merge_codes", "Failed to merge codes")
+        return {"merged": True, **preview}
+
+    def preview_delete_code(self, code_id: int) -> Dict[str, Any]:
+        """Count the coded data a code delete would destroy (read-only)."""
+        code_id = validate_id(code_id, "code_id")
+        code = self._get_code_row(code_id)
+        text_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_text WHERE cid = ?", (code_id,)
+        ).fetchone()[0]
+        av_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_av WHERE cid = ?", (code_id,)
+        ).fetchone()[0]
+        img_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_image WHERE cid = ?", (code_id,)
+        ).fetchone()[0]
+        return {
+            "code": {"id": code_id, "name": code["name"]},
+            "text_codings_to_delete": text_n,
+            "av_codings_to_delete": av_n,
+            "image_codings_to_delete": img_n,
+            "total_codings_to_delete": text_n + av_n + img_n,
+        }
+
+    def delete_code(self, code_id: int,
+                    auto_commit: bool = True) -> Dict[str, Any]:
+        """Delete a code AND all its codings (code-edits.md §7).
+
+        Bulk data destruction, matching QualCoder: removes the code_name row
+        plus every code_text/code_av/code_image row for the cid. Categories,
+        annotations, case links and graph rows are deliberately NOT touched
+        (QualCoder leaves them; do not add cleanup it omits). Atomic.
+        """
+        self._require_write_access()
+        preview = self.preview_delete_code(code_id)
+        try:
+            self.conn.execute("DELETE FROM code_text WHERE cid = ?", (code_id,))
+            self.conn.execute("DELETE FROM code_av WHERE cid = ?", (code_id,))
+            self.conn.execute("DELETE FROM code_image WHERE cid = ?", (code_id,))
+            self.conn.execute("DELETE FROM code_name WHERE cid = ?", (code_id,))
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Deleted code {code_id} and its codings")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "delete_code", "Failed to delete code")
+        return {"deleted": True, **preview}
+
+    def preview_delete_category(self, category_id: int) -> Dict[str, Any]:
+        """Count what a category delete would reparent (read-only)."""
+        category_id = validate_id(category_id, "category_id")
+        cat = self._get_category_row(category_id)
+        codes_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_name WHERE catid = ?", (category_id,)
+        ).fetchone()[0]
+        subcats_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_cat WHERE supercatid = ?", (category_id,)
+        ).fetchone()[0]
+        return {
+            "category": {"id": category_id, "name": cat["name"]},
+            "codes_moved_to_top_level": codes_n,
+            "subcategories_moved_to_top_level": subcats_n,
+            "note": "Deleting a category is SHALLOW: its codes and direct "
+                    "sub-categories move to the top level (never deleted, "
+                    "never reparented to a grandparent). Coded data is "
+                    "untouched.",
+        }
+
+    def delete_category(self, category_id: int,
+                        auto_commit: bool = True) -> Dict[str, Any]:
+        """Delete a category, reparenting its children to top level.
+
+        Shallow and non-destructive to codes (category-tree.md §4): codes in
+        the category get catid=NULL, direct sub-categories get
+        supercatid=NULL, then the category row is deleted and a dangling-
+        parent sweep runs. Coded data is never touched.
+        """
+        self._require_write_access()
+        preview = self.preview_delete_category(category_id)
+        try:
+            self.conn.execute(
+                "UPDATE code_name SET catid = NULL WHERE catid = ?",
+                (category_id,)
+            )
+            self.conn.execute(
+                "UPDATE code_cat SET supercatid = NULL WHERE supercatid = ?",
+                (category_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM code_cat WHERE catid = ?", (category_id,)
+            )
+            # Safety sweep: null any now-dangling supercatid (matches
+            # QualCoder's post-delete + open-time hygiene)
+            self.conn.execute(
+                "UPDATE code_cat SET supercatid = NULL WHERE supercatid IS "
+                "NOT NULL AND supercatid NOT IN (SELECT catid FROM code_cat)"
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Deleted category {category_id}, reparented children")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "delete_category", "Failed to delete category")
+        return {"deleted": True, **preview}
 
     def backup_before_write(self) -> Path:
         """Create a backup of the current project before making changes.

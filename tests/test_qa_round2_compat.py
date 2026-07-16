@@ -195,11 +195,14 @@ class TestWriteRowContracts:
         json.loads(server.delete_coding(1, create_backup=False))
         after = _sql(qualcoder_db_path, "SELECT * FROM project")
         assert [tuple(r) for r in before] == [tuple(r) for r in after]
-        # static: the only UPDATE in the db layer touches code_text memo/date
+        # static: no UPDATE in the db layer ever targets project or
+        # coder_names (the W14 invariant). Codebook/memo edits legitimately
+        # UPDATE code_name/code_cat/code_text/source/cases.
         src = (SRC_DIR / "database.py").read_text()
-        updates = re.findall(r"UPDATE\s+(\w+)\s+SET\s+([^\n]+)", src)
-        assert all(t == "code_text" for t, _ in updates)
-        assert all("memo" in cols for _, cols in updates)
+        updated_tables = {t for t, _ in
+                          re.findall(r"UPDATE\s+(\w+)\s+SET\s+([^\n]+)", src)}
+        assert "project" not in updated_tables
+        assert "coder_names" not in updated_tables
 
 
 # =============================================================================

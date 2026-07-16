@@ -337,6 +337,98 @@ def _recheck_lock_before_commit(project_folder: Path, held: bool) -> None:
         raise DatabaseLockedError(qualcoder_open_message(holder))
 
 
+def _default_owner() -> str:
+    """Attribution owner for MCP-authored rows.
+
+    Uses the project's own coder name (project.codername) so memos,
+    journal entries and codebook edits are attributed to the researcher,
+    matching what QualCoder would record. Falls back to 'MCP'.
+    """
+    try:
+        info = get_db().get_project_info()
+        name = (info or {}).get("coder_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception:
+        pass
+    return "MCP"
+
+
+def _perform_write(op, create_backup: bool = True,
+                   backup_fail_detail: str = "nothing was written"):
+    """Run a mutation under the full write-safety discipline.
+
+    This is the single, uniform implementation of the write pattern every
+    write tool must follow: refuse on pre-v14 schema and while QualCoder
+    has the project open (heartbeat lock), upgrade to read-write, hold
+    QualCoder's project lock, back up before writing, run the mutation with
+    auto_commit deferred, re-check the lock to close the TOCTOU window,
+    commit, and downgrade to read-only on EVERY exit path including
+    exceptions.
+
+    Args:
+        op: Callable op(write_db) that performs the mutation with
+            auto_commit=False and returns a JSON-serializable success dict.
+        create_backup: Create a timestamped backup before writing.
+        backup_fail_detail: Tail of the "nothing was ..." message on backup
+            failure (e.g. "nothing was deleted").
+
+    Returns:
+        The op's success dict (with backup_path added when a backup was
+        made), or an {"error": ...} dict. Callers json.dumps the result.
+
+    Raises:
+        DatabaseLockedError: If QualCoder grabs the project mid-write (the
+            tool guard converts it to a friendly error).
+    """
+    gate = _write_gate_error()
+    if gate is not None:
+        return gate
+
+    project_folder = _current_project_folder()
+    write_db = get_db(read_only=False)
+    backup_path = None
+    try:
+        with hold_project_lock(project_folder) as lock_held:
+            if create_backup:
+                try:
+                    backup_path = write_db.backup_before_write()
+                except Exception as e:
+                    logger.error(f"Failed to create backup: {e}")
+                    _downgrade_to_readonly()
+                    return {
+                        "error": "Failed to create a backup — check disk space "
+                                 "and permissions. Nothing was written.",
+                        "message": f"Aborting to protect your data — "
+                                   f"{backup_fail_detail}.",
+                    }
+            try:
+                result = op(write_db)
+                _recheck_lock_before_commit(project_folder, lock_held)
+                write_db.conn.commit()
+            except DatabaseLockedError:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                raise
+            except (ValueError, RuntimeError) as e:
+                try:
+                    write_db.conn.rollback()
+                except Exception:
+                    pass
+                _downgrade_to_readonly()
+                return {"error": str(e)}
+    except DatabaseLockedError:
+        _downgrade_to_readonly()
+        raise
+
+    _downgrade_to_readonly()
+    if backup_path:
+        result["backup_path"] = str(backup_path)
+    return result
+
+
 def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]:
     """Verify a session belongs to the currently open project.
 
@@ -992,7 +1084,9 @@ def search_memos(query: str, limit: int = 50) -> str:
     """Search through all memos and annotations in the project.
 
     This tool searches through code memos, file memos, and annotations
-    to find notes and reflections containing specific keywords.
+    to find notes and reflections containing specific keywords. To WRITE a
+    memo, use set_memo(target_type, target_id, memo); to add a research
+    journal entry, use add_journal_entry(name, entry).
 
     Args:
         query: The text to search for in memos
@@ -3161,6 +3255,468 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             ],
             "tip": "Use explain_ai_coding_tools() with no arguments for an overview"
         }, indent=2)
+
+
+# ============================================================================
+# MEMO WRITING & JOURNALS (write tools)
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def set_memo(target_type: str, target_id: int, memo: str,
+             create_backup: bool = True) -> str:
+    """Write (or clear) the memo on a code, category, file, coding, or case.
+
+    THIS WRITES TO THE DATABASE. Memos are the researcher's analytic notes
+    attached to an object. This sets the memo, replacing any existing one;
+    pass an empty string to clear it.
+
+    Args:
+        target_type: What to attach the memo to — one of 'code', 'category',
+                     'file', 'coding', 'case'
+        target_id: The object's id (code cid / category catid / file source
+                   id / coding ctid / case caseid)
+        memo: The memo text ('' clears it)
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Returns:
+        JSON confirming the updated object and memo
+
+    Example:
+        "Add a memo to code 5: 'participants frame this as institutional'"
+        "Note on file 3 that the audio was hard to transcribe"
+    """
+    # Validate on the read-only connection before upgrading/backup
+    valid = {"code", "category", "file", "coding", "case"}
+    if target_type not in valid:
+        return json.dumps({
+            "error": f"target_type must be one of: {', '.join(sorted(valid))}"
+        })
+
+    result = _perform_write(
+        lambda wdb: {
+            "success": True,
+            **wdb.set_memo(target_type, target_id, memo, auto_commit=False),
+        },
+        create_backup=create_backup,
+        backup_fail_detail="the memo was not changed",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def add_journal_entry(name: str, entry: str,
+                      create_backup: bool = True) -> str:
+    """Add a research journal entry to the project.
+
+    THIS WRITES TO THE DATABASE. Journals are free-form research notes
+    (reflexive memos, decisions, an audit trail) kept alongside the coding.
+
+    Args:
+        name: A short unique title for the entry
+        entry: The journal text
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Returns:
+        JSON with the new entry's id, name and date
+
+    Example:
+        "Add a journal entry titled 'Week 1 reflections' about the emerging
+         boundary-setting theme"
+    """
+    owner = _default_owner()
+    result = _perform_write(
+        lambda wdb: {
+            "success": True,
+            "message": f"Added journal entry '{name}'",
+            "journal_entry": wdb.add_journal_entry(
+                name, entry, owner, auto_commit=False),
+        },
+        create_backup=create_backup,
+        backup_fail_detail="the journal entry was not added",
+    )
+    return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# CODEBOOK EDITING (non-destructive write tools)
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def create_code(name: str, category: Optional[str] = None,
+                color: Optional[str] = None, memo: Optional[str] = None,
+                create_backup: bool = True) -> str:
+    """Create a new code in the codebook.
+
+    THIS WRITES TO THE DATABASE. Adds a code that can then be applied to
+    segments. Code names are unique. The color defaults to a random pick
+    from QualCoder's own palette (like GUI-created codes).
+
+    Args:
+        name: The code name (must be unique among codes)
+        category: Optional category name to place the code in (matched
+                  case-insensitively; must already exist)
+        color: Optional #RRGGBB hex color (default: random palette color)
+        memo: Optional code definition/memo
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Returns:
+        JSON with the new code's id, name, category and color
+
+    Example:
+        "Create a code 'Institutional distrust' in the Wellbeing category"
+    """
+    ro_db = get_db()
+    category_id = None
+    if category is not None:
+        cats = ro_db.list_categories()
+        match = next((c for c in cats
+                      if c["name"].lower() == str(category).lower()), None)
+        if match is None:
+            return json.dumps({
+                "error": f"Category '{category}' not found",
+                "available_categories": sorted(c["name"] for c in cats)[:50],
+            })
+        category_id = match["id"]
+
+    owner = _default_owner()
+
+    def _op(wdb):
+        cid = wdb.add_code(name=name, owner=owner, memo=memo,
+                           category_id=category_id, color=color,
+                           auto_commit=False)
+        details = wdb.get_code_details(cid)
+        return {
+            "success": True,
+            "message": f"Created code '{name}'",
+            "code": {
+                "id": cid,
+                "name": details["name"],
+                "category": details.get("category"),
+                "color": details.get("color"),
+                "memo": details.get("memo", ""),
+            },
+        }
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the code was not created")
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def rename_code(code_id: int, new_name: str,
+                create_backup: bool = True) -> str:
+    """Rename a code. THIS WRITES TO THE DATABASE. Names are unique.
+
+    Args:
+        code_id: The code's cid
+        new_name: The new name (must not collide with another code)
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Renamed code",
+                     **wdb.rename_code(code_id, new_name, auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the code was not renamed",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def recolor_code(code_id: int, color: str,
+                 create_backup: bool = True) -> str:
+    """Set a code's color (#RRGGBB). THIS WRITES TO THE DATABASE.
+
+    Args:
+        code_id: The code's cid
+        color: Hex color in #RRGGBB format
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Recolored code",
+                     **wdb.recolor_code(code_id, color, auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the code color was not changed",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def move_code_to_category(code_id: int,
+                          category: Optional[str] = None,
+                          create_backup: bool = True) -> str:
+    """Move a code into a category (or out of any category).
+
+    THIS WRITES TO THE DATABASE.
+
+    Args:
+        code_id: The code's cid
+        category: Category name to move the code into (case-insensitive),
+                  or null/omitted to make the code uncategorised
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    ro_db = get_db()
+    category_id = None
+    if category is not None:
+        cats = ro_db.list_categories()
+        match = next((c for c in cats
+                      if c["name"].lower() == str(category).lower()), None)
+        if match is None:
+            return json.dumps({
+                "error": f"Category '{category}' not found",
+                "available_categories": sorted(c["name"] for c in cats)[:50],
+            })
+        category_id = match["id"]
+
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Moved code",
+                     **wdb.move_code_to_category(code_id, category_id,
+                                                 auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the code was not moved",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def create_category(name: str, parent_category: Optional[str] = None,
+                    memo: Optional[str] = None,
+                    create_backup: bool = True) -> str:
+    """Create a code category. THIS WRITES TO THE DATABASE.
+
+    Categories group codes (and can nest under a parent category). Names
+    are unique among categories.
+
+    Args:
+        name: The category name (unique among categories)
+        parent_category: Optional parent category name (case-insensitive) to
+                         nest under; omit for a top-level category
+        memo: Optional category memo
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    ro_db = get_db()
+    supercatid = None
+    if parent_category is not None:
+        cats = ro_db.list_categories()
+        match = next((c for c in cats
+                      if c["name"].lower() == str(parent_category).lower()), None)
+        if match is None:
+            return json.dumps({
+                "error": f"Parent category '{parent_category}' not found",
+                "available_categories": sorted(c["name"] for c in cats)[:50],
+            })
+        supercatid = match["id"]
+
+    owner = _default_owner()
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": f"Created category '{name}'",
+                     "category": wdb.add_category(name, owner,
+                                                  supercatid=supercatid,
+                                                  memo=memo, auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the category was not created",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def rename_category(category_id: int, new_name: str,
+                    create_backup: bool = True) -> str:
+    """Rename a category. THIS WRITES TO THE DATABASE. Names are unique.
+
+    Args:
+        category_id: The category's catid
+        new_name: The new name (must not collide with another category)
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Renamed category",
+                     **wdb.rename_category(category_id, new_name,
+                                           auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the category was not renamed",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def move_category(category_id: int, parent_category: Optional[str] = None,
+                  create_backup: bool = True) -> str:
+    """Reparent a category under another category (or to the top level).
+
+    THIS WRITES TO THE DATABASE. Refuses any move that would create a cycle
+    (make a category its own ancestor) — such a cycle would silently hide
+    the category and all its codes from QualCoder's tree.
+
+    Args:
+        category_id: The category to move (its catid)
+        parent_category: Name of the new parent category (case-insensitive),
+                         or null/omitted to move to the top level
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    ro_db = get_db()
+    new_supercatid = None
+    if parent_category is not None:
+        cats = ro_db.list_categories()
+        match = next((c for c in cats
+                      if c["name"].lower() == str(parent_category).lower()), None)
+        if match is None:
+            return json.dumps({
+                "error": f"Parent category '{parent_category}' not found",
+                "available_categories": sorted(c["name"] for c in cats)[:50],
+            })
+        new_supercatid = match["id"]
+
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Moved category",
+                     **wdb.move_category(category_id, new_supercatid,
+                                         auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the category was not moved",
+    )
+    return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# CODEBOOK EDITING (destructive — preview -> confirm -> safety backup)
+# ============================================================================
+
+def _guarded_destructive(preview_fn, op_fn, confirm: bool,
+                         backup_fail_detail: str,
+                         confirm_hint: str) -> Dict[str, Any]:
+    """Preview -> confirm -> safety-backup gate for destructive codebook ops.
+
+    Without confirm this returns a preview (read-only) of exactly what will
+    change; with confirm=true it runs the mutation under the full write
+    discipline, always creating a backup first (the safety net).
+    """
+    try:
+        preview = preview_fn(get_db())
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    if not confirm:
+        return {
+            "requires_confirmation": True,
+            "preview": preview,
+            "hint": confirm_hint,
+        }
+
+    # Always back up before a destructive write (no create_backup=False here)
+    return _perform_write(op_fn, create_backup=True,
+                          backup_fail_detail=backup_fail_detail)
+
+
+@mcp.tool()
+@_tool_guard
+def merge_codes(from_code_id: int, into_code_id: int,
+                confirm: bool = False) -> str:
+    """Merge one code into another. DESTRUCTIVE — preview first, then confirm.
+
+    THIS WRITES TO THE DATABASE. All codings of `from_code_id` are reassigned
+    to `into_code_id`, then `from_code_id` is deleted. This matches QualCoder
+    exactly and is LOSSY BY DESIGN: where both codes already mark the same
+    text span by the same coder, the source coding (with its memo/important
+    flag) is DISCARDED — the destination coding wins. Audio/video and image
+    codings are reassigned without de-duplication (as QualCoder does), which
+    can create visual duplicates.
+
+    Call once without confirm to see how many codings will be reassigned vs
+    discarded, then again with confirm=true. A backup is created first.
+
+    Args:
+        from_code_id: The code to merge away (deleted afterwards)
+        into_code_id: The code to keep (receives the codings)
+        confirm: Must be true to actually merge (default: preview only)
+    """
+    result = _guarded_destructive(
+        preview_fn=lambda ro: ro.preview_merge_codes(from_code_id, into_code_id),
+        op_fn=lambda wdb: {"success": True, "message": "Merged codes",
+                           **wdb.merge_codes(from_code_id, into_code_id,
+                                             auto_commit=False)},
+        confirm=confirm,
+        backup_fail_detail="no codes were merged",
+        confirm_hint="Review the counts, then call merge_codes again with "
+                     "confirm=true. The source coding is discarded on any "
+                     "duplicate span; a backup is made first.",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def delete_code(code_id: int, confirm: bool = False) -> str:
+    """Delete a code AND all its codings. DESTRUCTIVE — preview then confirm.
+
+    THIS WRITES TO THE DATABASE. Deleting a code removes the code itself and
+    EVERY coded segment made with it (text, audio/video, and image codings).
+    Categories, annotations, case links and other codes are not affected.
+
+    Call once without confirm to see how many codings will be destroyed, then
+    again with confirm=true. A backup is created first, so a mistaken delete
+    can be undone with restore_backup.
+
+    Args:
+        code_id: The code's cid
+        confirm: Must be true to actually delete (default: preview only)
+    """
+    result = _guarded_destructive(
+        preview_fn=lambda ro: ro.preview_delete_code(code_id),
+        op_fn=lambda wdb: {"success": True, "message": "Deleted code",
+                           **wdb.delete_code(code_id, auto_commit=False)},
+        confirm=confirm,
+        backup_fail_detail="the code was not deleted",
+        confirm_hint="This will destroy the code and all its coded segments. "
+                     "Review total_codings_to_delete, then call delete_code "
+                     "again with confirm=true. A backup is made first.",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def delete_category(category_id: int, confirm: bool = False) -> str:
+    """Delete a category. DESTRUCTIVE to the category — preview then confirm.
+
+    THIS WRITES TO THE DATABASE. Deleting a category is SHALLOW and safe for
+    your coding: its codes and its direct sub-categories are moved to the top
+    level (never deleted, never reparented to a grandparent), then the
+    category itself is removed. No coded data is lost.
+
+    Call once without confirm to see how many codes and sub-categories will be
+    moved to the top level, then again with confirm=true. A backup is made
+    first.
+
+    Args:
+        category_id: The category's catid
+        confirm: Must be true to actually delete (default: preview only)
+    """
+    result = _guarded_destructive(
+        preview_fn=lambda ro: ro.preview_delete_category(category_id),
+        op_fn=lambda wdb: {"success": True, "message": "Deleted category",
+                           **wdb.delete_category(category_id,
+                                                 auto_commit=False)},
+        confirm=confirm,
+        backup_fail_detail="the category was not deleted",
+        confirm_hint="Codes and sub-categories will move to the top level "
+                     "(coded data is untouched). Call delete_category again "
+                     "with confirm=true. A backup is made first.",
+    )
+    return json.dumps(result, indent=2)
 
 
 # ============================================================================
