@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — memo writing & codebook editing
+
+- **Memo writing**: `set_memo(target_type, target_id, memo)` for codes,
+  categories, files, codings and cases (content-only, matching
+  QualCoder — never rewrites date/owner; `""` clears, never NULL) and
+  `add_journal_entry(name, entry)` (name charset/uniqueness enforced).
+  Fixed a pre-existing bug where coding-memo edits stamped the coding's
+  `date`.
+- **Codebook editing**: `create_code`, `rename_code`, `recolor_code`,
+  `move_code_to_category`, `create_category`, `rename_category`,
+  `move_category` (with a cycle guard QualCoder lacks).
+- **Destructive codebook ops** with preview → confirm → safety-backup
+  gating: `merge_codes` (lossy-by-design, matching QualCoder exactly),
+  `delete_code` (bulk delete, previews the coding count QualCoder's
+  dialog omits), `delete_category` (shallow reparent to top level, no
+  cascade to coded data).
+- All new write tools honor the QualCoder lock, refuse below schema v14,
+  back up before writing, and reject over-length memo/journal content
+  rather than silently truncate it. Implemented against QualCoder 3.8.2
+  source ground truth.
+
 ## [0.6.0-alpha] - 2026-07-15
 
 Everything since 0.4.0: the QualCoder v14 schema alignment, the

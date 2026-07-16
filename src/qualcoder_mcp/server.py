@@ -3251,7 +3251,19 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "get_coding_session_info",
                 "list_coding_sessions",
                 "delete_coding_session",
-                "cleanup_old_sessions"
+                "cleanup_old_sessions",
+                "set_memo",
+                "add_journal_entry",
+                "create_code",
+                "rename_code",
+                "recolor_code",
+                "move_code_to_category",
+                "create_category",
+                "rename_category",
+                "move_category",
+                "merge_codes",
+                "delete_code",
+                "delete_category"
             ],
             "tip": "Use explain_ai_coding_tools() with no arguments for an overview"
         }, indent=2)
