@@ -1,7 +1,7 @@
 # AI-Assisted Coding Guide
 
 Guide to coding qualitative data with Claude through the QualCoder MCP
-server (v0.5.0 conversational workflow).
+server (v0.6.0 conversational workflow).
 
 > **This guide replaces the v0.3.0 export/import guide.** The old
 > `suggest_coding_for_files` / `export_coding_suggestions` /

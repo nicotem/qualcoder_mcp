@@ -609,7 +609,7 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ GUID-based suggestion approval/rejection
 - ✅ Context-aware suggestions with reasoning
 
-**Completed in v0.5.0 (this release):**
+**Completed in v0.6.0 (this release):**
 - ✅ `record_suggestions` — the AI coding loop works end-to-end via MCP tools
 - ✅ Session-project binding and text/position verification on every write
 - ✅ QualCoder lock-file protocol: writes refuse while QualCoder is open
@@ -619,7 +619,7 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Attribute queries with operators (contains, gt/gte/lt/lte)
 - ✅ Old-schema/corrupt/locked projects fail with clear, actionable errors
 
-**Future Enhancements (v0.5.0+):**
+**Future Enhancements (v0.7.0+):**
 - [ ] HTML review interface for visual approval/rejection of suggestions
 - [ ] Batch operations for multiple files at once
 - [ ] Automatic chunking for large files

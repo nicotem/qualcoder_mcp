@@ -5,12 +5,14 @@ All notable changes to the Qualcoder MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — targeting 0.5.0-alpha
+## [Unreleased]
+
+## [0.6.0-alpha] - 2026-07-15
 
 Everything since 0.4.0: the QualCoder v14 schema alignment, the
 `import_text_file` tool, and the pre-release fix wave (write-path
 blockers, QualCoder-3.8.2 ground-truth reconciliation, recovery tooling,
-REFI-QDA revival).
+REFI-QDA revival), hardened through three QA/security review rounds.
 
 ### Added — the AI coding loop now works end-to-end
 
@@ -59,7 +61,11 @@ REFI-QDA revival).
   references and empty-content files fail loudly instead of producing
   archives that crash importers), per-document GUID uniqueness, category
   hierarchy as nested `isCodable="false"` codes, real-UTC timestamps,
-  documented position convention, UTF-8 without BOM.
+  documented position convention, UTF-8 without BOM. Exports are
+  schema-validated against the official REFI-QDA Project.xsd in the test
+  suite (vendored with provenance; xmlschema as a dev dependency) —
+  QualCoder itself never validates, so this is where conformance is
+  proven.
 
 ### Changed — write-path safety (QualCoder 3.8.2 ground truth)
 
