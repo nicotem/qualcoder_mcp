@@ -337,6 +337,38 @@ def _recheck_lock_before_commit(project_folder: Path, held: bool) -> None:
         raise DatabaseLockedError(qualcoder_open_message(holder))
 
 
+def _resolve_category_by_name(name: str):
+    """Resolve a category name to its catid, refusing ambiguous matches.
+
+    Exact (case-sensitive) match wins; otherwise a UNIQUE case-insensitive
+    match is used. code_cat's unique(name) is BINARY, so 'Theme' and
+    'theme' can legally coexist — with both present a case-insensitive
+    lookup must refuse and list the candidates instead of silently picking
+    the first one (QA5-1).
+
+    Returns:
+        (category_id, None) on success, (None, error_dict) otherwise.
+    """
+    cats = get_db().list_categories()
+    exact = [c for c in cats if c["name"] == name]
+    if len(exact) == 1:
+        return exact[0]["id"], None
+    ci = [c for c in cats if c["name"].lower() == str(name).lower()]
+    if len(ci) == 1:
+        return ci[0]["id"], None
+    if len(ci) > 1:
+        return None, {
+            "error": f"Category name '{name}' is ambiguous — {len(ci)} "
+                     f"categories differ only by letter case. Use the exact "
+                     f"spelling of the one you mean (their ids are listed).",
+            "candidates": [{"id": c["id"], "name": c["name"]} for c in ci],
+        }
+    return None, {
+        "error": f"Category '{name}' not found",
+        "available_categories": sorted(c["name"] for c in cats)[:50],
+    }
+
+
 def _default_owner() -> str:
     """Attribution owner for MCP-authored rows.
 
@@ -3380,18 +3412,11 @@ def create_code(name: str, category: Optional[str] = None,
     Example:
         "Create a code 'Institutional distrust' in the Wellbeing category"
     """
-    ro_db = get_db()
     category_id = None
     if category is not None:
-        cats = ro_db.list_categories()
-        match = next((c for c in cats
-                      if c["name"].lower() == str(category).lower()), None)
-        if match is None:
-            return json.dumps({
-                "error": f"Category '{category}' not found",
-                "available_categories": sorted(c["name"] for c in cats)[:50],
-            })
-        category_id = match["id"]
+        category_id, err = _resolve_category_by_name(str(category))
+        if err is not None:
+            return json.dumps(err, indent=2)
 
     owner = _default_owner()
 
@@ -3474,18 +3499,11 @@ def move_code_to_category(code_id: int,
                   or null/omitted to make the code uncategorised
         create_backup: Create a timestamped backup before writing (default True)
     """
-    ro_db = get_db()
     category_id = None
     if category is not None:
-        cats = ro_db.list_categories()
-        match = next((c for c in cats
-                      if c["name"].lower() == str(category).lower()), None)
-        if match is None:
-            return json.dumps({
-                "error": f"Category '{category}' not found",
-                "available_categories": sorted(c["name"] for c in cats)[:50],
-            })
-        category_id = match["id"]
+        category_id, err = _resolve_category_by_name(str(category))
+        if err is not None:
+            return json.dumps(err, indent=2)
 
     result = _perform_write(
         lambda wdb: {"success": True,
@@ -3515,18 +3533,11 @@ def create_category(name: str, parent_category: Optional[str] = None,
         memo: Optional category memo
         create_backup: Create a timestamped backup before writing (default True)
     """
-    ro_db = get_db()
     supercatid = None
     if parent_category is not None:
-        cats = ro_db.list_categories()
-        match = next((c for c in cats
-                      if c["name"].lower() == str(parent_category).lower()), None)
-        if match is None:
-            return json.dumps({
-                "error": f"Parent category '{parent_category}' not found",
-                "available_categories": sorted(c["name"] for c in cats)[:50],
-            })
-        supercatid = match["id"]
+        supercatid, err = _resolve_category_by_name(str(parent_category))
+        if err is not None:
+            return json.dumps(err, indent=2)
 
     owner = _default_owner()
     result = _perform_write(
@@ -3579,18 +3590,11 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
                          or null/omitted to move to the top level
         create_backup: Create a timestamped backup before writing (default True)
     """
-    ro_db = get_db()
     new_supercatid = None
     if parent_category is not None:
-        cats = ro_db.list_categories()
-        match = next((c for c in cats
-                      if c["name"].lower() == str(parent_category).lower()), None)
-        if match is None:
-            return json.dumps({
-                "error": f"Parent category '{parent_category}' not found",
-                "available_categories": sorted(c["name"] for c in cats)[:50],
-            })
-        new_supercatid = match["id"]
+        new_supercatid, err = _resolve_category_by_name(str(parent_category))
+        if err is not None:
+            return json.dumps(err, indent=2)
 
     result = _perform_write(
         lambda wdb: {"success": True,

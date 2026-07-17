@@ -362,8 +362,10 @@ def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
 MAX_STRING_LENGTH = 10000  # Maximum allowed string length for user inputs
 MAX_TEXT_CONTENT_LENGTH = 1_000_000  # Maximum text content for file import (approx 1MB)
 # Journal titles: QualCoder restricts to letters/digits/underscore/space/hyphen
-# (journals.py:607, ^[\ \w-]+$) and unique(name).
-JOURNAL_NAME_RE = re.compile(r"^[ \w-]+$")
+# (journals.py:607, ^[\ \w-]+$). QualCoder's validator is PCRE2 whose \w is
+# ASCII-only, so re.ASCII keeps us from accepting names (e.g. accented or CJK
+# letters) that the GUI would refuse (QA5-2).
+JOURNAL_NAME_RE = re.compile(r"^[ \w-]+$", re.ASCII)
 
 
 def _reject_if_too_long(value: str, param_name: str,
@@ -2549,8 +2551,12 @@ class QualcoderDatabase:
             RuntimeError: If database is read-only or operation fails
         """
         self._require_write_access()
-        if not name or not isinstance(name, str):
+        # Strip and reject whitespace-only names (QA5-3), consistent with
+        # add_category/rename_code/rename_category
+        if not name or not isinstance(name, str) or not name.strip():
             raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        validate_string(name, "name")
 
         if not owner or not isinstance(owner, str):
             raise ValueError("owner must be a non-empty string")

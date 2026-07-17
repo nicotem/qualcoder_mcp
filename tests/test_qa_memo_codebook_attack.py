@@ -422,13 +422,6 @@ class TestSessionInteraction:
 
 class TestNameResolutionAmbiguity:
 
-    @pytest.mark.xfail(reason="QA5-1 (LOW): category parameters resolve "
-                       "case-insensitively by FIRST match, but BINARY "
-                       "unique(name) legally allows 'Theme' and 'theme' to "
-                       "coexist — with both present, create_code/"
-                       "move_code_to_category/move_category/create_category "
-                       "silently pick one. Ambiguous matches should be "
-                       "refused with both candidates listed.", strict=True)
     def test_qa5_1_case_ambiguous_category_refused(self, setup_server,
                                                    qualcoder_db_path):
         assert json.loads(server.create_category("Theme"))["success"]
