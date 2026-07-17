@@ -755,11 +755,18 @@ def select_project(project_path: str) -> str:
     Use this tool to change which project you're working with. You can get
     a list of available projects using 'list_available_projects' first.
 
+    The result may include a `warning` — e.g. that QualCoder currently has
+    this project open. If so, RELAY it to the user: ask them to close the
+    project in QualCoder before any coding they intend to save, because
+    all write operations will be refused until it is closed
+    (re-check with get_current_project).
+
     Args:
         project_path: Full path to the .qda file you want to open
 
     Returns:
-        JSON with success status and project information
+        JSON with success status, project information, and possibly a
+        `warning` to pass on to the user
     """
     try:
         switch_project(project_path)
@@ -783,9 +790,10 @@ def select_project(project_path: str) -> str:
         if state == "active":
             warnings.append(
                 f"QualCoder currently has this project open (user "
-                f"{holder or 'unknown'}). Reads may return changing data, and "
-                f"all write operations will be refused until the project is "
-                f"closed in QualCoder."
+                f"{holder or 'unknown'}). Ask the user to close the project "
+                f"in QualCoder before any coding they intend to save — all "
+                f"write operations will be refused until it is closed. Reads "
+                f"work but may return changing data."
             )
 
         # QualCoder's own open check requires "QualCoder" in project.about
@@ -1458,6 +1466,10 @@ def analyze_file_with_coding(file_id: int) -> str:
     Example use case:
         "What does Paul say that has relevance to the Wisdom of the Crowds argument?"
         This requires seeing both coded segments AND the full transcript context.
+
+    If the result contains `position_safety_warning`, you MUST relay it to
+    the user before coding or applying anything on this file — codings on
+    such files can render shifted or unhighlighted in QualCoder's editor.
     """
     result = get_db().get_file_with_coding(file_id)
     if result is None:
@@ -1782,19 +1794,24 @@ def analyze_for_coding(
     # project open). Surface it NOW and instruct the client to check with
     # the user before continuing.
     qualcoder_banner = ""
+    action_required = None
     state, holder = qualcoder_lock_state(_current_project_folder())
     if state == "active":
+        action_required = (
+            f"QualCoder appears to have this project open (user "
+            f"{holder or 'unknown'}). Ask the user to close QualCoder (or "
+            f"close this project in it) before continuing — all database "
+            f"writes will be refused while it is open, so the "
+            f"review-and-approve work would be wasted. Once they confirm it "
+            f"is closed, re-check via get_current_project (the "
+            f"`qualcoder_open` field must be false) and only then proceed "
+            f"with the coding workflow."
+        )
         qualcoder_banner = f"""
 ⚠️ **STOP — QUALCODER HAS THIS PROJECT OPEN**
 
 qualcoder_open: true
-action_required: QualCoder appears to have this project open (user
-{holder or 'unknown'}). Ask the user to close QualCoder (or close this
-project in it) before continuing — all database writes will be refused
-while it is open, so the review-and-approve work would be wasted. Once
-they confirm it is closed, re-check via get_current_project (the
-`qualcoder_open` field must be false) and only then proceed with the
-coding workflow.
+action_required: {action_required}
 """
 
     output = f"""{qualcoder_banner}
@@ -1829,7 +1846,17 @@ Once Claude records and presents suggestions, you can:
 - Use `apply_codings` to write approved suggestions to the database
 """
 
-    return output
+    # Structured envelope: session_id and the QualCoder-open signal as REAL
+    # fields (track4 #4) so structured-field clients see the "ask" rung the
+    # same way get_current_project reports the "re-check" rung. The prose
+    # banner is preserved in `instructions` (and still contains the literal
+    # `qualcoder_open: true` / `action_required:` markers).
+    envelope: Dict[str, Any] = {"session_id": session.session_id}
+    if state == "active":
+        envelope["qualcoder_open"] = True
+        envelope["action_required"] = action_required
+    envelope["instructions"] = output
+    return json.dumps(envelope, indent=2)
 
 
 @mcp.tool()
@@ -1870,7 +1897,11 @@ def record_suggestions(
 
     Returns:
         JSON with recorded suggestions (GUIDs for approval), per-item
-        rejections with reasons, duplicate count, and session statistics
+        rejections with reasons, duplicate count, and session statistics.
+        If it contains `position_safety_warning`, you MUST relay that
+        warning to the user before proceeding to approval — codings on the
+        named files can render shifted or unhighlighted in QualCoder's
+        editor (reports and exports are unaffected).
 
     Example:
         record_suggestions(session_id="...", suggestions=[
@@ -2124,21 +2155,27 @@ def update_suggestion_status(
 ) -> str:
     """Approve or reject specific coding suggestions.
 
-    Use this to mark which suggestions should be applied to the database.
-    You can approve some, reject others, or approve/reject all at once.
+    Use this to record the USER'S decisions about which suggestions should
+    be applied to the database. Approve only the suggestions the user has
+    actually reviewed and confirmed — do not approve on their behalf.
+
+    Suggestions already APPLIED to the database are immutable here and are
+    skipped (reported as skipped_applied); to remove an applied coding,
+    use delete_coding.
 
     Args:
         session_id: The session ID from analyze_for_coding
-        approve: List of suggestion GUIDs to approve
-        reject: List of suggestion GUIDs to reject
+        approve: List of suggestion GUIDs the user approved
+        reject: List of suggestion GUIDs the user rejected
 
     Returns:
-        Confirmation of status updates
+        Confirmation of status updates (including any skipped applied
+        suggestions)
 
     Example:
-        "Approve suggestions abc-123 and def-456"
-        "Reject suggestion xyz-789"
-        "Approve all pending suggestions"
+        User says "the first two look right, drop the third" ->
+        update_suggestion_status(session_id, approve=[guid1, guid2],
+        reject=[guid3])
     """
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
@@ -2197,6 +2234,10 @@ def apply_codings(
     first by default for safety.
 
     Safety guarantees:
+    - Writes are refused while QualCoder has the project open (its
+      heartbeat lock). If refused, ask the user to close QualCoder,
+      re-check with get_current_project (`qualcoder_open` must be false),
+      then retry.
     - The session must belong to the CURRENTLY OPEN project; applying a
       session to a different project is refused.
     - Every approved suggestion is re-validated BEFORE the backup and the
@@ -2206,6 +2247,9 @@ def apply_codings(
     - All codings are written in a single all-or-nothing transaction.
     - Applied suggestions are marked "applied" so the session cannot be
       double-applied by accident.
+    - If the success output contains `position_safety_warning`, relay it
+      to the user: the written file is position-unsafe (emoji/CRLF) and
+      the codings may render shifted in QualCoder's editor.
 
     Args:
         session_id: The session ID with approved suggestions
@@ -2388,8 +2432,24 @@ def apply_codings(
     session.mark_applied([r["guid"] for r in results])
     session_manager.save_session(session)
 
+    # Re-signal position safety at the write step (track4 #6): if any file
+    # just written to is position-unsafe, say so in the success output too
+    unsafe_written = sorted({
+        (file_cache[s.file_id] or {}).get("name", str(s.file_id))
+        for s in approved
+        if not db_position_safe((file_cache[s.file_id] or {}).get("content") or "")
+    })
+
     # Format output
     output = ["\n✅ **CODINGS APPLIED TO DATABASE**\n"]
+
+    if unsafe_written:
+        output.append(
+            f"position_safety_warning: file(s) {unsafe_written} contain \\r\\n "
+            f"or characters beyond U+FFFF, so these codings may render "
+            f"shifted or unhighlighted in QualCoder's editor (reports and "
+            f"exports are unaffected). Relay this to the user.\n"
+        )
 
     if backup_path:
         output.append(f"🔒 Backup created: `{backup_path}`\n")
@@ -2438,6 +2498,8 @@ def import_text_file(
 
     IMPORTANT: Make sure you're working on a copy of your project in the
     MCP workspace (~/Documents/Qualcoder MCP Projects/)
+
+    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         filename: Name for the new file (must include extension, e.g., "interview_04.txt")
@@ -2590,6 +2652,8 @@ def link_file_to_case(
     and every other case-based analysis. Files imported with
     import_text_file are NOT linked to any case by default.
 
+    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         file_id: The source file to link
         case_id: The case to link to (or use case_name)
@@ -2704,7 +2768,7 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     the code itself, the source file, or any other coding.
 
     A backup is created first by default, so the deletion can be undone with
-    restore_backup if needed.
+    restore_backup if needed. Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         coding_id: The ctid of the coding to delete. You can find ctids in
@@ -3321,6 +3385,10 @@ def set_memo(target_type: str, target_id: int, memo: str,
     attached to an object. This sets the memo, replacing any existing one;
     pass an empty string to clear it.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         target_type: What to attach the memo to — one of 'code', 'category',
                      'file', 'coding', 'case'
@@ -3363,6 +3431,10 @@ def add_journal_entry(name: str, entry: str,
     THIS WRITES TO THE DATABASE. Journals are free-form research notes
     (reflexive memos, decisions, an audit trail) kept alongside the coding.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         name: A short unique title for the entry
         entry: The journal text
@@ -3403,6 +3475,10 @@ def create_code(name: str, category: Optional[str] = None,
     THIS WRITES TO THE DATABASE. Adds a code that can then be applied to
     segments. Code names are unique. The color defaults to a random pick
     from QualCoder's own palette (like GUI-created codes).
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         name: The code name (must be unique among codes)
@@ -3454,6 +3530,10 @@ def rename_code(code_id: int, new_name: str,
                 create_backup: bool = True) -> str:
     """Rename a code. THIS WRITES TO THE DATABASE. Names are unique.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         code_id: The code's cid
         new_name: The new name (must not collide with another code)
@@ -3474,6 +3554,10 @@ def rename_code(code_id: int, new_name: str,
 def recolor_code(code_id: int, color: str,
                  create_backup: bool = True) -> str:
     """Set a code's color (#RRGGBB). THIS WRITES TO THE DATABASE.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         code_id: The code's cid
@@ -3498,6 +3582,10 @@ def move_code_to_category(code_id: int,
     """Move a code into a category (or out of any category).
 
     THIS WRITES TO THE DATABASE.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         code_id: The code's cid
@@ -3532,6 +3620,10 @@ def create_category(name: str, parent_category: Optional[str] = None,
     Categories group codes (and can nest under a parent category). Names
     are unique among categories.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         name: The category name (unique among categories)
         parent_category: Optional parent category name (case-insensitive) to
@@ -3564,6 +3656,10 @@ def rename_category(category_id: int, new_name: str,
                     create_backup: bool = True) -> str:
     """Rename a category. THIS WRITES TO THE DATABASE. Names are unique.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         category_id: The category's catid
         new_name: The new name (must not collide with another category)
@@ -3589,6 +3685,10 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
     THIS WRITES TO THE DATABASE. Refuses any move that would create a cycle
     (make a category its own ancestor) — such a cycle would silently hide
     the category and all its codes from QualCoder's tree.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         category_id: The category to move (its catid)
@@ -3660,6 +3760,10 @@ def merge_codes(from_code_id: int, into_code_id: int,
     Call once without confirm to see how many codings will be reassigned vs
     discarded, then again with confirm=true. A backup is created first.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         from_code_id: The code to merge away (deleted afterwards)
         into_code_id: The code to keep (receives the codings)
@@ -3692,6 +3796,10 @@ def delete_code(code_id: int, confirm: bool = False) -> str:
     again with confirm=true. A backup is created first, so a mistaken delete
     can be undone with restore_backup.
 
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
     Args:
         code_id: The code's cid
         confirm: Must be true to actually delete (default: preview only)
@@ -3722,6 +3830,10 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
     Call once without confirm to see how many codes and sub-categories will be
     moved to the top level, then again with confirm=true. A backup is made
     first.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
 
     Args:
         category_id: The category's catid
