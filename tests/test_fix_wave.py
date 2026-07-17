@@ -161,18 +161,24 @@ class TestSessionStartQualcoderCheck:
         finally:
             lock.unlink()
 
-    def test_absent_lock_no_flag_noise(self, setup_server, qualcoder_db_path):
+    def test_absent_lock_consistent_shape(self, setup_server, qualcoder_db_path):
         out = server.analyze_for_coding([1])
-        assert "qualcoder_open" not in out
-        assert "action_required" not in out
+        # QA6-1: qualcoder_open is always present, false when clear; no
+        # directive noise beyond that
+        env = json.loads(out)
+        assert env["qualcoder_open"] is False
+        assert "action_required" not in env
+        assert "STOP" not in out
         assert "ANALYSIS SESSION CREATED" in out
 
-    def test_stale_lock_no_flag_noise(self, setup_server, qualcoder_db_path):
+    def test_stale_lock_consistent_shape(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
         lock.write_text(f"gemma\n{time.time() - 60}")
         try:
             out = server.analyze_for_coding([1])
-            assert "qualcoder_open" not in out
+            env = json.loads(out)
+            assert env["qualcoder_open"] is False
+            assert "action_required" not in env
             assert "ANALYSIS SESSION CREATED" in out
         finally:
             lock.unlink()

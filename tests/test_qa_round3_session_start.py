@@ -64,7 +64,11 @@ class TestSessionStartCraftedLocks:
         _lock(qualcoder_db_path).write_text("")
         try:
             out = server.analyze_for_coding([1])
-            assert "qualcoder_open" not in out
+            # QA6-1: qualcoder_open is ALWAYS present (false when clear) —
+            # consistent with get_current_project; no banner, no directive
+            env = json.loads(out)
+            assert env["qualcoder_open"] is False
+            assert "action_required" not in env
             assert "STOP" not in out
             assert "Session ID: `" in out          # session created normally
             cur = json.loads(server.get_current_project())

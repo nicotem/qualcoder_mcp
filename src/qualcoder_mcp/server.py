@@ -426,6 +426,7 @@ def _perform_write(op, create_backup: bool = True,
     project_folder = _current_project_folder()
     write_db = get_db(read_only=False)
     backup_path = None
+    committed = False
     try:
         with hold_project_lock(project_folder) as lock_held:
             if create_backup:
@@ -433,7 +434,6 @@ def _perform_write(op, create_backup: bool = True,
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
                     logger.error(f"Failed to create backup: {e}")
-                    _downgrade_to_readonly()
                     return {
                         "error": "Failed to create a backup — check disk space "
                                  "and permissions. Nothing was written.",
@@ -444,24 +444,28 @@ def _perform_write(op, create_backup: bool = True,
                 result = op(write_db)
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
+                committed = True
             except DatabaseLockedError:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
                 raise
             except (ValueError, RuntimeError) as e:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                _downgrade_to_readonly()
                 return {"error": str(e)}
-    except DatabaseLockedError:
+    finally:
+        # Unconditional cleanup on EVERY exit path (SEC M-1). The previous
+        # shape only rolled back / downgraded for DatabaseLockedError,
+        # ValueError and RuntimeError — a commit-time sqlite3.Error (disk
+        # I/O, SQLITE_BUSY) escaped past both, leaving the GLOBAL connection
+        # read-write with an open transaction; the next write reused it and
+        # could silently co-commit the failed operation's changes. A finally
+        # block cannot be skipped: roll back anything still in flight, then
+        # always return the connection to read-only.
+        if not committed:
+            try:
+                if write_db.conn is not None and write_db.conn.in_transaction:
+                    write_db.conn.rollback()
+            except Exception:
+                pass
         _downgrade_to_readonly()
-        raise
 
-    _downgrade_to_readonly()
     if backup_path:
         result["backup_path"] = str(backup_path)
     return result
@@ -1868,9 +1872,14 @@ Once Claude records and presents suggestions, you can:
     # same way get_current_project reports the "re-check" rung. The prose
     # banner is preserved in `instructions` (and still contains the literal
     # `qualcoder_open: true` / `action_required:` markers).
-    envelope: Dict[str, Any] = {"session_id": session.session_id}
+    envelope: Dict[str, Any] = {
+        "session_id": session.session_id,
+        # Always present (false when clear), matching get_current_project's
+        # always-present field so structured consumers get a consistent
+        # shape (QA6-1)
+        "qualcoder_open": state == "active",
+    }
     if state == "active":
-        envelope["qualcoder_open"] = True
         envelope["action_required"] = action_required
     envelope["instructions"] = output
     return json.dumps(envelope, indent=2)

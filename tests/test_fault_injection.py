@@ -1192,3 +1192,109 @@ class TestRestoreBackupFaults:
         assert not env.folder.exists()
         summary = json.loads(server.get_project_summary())
         assert "error" in summary
+
+
+# ---------------------------------------------------------------------------
+# SEC M-1 regression: commit-time sqlite3.Error through _perform_write
+# ---------------------------------------------------------------------------
+
+class TestPerformWriteUnconditionalCleanup:
+    """_perform_write (the shared write helper behind the memo/codebook
+    tools) previously rolled back and downgraded only for
+    DatabaseLockedError/ValueError/RuntimeError — a BARE sqlite3.Error at
+    commit time (disk I/O, SQLITE_BUSY) escaped both, leaving the GLOBAL
+    connection read-write with an open transaction; the next write reused
+    it and could silently co-commit the failed op's changes (Security M-1,
+    fault-injected via set_memo). Cleanup now runs in a finally block.
+    """
+
+    def _inject_commit_error(self, monkeypatch):
+        def boom(folder, held):
+            raise sqlite3.OperationalError("disk I/O error")
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", boom)
+
+    def test_commit_time_sqlite_error_leaves_clean_state(self, fi_env,
+                                                         monkeypatch):
+        env = fi_env
+        pre_hash = env.hash()
+        self._inject_commit_error(monkeypatch)
+
+        out = server.set_memo("code", 1, "will not land", create_backup=False)
+
+        # 1. sanitized structured error, no raw traceback
+        data = json.loads(out)
+        assert "error" in data
+        assert "Traceback" not in out
+        # 2. the failed op's change was rolled back
+        assert env.hash() == pre_hash
+        # 3. global connection is READ-ONLY again with NO open transaction
+        assert server.db is not None
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+    def test_next_write_does_not_co_commit_failed_op(self, fi_env,
+                                                     monkeypatch):
+        """The exact M-1 exploit shape: after the failed write, a subsequent
+        UNRELATED write must not carry the failed op's changes with it."""
+        env = fi_env
+        self._inject_commit_error(monkeypatch)
+        server.set_memo("code", 1, "ghost memo", create_backup=False)
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            _ORIG_RECHECK)
+
+        out = json.loads(server.set_memo("case", 1, "legit memo",
+                                         create_backup=False))
+        assert out.get("success") is True
+
+        con = sqlite3.connect(str(env.folder / "data.qda"))
+        code_memo = con.execute(
+            "SELECT memo FROM code_name WHERE cid=1").fetchone()[0]
+        case_memo = con.execute(
+            "SELECT memo FROM cases WHERE caseid=1").fetchone()[0]
+        con.close()
+        assert case_memo == "legit memo"
+        assert code_memo != "ghost memo"  # never co-committed
+
+    def test_guarded_destructive_inherits_cleanup(self, fi_env, monkeypatch):
+        """merge/delete route through the same helper: same guarantee."""
+        env = fi_env
+        pre_hash = env.hash()
+        self._inject_commit_error(monkeypatch)
+
+        out = json.loads(server.delete_code(1, confirm=True))
+        assert "error" in out
+        assert env.hash() == pre_hash                 # nothing destroyed
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+
+_ORIG_RECHECK = server._recheck_lock_before_commit
+
+
+class TestPerformWriteUnexpectedException:
+    """Security's second probe shape: op raises something entirely outside
+    the anticipated classes (KeyError). The exception propagates past
+    _tool_guard (FastMCP's catch-all handles it in production), but the
+    finally block must STILL roll back and downgrade — state is never left
+    dirty regardless of exception class."""
+
+    def test_unexpected_exception_class_still_cleans_up(self, fi_env,
+                                                        monkeypatch):
+        env = fi_env
+        pre_hash = env.hash()
+
+        def keyboom(self, *a, **k):
+            raise KeyError("unexpected internal key")
+
+        monkeypatch.setattr(QualcoderDatabase, "set_memo", keyboom)
+        with pytest.raises(KeyError):
+            server.set_memo("code", 1, "x", create_backup=False)
+
+        assert env.hash() == pre_hash
+        assert server.db is not None
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+        # server not bricked: a normal write works afterwards
+        monkeypatch.undo()
+        out = json.loads(server.set_memo("code", 1, "after", create_backup=False))
+        assert out.get("success") is True
