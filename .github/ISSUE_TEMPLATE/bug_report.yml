@@ -1,0 +1,62 @@
+name: Bug report
+description: Something didn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping test this alpha. A couple of things first:
+        - **Please work on a copy of your data**, never an original.
+        - **Don't paste participant data, interview text, or anything sensitive** into this issue — describe the problem structurally instead (e.g. "a code name with an apostrophe", "a file with ~40k characters").
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you ask Claude to do, and what went wrong?
+      placeholder: I asked Claude to merge two codes and it…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The conversation or sequence of tools, as best you can reconstruct it.
+    validations:
+      required: false
+  - type: input
+    id: mcp-version
+    attributes:
+      label: QualCoder MCP version
+      placeholder: e.g. 0.7.0-alpha (ask Claude "what version of the qualcoder server is running?")
+    validations:
+      required: true
+  - type: input
+    id: qualcoder-version
+    attributes:
+      label: QualCoder version
+      placeholder: e.g. 3.8.2
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.11
+    validations:
+      required: false

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-alpha] - 2026-07-17
+
+Adds memo writing and full codebook editing, implemented against
+QualCoder 3.8.2 source ground truth and hardened through QA, security,
+and four parallel test tracks (transport, property-based, scale/media,
+and fault injection). Tool surface: 36 → 48.
+
 ### Added — memo writing & codebook editing
 
 - **Memo writing**: `set_memo(target_type, target_id, memo)` for codes,
@@ -54,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed: a restore whose copy failed partway could leave a half-replaced
   live project; the recovery handler now clears the partial folder and
   restores from the safety backup.
+- Fixed: the shared write helper now guarantees a rollback and read-only
+  downgrade on every failure path (including commit-time database
+  errors), so a failed write can never leave the connection writable or
+  its changes to be silently co-committed by a later write.
 
 ## [0.6.0-alpha] - 2026-07-15
 

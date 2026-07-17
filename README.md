@@ -17,11 +17,14 @@ This MCP server allows Claude (via Claude Desktop) to directly access and analyz
 - 👥 **Query by demographics/attributes** (age, gender, etc.)
 - 🎯 **Create case-code matrices for comparative analysis**
 - 🗒️ Search through memos and annotations
-- 🤖 **AI-assisted coding: Conversational approval workflow** (NEW in v0.4.0!)
-- ✅ **Review and approve suggestions in chat before applying** (NEW in v0.4.0!)
-- 📥 **Direct database writes with automatic backups** (NEW in v0.4.0!)
+- 🤖 **AI-assisted coding**: suggest → review → approve → apply, so nothing is written until you say so
+- 🏷️ **Codebook editing**: create, rename, recolor, merge, move, and delete codes and categories
+- 💾 **Memo & journal writing**: annotate codes, files, codings, and cases; keep a research journal
+- ↩️ **Undo & restore**: delete a coding, list backups, and restore a whole project to an earlier state
+- 📥 **Import transcripts** and link files to cases
+- 🔄 **REFI-QDA export** (.qdpx) for interchange with NVivo, ATLAS.ti, and MAXQDA
 
-You can work with read-only analysis OR use write-enabled AI coding. All AI coding operations include automatic backups for safety.
+You can work with read-only analysis OR use write-enabled tools. The database is opened read-only by default; every write is preceded by an automatic backup, verified against QualCoder's format, and refused while QualCoder has the project open — so the two can't corrupt each other.
 
 ## Support & Feedback
 
