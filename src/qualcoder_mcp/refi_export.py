@@ -463,8 +463,14 @@ class RefiQdaExporter:
             logger.info("Generating REFI-QDA XML...")
             xml_root = self.create_project_xml(suggestions, project_name)
 
-            # Pretty print XML
-            xml_string = self.prettify_xml(xml_root)
+            # Serialize ONCE. The previous minidom pretty-print re-parse
+            # roughly doubled peak memory (~147 MB for a 4 MB project) and
+            # dominated wall-clock at scale (track6); pretty-printing a
+            # machine-interchange file buys nothing. prettify_xml remains
+            # available for callers that want readable output.
+            xml_string = ET.tostring(
+                xml_root, encoding="unicode", xml_declaration=True
+            )
 
             file_guids = self.db.get_file_guids()
 

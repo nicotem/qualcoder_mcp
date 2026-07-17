@@ -1379,6 +1379,14 @@ def export_refi_qda(
     if skipped_non_text:
         output["skipped_codings_on_non_text_sources"] = skipped_non_text
     if session_id is None:
+        media = ro_db.count_media_codings()
+        if media["av"] or media["image"]:
+            output["av_image_codings_not_exported"] = media
+            output["note"] += (
+                f" This project also has {media['av']} audio/video and "
+                f"{media['image']} image codings — REFI export covers text "
+                f"codings only, so those are NOT included."
+            )
         if skipped_invalid:
             output["skipped_invalid_codings"] = len(skipped_invalid)
             output["skipped_details"] = skipped_invalid[:20]
@@ -1476,6 +1484,15 @@ def analyze_file_with_coding(file_id: int) -> str:
         return json.dumps({
             "error": f"File with id {file_id} not found"
         })
+
+    # Non-text sources: say so explicitly — an empty full_text was
+    # previously indistinguishable from a genuinely empty text file (track6)
+    if not result.get("file_info", {}).get("is_text", True):
+        result["note"] = (
+            f"This source is {result['file_info'].get('type', 'media')}, not "
+            f"text — it has no codable text content, and its image/audio-video "
+            f"codings (if any) are not shown by this tool."
+        )
 
     # Read-side position-safety notice (QA2-4): researchers should learn
     # that a file is position-unsafe when EXPLORING it, not only when
@@ -3047,17 +3064,26 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         switch_project(current_project_path)
         raise
     except Exception as e:
-        # Attempt recovery from the safety backup
+        # Attempt recovery from the safety backup. A copytree that fails
+        # PARTWAY (e.g. disk full) leaves a PARTIAL project folder — the
+        # backup's data.qda without the rest — which the previous
+        # exists()-guard mistook for "project still there", leaving a live
+        # half-replaced project that the next read tool silently reconnects
+        # to (fault-injection D1). Remove any partial folder first so the
+        # safety-backup recovery always runs on a clean slate.
         logger.error(f"Restore failed mid-swap: {e}")
         try:
-            if not project_folder.exists():
-                shutil.copytree(safety_backup, project_folder)
-                switch_project(current_project_path)
-                return json.dumps({
-                    "error": "Restore failed, but the project was recovered "
-                             "from the safety backup — nothing was lost.",
-                    "safety_backup": str(safety_backup)
-                })
+            if project_folder.exists():
+                # The original folder was already rmtree'd inside the swap;
+                # anything here now is a partial copy — never the original
+                shutil.rmtree(project_folder)
+            shutil.copytree(safety_backup, project_folder)
+            switch_project(current_project_path)
+            return json.dumps({
+                "error": "Restore failed, but the project was recovered "
+                         "from the safety backup — nothing was lost.",
+                "safety_backup": str(safety_backup)
+            })
         except Exception as recovery_error:
             logger.error(f"Recovery also failed: {recovery_error}")
         return json.dumps({

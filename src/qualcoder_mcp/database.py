@@ -1,5 +1,6 @@
 """Database interface for Qualcoder .qda files."""
 
+import bisect
 import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
@@ -1068,6 +1069,7 @@ class QualcoderDatabase:
                     id,
                     name,
                     fulltext,
+                    mediapath,
                     memo,
                     owner,
                     date
@@ -1078,6 +1080,9 @@ class QualcoderDatabase:
             file_row = file_cursor.fetchone()
             if not file_row:
                 return None
+
+            file_type = _detect_file_type(file_row["mediapath"])
+            is_text = file_type in ("text", "pdf")
 
             # Get all coded segments for this file
             segments_cursor = self.conn.execute("""
@@ -1162,6 +1167,8 @@ class QualcoderDatabase:
                 "file_info": {
                     "id": file_row["id"],
                     "name": file_row["name"],
+                    "type": file_type,
+                    "is_text": is_text,
                     "memo": file_row["memo"] or "",
                     "owner": file_row["owner"],
                     "date": file_row["date"]
@@ -1808,6 +1815,22 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "search_files", "Failed to search files")
 
+    def count_media_codings(self) -> Dict[str, int]:
+        """Count the project's audio/video and image codings.
+
+        REFI export covers text codings only; the export tool uses these
+        counts to disclose what a mixed project loses (track6 finding).
+        """
+        try:
+            av = self.conn.execute(
+                "SELECT COUNT(*) FROM code_av").fetchone()[0]
+            image = self.conn.execute(
+                "SELECT COUNT(*) FROM code_image").fetchone()[0]
+            return {"av": av, "image": image}
+        except sqlite3.Error as e:
+            _raise_query_error(e, "count_media_codings",
+                               "Failed to count media codings")
+
     def get_journal_entries(self) -> List[Dict[str, Any]]:
         """Get all journal entries.
 
@@ -2081,60 +2104,70 @@ class QualcoderDatabase:
         if not isinstance(window_size, int) or window_size < 0:
             raise ValueError("window_size must be a non-negative integer")
 
+        # The old SQL self-join on code_text was O(n^2) in codings-per-file
+        # (3.2 s at 12k codings in one dense document — track6). The user DB
+        # schema is QualCoder's and must not gain indexes, so the join is
+        # built in Python instead: one pass to group rows by fid, then a
+        # sorted-array bisect per candidate row — O(n log n) per file.
+        # Semantics are identical to the old SQL: window_size == 0 counts
+        # closed-interval intersections (the three OR conditions reduce to
+        # o.pos0 <= t.pos1 AND o.pos1 >= t.pos0); window_size > 0 counts
+        # |o.pos0 - t.pos0| <= window; NULL positions never match.
         try:
-            if window_size == 0:
-                # Find overlapping segments
-                cursor = self.conn.execute("""
-                    SELECT
-                        c.cid,
-                        c.name as code_name,
-                        c.color,
-                        cat.name as category_name,
-                        COUNT(*) as cooccurrence_count
-                    FROM code_text ct1
-                    JOIN code_text ct2 ON ct1.fid = ct2.fid
-                        AND ct1.cid != ct2.cid
-                        AND (
-                            (ct2.pos0 >= ct1.pos0 AND ct2.pos0 <= ct1.pos1)
-                            OR (ct2.pos1 >= ct1.pos0 AND ct2.pos1 <= ct1.pos1)
-                            OR (ct2.pos0 <= ct1.pos0 AND ct2.pos1 >= ct1.pos1)
-                        )
-                    JOIN code_name c ON ct2.cid = c.cid
-                    LEFT JOIN code_cat cat ON c.catid = cat.catid
-                    WHERE ct1.cid = ?
-                    GROUP BY c.cid, c.name, c.color, cat.name
-                    ORDER BY cooccurrence_count DESC
-                """, (code_id,))
-            else:
-                # Find codes within window
-                cursor = self.conn.execute("""
-                    SELECT
-                        c.cid,
-                        c.name as code_name,
-                        c.color,
-                        cat.name as category_name,
-                        COUNT(*) as cooccurrence_count
-                    FROM code_text ct1
-                    JOIN code_text ct2 ON ct1.fid = ct2.fid
-                        AND ct1.cid != ct2.cid
-                        AND ABS(ct2.pos0 - ct1.pos0) <= ?
-                    JOIN code_name c ON ct2.cid = c.cid
-                    LEFT JOIN code_cat cat ON c.catid = cat.catid
-                    WHERE ct1.cid = ?
-                    GROUP BY c.cid, c.name, c.color, cat.name
-                    ORDER BY cooccurrence_count DESC
-                """, (window_size, code_id))
+            rows = self.conn.execute("""
+                SELECT ct.cid, ct.fid, ct.pos0, ct.pos1
+                FROM code_text ct
+                WHERE ct.fid IN (
+                    SELECT DISTINCT fid FROM code_text WHERE cid = ?
+                )
+            """, (code_id,)).fetchall()
 
+            # Group by file, separating target-code rows from candidates
+            targets_by_fid: Dict[Any, List] = {}
+            others_by_fid: Dict[Any, List] = {}
+            for r in rows:
+                pos0, pos1 = r["pos0"], r["pos1"]
+                if not isinstance(pos0, int) or not isinstance(pos1, int):
+                    continue  # damaged row; SQL NULL comparisons never matched
+                if r["cid"] == code_id:
+                    targets_by_fid.setdefault(r["fid"], []).append((pos0, pos1))
+                elif r["cid"] is not None:
+                    others_by_fid.setdefault(r["fid"], []).append(
+                        (r["cid"], pos0, pos1))
+
+            counts: Dict[int, int] = {}
+            for fid, targets in targets_by_fid.items():
+                others = others_by_fid.get(fid)
+                if not others:
+                    continue
+                starts = sorted(p0 for p0, _ in targets)
+                ends = sorted(p1 for _, p1 in targets)
+                for cid, o0, o1 in others:
+                    if window_size == 0:
+                        # targets with pos0 <= o1, minus targets with pos1 < o0
+                        n = (bisect.bisect_right(starts, o1)
+                             - bisect.bisect_left(ends, o0))
+                    else:
+                        n = (bisect.bisect_right(starts, o0 + window_size)
+                             - bisect.bisect_left(starts, o0 - window_size))
+                    if n > 0:
+                        counts[cid] = counts.get(cid, 0) + n
+
+            code_info = {c["id"]: c for c in self.list_codes()}
             cooccurrences = []
-            for row in cursor.fetchall():
+            for cid, n in counts.items():
+                info = code_info.get(cid)
+                if info is None:
+                    continue  # orphaned cid — the old JOIN dropped these too
                 cooccurrences.append({
-                    "code_id": row["cid"],
-                    "code_name": row["code_name"],
-                    "color": row["color"],
-                    "category": row["category_name"],
-                    "cooccurrence_count": row["cooccurrence_count"]
+                    "code_id": cid,
+                    "code_name": info["name"],
+                    "color": info["color"],
+                    "category": info["category"],
+                    "cooccurrence_count": n,
                 })
-
+            cooccurrences.sort(key=lambda c: c["cooccurrence_count"],
+                               reverse=True)
             return cooccurrences
         except sqlite3.Error as e:
             _raise_query_error(e, "find_code_cooccurrences", "Failed to find co-occurrences")
