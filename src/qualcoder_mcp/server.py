@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 # Initialize MCP server
 mcp = FastMCP("Qualcoder")
+# Advertise OUR version in the MCP handshake (serverInfo.version) instead of
+# the mcp SDK's own version, which FastMCP falls back to (track3 L-1). The
+# FastMCP constructor has no version parameter in this SDK line, so set it on
+# the wrapped low-level server, which reads the attribute at initialize time.
+from . import __version__ as _package_version  # noqa: E402
+mcp._mcp_server.version = _package_version
 
 # Global database instance and current project path
 db: Optional[QualcoderDatabase] = None
