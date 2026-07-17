@@ -28,6 +28,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than silently truncate it. Implemented against QualCoder 3.8.2
   source ground truth.
 
+### Changed — consolidated polish round (QA + four parallel test tracks)
+
+- Name-based category parameters refuse ambiguous case-variant matches
+  ('Theme' vs 'theme') with the candidates listed instead of silently
+  picking one; journal-name validation is ASCII like QualCoder's own
+  validator; code names are stripped/validated consistently.
+- The MCP handshake now advertises the package version (was the mcp SDK
+  version); `__version__` reads the installed package metadata.
+- LLM-guidance hardening: every write tool documents the
+  QualCoder-open refusal with the close → re-check → retry recipe;
+  position-safety warnings are imperative (relay to the researcher) and
+  re-signaled at apply time; `analyze_for_coding` returns structured
+  `session_id`/`qualcoder_open`/`action_required` fields alongside the
+  prose banner; `update_suggestion_status` documents the
+  applied-is-immutable rule and models user-decision-centric approval;
+  `select_project`'s QualCoder-open warning is imperative.
+- Performance at scale: `find_cooccurring_codes` no longer O(n²) per
+  densely-coded file (1.46 s → ~5 ms at 8k codings; no schema changes to
+  user databases); REFI export serializes once (the pretty-print reparse
+  doubled peak memory).
+- Researcher-facing honesty: REFI export discloses audio/video and image
+  codings it cannot carry; `analyze_file_with_coding` flags non-text
+  sources instead of returning an empty text result.
+- Fixed: a restore whose copy failed partway could leave a half-replaced
+  live project; the recovery handler now clears the partial folder and
+  restores from the safety backup.
+
 ## [0.6.0-alpha] - 2026-07-15
 
 Everything since 0.4.0: the QualCoder v14 schema alignment, the
