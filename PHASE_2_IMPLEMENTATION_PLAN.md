@@ -1,5 +1,9 @@
 # Phase 2 Implementation Plan: MCP Tools & User Interface
 
+> **HISTORICAL DOCUMENT.** This is an early implementation plan; the work
+> it describes has long since shipped. Kept for design-history reference.
+> See the README and CHANGELOG for what the server actually does today.
+
 **Status**: Ready for Implementation - Awaiting Approval
 **Phase 1**: ✅ COMPLETE (Foundation: Test project, Sessions, GUIDs, REFI-QDA export)
 **Phase 2**: 📋 PLANNED (MCP Tools, HTML Interface, Testing)

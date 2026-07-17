@@ -1,5 +1,10 @@
 # Feature Analysis & Enhancement Plan
 
+> **HISTORICAL DOCUMENT (v0.1.0 planning).** The "current feature set"
+> below describes an early version. The server now exposes 48 tools
+> including AI-assisted coding, codebook editing, and memo writing — see
+> the README and CHANGELOG for the current surface.
+
 ## Current Feature Set (v0.1.0)
 
 ### ✅ Resources (9) - Read-only data access

@@ -1,5 +1,10 @@
 # Qualcoder Import/Export Analysis Report
 
+> **HISTORICAL DOCUMENT (early analysis).** This scoping report predates
+> the write-enabled releases. The server is no longer read-only and does
+> support importing text and exporting REFI-QDA — see the README and
+> CHANGELOG for current capabilities.
+
 ## Executive Summary
 
 The Qualcoder MCP server **currently has NO built-in import capabilities** for coded segments. The codebase is READ-ONLY and provides only export/query functionality. To implement coded segment imports, we would need to create new import functionality that writes to the Qualcoder SQLite database.

@@ -285,7 +285,7 @@ Find coded segments that mention "remote work" but only for the code "challenges
 
 ## AI-Assisted Coding 🤖
 
-**NEW in v0.4.0!** Claude can now help you code your qualitative data with a conversational approval workflow. You chat with Claude, review suggestions together, and directly write approved codings to your database.
+Claude can help you code your qualitative data with a conversational approval workflow. You chat with Claude, review suggestions together, and directly write approved codings to your database.
 
 ### Conversational Workflow
 
@@ -402,7 +402,7 @@ Claude can use these tools to analyze your data:
 - `get_current_project()` - Show which project is currently open
 
 **Core Data Analysis:**
-- `search_files(pattern, search_filename, search_content, search_memo)` - **NEW**: Find files by name, content, or memo with smart clarification workflow
+- `search_files(pattern, search_filename, search_content, search_memo)` - Find files by name, content, or memo with smart clarification workflow
 - `search_coded_text(query, code_name, limit)` - Search coded segments
 - `get_coded_segments(code_id, limit)` - Get all segments for a code
 - `get_coding_frequencies()` - Coding statistics
@@ -451,6 +451,24 @@ Claude can use these tools to analyze your data:
 
 **Interchange:**
 - `export_refi_qda(output_path, session_id, overwrite)` - Export codings (or a session's suggestions) as a REFI-QDA .qdpx for QualCoder/NVivo/ATLAS.ti/MAXQDA
+
+**Memos & Journal (Write Operations):**
+- `set_memo(target_type, target_id, memo)` - **WRITES TO DATABASE** - Write or clear a memo on a code, category, file, coding, or case (content-only, matching QualCoder — never rewrites date/owner)
+- `add_journal_entry(name, entry)` - **WRITES TO DATABASE** - Add or update a research journal entry
+
+**Codebook Editing (Write Operations):**
+- `create_code(name, category, color, memo)` - **WRITES TO DATABASE** - Create a new code (colour from QualCoder's palette)
+- `rename_code(code_id, new_name)` - **WRITES TO DATABASE** - Rename a code
+- `recolor_code(code_id, color)` - **WRITES TO DATABASE** - Change a code's colour
+- `move_code_to_category(code_id, category)` - **WRITES TO DATABASE** - Move a code into a category (omit `category` for top level)
+- `create_category(name, parent_category, memo)` - **WRITES TO DATABASE** - Create a category
+- `rename_category(category_id, new_name)` - **WRITES TO DATABASE** - Rename a category
+- `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle)
+
+**Codebook — Destructive (preview → confirm → safety backup):**
+- `merge_codes(from_code_id, into_code_id, confirm)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder; previews before confirming)
+- `delete_code(code_id, confirm)` - **WRITES TO DATABASE** - Delete a code and all its coded segments (preview shows how many codings will be removed)
+- `delete_category(category_id, confirm)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data)
 
 ## Available Prompts
 
@@ -612,7 +630,7 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ GUID-based suggestion approval/rejection
 - ✅ Context-aware suggestions with reasoning
 
-**Completed in v0.6.0 (this release):**
+**Completed in v0.6.0:**
 - ✅ `record_suggestions` — the AI coding loop works end-to-end via MCP tools
 - ✅ Session-project binding and text/position verification on every write
 - ✅ QualCoder lock-file protocol: writes refuse while QualCoder is open
@@ -622,13 +640,19 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Attribute queries with operators (contains, gt/gte/lt/lte)
 - ✅ Old-schema/corrupt/locked projects fail with clear, actionable errors
 
-**Future Enhancements (v0.7.0+):**
+**Completed in v0.7.0 (this release):**
+- ✅ Memo writing (`set_memo`) and research journal (`add_journal_entry`)
+- ✅ Codebook editing: create/rename/recolour/move codes and categories
+- ✅ Destructive codebook ops with preview → confirm → safety backup (`merge_codes`, `delete_code`, `delete_category`), matching QualCoder's own semantics
+- ✅ Category cycle guard (which QualCoder itself lacks)
+
+**Future Enhancements (v0.8.0+):**
+- [ ] Inductive/open coding — AI proposes brand-new codes for approval
+- [ ] Image/audio/video/PDF region coding
+- [ ] Document/CSV report exports (codebook, coded segments, matrices)
+- [ ] Case creation and attribute-schema editing
+- [ ] Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
 - [ ] HTML review interface for visual approval/rejection of suggestions
-- [ ] Batch operations for multiple files at once
-- [ ] Automatic chunking for large files
-- [ ] Support for code-code relationships/links (graph data)
-- [ ] Network visualization data export
-- [ ] More statistical reports (Cohen's Kappa, inter-rater reliability)
 - [ ] Media segment access (images, audio, video)
 - [ ] Timeline analysis
 - [ ] Saved queries execution
