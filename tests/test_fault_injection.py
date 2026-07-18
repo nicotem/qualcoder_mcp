@@ -145,7 +145,8 @@ def build_project(parent: Path, stem: str) -> Path:
 def db_hash(project_folder: Path) -> str:
     """Deterministic hash of the full logical DB content (schema + rows)."""
     data = Path(project_folder) / "data.qda"
-    conn = sqlite3.connect(f"file:{data}?mode=ro", uri=True)
+    # POSIX-and-Windows-safe read-only URI (see database._sqlite_ro_uri)
+    conn = sqlite3.connect(f"{data.resolve().as_uri()}?mode=ro", uri=True)
     try:
         h = hashlib.sha256()
         for line in conn.iterdump():

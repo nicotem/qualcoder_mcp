@@ -184,7 +184,8 @@ def save_server_state():
 # ---------------------------------------------------------------------------
 def _ro_conn(project_path: str) -> sqlite3.Connection:
     data = Path(project_path) / "data.qda"
-    conn = sqlite3.connect(f"file:{data}?mode=ro", uri=True)
+    # POSIX-and-Windows-safe read-only URI (see database._sqlite_ro_uri)
+    conn = sqlite3.connect(f"{data.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
