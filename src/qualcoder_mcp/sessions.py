@@ -403,7 +403,7 @@ class SessionManager:
         self._validate_session_id(session.session_id)
         filepath = self.storage_dir / f"session_{session.session_id}.json"
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(session.to_dict(), f, indent=2)
             logger.info(f"Saved session {session.session_id} to {filepath}")
         except Exception as e:
@@ -429,7 +429,7 @@ class SessionManager:
             raise FileNotFoundError(f"Session {session_id} not found at {filepath}")
 
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             session = AICodingSession.from_dict(data)
             logger.info(f"Loaded session {session_id} from {filepath}")
@@ -475,7 +475,7 @@ class SessionManager:
         try:
             for filepath in self.storage_dir.glob("session_*.json"):
                 try:
-                    with open(filepath, 'r') as f:
+                    with open(filepath, 'r', encoding='utf-8') as f:
                         data = json.load(f)
 
                     # Filter by project if specified
@@ -555,7 +555,7 @@ class SessionManager:
         try:
             for filepath in self.storage_dir.glob("session_*.json"):
                 try:
-                    with open(filepath, 'r') as f:
+                    with open(filepath, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                     last_modified = datetime.fromisoformat(data['last_modified'])
                     if last_modified < cutoff_date:

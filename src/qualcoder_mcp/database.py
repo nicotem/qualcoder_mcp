@@ -68,6 +68,19 @@ class UnsupportedSchemaError(RuntimeError):
     """Raised when the project database schema is too old for this server."""
 
 
+def _sqlite_ro_uri(path: Union[str, Path]) -> str:
+    """Build a valid read-only SQLite file: URI for the given path.
+
+    ``f"file:{path}?mode=ro"`` is a POSIX-only shortcut: on Windows a path is
+    ``C:\\Users\\...`` (backslashes + a drive colon), which is not a valid
+    file: URI and makes sqlite3 fail to open the database. ``Path.as_uri()``
+    produces a spec-compliant, percent-encoded URI from an absolute path
+    (``file:///C:/Users/...`` on Windows, ``file:///Users/...`` on POSIX);
+    the read-only query parameter is appended to that.
+    """
+    return f"{Path(path).resolve().as_uri()}?mode=ro"
+
+
 def _is_locked_error(e: sqlite3.Error) -> bool:
     """Check whether a sqlite3 error indicates a locked/busy database."""
     msg = str(e).lower()
@@ -314,7 +327,7 @@ def validate_qda_path(db_path: str) -> Path:
     # Basic SQLite validation (read-only check)
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(_sqlite_ro_uri(path), uri=True)
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
         cursor.fetchone()
     except sqlite3.OperationalError as e:
@@ -613,8 +626,7 @@ class QualcoderDatabase:
         try:
             if read_only:
                 # Open in read-only mode via URI to prevent accidental writes
-                uri = f"file:{self.db_path}?mode=ro"
-                self.conn = sqlite3.connect(uri, uri=True)
+                self.conn = sqlite3.connect(_sqlite_ro_uri(self.db_path), uri=True)
             else:
                 self.conn = sqlite3.connect(str(self.db_path), uri=False)
             self.conn.row_factory = sqlite3.Row  # Access columns by name
