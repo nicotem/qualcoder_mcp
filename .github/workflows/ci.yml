@@ -32,5 +32,24 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run test suite
+        shell: bash
         run: |
-          python -m pytest -q --durations=10
+          set +e
+          python -m pytest -ra --tb=short -q 2>&1 | tee pytest_output.txt
+          code=${PIPESTATUS[0]}
+          {
+            echo "### pytest — ${{ matrix.os }} / py${{ matrix.python-version }}"
+            echo ""
+            echo '```'
+            grep -E "^[0-9]+ (passed|failed)| failed,| error" pytest_output.txt | tail -3
+            grep -E "^(FAILED|ERROR) " pytest_output.txt | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Upload pytest output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: pytest_output.txt
