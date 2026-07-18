@@ -120,7 +120,7 @@ class TestSetMemo:
 
     def test_refused_while_qualcoder_open(self, setup_server, qualcoder_db_path):
         lk = _lock(qualcoder_db_path)
-        lk.write_text(f"gemma\n{time.time()}")
+        lk.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
             out = json.loads(server.set_memo("code", 1, "x"))
             assert "open in QualCoder" in out["error"]
@@ -390,7 +390,7 @@ class TestDeleteCategory:
 
     def test_refused_while_qualcoder_open(self, setup_server, qualcoder_db_path):
         lk = _lock(qualcoder_db_path)
-        lk.write_text(f"gemma\n{time.time()}")
+        lk.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
             out = json.loads(server.delete_category(1, confirm=True))
             assert "open in QualCoder" in out["error"]

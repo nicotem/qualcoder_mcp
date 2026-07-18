@@ -168,7 +168,7 @@ class TestWriteDisciplineAcrossNewSurface:
         before = _dump(qualcoder_db_path)
         n_backups = len(_backups(qualcoder_db_path))
         lock = _lock(qualcoder_db_path)
-        lock.write_text(f"gui_user\n{time.time()}")
+        lock.write_text(f"gui_user\n{time.time()}", encoding="utf-8")
         try:
             for name, call in self.ALL_12:
                 out = json.loads(call())
@@ -184,13 +184,13 @@ class TestWriteDisciplineAcrossNewSurface:
         """Stale foreign lock -> write proceeds unheld; QualCoder 'opening'
         between the mutation and the commit must abort with rollback."""
         lock = _lock(qualcoder_db_path)
-        lock.write_text(f"crashed\n{time.time() - 31}")
+        lock.write_text(f"crashed\n{time.time() - 31}", encoding="utf-8")
 
         original = QualcoderDatabase.set_memo
 
         def mutate_then_qualcoder_arrives(self, *a, **k):
             result = original(self, *a, **k)
-            lock.write_text(f"qc_live\n{time.time()}")
+            lock.write_text(f"qc_live\n{time.time()}", encoding="utf-8")
             return result
 
         monkeypatch.setattr(QualcoderDatabase, "set_memo",
@@ -202,7 +202,7 @@ class TestWriteDisciplineAcrossNewSurface:
                         "SELECT memo FROM code_name WHERE cid = 1")[0] \
                 == "Stress code"                       # rolled back
             # the foreign lock is not ours: left in place
-            assert lock.read_text().startswith("qc_live")
+            assert lock.read_text(encoding="utf-8").startswith("qc_live")
         finally:
             lock.unlink()
 

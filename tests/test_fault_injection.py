@@ -489,7 +489,7 @@ class TestApplyCodingsFaults:
         assert env.hash() == pre
         assert env.backup_names() == before, "backup created despite lock refusal"
         assert env.lock.exists(), "foreign lock file was removed"
-        assert env.lock.read_text().startswith("qc_foreign")
+        assert env.lock.read_text(encoding="utf-8").startswith("qc_foreign")
         assert_connection_recovered(env)
         reloaded = server.session_manager.load_session(sess.session_id)
         assert len(reloaded.filter_by_status("applied")) == 0

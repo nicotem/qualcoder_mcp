@@ -59,8 +59,8 @@ class TestRestoreNeverHalfReplaced:
         then produce a genuine MCP backup via a real write."""
         docs = Path(qualcoder_db_path) / "documents"
         docs.mkdir(exist_ok=True)
-        (docs / "transcript_a.txt").write_text("a" * 4000)
-        (docs / "transcript_b.txt").write_text("b" * 9000)
+        (docs / "transcript_a.txt").write_text("a" * 4000, encoding="utf-8")
+        (docs / "transcript_b.txt").write_text("b" * 9000, encoding="utf-8")
         out = json.loads(server.import_text_file(
             f"marker_{time.time_ns()}.txt", "backup marker content"))
         assert out["success"] is True
@@ -335,7 +335,7 @@ class TestGuidanceEnvelope:
 
         # fresh lock: real fields present AND banner appears
         lock = validate_qda_path(qualcoder_db_path).parent / "project_in_use.lock"
-        lock.write_text(f"gui_user\n{time.time()}")
+        lock.write_text(f"gui_user\n{time.time()}", encoding="utf-8")
         try:
             payload = json.loads(server.analyze_for_coding([1]))
             assert payload["qualcoder_open"] is True

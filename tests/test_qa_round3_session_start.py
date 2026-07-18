@@ -31,11 +31,11 @@ def _lock(project_path) -> Path:
 
 
 def _fresh(project_path, holder="livecoder"):
-    _lock(project_path).write_text(f"{holder}\n{time.time()}")
+    _lock(project_path).write_text(f"{holder}\n{time.time()}", encoding="utf-8")
 
 
 def _stale(project_path, holder="crashed"):
-    _lock(project_path).write_text(f"{holder}\n{time.time() - 31}")
+    _lock(project_path).write_text(f"{holder}\n{time.time() - 31}", encoding="utf-8")
 
 
 def _sid(out: str) -> str:
@@ -61,7 +61,7 @@ class TestSessionStartCraftedLocks:
 
     def test_empty_lock_treated_stale_no_banner(self, setup_server,
                                                 qualcoder_db_path):
-        _lock(qualcoder_db_path).write_text("")
+        _lock(qualcoder_db_path).write_text("", encoding="utf-8")
         try:
             out = server.analyze_for_coding([1])
             # QA6-1: qualcoder_open is ALWAYS present (false when clear) —
@@ -119,7 +119,7 @@ class TestSessionStartCraftedLocks:
     def test_symlinked_lock_resolves_target_content(self, setup_server,
                                                     qualcoder_db_path, tmp_path):
         target = tmp_path / "elsewhere.lock"
-        target.write_text(f"remote_user\n{time.time()}")
+        target.write_text(f"remote_user\n{time.time()}", encoding="utf-8")
         os.symlink(target, _lock(qualcoder_db_path))
         try:
             out = server.analyze_for_coding([1])
@@ -146,7 +146,7 @@ class TestSessionStartCraftedLocks:
                                              qualcoder_db_path):
         """Clock skew: a heartbeat 10 s in the future is within the 30 s
         window (negative age) — must read as OPEN, not crash."""
-        _lock(qualcoder_db_path).write_text(f"skewed\n{time.time() + 10}")
+        _lock(qualcoder_db_path).write_text(f"skewed\n{time.time() + 10}", encoding="utf-8")
         try:
             out = server.analyze_for_coding([1])
             assert "qualcoder_open: true" in out

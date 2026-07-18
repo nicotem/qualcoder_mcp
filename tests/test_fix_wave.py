@@ -122,7 +122,7 @@ class TestSecurityFixes:
         """S-3: a huge lock file must not be read whole into memory."""
         lock = _lock_file(qualcoder_db_path)
         # 20 MB of garbage before any parseable content
-        lock.write_text("x" * (20 * 1024 * 1024))
+        lock.write_text("x" * (20 * 1024 * 1024), encoding="utf-8")
         try:
             state, holder = qualcoder_lock_state(lock.parent)
             # unparseable within the capped prefix -> treated as stale
@@ -132,7 +132,7 @@ class TestSecurityFixes:
 
     def test_s3_normal_lock_still_parsed(self, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"alice\n{time.time()}")
+        lock.write_text(f"alice\n{time.time()}", encoding="utf-8")
         try:
             state, holder = qualcoder_lock_state(lock.parent)
             assert state == "active" and holder == "alice"
@@ -150,7 +150,7 @@ class TestSessionStartQualcoderCheck:
         """Active heartbeat: session still created (reads are safe) but the
         response carries the flag and the explicit ask-the-user instruction."""
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"gemma\n{time.time()}")
+        lock.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
             out = server.analyze_for_coding([1])
             assert "qualcoder_open: true" in out
@@ -176,7 +176,7 @@ class TestSessionStartQualcoderCheck:
 
     def test_stale_lock_consistent_shape(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"gemma\n{time.time() - 60}")
+        lock.write_text(f"gemma\n{time.time() - 60}", encoding="utf-8")
         try:
             out = server.analyze_for_coding([1])
             env = json.loads(out)
@@ -189,7 +189,7 @@ class TestSessionStartQualcoderCheck:
     def test_get_current_project_reflects_open_state(self, setup_server,
                                                      qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"gemma\n{time.time()}")
+        lock.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
             out = json.loads(server.get_current_project())
             assert out["qualcoder_open"] is True
@@ -207,7 +207,7 @@ class TestSessionStartQualcoderCheck:
     def test_get_current_project_stale_lock_detail(self, setup_server,
                                                    qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"gemma\n{time.time() - 60}")
+        lock.write_text(f"gemma\n{time.time() - 60}", encoding="utf-8")
         try:
             out = json.loads(server.get_current_project())
             assert out["qualcoder_open"] is False
@@ -389,7 +389,7 @@ class TestQualcoderLockProtocol:
 
     def test_active_lock_refuses_write(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"someone\n{time.time()}")
+        lock.write_text(f"someone\n{time.time()}", encoding="utf-8")
         try:
             result = json.loads(server.import_text_file(
                 "new.txt", "some new content", create_backup=False))
@@ -400,13 +400,13 @@ class TestQualcoderLockProtocol:
 
     def test_stale_lock_allows_write_and_is_left_alone(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"someone\n{time.time() - 60}")
+        lock.write_text(f"someone\n{time.time() - 60}", encoding="utf-8")
         try:
             result = json.loads(server.import_text_file(
                 "stale_ok.txt", "content body", create_backup=False))
             assert result["success"] is True
             assert lock.exists()  # stale foreign lock untouched
-            assert "someone" in lock.read_text()
+            assert "someone" in lock.read_text(encoding="utf-8")
         finally:
             lock.unlink()
 
@@ -420,15 +420,15 @@ class TestQualcoderLockProtocol:
         folder = validate_qda_path(qualcoder_db_path).parent
         assert qualcoder_lock_state(folder)[0] == "absent"
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"u\n{time.time()}")
+        lock.write_text(f"u\n{time.time()}", encoding="utf-8")
         assert qualcoder_lock_state(folder) == ("active", "u")
-        lock.write_text(f"u\n{time.time() - 31}")
+        lock.write_text(f"u\n{time.time() - 31}", encoding="utf-8")
         assert qualcoder_lock_state(folder)[0] == "stale"
         lock.unlink()
 
     def test_backup_excludes_lock_files(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"u\n{time.time() - 60}")  # stale so writes proceed
+        lock.write_text(f"u\n{time.time() - 60}", encoding="utf-8")  # stale so writes proceed
         try:
             backup = backup_project(qualcoder_db_path)
             assert not (backup / QUALCODER_LOCK_FILENAME).exists()
@@ -438,7 +438,7 @@ class TestQualcoderLockProtocol:
 
     def test_select_project_warns_when_open(self, setup_server, qualcoder_db_path):
         lock = _lock_file(qualcoder_db_path)
-        lock.write_text(f"gemma\n{time.time()}")
+        lock.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
             result = json.loads(server.select_project(qualcoder_db_path))
             assert result["success"] is True

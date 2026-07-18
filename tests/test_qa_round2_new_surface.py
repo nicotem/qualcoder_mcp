@@ -343,7 +343,7 @@ class TestRestoreBackupGates:
             self, setup_server, qualcoder_db_path):
         backup = self._make_backup(qualcoder_db_path)
         lock = _lock(qualcoder_db_path)
-        lock.write_text(f"livecoder\n{time.time()}")
+        lock.write_text(f"livecoder\n{time.time()}", encoding="utf-8")
         try:
             out = json.loads(server.restore_backup(str(backup), confirm=True))
             assert "livecoder" in out["error"]
@@ -365,7 +365,7 @@ class TestRestoreBackupGates:
         json.loads(server.import_text_file("post_backup.txt", "to be rolled back",
                                            create_backup=False))
         # plant a stray lock file inside the backup (old-format backups had them)
-        (backup / QUALCODER_LOCK_FILENAME).write_text("ghost\n1.0")
+        (backup / QUALCODER_LOCK_FILENAME).write_text("ghost\n1.0", encoding="utf-8")
 
         out = json.loads(server.restore_backup(str(backup), confirm=True))
         assert out["success"] is True, out
@@ -608,7 +608,7 @@ class TestHeartbeatProtocol:
         backup = _backups(qualcoder_db_path)[-1]
 
         lock = _lock(qualcoder_db_path)
-        lock.write_text(f"activeuser\n{time.time()}")
+        lock.write_text(f"activeuser\n{time.time()}", encoding="utf-8")
         n_backups = len(_backups(qualcoder_db_path))
         try:
             attempts = [
@@ -628,7 +628,7 @@ class TestHeartbeatProtocol:
     def test_garbled_lock_treated_stale_after_retry(self, setup_server,
                                                     qualcoder_db_path):
         lock = _lock(qualcoder_db_path)
-        lock.write_text("just one garbled line")
+        lock.write_text("just one garbled line", encoding="utf-8")
         try:
             state, holder = qualcoder_lock_state(lock.parent)
             assert state == "stale"
@@ -644,7 +644,7 @@ class TestHeartbeatProtocol:
         folder = _lock(qualcoder_db_path).parent
         with hold_project_lock(folder) as held:
             assert held is True
-            lines = _lock(qualcoder_db_path).read_text().splitlines()
+            lines = _lock(qualcoder_db_path).read_text(encoding="utf-8").splitlines()
             assert len(lines) == 2
             assert lines[0] == getpass.getuser()
             age = time.time() - float(lines[1])   # parses as epoch float
@@ -662,7 +662,7 @@ class TestHeartbeatProtocol:
             lock = _lock(qualcoder_db_path)
             seen["exists"] = lock.exists()
             if lock.exists():
-                seen["holder"] = lock.read_text().splitlines()[0]
+                seen["holder"] = lock.read_text(encoding="utf-8").splitlines()[0]
             return original(self, *args, **kwargs)
 
         monkeypatch.setattr(QualcoderDatabase, "add_coding", spy)

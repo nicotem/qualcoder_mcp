@@ -847,7 +847,7 @@ def _write_report(built, read_rows, refi_rows, write_rows, write_stats, media, c
     A("- `search_files(content)` and `analyze_file_with_coding` scan/return the full 500k-char "
       "document; their peak heap tracks document size, not coding count.\n")
 
-    (HERE / "report.md").write_text("\n".join(lines))
+    (HERE / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":

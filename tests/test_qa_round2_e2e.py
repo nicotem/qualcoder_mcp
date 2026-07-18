@@ -221,14 +221,14 @@ class TestUnhappyPaths:
         project_folder = validate_qda_path(qualcoder_db_path).parent
         lock = project_folder / QUALCODER_LOCK_FILENAME
         # stale foreign lock: 31 s old -> write proceeds WITHOUT holding
-        lock.write_text(f"crashed_user\n{time.time() - 31}")
+        lock.write_text(f"crashed_user\n{time.time() - 31}", encoding="utf-8")
 
         original = QualcoderDatabase.add_coding
 
         def add_and_refresh_lock(self, *args, **kwargs):
             ctid = original(self, *args, **kwargs)
             # QualCoder starts up right after our insert, before our commit
-            lock.write_text(f"qc_user\n{time.time()}")
+            lock.write_text(f"qc_user\n{time.time()}", encoding="utf-8")
             return ctid
 
         monkeypatch.setattr(QualcoderDatabase, "add_coding", add_and_refresh_lock)
@@ -243,7 +243,7 @@ class TestUnhappyPaths:
                      "SELECT COUNT(*) as n FROM code_text")[0]["n"] == before
         # the foreign lock was NOT deleted (it is not ours)
         assert lock.exists()
-        assert lock.read_text().startswith("qc_user")
+        assert lock.read_text(encoding="utf-8").startswith("qc_user")
         # server still usable afterwards
         lock.unlink()
         assert json.loads(server.search_coded_text("stressed"))["result_count"] == 1
@@ -259,19 +259,19 @@ class TestUnhappyPaths:
 
         project_folder = validate_qda_path(qualcoder_db_path).parent
         lock = project_folder / QUALCODER_LOCK_FILENAME
-        lock.write_text(f"livecoder\n{time.time()}")
+        lock.write_text(f"livecoder\n{time.time()}", encoding="utf-8")
         try:
             out = json.loads(server.apply_codings(sid))
             assert "livecoder" in out["error"]
             # reads keep working while QualCoder is open
             assert json.loads(server.search_coded_text("stressed"))["result_count"] == 1
             # stale after 31s: heartbeat aging is what unblocks writes
-            lock.write_text(f"livecoder\n{time.time() - 31}")
+            lock.write_text(f"livecoder\n{time.time() - 31}", encoding="utf-8")
             result = server.apply_codings(sid)
             assert "CODINGS APPLIED" in result
             # the stale foreign lock file was left alone
             assert lock.exists()
-            assert lock.read_text().startswith("livecoder")
+            assert lock.read_text(encoding="utf-8").startswith("livecoder")
         finally:
             if lock.exists():
                 lock.unlink()

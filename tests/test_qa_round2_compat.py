@@ -198,7 +198,7 @@ class TestWriteRowContracts:
         # static: no UPDATE in the db layer ever targets project or
         # coder_names (the W14 invariant). Codebook/memo edits legitimately
         # UPDATE code_name/code_cat/code_text/source/cases.
-        src = (SRC_DIR / "database.py").read_text()
+        src = (SRC_DIR / "database.py").read_text(encoding="utf-8")
         updated_tables = {t for t, _ in
                           re.findall(r"UPDATE\s+(\w+)\s+SET\s+([^\n]+)", src)}
         assert "project" not in updated_tables
@@ -307,7 +307,7 @@ class TestTextPositions:
         # static: no UPDATE may touch pos0/pos1/seltext
         for fname in ("database.py", "server.py", "sessions.py",
                       "refi_export.py"):
-            src = (SRC_DIR / fname).read_text()
+            src = (SRC_DIR / fname).read_text(encoding="utf-8")
             for stmt in re.findall(r"UPDATE\s+code_text\s+SET\s+([^\"]+?)WHERE",
                                    src, flags=re.S):
                 assert "pos0" not in stmt and "pos1" not in stmt \
