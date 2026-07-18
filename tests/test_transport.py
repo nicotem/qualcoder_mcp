@@ -224,7 +224,8 @@ def build_write_project(folder: Path) -> str:
 def server_params() -> StdioServerParameters:
     """Launch `python -m qualcoder_mcp.server` with a private HOME (dynamic mode)."""
     env = os.environ.copy()
-    env["HOME"] = str(HOME_DIR)          # -> HOME/.qualcoder_mcp/sessions
+    env["HOME"] = str(HOME_DIR)          # POSIX: ~ -> HOME/.qualcoder_mcp/sessions
+    env["USERPROFILE"] = str(HOME_DIR)   # Windows: expanduser() uses USERPROFILE
     env.pop("QUALCODER_PROJECT_PATH", None)   # dynamic project-selection mode
     env["PYTHONPATH"] = str(REPO / "src")
     return StdioServerParameters(

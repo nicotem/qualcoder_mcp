@@ -81,12 +81,15 @@ class TestSecurityFixes:
         workspace = tmp_path / "ws"
         monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
         outside = tmp_path / "OUTSIDE"
-        for evil in ["../OUTSIDE/exfil", "/tmp/qc_abs_evil_test"]:
+        # OS-native absolute path (a real drive-qualified path on Windows,
+        # a leading-slash path on POSIX) — both must be rejected
+        abs_target = tmp_path / "qc_abs_evil_target"
+        for evil in ["../OUTSIDE/exfil", str(abs_target)]:
             out = json.loads(server.copy_project_to_workspace(
                 qualcoder_db_path, new_name=evil))
             assert "error" in out
         assert not outside.exists()
-        assert not Path("/tmp/qc_abs_evil_test.qda").exists()
+        assert not abs_target.with_suffix(".qda").exists()
 
     def test_s1_plain_name_still_works(self, qualcoder_db_path, tmp_path,
                                        monkeypatch):

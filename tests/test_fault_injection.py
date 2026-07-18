@@ -267,6 +267,7 @@ def fi_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows home for expanduser()
     monkeypatch.delenv("QUALCODER_PROJECT_PATH", raising=False)
 
     work = tmp_path / "work"
