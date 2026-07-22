@@ -963,8 +963,11 @@ class TestImportTextFile:
         )
         assert result["attributes_created"] == 1
 
-    def test_import_creates_both_type_attribute_placeholders(self, write_db):
-        # Add a 'both'-type attribute (applies to files AND cases)
+    def test_import_ignores_bogus_both_domain_rows(self, write_db):
+        """QualCoder's attribute domain set is case|file|journal — 'both'
+        does not exist (cases-attributes.md §1). A hand-made 'both' row must
+        NOT get a placeholder, exactly as upstream (caseOrFile='file' only,
+        manage_files.py:1387-1392) would ignore it."""
         write_db.conn.execute(
             "INSERT INTO attribute_type (name, date, owner, memo, caseOrFile, valuetype) "
             "VALUES ('SharedAttr', '2024-01-15', 'TestCoder', '', 'both', 'character')"
@@ -975,7 +978,7 @@ class TestImportTextFile:
             content="Content.",
             owner="MCP Import"
         )
-        assert result["attributes_created"] == 1
+        assert result["attributes_created"] == 0
 
     def test_import_no_attribute_placeholders_when_none_exist(self, write_db):
         result = write_db.import_text_file(

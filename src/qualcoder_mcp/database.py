@@ -1170,7 +1170,10 @@ class QualcoderDatabase:
                     "annotation_id": ann_row["anid"],
                     "position_start": ann_row["pos0"],
                     "position_end": ann_row["pos1"],
-                    "memo": ann_row["memo"],
+                    # GUI-created annotations always have a non-empty memo,
+                    # but REFI-imported rows can carry '' or NULL
+                    # (cases-attributes.md §7.5) — tolerate and normalize
+                    "memo": ann_row["memo"] or "",
                     "owner": ann_row["owner"],
                     "date": ann_row["date"]
                 })
@@ -1901,7 +1904,10 @@ class QualcoderDatabase:
                     "date": row["date"],
                     "owner": row["owner"],
                     "memo": row["memo"] or "",
-                    "applies_to": row["caseOrFile"],  # 'case', 'file', or 'both'
+                    # Real domain set is 'case' | 'file' | 'journal' — there
+                    # is no 'both' anywhere in QualCoder (cases-attributes.md
+                    # §1; the old comment here claiming 'both' was wrong)
+                    "applies_to": row["caseOrFile"],
                     "value_type": row["valuetype"]  # 'character' or 'numeric'
                 })
             return attributes
@@ -1994,16 +2000,29 @@ class QualcoderDatabase:
 
     # Operator -> SQL condition over the attribute value. The SQL text is
     # selected from this FIXED mapping (never user input); values are bound
-    # as parameters. Numeric operators cast the stored text value to REAL,
-    # so non-numeric attribute values simply never match them.
+    # as parameters. Attribute values are stored as TEXT even for numeric
+    # attributes, and SQLite CAST('' AS REAL) = 0.0 — so a bare CAST would
+    # make every UNSET placeholder ('' value) match gt/lt comparisons as
+    # zero (the old comment claiming non-numeric values never match was
+    # FALSE). Numeric operators therefore exclude ''-value rows explicitly
+    # (cases-attributes.md §3.4/§6.4; NULL values are excluded by CAST(NULL)
+    # comparing as NULL). QualCoder's own attribute report shares the
+    # empty-matches-as-zero flaw; this is a deliberate, documented fix.
     _ATTRIBUTE_OPERATORS = {
         "equals": "a.value = ?",
         "contains": "a.value LIKE ? ESCAPE '\\'",
-        "gt": "CAST(a.value AS REAL) > ?",
-        "gte": "CAST(a.value AS REAL) >= ?",
-        "lt": "CAST(a.value AS REAL) < ?",
-        "lte": "CAST(a.value AS REAL) <= ?",
+        "gt": "(a.value != '' AND CAST(a.value AS REAL) > ?)",
+        "gte": "(a.value != '' AND CAST(a.value AS REAL) >= ?)",
+        "lt": "(a.value != '' AND CAST(a.value AS REAL) < ?)",
+        "lte": "(a.value != '' AND CAST(a.value AS REAL) <= ?)",
     }
+
+    # 'equals' on a NUMERIC attribute compares numerically (so '5' matches
+    # a stored '5.0'), because plain string equality on numerics is a trap.
+    # 'equals' with '' stays string comparison — it is the legitimate way
+    # to find UNSET attributes (cases-attributes.md §6.4: don't fix that
+    # away).
+    _NUMERIC_EQUALS_CONDITION = "(a.value != '' AND CAST(a.value AS REAL) = ?)"
 
     def query_by_attribute(self, attr_name: str, attr_value: str,
                            attr_type: str = "case",
@@ -2015,9 +2034,11 @@ class QualcoderDatabase:
             attr_value: The attribute value to match (a number for the
                         gt/gte/lt/lte operators)
             attr_type: 'case' or 'file'
-            operator: 'equals' (exact match, default), 'contains'
-                      (case-insensitive substring), or 'gt'/'gte'/'lt'/'lte'
-                      (numeric comparison)
+            operator: 'equals' (exact match, default; compares numerically
+                      for numeric attributes so '5' finds '5.0'; '' finds
+                      unset attributes), 'contains' (case-insensitive
+                      substring), or 'gt'/'gte'/'lt'/'lte' (numeric
+                      comparison; unset ''-value rows never match)
 
         Returns:
             List of cases or files matching the attribute criteria
@@ -2045,6 +2066,30 @@ class QualcoderDatabase:
                     f"attr_value must be a number for operator '{operator}', "
                     f"got '{attr_value}'"
                 ) from None
+        elif operator == "equals":
+            # Numeric attributes: compare numerically so '5' finds '5.0'
+            # (values are stored as TEXT; plain string equality would miss
+            # every formatting variant). '' keeps string semantics — it is
+            # how unset attributes are found.
+            bound_value = attr_value
+            if attr_value != "":
+                try:
+                    vt_row = self.conn.execute(
+                        "SELECT valuetype FROM attribute_type WHERE name = ?",
+                        (attr_name,)
+                    ).fetchone()
+                except sqlite3.Error as e:
+                    _raise_query_error(e, "query_by_attribute",
+                                       "Failed to query by attribute")
+                if vt_row and vt_row["valuetype"] == "numeric":
+                    try:
+                        bound_value = float(attr_value)
+                        condition = self._NUMERIC_EQUALS_CONDITION
+                    except ValueError:
+                        # Non-numeric probe against a numeric attribute can
+                        # only string-match (and never will match a numeric
+                        # value) — keep string equality
+                        pass
         else:
             bound_value = attr_value
 
@@ -2914,9 +2959,13 @@ class QualcoderDatabase:
             """, (name, content, memo, owner, date_str))
             file_id = cursor.lastrowid
 
-            # Create attribute placeholders for file-type attribute types
+            # Create attribute placeholders for file-type attribute types —
+            # driven by caseOrFile='file' exactly like QualCoder's own file
+            # writers (manage_files.py:1387-1392). The real domain set is
+            # case|file|journal; 'both' does not exist (cases-attributes.md
+            # §1), so the old IN ('file','both') superset was wrong.
             attr_types = self.conn.execute(
-                "SELECT name FROM attribute_type WHERE caseOrFile IN ('file', 'both')"
+                "SELECT name FROM attribute_type WHERE caseOrFile = 'file'"
             ).fetchall()
             for attr_type_row in attr_types:
                 self.conn.execute("""
@@ -3016,15 +3065,31 @@ class QualcoderDatabase:
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         try:
+            # Overlap-aware duplicate check (cases-attributes.md §2.6):
+            # upstream has TWO conflicting whole-file conventions — the case
+            # file manager writes pos1 = len(fulltext)-1, while Manage Files
+            # "Assign case" and survey import write pos1 = len(fulltext) —
+            # and each GUI path's own probe only matches its own convention,
+            # silently double-linking across paths. case_text has NO unique
+            # constraint, so this app-side probe is the only protection:
+            # treat ANY existing row that already covers the whole file
+            # (either convention, or a superset span) as a duplicate.
             existing = self.conn.execute(
-                "SELECT id FROM case_text WHERE caseid = ? AND fid = ? "
-                "AND pos0 = ? AND pos1 = ?",
-                (case_id, file_id, pos0, pos1)
+                "SELECT id, pos0, pos1 FROM case_text WHERE caseid = ? "
+                "AND fid = ? AND pos0 <= 0 AND pos1 >= ?",
+                (case_id, file_id, pos1)
             ).fetchone()
             if existing:
+                convention = ""
+                if (existing["pos0"], existing["pos1"]) != (pos0, pos1):
+                    convention = (
+                        f" (existing span {existing['pos0']}-"
+                        f"{existing['pos1']}, QualCoder's other whole-file "
+                        f"convention)"
+                    )
                 raise ValueError(
                     f"File '{file_row['name']}' is already linked to case "
-                    f"'{case_row['name']}'"
+                    f"'{case_row['name']}'{convention}"
                 )
 
             self.conn.execute(
@@ -3737,7 +3802,9 @@ class QualcoderDatabase:
             "file_name": row["file_name"],
             "position_start": row["pos0"],
             "position_end": row["pos1"],
-            "memo": row["memo"],
+            # REFI-born rows can carry '' or NULL memos (cases-attributes.md
+            # §7.5) — tolerate on read; our writers never create them
+            "memo": row["memo"] or "",
             "owner": row["owner"],
             "date": row["date"],
         }
@@ -3799,6 +3866,27 @@ class QualcoderDatabase:
                     f"An annotation by '{owner}' already exists on this exact "
                     f"span (anid={existing['anid']}) — edit it with "
                     f"update_annotation instead"
+                )
+            # Overlap check (cases-attributes.md §7.1): the GUI never
+            # creates a second annotation overlapping an existing one by
+            # the same coder — it switches to editing the existing one.
+            # The DB only blocks exact duplicates, but overlapping rows
+            # are hazardous in the GUI (its clear-path deletes by pos0
+            # alone, taking collateral) and its bold-range display merges
+            # them. Mirror the GUI: refuse and point at the existing row.
+            overlapping = self.conn.execute(
+                "SELECT anid, pos0, pos1 FROM annotation WHERE fid = ? "
+                "AND owner = ? AND pos0 < ? AND pos1 > ? ORDER BY pos0",
+                (file_id, owner, end_pos, start_pos)
+            ).fetchone()
+            if overlapping:
+                raise ValueError(
+                    f"An annotation by '{owner}' already overlaps this span "
+                    f"(anid={overlapping['anid']}, "
+                    f"{overlapping['pos0']}-{overlapping['pos1']}). "
+                    f"QualCoder never keeps overlapping annotations by one "
+                    f"coder — edit the existing one with update_annotation, "
+                    f"or delete it first"
                 )
             cursor = self.conn.execute(
                 "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
@@ -4030,12 +4118,13 @@ class QualcoderDatabase:
             )
             case_id = cursor.lastrowid
 
-            # Attribute placeholders for case attribute types (mirrors the
-            # file-import placeholder pattern; QualCoder writes 'case' only,
-            # 'both' accepted as a harmless superset)
+            # Attribute placeholders for case attribute types — the exact
+            # rows QualCoder's own add_case writes (cases.py:584-590,
+            # driven by caseOrFile='case'). The real domain set is
+            # case|file|journal; 'both' does not exist anywhere in
+            # QualCoder (cases-attributes.md §1), so no superset matching.
             attr_types = self.conn.execute(
-                "SELECT name FROM attribute_type "
-                "WHERE caseOrFile IN ('case', 'both')"
+                "SELECT name FROM attribute_type WHERE caseOrFile = 'case'"
             ).fetchall()
             for attr_type_row in attr_types:
                 self.conn.execute(
@@ -4069,6 +4158,267 @@ class QualcoderDatabase:
             "owner": owner,
             "date": date_str,
             "attributes_created": len(attr_types),
+        }
+
+    # Reserved attribute names (cases-attributes.md §3.3): QualCoder's own
+    # dialog reserves the singular forms, but its RIS importer actually
+    # creates Ref_Authors (plural) — an upstream inconsistency. Reserve BOTH
+    # spellings so a user-created attribute can never collide with the RIS
+    # importer's later insert-if-missing.
+    RESERVED_ATTRIBUTE_NAMES = frozenset({
+        "Ref_Type", "Ref_Author", "Ref_Authors", "Ref_Title", "Ref_Year",
+        "Ref_Journal",
+    })
+
+    # attribute_type.caseOrFile / attribute.attr_type domain -> the entity
+    # table each domain's overloaded attribute.id points into
+    # (cases-attributes.md §1). There is no 'both'.
+    _ATTRIBUTE_DOMAINS = {
+        "case": ("cases", "caseid"),
+        "file": ("source", "id"),
+        "journal": ("journal", "jid"),
+    }
+
+    def add_attribute_type(self, name: str, owner: str, applies_to: str,
+                           value_type: str = "character",
+                           memo: Optional[str] = None,
+                           auto_commit: bool = True) -> Dict[str, Any]:
+        """Define a new attribute (cases-attributes.md §3.1/§3.2).
+
+        Writes the attribute_type row exactly as every QualCoder entry
+        point does, then performs the placeholder back-fill: one empty
+        ('' value) attribute row per existing entity of the domain. The
+        back-fill is load-bearing — QualCoder's GUI table, exports and
+        sorting assume every entity has a row for every attribute of its
+        domain, and the case-side auto-heal is a no-op in 3.8.2, so
+        skipping it here would leave cases silently dropped from
+        attribute joins.
+
+        Attribute names are GLOBAL (attribute_type.name is the primary
+        key across all three domains). Both Ref_Author and Ref_Authors
+        spellings are reserved (upstream reserves only the singular but
+        its RIS importer creates the plural).
+        """
+        self._require_write_access()
+        if not name or not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        validate_string(name, "name")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+        if applies_to not in self._ATTRIBUTE_DOMAINS:
+            raise ValueError(
+                "applies_to must be 'case', 'file' or 'journal' (QualCoder's "
+                "real domain set — there is no 'both')"
+            )
+        if value_type not in ("character", "numeric"):
+            raise ValueError("value_type must be 'character' or 'numeric'")
+        if name in self.RESERVED_ATTRIBUTE_NAMES:
+            raise ValueError(
+                f"'{name}' is reserved for QualCoder's reference importer "
+                f"(Ref_* attributes are created automatically by RIS/nbib "
+                f"import) — choose another name"
+            )
+        if memo:
+            _reject_if_too_long(memo, "memo")
+
+        entity_table, entity_id_col = self._ATTRIBUTE_DOMAINS[applies_to]
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            existing = self.conn.execute(
+                "SELECT name, caseOrFile FROM attribute_type WHERE name = ?",
+                (name,)
+            ).fetchone()
+            if existing:
+                raise ValueError(
+                    f"An attribute named '{name}' already exists (as a "
+                    f"{existing['caseOrFile']} attribute) — attribute names "
+                    f"are global across cases, files and journals"
+                )
+
+            self.conn.execute(
+                "INSERT INTO attribute_type (name, date, owner, memo, "
+                "caseOrFile, valuetype) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, date_str, owner, memo or "", applies_to, value_type)
+            )
+
+            # Placeholder back-fill (§3.2): value='' (never NULL), one row
+            # per existing entity of this domain
+            entity_ids = self.conn.execute(
+                f"SELECT {entity_id_col} FROM {entity_table}"
+            ).fetchall()
+            for row in entity_ids:
+                self.conn.execute(
+                    "INSERT INTO attribute (name, value, id, attr_type, "
+                    "date, owner) VALUES (?, '', ?, ?, ?, ?)",
+                    (name, row[0], applies_to, date_str, owner)
+                )
+
+            if auto_commit:
+                self.conn.commit()
+            logger.info(
+                f"Added attribute type '{name}' ({applies_to}/{value_type}), "
+                f"{len(entity_ids)} placeholder(s)"
+            )
+        except ValueError:
+            raise
+        except sqlite3.IntegrityError:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise ValueError(
+                f"An attribute named '{name}' already exists — attribute "
+                f"names are global across cases, files and journals"
+            ) from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "add_attribute_type",
+                               "Failed to add attribute type")
+
+        return {
+            "name": name,
+            "applies_to": applies_to,
+            "value_type": value_type,
+            "memo": memo or "",
+            "owner": owner,
+            "date": date_str,
+            "placeholders_created": len(entity_ids),
+        }
+
+    def set_attribute_value(self, target_type: str, target_id: int,
+                            attr_name: str, value: str, owner: str,
+                            auto_commit: bool = True) -> Dict[str, Any]:
+        """Set an attribute value for a case, file or journal.
+
+        QualCoder contract (cases-attributes.md §4.1/§4.2): input is
+        stripped; the domain-filtered valuetype gates numeric values;
+        the write is insert-if-missing then update, keyed
+        (id, name, attr_type) — never assume the placeholder row exists
+        (QualCoder's case-side placeholder heal is a no-op in 3.8.2).
+        Byte-fidelity per domain: the case path refreshes owner+date on
+        update, the file/journal paths write value only, exactly like the
+        three GUI paths.
+
+        Deliberate deviation (documented): a non-castable value for a
+        numeric attribute is REJECTED with an error — QualCoder silently
+        replaces it with '' (interactive data loss). '' itself is the
+        canonical "unset" and is always accepted.
+        """
+        self._require_write_access()
+        if target_type not in self._ATTRIBUTE_DOMAINS:
+            raise ValueError(
+                "target_type must be 'case', 'file' or 'journal'"
+            )
+        target_id = validate_id(target_id, "target_id")
+        if not isinstance(attr_name, str) or not attr_name.strip():
+            raise ValueError("attr_name must be a non-empty string")
+        attr_name = attr_name.strip()
+        if not isinstance(value, str):
+            raise ValueError("value must be a string ('' clears/unsets)")
+        value = value.strip()
+        _reject_if_too_long(value, "value")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+
+        entity_table, entity_id_col = self._ATTRIBUTE_DOMAINS[target_type]
+        try:
+            entity = self.conn.execute(
+                f"SELECT {entity_id_col} AS eid, name FROM {entity_table} "
+                f"WHERE {entity_id_col} = ?", (target_id,)
+            ).fetchone()
+            if not entity:
+                raise ValueError(
+                    f"{target_type.capitalize()} ID {target_id} does not exist"
+                )
+
+            att = self.conn.execute(
+                "SELECT valuetype, caseOrFile FROM attribute_type "
+                "WHERE name = ?", (attr_name,)
+            ).fetchone()
+            if not att:
+                raise ValueError(
+                    f"Attribute '{attr_name}' does not exist — create it "
+                    f"first with create_attribute_type"
+                )
+            if att["caseOrFile"] != target_type:
+                raise ValueError(
+                    f"'{attr_name}' is a {att['caseOrFile']} attribute — it "
+                    f"cannot be set on a {target_type}"
+                )
+            if att["valuetype"] == "numeric" and value != "":
+                try:
+                    float(value)
+                except ValueError:
+                    raise ValueError(
+                        f"'{attr_name}' is a numeric attribute and "
+                        f"'{value}' is not a number (QualCoder would "
+                        f"silently blank it; refusing instead). Pass '' to "
+                        f"unset."
+                    ) from None
+
+            date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            existing = self.conn.execute(
+                "SELECT attrid, value FROM attribute "
+                "WHERE id = ? AND name = ? AND attr_type = ?",
+                (target_id, attr_name, target_type)
+            ).fetchone()
+            if existing is None:
+                # Insert-if-missing: placeholder rows can be absent
+                # (older writers, no-op case heal) — §3.8/§4.1
+                self.conn.execute(
+                    "INSERT INTO attribute (name, value, id, attr_type, "
+                    "date, owner) VALUES (?, ?, ?, ?, ?, ?)",
+                    (attr_name, value, target_id, target_type, date_str,
+                     owner)
+                )
+                previous = None
+            elif target_type == "case":
+                # Case path refreshes owner and date (cases.py:670-679)
+                self.conn.execute(
+                    "UPDATE attribute SET value = ?, date = ?, owner = ? "
+                    "WHERE attrid = ?",
+                    (value, date_str, owner, existing["attrid"])
+                )
+                previous = existing["value"]
+            else:
+                # File/journal paths write value only
+                # (manage_files.py:1470-1471, journals.py:747-748)
+                self.conn.execute(
+                    "UPDATE attribute SET value = ? WHERE attrid = ?",
+                    (value, existing["attrid"])
+                )
+                previous = existing["value"]
+
+            if auto_commit:
+                self.conn.commit()
+            logger.info(
+                f"Set {target_type} attribute '{attr_name}' on "
+                f"{target_type} {target_id}"
+            )
+        except ValueError:
+            raise
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "set_attribute_value",
+                               "Failed to set attribute value")
+
+        return {
+            "target_type": target_type,
+            "target_id": target_id,
+            "target_name": entity["name"],
+            "attribute": attr_name,
+            "value_type": att["valuetype"],
+            "value": value,
+            "previous_value": (previous if previous is not None
+                               else "" if existing else None),
+            "row_created": existing is None,
         }
 
     def backup_before_write(self) -> Path:

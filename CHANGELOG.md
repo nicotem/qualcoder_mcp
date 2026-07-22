@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — attributes (v0.8 phase D2, per the cases-attributes ground-truth dossier)
+
+- **`create_attribute_type`**: define a case, file or **journal** attribute
+  (QualCoder's real domain set — `'both'` does not exist) with the
+  placeholder back-fill QualCoder's GUI performs: one empty (`''`) value
+  row per existing entity of the domain. Attribute names are global
+  across all three domains; the `Ref_*` reference-importer names are
+  reserved in **both** spellings (`Ref_Author` AND `Ref_Authors` — the
+  upstream dialog reserves only the singular but its RIS importer
+  creates the plural).
+- **`set_attribute`** (unified for case/file/journal, per Q-D2): set or
+  clear (`""`) an attribute value with byte-fidelity per domain — the
+  case path refreshes owner+date on update, the file/journal paths write
+  the value only, exactly like the three GUI paths — and the
+  insert-if-missing dance (never assume the placeholder row exists;
+  QualCoder's case-side placeholder heal is a no-op in 3.8.2).
+  **Documented deviation:** a non-castable value for a numeric attribute
+  is refused with an error; QualCoder's GUI silently blanks it.
+
+### Fixed — dossier-exposed bugs in existing tools (v0.8 phase D2)
+
+- **`query_by_attribute` numeric semantics**: `CAST('' AS REAL)` is
+  `0.0` in SQLite, so every UNSET attribute (empty placeholder) matched
+  numeric `gt/gte/lt/lte` comparisons as zero — unset rows are now
+  excluded from numeric comparisons. `equals` on a numeric attribute now
+  compares numerically (`"5"` finds a stored `"5.0"`); `equals ""`
+  keeps string semantics as the way to find unset attributes.
+  (QualCoder's own attribute report shares the cast-empty flaw; this is
+  a deliberate, documented divergence.)
+- **`link_file_to_case` overlap-aware duplicate check**: QualCoder ships
+  TWO conflicting whole-file link conventions (`pos1 = len-1` from the
+  case file manager, `pos1 = len` from Manage Files "Assign case" and
+  survey import) and each GUI path's probe only matches its own — so
+  cross-path double-links happen silently upstream. The MCP link now
+  refuses when ANY existing row already covers the whole file in either
+  convention.
+- **`import_text_file` / `create_case` placeholder back-fill exactness**:
+  both were back-filling for a hypothetical `'both'` attribute domain;
+  the real domain set is `case|file|journal` and upstream drives each
+  back-fill with a single-domain filter — matched exactly.
+- **Annotation addenda** (dossier §7): `add_annotation` now refuses a
+  same-coder OVERLAPPING annotation (the GUI never creates one — and
+  overlapping rows are hazardous to QualCoder's pos0-keyed clear path),
+  pointing at the existing row; read paths tolerate and normalize
+  REFI-born empty/NULL-memo annotation rows.
+
 ### Added — inductive / open coding (v0.8 phase A)
 
 Six new tools close the loop the AI coding surface was missing: until

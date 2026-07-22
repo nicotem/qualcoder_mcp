@@ -67,6 +67,8 @@ EXPECTED_TOOLS = {
     # inductive / open coding (v0.8 phase A)
     "propose_codes", "review_proposals", "update_proposal",
     "merge_proposals", "update_proposal_status", "create_proposed_codes",
+    # attributes (v0.8 phase D2)
+    "create_attribute_type", "set_attribute",
 }
 
 
@@ -92,7 +94,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 60
+        assert len(names) == 62
 
 
 class TestEndToEndLoop:

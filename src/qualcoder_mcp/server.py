@@ -1606,9 +1606,12 @@ def query_by_attribute(
         attr_name: Name of the attribute to query
         attr_value: Value to compare against (a number for gt/gte/lt/lte)
         attr_type: Either 'case' or 'file' (default: 'case')
-        operator: 'equals' (exact match, default), 'contains'
-                  (case-insensitive substring), or 'gt'/'gte'/'lt'/'lte'
-                  (numeric comparisons; non-numeric values never match)
+        operator: 'equals' (exact match, default; numeric attributes
+                  compare numerically so "5" finds a stored "5.0", and
+                  "" finds cases/files whose attribute is unset),
+                  'contains' (case-insensitive substring), or
+                  'gt'/'gte'/'lt'/'lte' (numeric comparisons; unset
+                  values never match)
 
     Returns:
         JSON array of matching cases/files, each with id, name, memo and
@@ -4875,6 +4878,110 @@ def create_case(name: str, memo: Optional[str] = None,
                                           auto_commit=False)},
         create_backup=create_backup,
         backup_fail_detail="the case was not created",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def create_attribute_type(name: str, applies_to: str,
+                          value_type: str = "character",
+                          memo: Optional[str] = None,
+                          create_backup: bool = True) -> str:
+    """Define a new attribute for cases, files or journals.
+
+    THIS WRITES TO THE DATABASE. Attributes are typed variables attached
+    to every entity of one domain (e.g. a case attribute "Age" gives
+    every case an Age cell). Creating one also back-fills an empty
+    placeholder row for every EXISTING entity of that domain, exactly as
+    QualCoder does — an unset attribute is the empty string, never a
+    missing row.
+
+    Attribute names are GLOBAL across all three domains: a case
+    attribute and a file attribute can never share a name. The Ref_*
+    names (Ref_Type, Ref_Author, Ref_Authors, Ref_Title, Ref_Year,
+    Ref_Journal) are reserved for QualCoder's reference importer.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        name: The attribute name (unique across ALL domains)
+        applies_to: 'case', 'file' or 'journal' (QualCoder's real domain
+                    set — there is no 'both')
+        value_type: 'character' (default) or 'numeric'. Numeric values
+                    are stored as text but validated and compared as
+                    numbers. There is no path back from numeric data to
+                    character-only in this server, so choose carefully.
+        memo: Optional description of what the attribute captures
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Example:
+        "Add a numeric Age attribute for cases"
+    """
+    owner = _default_owner()
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": f"Created {applies_to} attribute "
+                                f"'{name.strip() if isinstance(name, str) else name}'",
+                     "attribute_type": wdb.add_attribute_type(
+                         name, owner, applies_to, value_type=value_type,
+                         memo=memo, auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the attribute was not created",
+    )
+    if "error" not in result:
+        result["note"] = (
+            f"{result['attribute_type']['placeholders_created']} existing "
+            f"{applies_to}(s) received an empty placeholder value — set "
+            f"real values with set_attribute."
+        )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def set_attribute(target_type: str, target_id: int, attribute_name: str,
+                  value: str, create_backup: bool = True) -> str:
+    """Set (or clear) an attribute value on a case, file or journal.
+
+    THIS WRITES TO THE DATABASE. The attribute must already exist (see
+    create_attribute_type and list_attribute_types) and must belong to
+    the target's domain — a case attribute cannot be set on a file.
+    Pass value="" to unset: QualCoder represents "no value" as an empty
+    cell, the row itself always remains.
+
+    Numeric attributes require a number ("30", "4.5", "1e3"): a
+    non-numeric value is refused with an error. (QualCoder's own GUI
+    silently blanks invalid numeric input — this server refuses instead,
+    so nothing is lost without the user knowing.)
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        target_type: 'case', 'file' or 'journal'
+        target_id: The case ID, file ID or journal ID
+        attribute_name: The attribute to set (exact name; see
+                        list_attribute_types)
+        value: The value as a string ("" clears/unsets)
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Example:
+        "Set Age to 34 for case 2"
+    """
+    owner = _default_owner()
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": f"Set '{attribute_name}' on {target_type} "
+                                f"{target_id}",
+                     "attribute": wdb.set_attribute_value(
+                         target_type, target_id, attribute_name, value,
+                         owner, auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the attribute value was not changed",
     )
     return json.dumps(result, indent=2)
 

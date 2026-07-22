@@ -169,18 +169,27 @@ class TestDeleteAnnotation:
                                          qualcoder_db_path):
         """§4.3 gotcha: two annotations sharing pos0 (different spans) —
         deleting one must never remove the other (the upstream
-        delete-by-pos0 bug this surface must not replicate)."""
+        delete-by-pos0 bug this surface must not replicate).
+
+        add_annotation itself refuses same-owner overlaps (mirroring the
+        GUI), so the colliding row is seeded directly — exactly how such
+        rows arise in real projects (REFI import, GUI convention mixes)."""
         a1 = json.loads(server.add_annotation(
             1, 0, 10, "note one", create_backup=False))["annotation"]
-        a2 = json.loads(server.add_annotation(
-            1, 0, 20, "note two — same pos0",
-            create_backup=False))["annotation"]
+        conn = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        cur = conn.execute(
+            "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
+            "VALUES (1, 0, 20, 'note two — same pos0', 'OtherCoder', "
+            "'2024-01-15 00:00:00')")
+        a2_anid = cur.lastrowid
+        conn.commit()
+        conn.close()
         out = json.loads(server.delete_annotation(a1["annotation_id"],
                                                   create_backup=False))
         assert out["deleted"] is True
         remaining = _row(qualcoder_db_path,
                          "SELECT anid, memo FROM annotation")
-        assert remaining["anid"] == a2["annotation_id"]
+        assert remaining["anid"] == a2_anid
         assert remaining["memo"] == "note two — same pos0"
 
     def test_unknown_anid(self, setup_server, qualcoder_db_path):
