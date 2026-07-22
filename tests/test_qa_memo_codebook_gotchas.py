@@ -128,13 +128,17 @@ class TestMemoGotchas:
         for t in ("code", "category", "file", "coding", "case"):
             assert t in out["error"]
 
-    def test_m3_no_annotation_write_surface(self):
-        """M3: annotations (insert-only-nonempty / clear-deletes) are out of
-        scope — no annotation write tool may exist on the surface."""
+    def test_m3_annotation_surface_matches_contract(self):
+        """M3 UPDATED for v0.8 phase D1: annotations are now IN scope
+        (owner-approved contract). The surface must be exactly the three
+        anid-keyed tools from memos-journals.md §4 — create (non-empty
+        only), update (clear-deletes), delete — and nothing else."""
         import asyncio
         names = {t.name for t in asyncio.run(server.mcp.list_tools())}
-        assert not any("annotation" in n for n in names)
-        assert len(names) == 49
+        annotation_tools = {n for n in names if "annotation" in n}
+        assert annotation_tools == {"add_annotation", "update_annotation",
+                                    "delete_annotation"}
+        assert len(names) == 54
 
     @pytest.mark.parametrize("target_type,table,id_col,target_id", MEMO_FIXTURES)
     def test_m4_clear_stores_empty_string_never_null(

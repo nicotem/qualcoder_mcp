@@ -4050,6 +4050,208 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
     return json.dumps(result, indent=2)
 
 
+@mcp.tool()
+@_tool_guard
+def merge_category(from_category_id: int,
+                   into_category: Optional[str] = None,
+                   confirm: bool = False) -> str:
+    """Merge a category into another category (or into the top level).
+
+    DESTRUCTIVE to the category — preview first, then confirm. The source
+    category's codes and direct sub-categories are reparented to the
+    target (unlike delete_category, which sends them to the top level),
+    then the source category is removed. Coded data is never touched —
+    codings key on the code, not the category. Merging into a descendant
+    of the source is refused (it would orphan the subtree).
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        from_category_id: The category to merge away (deleted afterwards)
+        into_category: Target category name (case-insensitive, ambiguous
+                       case-variants refused), or null/omitted to move
+                       everything to the top level
+        confirm: Must be true to actually merge (default: preview only)
+    """
+    into_category_id = None
+    if into_category is not None:
+        into_category_id, err = _resolve_category_by_name(str(into_category))
+        if err is not None:
+            return json.dumps(err, indent=2)
+
+    result = _guarded_destructive(
+        preview_fn=lambda ro: ro.preview_merge_category(from_category_id,
+                                                        into_category_id),
+        op_fn=lambda wdb: {"success": True, "message": "Merged category",
+                           **wdb.merge_category(from_category_id,
+                                                into_category_id,
+                                                auto_commit=False)},
+        confirm=confirm,
+        backup_fail_detail="no categories were merged",
+        confirm_hint="Review the reparent counts, then call merge_category "
+                     "again with confirm=true. A backup is made first.",
+    )
+    return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# ANNOTATIONS (v0.8 D1 write tools)
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
+                   create_backup: bool = True) -> str:
+    """Attach a note (annotation) to a text span of a file.
+
+    THIS WRITES TO THE DATABASE. An annotation is a researcher note
+    anchored to characters [start_pos, end_pos) of a text file — distinct
+    from a coding (no code involved) and from a file memo (span-specific).
+    The note must be non-empty: the note IS the annotation, and clearing
+    it later (update_annotation with "") deletes it, exactly as QualCoder
+    behaves. One annotation per coder per exact span.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        file_id: The text file to annotate
+        start_pos: 0-based character offset (inclusive)
+        end_pos: End offset (exclusive, > start_pos)
+        memo: The note text (must be non-empty)
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Returns:
+        JSON with the new annotation (anid, span, note). If it contains
+        `position_safety_warning`, you MUST relay it to the user — spans
+        on such files can render shifted in QualCoder's editor.
+    """
+    owner = _default_owner()
+
+    def _op(wdb):
+        created = wdb.add_annotation(file_id, start_pos, end_pos, memo,
+                                     owner, auto_commit=False)
+        result = {"success": True,
+                  "message": f"Annotated '{created['file_name']}' at "
+                             f"{start_pos}-{end_pos}",
+                  "annotation": created}
+        fulltext = (wdb.get_file_content(file_id) or {}).get("content") or ""
+        if fulltext and not db_position_safe(fulltext):
+            result["position_safety_warning"] = (
+                f"File '{created['file_name']}' contains \\r\\n or characters "
+                f"beyond U+FFFF, so this annotation's span may render shifted "
+                f"in QualCoder's editor. Relay this to the user."
+            )
+        return result
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the annotation was not added")
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def update_annotation(annotation_id: int, memo: str,
+                      create_backup: bool = True) -> str:
+    """Edit an annotation's note. AN EMPTY NOTE DELETES THE ANNOTATION.
+
+    THIS WRITES TO THE DATABASE. Matches QualCoder exactly: editing
+    updates the note and its date (owner and the anchored span never
+    change); clearing the note to "" deletes the annotation row —
+    QualCoder never keeps an empty annotation. The response says whether
+    it updated or deleted.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        annotation_id: The annotation's anid (from analyze_file_with_coding
+                       or search_memos)
+        memo: The new note text ('' deletes the annotation)
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     **wdb.update_annotation(annotation_id, memo,
+                                             auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the annotation was not changed",
+    )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
+    """Delete an annotation by its anid.
+
+    THIS WRITES TO THE DATABASE. Removes one annotation (the note on a
+    text span) — never the text, codings, or anything else. A backup is
+    created first by default.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        annotation_id: The annotation's anid
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": "Deleted annotation",
+                     **wdb.delete_annotation(annotation_id,
+                                             auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the annotation was not deleted",
+    )
+    return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# CASES (v0.8 D1 write tool)
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def create_case(name: str, memo: Optional[str] = None,
+                create_backup: bool = True) -> str:
+    """Create a new case (participant/subject) in the project.
+
+    THIS WRITES TO THE DATABASE. Cases group data by participant; link
+    files to the new case with link_file_to_case (or import_text_file's
+    case_name parameter) so they appear in case-based analyses. Case
+    names are unique. Placeholder rows are created for any existing case
+    attributes, exactly as QualCoder does.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        name: The case name (unique among cases)
+        memo: Optional case memo
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Example:
+        "Create a case for participant Dana"
+    """
+    owner = _default_owner()
+    result = _perform_write(
+        lambda wdb: {"success": True,
+                     "message": f"Created case '{name.strip() if isinstance(name, str) else name}'",
+                     "case": wdb.add_case(name, owner, memo=memo,
+                                          auto_commit=False)},
+        create_backup=create_backup,
+        backup_fail_detail="the case was not created",
+    )
+    return json.dumps(result, indent=2)
+
+
 # ============================================================================
 # PROMPTS - Interaction templates
 # ============================================================================

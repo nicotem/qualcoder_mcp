@@ -3711,6 +3711,366 @@ class QualcoderDatabase:
             _raise_query_error(e, "delete_category", "Failed to delete category")
         return {"deleted": True, **preview}
 
+    # ========================================================================
+    # ANNOTATIONS (v0.8 D1 — memos-journals.md §4: the memo IS the
+    # annotation; no empty state exists)
+    # ========================================================================
+
+    def get_annotation(self, annotation_id: int) -> Optional[Dict[str, Any]]:
+        """Get one annotation by anid (with its file name)."""
+        annotation_id = validate_id(annotation_id, "annotation_id")
+        try:
+            row = self.conn.execute(
+                "SELECT a.anid, a.fid, a.pos0, a.pos1, a.memo, a.owner, "
+                "a.date, s.name AS file_name "
+                "FROM annotation a LEFT JOIN source s ON a.fid = s.id "
+                "WHERE a.anid = ?", (annotation_id,)
+            ).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "get_annotation",
+                               "Failed to retrieve annotation")
+        if not row:
+            return None
+        return {
+            "annotation_id": row["anid"],
+            "file_id": row["fid"],
+            "file_name": row["file_name"],
+            "position_start": row["pos0"],
+            "position_end": row["pos1"],
+            "memo": row["memo"],
+            "owner": row["owner"],
+            "date": row["date"],
+        }
+
+    def add_annotation(self, file_id: int, start_pos: int, end_pos: int,
+                       memo: str, owner: str,
+                       auto_commit: bool = True) -> Dict[str, Any]:
+        """Create an annotation on a text span.
+
+        QualCoder contract (memos-journals.md §4.1): insert ONLY when the
+        memo is non-empty — an annotation never exists with memo='' (the
+        memo is the annotation). Positions are character offsets into the
+        file's fulltext; unique(fid,pos0,pos1,owner) is pre-checked
+        app-side for a clean error.
+        """
+        self._require_write_access()
+        file_id = validate_id(file_id, "file_id")
+        if not isinstance(memo, str) or not memo.strip():
+            raise ValueError(
+                "memo must be a non-empty string — an annotation IS its "
+                "note; there is no empty annotation"
+            )
+        _reject_if_too_long(memo, "memo")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+        if (not isinstance(start_pos, int) or isinstance(start_pos, bool)
+                or not isinstance(end_pos, int) or isinstance(end_pos, bool)):
+            raise ValueError("start_pos and end_pos must be integers")
+        if start_pos < 0 or end_pos <= start_pos:
+            raise ValueError(
+                f"positions must satisfy 0 <= start_pos < end_pos, got "
+                f"{start_pos}-{end_pos}"
+            )
+
+        file_content = self.get_file_content(file_id)
+        if file_content is None:
+            raise ValueError(f"File ID {file_id} does not exist")
+        fulltext = file_content.get("content") or ""
+        if not file_content.get("is_text") or not fulltext:
+            raise ValueError(
+                f"File ID {file_id} is not a text source with text content - "
+                f"annotations attach to text spans"
+            )
+        if end_pos > len(fulltext):
+            raise ValueError(
+                f"end_pos ({end_pos}) exceeds file length ({len(fulltext)})"
+            )
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            # unique(fid,pos0,pos1,owner) pre-check for a clean error
+            existing = self.conn.execute(
+                "SELECT anid FROM annotation WHERE fid = ? AND pos0 = ? "
+                "AND pos1 = ? AND owner = ?",
+                (file_id, start_pos, end_pos, owner)
+            ).fetchone()
+            if existing:
+                raise ValueError(
+                    f"An annotation by '{owner}' already exists on this exact "
+                    f"span (anid={existing['anid']}) — edit it with "
+                    f"update_annotation instead"
+                )
+            cursor = self.conn.execute(
+                "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (file_id, start_pos, end_pos, memo, owner, date_str)
+            )
+            if auto_commit:
+                self.conn.commit()
+            anid = cursor.lastrowid
+            logger.info(f"Added annotation anid={anid} on file {file_id}")
+        except ValueError:
+            raise
+        except sqlite3.IntegrityError:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise ValueError(
+                "An annotation already exists on this exact span"
+            ) from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "add_annotation", "Failed to add annotation")
+
+        return {
+            "annotation_id": anid,
+            "file_id": file_id,
+            "file_name": file_content["name"],
+            "position_start": start_pos,
+            "position_end": end_pos,
+            "memo": memo,
+            "owner": owner,
+            "date": date_str,
+        }
+
+    def update_annotation(self, annotation_id: int, memo: str,
+                          auto_commit: bool = True) -> Dict[str, Any]:
+        """Edit an annotation's note by anid; an EMPTY memo DELETES the row.
+
+        QualCoder contract (memos-journals.md §4.2/§4.3): annotation is one
+        of the three date-on-edit objects (memo AND date updated; owner and
+        the span untouched); clearing the memo deletes the annotation —
+        never leave an empty one. Keyed by anid, never pos0 (the upstream
+        delete-by-pos0 bug is documented; do not replicate it).
+        """
+        self._require_write_access()
+        if not isinstance(memo, str):
+            raise ValueError("memo must be a string")
+        _reject_if_too_long(memo, "memo")
+        existing = self.get_annotation(annotation_id)
+        if existing is None:
+            raise ValueError(f"Annotation ID {annotation_id} does not exist")
+
+        if not memo.strip():
+            # Clear = delete (matches QualCoder exactly)
+            return {**self.delete_annotation(annotation_id,
+                                             auto_commit=auto_commit),
+                    "deleted_because_cleared": True}
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            self.conn.execute(
+                "UPDATE annotation SET memo = ?, date = ? WHERE anid = ?",
+                (memo, date_str, annotation_id)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Updated annotation anid={annotation_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "update_annotation",
+                               "Failed to update annotation")
+        return {**existing, "memo": memo, "date": date_str, "updated": True}
+
+    def delete_annotation(self, annotation_id: int,
+                          auto_commit: bool = True) -> Dict[str, Any]:
+        """Delete an annotation by anid (never by pos0 — see §4.3 gotcha)."""
+        self._require_write_access()
+        existing = self.get_annotation(annotation_id)
+        if existing is None:
+            raise ValueError(f"Annotation ID {annotation_id} does not exist")
+        try:
+            self.conn.execute(
+                "DELETE FROM annotation WHERE anid = ?", (annotation_id,)
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Deleted annotation anid={annotation_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "delete_annotation",
+                               "Failed to delete annotation")
+        return {**existing, "deleted": True}
+
+    # ========================================================================
+    # MERGE CATEGORY (v0.8 D1 — category-tree.md §9)
+    # ========================================================================
+
+    def preview_merge_category(self, from_category_id: int,
+                               into_category_id: Optional[int]
+                               ) -> Dict[str, Any]:
+        """Count what a category merge would reparent (read-only)."""
+        from_category_id = validate_id(from_category_id, "from_category_id")
+        src_cat = self._get_category_row(from_category_id)
+        if into_category_id is not None:
+            into_category_id = validate_id(into_category_id,
+                                           "into_category_id")
+            if into_category_id == from_category_id:
+                raise ValueError("Cannot merge a category into itself")
+            dest = self._get_category_row(into_category_id)
+            # Target must not be a DESCENDANT of the source (the cycle-guard
+            # intent of QualCoder's picker, id-based; category-tree.md §9)
+            if self.would_create_category_cycle(from_category_id,
+                                                into_category_id):
+                raise ValueError(
+                    "Cannot merge a category into its own descendant — "
+                    "that would orphan the subtree"
+                )
+            target_desc = {"id": into_category_id, "name": dest["name"]}
+        else:
+            target_desc = {"id": None, "name": "(top level)"}
+
+        codes_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_name WHERE catid = ?",
+            (from_category_id,)
+        ).fetchone()[0]
+        subcats_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_cat WHERE supercatid = ?",
+            (from_category_id,)
+        ).fetchone()[0]
+        return {
+            "from_category": {"id": from_category_id, "name": src_cat["name"]},
+            "into_category": target_desc,
+            "codes_reparented": codes_n,
+            "subcategories_reparented": subcats_n,
+            "note": "Merging a category reparents its codes and direct "
+                    "sub-categories to the target (codings are untouched — "
+                    "they key on the code, not the category), then deletes "
+                    "the source category.",
+        }
+
+    def merge_category(self, from_category_id: int,
+                       into_category_id: Optional[int],
+                       auto_commit: bool = True) -> Dict[str, Any]:
+        """Merge one category into another (or into the top level).
+
+        QualCoder recipe (category-tree.md §9): codes with catid=source ->
+        target; sub-categories with supercatid=source -> target; delete the
+        source code_cat row; dangling-supercatid sweep. into_category_id of
+        None moves everything to the top level (QualCoder's blank option).
+        Codings are never touched.
+        """
+        self._require_write_access()
+        preview = self.preview_merge_category(from_category_id,
+                                              into_category_id)
+        try:
+            self.conn.execute(
+                "UPDATE code_name SET catid = ? WHERE catid = ?",
+                (into_category_id, from_category_id)
+            )
+            self.conn.execute(
+                "UPDATE code_cat SET supercatid = ? WHERE supercatid = ?",
+                (into_category_id, from_category_id)
+            )
+            self.conn.execute(
+                "DELETE FROM code_cat WHERE catid = ?", (from_category_id,)
+            )
+            self.conn.execute(
+                "UPDATE code_cat SET supercatid = NULL WHERE supercatid IS "
+                "NOT NULL AND supercatid NOT IN (SELECT catid FROM code_cat)"
+            )
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Merged category {from_category_id} into "
+                        f"{into_category_id}")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "merge_category",
+                               "Failed to merge category")
+        return {"merged": True, **preview}
+
+    # ========================================================================
+    # CASES (v0.8 D1 — schema-writes.md §5.1)
+    # ========================================================================
+
+    def add_case(self, name: str, owner: str, memo: Optional[str] = None,
+                 auto_commit: bool = True) -> Dict[str, Any]:
+        """Create a case (participant/subject).
+
+        QualCoder contract (schema-writes.md §5.1): INSERT INTO cases with
+        memo='' default (never NULL), unique(name) pre-checked app-side,
+        then one empty attribute placeholder row per existing CASE
+        attribute type (attr_type='case', attribute.id = the new caseid).
+        """
+        self._require_write_access()
+        if not name or not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be a non-empty string")
+        name = name.strip()
+        validate_string(name, "name")
+        if not owner or not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty string")
+        if memo:
+            _reject_if_too_long(memo, "memo")
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            existing = self.conn.execute(
+                "SELECT caseid FROM cases WHERE name = ?", (name,)
+            ).fetchone()
+            if existing:
+                raise ValueError(f"A case named '{name}' already exists")
+
+            cursor = self.conn.execute(
+                "INSERT INTO cases (name, memo, owner, date) "
+                "VALUES (?, ?, ?, ?)",
+                (name, memo or "", owner, date_str)
+            )
+            case_id = cursor.lastrowid
+
+            # Attribute placeholders for case attribute types (mirrors the
+            # file-import placeholder pattern; QualCoder writes 'case' only,
+            # 'both' accepted as a harmless superset)
+            attr_types = self.conn.execute(
+                "SELECT name FROM attribute_type "
+                "WHERE caseOrFile IN ('case', 'both')"
+            ).fetchall()
+            for attr_type_row in attr_types:
+                self.conn.execute(
+                    "INSERT INTO attribute (name, attr_type, value, id, "
+                    "date, owner) VALUES (?, 'case', '', ?, ?, ?)",
+                    (attr_type_row["name"], case_id, date_str, owner)
+                )
+
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Added case: caseid={case_id}, name={name}")
+        except ValueError:
+            raise
+        except sqlite3.IntegrityError:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise ValueError(f"A case named '{name}' already exists") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "add_case", "Failed to add case")
+
+        return {
+            "id": case_id,
+            "name": name,
+            "memo": memo or "",
+            "owner": owner,
+            "date": date_str,
+            "attributes_created": len(attr_types),
+        }
+
     def backup_before_write(self) -> Path:
         """Create a backup of the current project before making changes.
 

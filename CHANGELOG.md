@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — write-surface completions (v0.8 phase D1)
+
+- **Annotations** (per the QualCoder 3.8.2 ground-truth contract):
+  `add_annotation` (the note IS the annotation — empty notes refused; one
+  per coder per exact span, pre-checked; position-validated with the
+  position-safety relay on unsafe files), `update_annotation` (note +
+  date updated, owner/span immutable; **clearing the note deletes the
+  annotation**, exactly as QualCoder behaves), `delete_annotation`
+  (keyed by anid — never by pos0, avoiding the upstream delete-by-pos0
+  bug on colliding spans).
+- **`merge_category`** (preview → confirm → backup): reparents the
+  source category's codes and sub-categories to the TARGET (unlike
+  delete_category's orphan-to-top-level), then removes the source;
+  merging into the source's own descendant is refused; codings are never
+  touched. Completes the category surface.
+- **`create_case`**: unique name, `''` memo convention, owner from the
+  project codername, and attribute placeholder rows for existing case
+  attributes — exactly the rows QualCoder's own create-case writes.
+  Composes with `link_file_to_case` / `import_text_file(case_name=...)`.
+
 ### Added — backup retention (v0.8 phase C)
 
 - `prune_backups(keep_last, older_than_days, confirm)`: prune this
