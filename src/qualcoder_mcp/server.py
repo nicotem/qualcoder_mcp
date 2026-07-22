@@ -1841,6 +1841,13 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
     in the same segments or nearby in the text. Essential for discovering
     relationships between themes and concepts.
 
+    NOT QualCoder's co-occurrence matrix: QualCoder's report classifies
+    each unordered coding PAIR once (exact/inclusion/overlap) into an
+    asymmetric code-by-code matrix, while this tool counts every
+    overlapping pair occurrence per target code — the numbers will not
+    match QualCoder's Code co-occurrence report. Say so if the user asks
+    for a comparison.
+
     Args:
         code_id: The numeric ID of the code to analyze
         window_size: How to define "co-occurrence":
@@ -5670,6 +5677,611 @@ def set_attribute(target_type: str, target_id: int, attribute_name: str,
         backup_fail_detail="the attribute value was not changed",
     )
     return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# REPORT EXPORTS (v0.8 phase B) — file artefacts with QualCoder-parity shapes
+# ============================================================================
+
+def _resolve_export_path(output_path: str, suffix: str, default_name: str,
+                         overwrite: bool):
+    """Resolve and validate an export path (export_refi_qda posture).
+
+    Accepts a full file path (required suffix, parent must exist, refuse
+    existing unless overwrite) or an existing DIRECTORY — then QualCoder's
+    own convention applies: the report's default filename, with collision
+    suffixes _0, _1, … appended before the extension (helpers.py:147-150).
+    Always refuses to write inside the project folder.
+
+    Returns (Path, None) on success or (None, error_dict).
+    """
+    try:
+        out_file = Path(output_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None, {"error": "Invalid output path"}
+    if out_file.is_dir():
+        candidate = out_file / default_name
+        stem, ext = candidate.stem, candidate.suffix
+        counter = 0
+        while candidate.exists():
+            candidate = out_file / f"{stem}_{counter}{ext}"
+            counter += 1
+            if counter > 999:
+                return None, {"error": "Too many existing exports with "
+                                       "this name — clean up or give a "
+                                       "full file path"}
+        out_file = candidate
+    else:
+        if out_file.suffix.lower() != suffix:
+            return None, {"error": f"output_path must end in {suffix} "
+                                   f"(or be an existing directory)"}
+        if not out_file.parent.is_dir():
+            return None, {
+                "error": "The output directory does not exist — create it "
+                         "first or choose an existing folder "
+                         "(e.g. ~/Documents)"
+            }
+        if out_file.exists() and not overwrite:
+            return None, {
+                "error": f"'{out_file.name}' already exists. Pass "
+                         f"overwrite=true to replace it."
+            }
+    project_folder = validate_qda_path(current_project_path).parent
+    if project_folder in out_file.parents or out_file.parent == project_folder:
+        return None, {
+            "error": "Refusing to write the export inside the project "
+                     "folder — choose a location outside it."
+        }
+    return out_file, None
+
+
+def _write_csv_file(out_file: Path, rows, quote_all: bool):
+    """QualCoder CSV conventions: utf-8-sig (BOM), CRLF rows; QUOTE_ALL
+    for the coded report (report_codes.py:877-881), minimal otherwise."""
+    import csv
+    with open(out_file, "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(
+            fh, delimiter=",", quotechar='"',
+            quoting=csv.QUOTE_ALL if quote_all else csv.QUOTE_MINIMAL)
+        for row in rows:
+            writer.writerow(row)
+
+
+def _resolve_names_ci(requested, available, kind: str):
+    """Resolve names against a live list: exact match wins, else unique
+    case-insensitive match; ambiguous or missing -> (None, error_dict)."""
+    by_exact = {a["name"]: a for a in available}
+    resolved = []
+    for name in requested:
+        item = by_exact.get(name)
+        if item is None:
+            ci = [a for a in available
+                  if a["name"].lower() == str(name).lower()]
+            if len(ci) == 1:
+                item = ci[0]
+            elif len(ci) > 1:
+                return None, {
+                    "error": f"{kind} name '{name}' is ambiguous "
+                             f"(case-insensitive matches: "
+                             f"{sorted(a['name'] for a in ci)}) — use the "
+                             f"exact name"
+                }
+            else:
+                return None, {
+                    "error": f"{kind} '{name}' not found",
+                    f"available_{kind.lower()}s":
+                        sorted(a["name"] for a in available)[:50],
+                }
+        resolved.append(item)
+    return resolved, None
+
+
+def _codebook_tree(ro_db):
+    """Depth-first codebook walk: at each level, sub-categories and codes
+    together, sorted case-insensitively by name (the GUI tree's resting
+    order). Yields (depth, kind, item) with kind 'category'|'code'."""
+    cats = ro_db.list_categories()
+    codes = ro_db.list_codes()
+    child_cats: Dict[Any, list] = {}
+    for c in cats:
+        child_cats.setdefault(c["parent_id"], []).append(c)
+    cat_codes: Dict[Any, list] = {}
+    for c in codes:
+        cat_codes.setdefault(c["category_id"], []).append(c)
+
+    def walk(parent_id, depth):
+        children = ([("category", c) for c in child_cats.get(parent_id, [])]
+                    + [("code", c) for c in cat_codes.get(parent_id, [])])
+        for kind, item in sorted(children,
+                                 key=lambda kc: kc[1]["name"].lower()):
+            yield depth, kind, item
+            if kind == "category":
+                yield from walk(item["id"], depth + 1)
+
+    yield from walk(None, 0)
+
+
+def _category_chain(cat_by_id, category_id):
+    """Category names, immediate parent first, up to the root — the exact
+    column order of QualCoder's coded-report CSV (report_codes.py:
+    1003-1030)."""
+    chain = []
+    seen = set()
+    current = category_id
+    while current is not None and current not in seen:
+        seen.add(current)
+        cat = cat_by_id.get(current)
+        if cat is None:
+            break
+        chain.append(cat["name"])
+        current = cat["parent_id"]
+    return chain
+
+
+@mcp.tool()
+@_tool_guard
+def export_codebook(output_path: str, format: str = "csv",
+                    include_memos: bool = True,
+                    overwrite: bool = False) -> str:
+    """Export the full codebook (codes + category tree) to a file.
+
+    Read-only. Content mirrors QualCoder's own Codebook export: the tree
+    in depth order, each code with its colour and its coding count —
+    counted exactly as QualCoder counts it (text + image + A/V codings,
+    all coders, no filters, orphaned codings included).
+
+    Formats:
+    - "csv": flat table `Tree, Id, Type, Color, Count[, Memo]` — the
+      Tree cell carries the depth prefix (`...` per level, QualCoder's
+      codebook convention), Id is `catid:N`/`cid:N`.
+    - "txt": QualCoder's Codebook text shape (`...Category: X` /
+      `...Code: Y, Count: N`, `MEMO:` lines when include_memos).
+    - "md": Markdown — headings per category depth, codes as bullets.
+    All files are UTF-8 with BOM (QualCoder's export encoding).
+
+    Args:
+        output_path: Target file (matching extension), or an existing
+                     directory — then the default name `Codebook.csv`
+                     etc. is used, with `_0`, `_1` collision suffixes
+        format: "csv" (default), "txt" or "md"
+        include_memos: Include code/category memos (default True)
+        overwrite: Allow replacing an existing file (default False)
+
+    Returns:
+        JSON with output_path, counts, and the counting rule used.
+    """
+    if format not in ("csv", "txt", "md"):
+        return json.dumps({"error": "format must be 'csv', 'txt' or 'md'"})
+    suffix = f".{format}"
+    out_file, err = _resolve_export_path(
+        output_path, suffix, f"Codebook{suffix}", overwrite)
+    if err:
+        return json.dumps(err)
+
+    ro_db = get_db()
+    freq = ro_db.get_codebook_frequencies()
+    project = Path(current_project_path).stem
+    n_codes = n_cats = 0
+
+    if format == "csv":
+        header = ["Tree", "Id", "Type", "Color", "Count"]
+        if include_memos:
+            header.append("Memo")
+        rows = [header]
+        for depth, kind, item in _codebook_tree(ro_db):
+            prefix = "..." * depth
+            if kind == "category":
+                n_cats += 1
+                row = [f"{prefix}{item['name']}", f"catid:{item['id']}",
+                       "category", "", ""]
+            else:
+                n_codes += 1
+                row = [f"{prefix}{item['name']}", f"cid:{item['id']}",
+                       "code", item["color"] or "",
+                       str(freq.get(item["id"], 0))]
+            if include_memos:
+                row.append(item.get("memo") or "")
+            rows.append(row)
+        _write_csv_file(out_file, rows, quote_all=False)
+    else:
+        lines = [f"Codebook: {project}", ""]
+        for depth, kind, item in _codebook_tree(ro_db):
+            memo = item.get("memo") or ""
+            if format == "txt":
+                prefix = "..." * depth
+                if kind == "category":
+                    n_cats += 1
+                    lines.append(f"{prefix}Category: {item['name']}")
+                else:
+                    n_codes += 1
+                    lines.append(f"{prefix}Code: {item['name']}, "
+                                 f"Count: {freq.get(item['id'], 0)}")
+                if include_memos and memo:
+                    lines.append(f"{prefix}MEMO: {memo}")
+            else:  # md
+                if kind == "category":
+                    n_cats += 1
+                    lines.append(f"{'#' * min(depth + 2, 6)} {item['name']}")
+                    if include_memos and memo:
+                        lines.append(f"> {memo}")
+                    lines.append("")
+                else:
+                    n_codes += 1
+                    color = f" `{item['color']}`" if item.get("color") else ""
+                    lines.append(f"- **{item['name']}**{color} — "
+                                 f"{freq.get(item['id'], 0)} coding(s)")
+                    if include_memos and memo:
+                        lines.append(f"  > {memo}")
+        if format == "md":
+            lines.insert(0, f"# Codebook: {project}")
+            del lines[1]
+        with open(out_file, "w", encoding="utf-8-sig") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_file),
+        "format": format,
+        "codes": n_codes,
+        "categories": n_cats,
+        "counting_rule": "QualCoder Codebook parity: text + image + A/V "
+                         "codings, all coders, no filters, orphaned "
+                         "codings included",
+    }, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def export_coded_segments_report(
+    output_path: str,
+    code_names: Optional[List[str]] = None,
+    case_names: Optional[List[str]] = None,
+    coder: str = "",
+    file_ids: Optional[List[int]] = None,
+    search_text: Optional[str] = None,
+    important: bool = False,
+    include_variables: bool = False,
+    format: str = "csv",
+    overwrite: bool = False,
+) -> str:
+    """Export the coded-segments-with-quotes report (QualCoder's Coding
+    Report) to a file.
+
+    Read-only. Rows, columns and ordering mirror QualCoder's own
+    File > Reports > Coding report export exactly:
+    - CSV columns (file mode): `File, Coder, Coded, Id, Codename,
+      Coded_Memo` then `Category` × N (the code's category chain,
+      immediate parent first, padded to the deepest chain).
+      Case mode: `Case, Filename, Coder, Coded, ...`.
+      `Id` is `ctid:N`. UTF-8 with BOM, every cell quoted, CRLF rows —
+      the exact dialect QualCoder writes.
+    - txt: the on-screen report serialization (Search parameters header,
+      then `[pos0-pos1] Codename, File: ..., Coder: ...` headings with
+      the quoted text).
+    - Case mode uses the CONTAINMENT rule (a coding belongs to a case
+      iff fully inside one of the case's text spans) — the rule
+      QualCoder's coding report uses, stated in the response because the
+      GUI ships a second, different rule elsewhere.
+    - Text codings only; image/AV codings are not included (disclosed).
+
+    Args:
+        output_path: Target file, or an existing directory (default name
+                     `Coded_segments.csv`/`.txt`, `_0` collision suffixes)
+        code_names: Codes to include (default: all). Exact name wins,
+                    else unique case-insensitive match.
+        case_names: Switch to CASE mode and filter to these cases
+        coder: Exact coder name (default "" = all coders — exact match,
+               never a substring, like QualCoder)
+        file_ids: Restrict to these files
+        search_text: Only segments whose text contains this substring
+        important: Only segments flagged important
+        include_variables: Append `FileVar_{name}` columns (and, in case
+                           mode, `CaseVar_{name}`) with attribute values
+                           per row — QualCoder's "variables" checkbox
+        format: "csv" (default) or "txt"
+        overwrite: Allow replacing an existing file (default False)
+
+    Returns:
+        JSON with output_path, row count, the filters applied, and the
+        counting rule + disclosures.
+    """
+    if format not in ("csv", "txt"):
+        return json.dumps({"error": "format must be 'csv' or 'txt'"})
+    ro_db = get_db()
+
+    all_codes = ro_db.list_codes()
+    code_ids = None
+    if code_names:
+        resolved, err = _resolve_names_ci(code_names, all_codes, "Code")
+        if err:
+            return json.dumps(err)
+        code_ids = [c["id"] for c in resolved]
+    case_ids = None
+    case_mode = bool(case_names)
+    if case_mode:
+        all_cases = ro_db.list_cases()
+        resolved, err = _resolve_names_ci(case_names, all_cases, "Case")
+        if err:
+            return json.dumps(err)
+        case_ids = [c["id"] for c in resolved]
+
+    suffix = f".{format}"
+    out_file, err = _resolve_export_path(
+        output_path, suffix, f"Coded_segments{suffix}", overwrite)
+    if err:
+        return json.dumps(err)
+
+    rows = ro_db.get_coding_report_rows(
+        code_ids=code_ids, file_ids=file_ids, case_ids=case_ids,
+        coder=coder or "", search_text=search_text or "",
+        important=important)
+
+    cats = ro_db.list_categories()
+    cat_by_id = {c["id"]: c for c in cats}
+    code_cat = {c["id"]: c["category_id"] for c in all_codes}
+    result_cids = {r["cid"] for r in rows}
+    chains = {cid: _category_chain(cat_by_id, code_cat.get(cid))
+              for cid in result_cids}
+    max_depth = max((len(ch) for ch in chains.values()), default=0)
+
+    if format == "csv":
+        if case_mode:
+            header = ["Case", "Filename", "Coder", "Coded", "Id",
+                      "Codename", "Coded_Memo"]
+        else:
+            header = ["File", "Coder", "Coded", "Id", "Codename",
+                      "Coded_Memo"]
+        header += ["Category"] * max_depth
+        file_vars = case_vars = []
+        file_attr_cache: Dict[int, Dict[str, str]] = {}
+        case_attr_cache: Dict[int, Dict[str, str]] = {}
+        if include_variables:
+            attr_types = ro_db.list_attribute_types()
+            file_vars = sorted(a["name"] for a in attr_types
+                               if a["applies_to"] == "file")
+            header += [f"FileVar_{n}" for n in file_vars]
+            if case_mode:
+                case_vars = sorted(a["name"] for a in attr_types
+                                   if a["applies_to"] == "case")
+                header += [f"CaseVar_{n}" for n in case_vars]
+        out_rows = [header]
+        for r in rows:
+            if case_mode:
+                row = [r["casename"], r["filename"], r["owner"],
+                       r["seltext"] or "", f"ctid:{r['ctid']}",
+                       r["codename"], r["coded_memo"]]
+            else:
+                row = [r["filename"], r["owner"], r["seltext"] or "",
+                       f"ctid:{r['ctid']}", r["codename"], r["coded_memo"]]
+            chain = chains.get(r["cid"], [])
+            row += chain + [""] * (max_depth - len(chain))
+            if include_variables:
+                fid = r["fid"]
+                if fid not in file_attr_cache:
+                    file_attr_cache[fid] = {
+                        a["name"]: (a["value"] or "")
+                        for a in ro_db.get_file_attributes(fid)}
+                row += [file_attr_cache[fid].get(n, "") for n in file_vars]
+                if case_mode:
+                    caseid = r["caseid"]
+                    if caseid not in case_attr_cache:
+                        case_attr_cache[caseid] = {
+                            a["name"]: (a["value"] or "")
+                            for a in ro_db.get_case_attributes(caseid)}
+                    row += [case_attr_cache[caseid].get(n, "")
+                            for n in case_vars]
+            out_rows.append(row)
+        _write_csv_file(out_file, out_rows, quote_all=True)
+    else:  # txt — the on-screen report serialization
+        total_codes = len(all_codes)
+        lines = ["Search parameters", "=" * 10]
+        lines.append(f"Coding by: {coder}" if coder else
+                     "Coding by: All coders")
+        lines.append(f"Codes: "
+                     f"{len(code_ids) if code_ids else total_codes} / "
+                     f"{total_codes}")
+        if case_mode:
+            lines.append(f"Cases: {len(case_ids)}")
+        if file_ids:
+            lines.append(f"Files: {len(file_ids)}")
+        if search_text:
+            lines.append(f"Search text: {search_text}")
+        lines.append("=" * 10)
+        for r in rows:
+            case_part = f"Case: {r['casename']}, " if case_mode else ""
+            lines.append("")
+            lines.append(f"[{r['pos0']}-{r['pos1']}] {r['codename']}, "
+                         f"File: {r['filename']}, {case_part}"
+                         f"Coder: {r['owner']}")
+            lines.append(r["seltext"] or "")
+        with open(out_file, "w", encoding="utf-8-sig") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    result = {
+        "success": True,
+        "output_path": str(out_file),
+        "format": format,
+        "rows": len(rows),
+        "mode": "case" if case_mode else "file",
+        "filters": {
+            "codes": code_names or "all",
+            "cases": case_names or None,
+            "coder": coder or "all coders (exact-match filter available)",
+            "file_ids": file_ids or "all",
+            "search_text": search_text,
+            "important_only": important,
+        },
+        "disclosures": [
+            "Text codings only — image and A/V codings are not included",
+            "Codings on deleted files are excluded (source join), exactly "
+            "as QualCoder's report",
+        ],
+    }
+    if case_mode:
+        result["counting_rule"] = (
+            "CONTAINMENT: a coding belongs to a case iff its span lies "
+            "fully inside one of the case's text spans on the same file "
+            "(QualCoder coding-report rule). Note QualCoder's comparison "
+            "table uses a different rule (file linkage); whole-file links "
+            "created by different QualCoder dialogs end at len-1 or len, "
+            "which can exclude a coding touching the file end."
+        )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def export_frequencies_csv(output_path: str,
+                           overwrite: bool = False) -> str:
+    """Export the code-frequencies table (QualCoder's Code Frequencies
+    report) as CSV.
+
+    Read-only. Numbers match QualCoder's report EXACTLY: one count per
+    coding row across ALL THREE media tables (text, image, A/V), one
+    column per coder plus Total, category rows carrying recursive
+    subtree totals, and — like QualCoder — codings whose file was
+    deleted still count.
+
+    DIVERGENCE NOTE (disclosed here and in the response): the
+    conversational get_coding_frequencies tool counts TEXT codings on
+    existing files only, so its numbers can be lower than this export.
+    This export is the QualCoder-parity artefact.
+
+    Columns: `Code Tree, Id, {coder…}, Total` (coders alphabetical).
+    Tree rows in depth order with `--` per level in the Code Tree cell
+    (QualCoder's text-export convention, kept so hierarchy survives a
+    flat CSV). UTF-8 with BOM, CRLF rows.
+
+    Args:
+        output_path: Target .csv file, or an existing directory (default
+                     name `Code_frequencies.csv`, `_0` suffixes)
+        overwrite: Allow replacing an existing file (default False)
+    """
+    out_file, err = _resolve_export_path(
+        output_path, ".csv", "Code_frequencies.csv", overwrite)
+    if err:
+        return json.dumps(err)
+
+    ro_db = get_db()
+    raw = ro_db.get_raw_coding_counts()
+    coders = sorted({r["owner"] for r in raw if r["owner"] is not None})
+    counts: Dict[Any, int] = {}
+    for r in raw:
+        counts[(r["code_id"], r["owner"])] = r["count"]
+
+    cats = ro_db.list_categories()
+    codes = ro_db.list_codes()
+    child_cats: Dict[Any, list] = {}
+    for c in cats:
+        child_cats.setdefault(c["parent_id"], []).append(c)
+    cat_codes: Dict[Any, list] = {}
+    for c in codes:
+        cat_codes.setdefault(c["category_id"], []).append(c)
+
+    def code_row_counts(cid):
+        per = [counts.get((cid, coder), 0) for coder in coders]
+        return per, sum(per)
+
+    def subtree_counts(catid):
+        per = [0] * len(coders)
+        for c in cat_codes.get(catid, []):
+            cper, _ = code_row_counts(c["id"])
+            per = [a + b for a, b in zip(per, cper)]
+        for sub in child_cats.get(catid, []):
+            sper = subtree_counts(sub["id"])
+            per = [a + b for a, b in zip(per, sper)]
+        return per
+
+    rows = [["Code Tree", "Id"] + coders + ["Total"]]
+
+    def walk(parent_id, depth):
+        children = ([("category", c) for c in child_cats.get(parent_id, [])]
+                    + [("code", c) for c in cat_codes.get(parent_id, [])])
+        for kind, item in sorted(children,
+                                 key=lambda kc: kc[1]["name"].lower()):
+            prefix = "--" * depth
+            if kind == "category":
+                per = subtree_counts(item["id"])
+                rows.append([f"{prefix}{item['name']}",
+                             f"catid:{item['id']}"]
+                            + [str(n) for n in per] + [str(sum(per))])
+                walk(item["id"], depth + 1)
+            else:
+                per, total = code_row_counts(item["id"])
+                rows.append([f"{prefix}{item['name']}",
+                             f"cid:{item['id']}"]
+                            + [str(n) for n in per] + [str(total)])
+
+    walk(None, 0)
+    _write_csv_file(out_file, rows, quote_all=False)
+
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_file),
+        "codes": len(codes),
+        "categories": len(cats),
+        "coders": coders,
+        "counting_rule": "QualCoder Code Frequencies parity: one count "
+                         "per coding row over code_text + code_image + "
+                         "code_av, per coder; category rows are recursive "
+                         "subtree totals; orphaned codings included",
+        "divergence_note": "get_coding_frequencies (the conversational "
+                           "tool) counts text codings on existing files "
+                           "only — its numbers can be lower than this "
+                           "QualCoder-parity export.",
+    }, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def export_case_code_matrix_csv(output_path: str,
+                                overwrite: bool = False) -> str:
+    """Export the case × code cross-tab as CSV.
+
+    Read-only. Rows are cases, columns are codes, cells are the number
+    of coded text segments of that code contained in that case. Uses the
+    CONTAINMENT rule — the same rule as get_case_code_matrix and
+    QualCoder's coding report: a coding counts for a case iff its span
+    lies fully inside one of the case's text spans on the same file.
+    The rule is stated in the response because QualCoder itself ships a
+    SECOND, different rule (its comparison table counts by file linkage,
+    including codings outside the case's spans) — matrices from the two
+    rules are not comparable.
+
+    No totals row/column (parity with QualCoder's matrix exports).
+    UTF-8 with BOM, CRLF rows.
+
+    Args:
+        output_path: Target .csv file, or an existing directory (default
+                     name `Case_code_matrix.csv`, `_0` suffixes)
+        overwrite: Allow replacing an existing file (default False)
+    """
+    out_file, err = _resolve_export_path(
+        output_path, ".csv", "Case_code_matrix.csv", overwrite)
+    if err:
+        return json.dumps(err)
+
+    data = get_db().get_case_code_matrix()
+    codes = data["codes"]
+    rows = [["Case"] + [c["name"] for c in codes]]
+    for case in data["cases"]:
+        cells = data["matrix"].get(case["id"], {})
+        rows.append([case["name"]]
+                    + [str(cells.get(c["id"], 0)) for c in codes])
+    _write_csv_file(out_file, rows, quote_all=False)
+
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_file),
+        "cases": len(data["cases"]),
+        "codes": len(codes),
+        "counting_rule": "CONTAINMENT: a coding counts for a case iff "
+                         "fully inside one of the case's text spans on "
+                         "the same file (QualCoder coding-report rule; "
+                         "text codings on existing files). QualCoder's "
+                         "comparison table uses file-linkage counting "
+                         "instead — its numbers will differ.",
+    }, indent=2)
 
 
 # ============================================================================

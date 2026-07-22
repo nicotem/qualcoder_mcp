@@ -57,7 +57,7 @@ RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))  # generated artefacts
 PROJECTS_DIR = RUN_DIR / "projects"
 HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
 
-EXPECTED_TOOLS = 63
+EXPECTED_TOOLS = 67
 EXPECTED_CONCRETE_RESOURCES = 6
 EXPECTED_RESOURCE_TEMPLATES = 3
 EXPECTED_RESOURCES_TOTAL = 9

@@ -2141,6 +2141,142 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "query_by_attribute", "Failed to query by attribute")
 
+    # ========================================================================
+    # REPORT-EXPORT READS (v0.8 phase B) — QualCoder-parity row sources
+    # ========================================================================
+
+    def get_codebook_frequencies(self) -> Dict[int, int]:
+        """Per-code coding counts exactly as QualCoder's Codebook export
+        computes them (codebook.py:249-267): code_text + code_image +
+        code_av rows, ALL coders, ALL files, no filters, no source join
+        (orphaned codings count, as upstream)."""
+        try:
+            cursor = self.conn.execute("""
+                SELECT cid, COUNT(*) AS n FROM (
+                    SELECT cid FROM code_text
+                    UNION ALL SELECT cid FROM code_image
+                    UNION ALL SELECT cid FROM code_av
+                ) GROUP BY cid
+            """)
+            return {row["cid"]: row["n"] for row in cursor.fetchall()}
+        except sqlite3.Error as e:
+            _raise_query_error(e, "get_codebook_frequencies",
+                               "Failed to compute codebook frequencies")
+
+    def get_raw_coding_counts(self) -> List[Dict[str, Any]]:
+        """Per-(code, coder) raw row counts over all three coding tables —
+        the exact number source of QualCoder's Code Frequencies report
+        (reports.py:177-280): no source join (orphaned fids count), one
+        count per coding row regardless of length or medium."""
+        try:
+            cursor = self.conn.execute("""
+                SELECT cid, owner, COUNT(*) AS n FROM (
+                    SELECT cid, owner FROM code_text
+                    UNION ALL SELECT cid, owner FROM code_image
+                    UNION ALL SELECT cid, owner FROM code_av
+                ) GROUP BY cid, owner
+            """)
+            return [{"code_id": row["cid"], "owner": row["owner"],
+                     "count": row["n"]} for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            _raise_query_error(e, "get_raw_coding_counts",
+                               "Failed to compute coding counts")
+
+    def get_coding_report_rows(
+        self,
+        code_ids: Optional[List[int]] = None,
+        file_ids: Optional[List[int]] = None,
+        case_ids: Optional[List[int]] = None,
+        coder: str = "",
+        search_text: str = "",
+        important: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Text-coding rows for the coded-segments report, using the exact
+        SQL semantics of QualCoder's Coding Report (report_codes.py).
+
+        File mode (no case_ids, :1504-1519): one row per code_text row,
+        joined to code_name and source; ordered code name, file name,
+        pos0. Case mode (:1628-1649): joined through case_text with the
+        CONTAINMENT rule — a coding belongs to a case iff fully inside
+        one of the case's case_text spans on the same fid
+        (pos0 >= case.pos0 AND pos1 <= case.pos1) — ordered code name,
+        case name. Coder filter is an EXACT owner match (never LIKE);
+        search_text is a seltext substring; important filters
+        important=1. Text codings only (image/AV excluded — disclosed by
+        the caller). Orphaned codings are excluded by the source join,
+        exactly as upstream.
+        """
+        if coder is not None and not isinstance(coder, str):
+            raise TypeError("coder must be a string")
+        if search_text is not None and not isinstance(search_text, str):
+            raise TypeError("search_text must be a string")
+        params: List[Any] = []
+        where = []
+        if code_ids:
+            code_ids = [validate_id(c, "code_id") for c in code_ids]
+            where.append(
+                f"code_name.cid IN ({','.join('?' * len(code_ids))})")
+            params.extend(code_ids)
+        if file_ids:
+            file_ids = [validate_id(f, "file_id") for f in file_ids]
+            where.append(
+                f"source.id IN ({','.join('?' * len(file_ids))})")
+            params.extend(file_ids)
+        if coder:
+            where.append("code_text.owner = ?")
+            params.append(coder)
+        if search_text:
+            where.append("code_text.seltext LIKE ? ESCAPE '\\'")
+            params.append(f"%{escape_like_pattern(search_text)}%")
+        if important:
+            where.append("code_text.important = 1")
+
+        try:
+            if case_ids:
+                case_ids = [validate_id(c, "case_id") for c in case_ids]
+                where.append(
+                    f"cases.caseid IN ({','.join('?' * len(case_ids))})")
+                params.extend(case_ids)
+                sql = f"""
+                    SELECT code_name.name AS codename, code_name.cid,
+                           code_name.color,
+                           cases.name AS casename, cases.caseid,
+                           source.name AS filename, source.id AS fid,
+                           code_text.pos0, code_text.pos1,
+                           code_text.seltext, code_text.owner,
+                           code_text.ctid,
+                           ifnull(code_text.memo, '') AS coded_memo
+                    FROM code_text
+                    JOIN code_name ON code_name.cid = code_text.cid
+                    JOIN source ON code_text.fid = source.id
+                    JOIN case_text ON case_text.fid = code_text.fid
+                    JOIN cases ON cases.caseid = case_text.caseid
+                    WHERE (code_text.pos0 >= case_text.pos0
+                           AND code_text.pos1 <= case_text.pos1)
+                      {"AND " + " AND ".join(where) if where else ""}
+                    ORDER BY code_name.name, cases.name, code_text.pos0
+                """
+            else:
+                sql = f"""
+                    SELECT code_name.name AS codename, code_name.cid,
+                           code_name.color,
+                           source.name AS filename, source.id AS fid,
+                           code_text.pos0, code_text.pos1,
+                           code_text.seltext, code_text.owner,
+                           code_text.ctid,
+                           ifnull(code_text.memo, '') AS coded_memo
+                    FROM code_text
+                    JOIN code_name ON code_name.cid = code_text.cid
+                    JOIN source ON code_text.fid = source.id
+                    {"WHERE " + " AND ".join(where) if where else ""}
+                    ORDER BY code_name.name, source.name, code_text.pos0
+                """
+            cursor = self.conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            _raise_query_error(e, "get_coding_report_rows",
+                               "Failed to build the coding report")
+
     # ============================================================================
     # CO-OCCURRENCE ANALYSIS - Codes appearing together
     # ============================================================================

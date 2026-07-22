@@ -159,6 +159,37 @@ After editing the configuration:
 1. Quit Claude Desktop completely (Cmd+Q)
 2. Reopen Claude Desktop
 
+### Using with Claude Code (and other MCP clients)
+
+The server speaks standard MCP over stdio, so **any MCP client works** —
+Claude Desktop is simply the most common host. Researchers also run it
+under Claude Code (including in editor side panels such as Obsidian's).
+
+**Claude Code — one command:**
+
+```bash
+claude mcp add qualcoder -- /Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server
+```
+
+**Or per-project** with a `.mcp.json` in the folder you run Claude Code
+from:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
+      "args": ["-m", "qualcoder_mcp.server"]
+    }
+  }
+}
+```
+
+Both accept the same optional `env` block
+(`QUALCODER_PROJECT_PATH`) as the Desktop configurations above.
+Everything in this guide — the tools, the review-first workflow, the
+safety gates — behaves identically in any client.
+
 The MCP server should now be connected! You'll see it listed in the MCP section if you look at the settings.
 
 ## Usage

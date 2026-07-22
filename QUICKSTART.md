@@ -5,7 +5,10 @@ This guide will get you up and running with the Qualcoder MCP server in 10 minut
 ## Prerequisites Checklist
 
 - [ ] Python 3.10 or higher installed
-- [ ] Claude Desktop installed
+- [ ] Claude Desktop installed — or any other MCP client: Claude Code
+      users can skip the Desktop config below and just run
+      `claude mcp add qualcoder -- <venv-python> -m qualcoder_mcp.server`
+      (see "Using with Claude Code" in the README)
 - [ ] At least one Qualcoder project created (`.qda` file)
 
 ## Installation Steps

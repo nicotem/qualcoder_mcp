@@ -183,6 +183,37 @@ Now we need to tell Claude Desktop about the MCP server. You have two options:
 
 ---
 
+## Alternative: Claude Code and other MCP clients
+
+Claude Desktop is not required — the server speaks standard MCP over
+stdio, so **any MCP client can host it** (researchers run it under
+Claude Code, including in editor side panels such as Obsidian's).
+
+**Claude Code** — register it with one command (use the venv Python
+path from Step 5):
+
+```bash
+claude mcp add qualcoder -- ~/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server
+```
+
+Or add a `.mcp.json` to the folder you run Claude Code from:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
+      "args": ["-m", "qualcoder_mcp.server"]
+    }
+  }
+}
+```
+
+The optional `env` block with `QUALCODER_PROJECT_PATH` (Option B above)
+works the same way. Every feature behaves identically in any client.
+
+---
+
 ## Testing Your Installation
 
 ### If you used Option A (Dynamic):

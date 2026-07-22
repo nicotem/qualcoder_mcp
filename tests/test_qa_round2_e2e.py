@@ -69,6 +69,9 @@ EXPECTED_TOOLS = {
     "merge_proposals", "update_proposal_status", "create_proposed_codes",
     # attributes (v0.8 phase D2)
     "create_attribute_type", "set_attribute",
+    # report exports (v0.8 phase B)
+    "export_codebook", "export_coded_segments_report",
+    "export_frequencies_csv", "export_case_code_matrix_csv",
 }
 
 
@@ -94,7 +97,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 63
+        assert len(names) == 67
 
 
 class TestEndToEndLoop:

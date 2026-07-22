@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — report exports (v0.8 phase B, per the reporting ground-truth dossier)
+
+Four read-only file exporters whose numbers and columns match
+QualCoder's own GUI exports (the parity discipline: same rows, same
+counting, stated rules, disclosed divergences). All follow the
+export_refi_qda path posture, accept an existing directory (QualCoder's
+default filename with `_0`, `_1` collision suffixes), refuse writing
+inside the project folder, and write UTF-8 with BOM — QualCoder's own
+export encoding. CSV/txt/md only in the alpha: no xlsx, no new runtime
+dependency (researchers open CSV in Excel).
+
+- **`export_codebook`** (csv/txt/md): the code tree with colours, memos
+  and QualCoder-Codebook counts (text + image + A/V codings, all
+  coders, orphans included).
+- **`export_coded_segments_report`** (csv/txt): QualCoder's Coding
+  Report. Exact CSV dialect (`File, Coder, Coded, Id, Codename,
+  Coded_Memo, Category×N` — category chain immediate-parent-first,
+  padded; `ctid:N` ids; every cell quoted; CRLF). Filters mirror the
+  GUI: code/case selection, EXACT coder match, file list, search text,
+  important-only, and the variables checkbox (`FileVar_`/`CaseVar_`
+  columns). Case mode uses the CONTAINMENT rule and says so in the
+  response — QualCoder itself ships a second, conflicting rule.
+  Text codings only (disclosed).
+- **`export_frequencies_csv`**: QualCoder's Code Frequencies numbers
+  exactly — per-coder columns, recursive category roll-ups, counts over
+  all three media tables with orphaned codings included — with an
+  explicit divergence note versus the conversational
+  get_coding_frequencies (which counts text-on-existing-files only).
+- **`export_case_code_matrix_csv`**: the case × code cross-tab
+  (containment rule, stated; no totals row — parity).
+- `find_cooccurring_codes` now documents that its counting is NOT
+  QualCoder's co-occurrence matrix (different pairing semantics).
+
+### Docs — any MCP client (from first real tester feedback, F3)
+
+- README, INSTALL and QUICKSTART now document running the server under
+  **Claude Code** (`claude mcp add ...` / `.mcp.json`) and state that
+  any MCP client works — the first real-world tester ran the whole loop
+  from Claude Code in Obsidian's side panel, not Claude Desktop.
+
 ### Added — review-time span editing (v0.8, from first real tester feedback)
 
 Our first tester's #1 friction: AI-suggested spans were too short to
