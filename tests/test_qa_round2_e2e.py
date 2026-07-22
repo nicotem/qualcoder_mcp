@@ -43,9 +43,9 @@ EXPECTED_TOOLS = {
     "find_cooccurring_codes", "get_case_code_matrix", "get_codes_by_case",
     # (16th read)
     "get_cases_by_code",
-    # AI coding loop (5)
+    # AI coding loop (6)
     "analyze_for_coding", "record_suggestions", "review_suggestions",
-    "update_suggestion_status", "apply_codings",
+    "edit_suggestion", "update_suggestion_status", "apply_codings",
     # writes & recovery (6)
     "import_text_file", "link_file_to_case", "delete_coding",
     "list_backups", "restore_backup", "export_refi_qda",
@@ -94,7 +94,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 62
+        assert len(names) == 63
 
 
 class TestEndToEndLoop:

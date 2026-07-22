@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — review-time span editing (v0.8, from first real tester feedback)
+
+Our first tester's #1 friction: AI-suggested spans were too short to
+stand alone as quotable extracts, and there was no way to widen one at
+review time.
+
+- **`edit_suggestion`**: adjust a PENDING suggestion's span
+  (extend/shrink/move) and/or its code during review — no more
+  reject-and-re-record round-trips. New spans are re-verified against
+  the file text with the same machinery as record_suggestions
+  (authoritative slices, unique-locate, position-safety relay);
+  surrounding context is refreshed; edits that would duplicate another
+  suggestion are refused. Applied suggestions are immutable;
+  approved/rejected ones reflect a decision already made and carry
+  per-status hints.
+- **Server-computed span alternatives**: every verified span (coding
+  suggestions AND proposal evidence) now carries up to two ready-made,
+  deterministic adjustments — "shorter" (the span's most-central
+  sentence) and "longer" (the enclosing paragraph, or ± one sentence
+  when the span already fills its paragraph) — with token-frugal
+  truncated previews. One call applies one:
+  `edit_suggestion(use_alternative="shorter"|"longer")`; alternatives
+  are recomputed after every edit. Paragraph/sentence boundaries are
+  code-point-safe (blank lines or U+2029; `[.!?]+` sentence ends) with
+  no new dependencies.
+- **`update_proposal(example_segments=...)`**: proposal evidence spans
+  are editable the same way — the replacement list is validated with
+  the same position machinery.
+- **Guidance recalibration** (tester findings F1b/F2):
+  analyze_for_coding and record_suggestions now direct the model to
+  prefer complete-thought spans (a quote that stands alone) over
+  minimal phrases, to ACTIVELY consider multiple codes per segment
+  (co-coding is normal qualitative practice), and to treat a researcher
+  adding a second code during review as a calibration signal.
+  review_suggestions shows surrounding context by default and offers
+  the span alternatives as a compact one-line affordance (calibrated
+  against decision fatigue). The `instruction`-parameter pattern for
+  span style ("code generous spans") is documented in the docstrings
+  and explain_ai_coding_tools.
+
 ### Added — attributes (v0.8 phase D2, per the cases-attributes ground-truth dossier)
 
 - **`create_attribute_type`**: define a case, file or **journal** attribute

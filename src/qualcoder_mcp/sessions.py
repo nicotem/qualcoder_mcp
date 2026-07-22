@@ -28,7 +28,8 @@ class CodingSuggestion:
         status: str = "pending",
         context_before: str = "",
         context_after: str = "",
-        guid: Optional[str] = None
+        guid: Optional[str] = None,
+        span_alternatives: Optional[List[Dict[str, Any]]] = None
     ):
         self.file_id = file_id
         self.file_name = file_name
@@ -44,6 +45,9 @@ class CodingSuggestion:
         self.context_before = context_before  # Text before for context
         self.context_after = context_after  # Text after for context
         self.guid = guid or str(uuid.uuid4())
+        # Server-computed ready-made span adjustments (shorter/longer),
+        # recomputed whenever the span changes; [] for old sessions
+        self.span_alternatives = span_alternatives or []
 
         # For backwards compatibility with old ai_memo field
         self.ai_memo = reasoning
@@ -63,7 +67,8 @@ class CodingSuggestion:
             "status": self.status,
             "context_before": self.context_before,
             "context_after": self.context_after,
-            "guid": self.guid
+            "guid": self.guid,
+            "span_alternatives": self.span_alternatives
         }
 
     _REQUIRED_FIELDS = {
@@ -102,7 +107,8 @@ class CodingSuggestion:
             status=data.get("status", "pending"),
             context_before=data.get("context_before", ""),
             context_after=data.get("context_after", ""),
-            guid=data.get("guid")
+            guid=data.get("guid"),
+            span_alternatives=data.get("span_alternatives")
         )
 
 

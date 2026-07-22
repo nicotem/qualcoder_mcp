@@ -590,6 +590,122 @@ def _resolve_segment_positions(
     }
 
 
+# ---------------------------------------------------------------------------
+# Span alternatives (v0.8 tester-feedback amendment): whenever a span is
+# verified, precompute up to two ready-made adjustments so a researcher can
+# fix span length with one pick instead of describing offsets. Deterministic,
+# code-point-safe, no dependencies: paragraphs are bounded by blank lines
+# (\n{2,}) or U+2029 (the same paragraph-separator awareness as the rest of
+# the position system); sentences end at [.!?]+ runs followed by whitespace
+# or end-of-text. All alternative spans are verbatim fulltext slices —
+# position-verified by construction.
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
+_PARAGRAPH_SEP_RE = re.compile(r"\n{2,}|\u2029")
+# How far beyond the span to look for the previous/next sentence when the
+# span already fills its paragraph (bounds the scan on huge files)
+_ALTERNATIVE_SCAN_WINDOW = 2000
+
+
+def _trim_span(fulltext: str, start: int, end: int):
+    """Shrink [start,end) past leading/trailing whitespace (verbatim)."""
+    while start < end and fulltext[start].isspace():
+        start += 1
+    while end > start and fulltext[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _sentence_spans(fulltext: str, start: int, end: int):
+    """Trimmed sentence [s,e) spans within fulltext[start:end]."""
+    spans = []
+    s = start
+    for m in _SENTENCE_END_RE.finditer(fulltext, start, end):
+        s2, e2 = _trim_span(fulltext, s, m.end())
+        if s2 < e2:
+            spans.append((s2, e2))
+        s = m.end()
+    s2, e2 = _trim_span(fulltext, s, end)
+    if s2 < e2:
+        spans.append((s2, e2))
+    return spans
+
+
+def _paragraph_bounds(fulltext: str, start: int, end: int):
+    """Trimmed bounds of the paragraph(s) containing [start,end)."""
+    para_start = 0
+    for m in _PARAGRAPH_SEP_RE.finditer(fulltext, 0, start):
+        para_start = m.end()
+    m = _PARAGRAPH_SEP_RE.search(fulltext, end)
+    para_end = m.start() if m else len(fulltext)
+    return _trim_span(fulltext, para_start, para_end)
+
+
+def _span_preview(text: str, head: int = 60, tail: int = 60) -> str:
+    """Token-frugal preview: first ~60 + last ~60 chars of long spans."""
+    if len(text) <= head + tail + 5:
+        return text
+    return f"{text[:head]} […] {text[-tail:]}"
+
+
+def _alternative_entry(label: str, fulltext: str, start: int, end: int):
+    return {
+        "label": label,
+        "start_pos": start,
+        "end_pos": end,
+        "preview": _span_preview(fulltext[start:end]),
+        "length": end - start,
+    }
+
+
+def _compute_span_alternatives(fulltext: str, start: int, end: int):
+    """Up to two deterministic span adjustments for [start,end).
+
+    - "shorter": the span's most-central sentence (the one containing the
+      span midpoint) when the span holds more than one sentence; omitted
+      for single-sentence spans (no meaningless alternative).
+    - "longer": the enclosing paragraph when it extends beyond the span;
+      if the span already fills its paragraph, ± one sentence (previous
+      and next within a bounded scan window); omitted at file boundaries
+      where no meaningful expansion exists.
+    """
+    alternatives = []
+    n = len(fulltext)
+    start, end = max(0, start), min(end, n)
+    if start >= end:
+        return alternatives
+
+    # -- shorter --
+    sentences = _sentence_spans(fulltext, start, end)
+    if len(sentences) > 1:
+        mid = (start + end) // 2
+        core = next((sp for sp in sentences if sp[0] <= mid < sp[1]), None)
+        if core is None:
+            core = min(sentences,
+                       key=lambda sp: min(abs(sp[0] - mid), abs(sp[1] - mid)))
+        if core != (start, end):
+            alternatives.append(
+                _alternative_entry("shorter", fulltext, core[0], core[1]))
+
+    # -- longer --
+    p0, p1 = _paragraph_bounds(fulltext, start, end)
+    if p0 <= start and end <= p1 and (p0, p1) != (start, end):
+        alternatives.append(_alternative_entry("longer", fulltext, p0, p1))
+    else:
+        prev = _sentence_spans(fulltext,
+                               max(0, start - _ALTERNATIVE_SCAN_WINDOW), start)
+        nxt = _sentence_spans(fulltext, end,
+                              min(n, end + _ALTERNATIVE_SCAN_WINDOW))
+        new_start = prev[-1][0] if prev else start
+        new_end = nxt[0][1] if nxt else end
+        if (new_start, new_end) != (start, end):
+            alternatives.append(
+                _alternative_entry("longer", fulltext, new_start, new_end))
+
+    return alternatives
+
+
 # ============================================================================
 # RESOURCES - Read-only data access
 # ============================================================================
@@ -1754,13 +1870,31 @@ def analyze_for_coding(
     1. I analyze the files and identify relevant segments
     2. I present suggestions to you in the chat with reasoning
     3. You review and can ask questions about specific suggestions
+       (edit_suggestion adjusts a span or code during review)
     4. You approve/reject suggestions using update_suggestion_status
     5. You apply approved suggestions using apply_codings
+
+    SPAN STYLE (learned from real researcher use): prefer
+    COMPLETE-THOUGHT spans — a quote that stands alone (a full sentence
+    or small paragraph with enough context to be quotable in a paper) —
+    over minimal phrases. Researchers overwhelmingly widen short spans
+    at review time; err generous.
+
+    CO-CODING: actively consider whether each segment warrants MULTIPLE
+    codes. Coding the same span under several codes is normal, expected
+    qualitative practice (the schema supports it — record one
+    suggestion per code). If the researcher adds a second code to a
+    fragment during review, treat that as a calibration signal: look
+    for the same code pairing in subsequent segments.
 
     Args:
         file_ids: List of file IDs to analyze
         code_names: Optional list of specific code names to apply
-        instruction: Guidance for what to look for in the analysis
+        instruction: Guidance for what to look for in the analysis.
+                     Also the place to set span style once per session —
+                     e.g. "code generous spans, full paragraphs" or
+                     "keep spans to single sentences" — and honor it in
+                     every suggestion you record.
         min_confidence: Minimum confidence for suggestions (0.0-1.0)
 
     Returns:
@@ -1941,6 +2075,8 @@ def _validate_proposal_evidence(ro_db, items, file_cache):
             "end_pos": end,
             "segment_text": fulltext[start:end],   # authoritative slice
             "positions_corrected": corrected,
+            "span_alternatives": _compute_span_alternatives(
+                fulltext, start, end),
         })
     return kept, rejected, unsafe_files
 
@@ -1969,6 +2105,21 @@ def record_suggestions(
       automatically (flagged as positions_corrected); otherwise the suggestion
       is rejected with an explanation. start_pos/end_pos may be omitted when
       the excerpt is unique in the file.
+
+    SPAN STYLE: prefer COMPLETE-THOUGHT spans — a full sentence or small
+    paragraph that stands alone as a quotable extract — over minimal
+    phrases. Real researchers consistently widen short spans at review
+    time (edit_suggestion exists for that, but getting it right first
+    saves them the round-trip). If the session's `instruction` set a span
+    style (e.g. "code generous spans"), honor it in every suggestion.
+
+    CO-CODING: for each segment, actively ask whether it warrants MORE
+    THAN ONE code — record one suggestion per code on the same span.
+    Same-span different-code suggestions are legitimate and expected in
+    qualitative work; do not default to one code per fragment. When the
+    researcher adds a second code to a fragment during review, treat it
+    as a calibration signal for the code pairings in your subsequent
+    suggestions.
 
     Args:
         session_id: The session ID from analyze_for_coding
@@ -2128,6 +2279,8 @@ def record_suggestions(
             status="pending",
             context_before=context_before,
             context_after=context_after,
+            span_alternatives=_compute_span_alternatives(
+                fulltext, start_pos, end_pos),
         )
         session.add_suggestion(suggestion)
         recorded.append({
@@ -2138,6 +2291,10 @@ def record_suggestions(
             "start_pos": start_pos,
             "end_pos": end_pos,
             "positions_corrected": corrected,
+            # labels only — the full alternatives (with previews) live on
+            # the suggestion; review_suggestions shows them compactly
+            "alternatives": [a["label"]
+                             for a in suggestion.span_alternatives],
         })
 
     session_manager.save_session(session)
@@ -2172,17 +2329,31 @@ def record_suggestions(
 def review_suggestions(
     session_id: str,
     suggestion_guids: Optional[List[str]] = None,
-    show_context: bool = False
+    show_context: bool = True
 ) -> str:
     """Review coding suggestions in detail.
 
-    Shows detailed information about specific suggestions from an analysis session.
-    Use this to examine suggestions more closely before approving/rejecting.
+    Shows detailed information about specific suggestions from an analysis
+    session, WITH the surrounding text by default — researchers judge a
+    span by what is around it (is the quote complete? should it be
+    wider?). Use this to examine suggestions before approving/rejecting;
+    if a span needs adjusting, edit_suggestion changes it in place.
+
+    SPAN ALTERNATIVES: each suggestion may carry ready-made
+    shorter/longer spans (core sentence / enclosing paragraph). Present
+    them COMPACTLY — a one-line "want it shorter (N chars) or longer
+    (M chars)?" affordance, never three full quotes per suggestion
+    (decision fatigue). Surface them proactively only when the
+    researcher has already adjusted spans this session (the calibration
+    signal) or asks about context; otherwise mention once that
+    alternatives exist. One pick applies via
+    edit_suggestion(use_alternative="shorter"|"longer").
 
     Args:
         session_id: The session ID from analyze_for_coding
         suggestion_guids: Optional list of specific suggestion GUIDs to review
-        show_context: Include surrounding text context (default: False)
+        show_context: Include surrounding text context (default: True;
+                      pass False for a compact listing)
 
     Returns:
         Detailed formatted information about the requested suggestions
@@ -2229,7 +2400,256 @@ def review_suggestions(
                 output.append(f"\n**Context After:**")
                 output.append(f"```\n{sugg.context_after}\n```")
 
+        alternatives = getattr(sugg, "span_alternatives", None) or []
+        if alternatives and sugg.status == "pending":
+            picks = " / ".join(
+                f"{a['label']} ({a['start_pos']}-{a['end_pos']}, "
+                f"{a['length']} chars)" for a in alternatives)
+            output.append(
+                f"\n↔ Span alternatives: {picks} — apply with "
+                f"edit_suggestion(use_alternative=...)")
+
     return "\n".join(output)
+
+
+@mcp.tool()
+@_tool_guard
+def edit_suggestion(
+    session_id: str,
+    suggestion_guid: str,
+    start_pos: Optional[int] = None,
+    end_pos: Optional[int] = None,
+    segment_text: Optional[str] = None,
+    use_alternative: Optional[str] = None,
+    code_id: Optional[int] = None,
+    code_name: Optional[str] = None,
+) -> str:
+    """Adjust a PENDING suggestion's span and/or code before approval.
+
+    The review-time refinement tool: when the researcher wants a
+    suggestion's span widened to a complete quote (or narrowed, or
+    moved), or wants a different code on it, edit it here instead of
+    rejecting and re-recording. Session-only — nothing touches the
+    project database until apply_codings.
+
+    Span editing accepts one of:
+    - use_alternative="shorter" or "longer" — one-call apply of a
+      ready-made alternative the server computed when the span was
+      recorded (core sentence / enclosing paragraph). The quickest
+      answer to "make it shorter/longer".
+    - new start_pos and/or end_pos ("extend it to position 120"; an
+      omitted bound keeps its current value) — the stored text becomes
+      the exact file slice for the new span;
+    - a new segment_text (the exact excerpt; positions optional when it
+      occurs exactly once in the file) — verified with the same
+      machinery as record_suggestions, positions auto-corrected when
+      the excerpt is unique.
+    The surrounding context shown by review_suggestions is refreshed,
+    and the shorter/longer alternatives are recomputed for the new span.
+
+    Only PENDING suggestions are editable: applied ones are immutable
+    (the coding is in the database — use delete_coding + record again),
+    and approved/rejected ones reflect a decision the user already made
+    (change the decision with update_suggestion_status, then edit).
+
+    Args:
+        session_id: The session ID from analyze_for_coding
+        suggestion_guid: The suggestion to edit
+        start_pos: New start position (code-point offset, 0-based)
+        end_pos: New end position (end-exclusive)
+        segment_text: New exact excerpt (alternative to positions)
+        use_alternative: "shorter" or "longer" — apply a stored span
+                         alternative (mutually exclusive with manual
+                         start_pos/end_pos/segment_text)
+        code_id: Change the code by id (existing codes only)
+        code_name: Change the code by name (case-insensitive match
+                   against the live codebook)
+
+    Returns:
+        JSON with the changes made (old -> new span/code), the new
+        segment text, recomputed span_alternatives, and
+        positions_corrected if the excerpt was re-located. If it
+        contains `position_safety_warning`, relay it to the user.
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({
+            "error": f"Session {session_id} not found",
+            "available_sessions": session_manager.list_sessions()
+        })
+    session = session_manager.load_session(session_id)
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+
+    sugg = session.get_suggestion_by_guid(suggestion_guid)
+    if sugg is None:
+        return json.dumps({"error": f"Suggestion {suggestion_guid} not found"})
+    if sugg.status != "pending":
+        hints = {
+            "applied": "the coding is already in the database — use "
+                       "delete_coding to remove it, then record a new "
+                       "suggestion",
+            "approved": "un-approve it first (update_suggestion_status "
+                        "reject, then approve after editing) or leave the "
+                        "decision as made",
+            "rejected": "it was rejected — record a corrected suggestion "
+                        "with record_suggestions instead, or approve it "
+                        "as-is if the rejection was a mistake",
+        }
+        return json.dumps({
+            "error": f"Only PENDING suggestions can be edited — this one is "
+                     f"{sugg.status.upper()}; "
+                     f"{hints.get(sugg.status, 'no edit path')}"
+        })
+
+    manual_span = (start_pos is not None or end_pos is not None
+                   or segment_text is not None)
+    if use_alternative is not None:
+        if manual_span:
+            return json.dumps({
+                "error": "use_alternative is mutually exclusive with manual "
+                         "start_pos/end_pos/segment_text — pick one"
+            })
+        alt = next((a for a in sugg.span_alternatives
+                    if a.get("label") == use_alternative), None)
+        if alt is None:
+            return json.dumps({
+                "error": f"No '{use_alternative}' alternative is stored for "
+                         f"this suggestion",
+                "available_alternatives": [a.get("label") for a in
+                                           sugg.span_alternatives],
+            })
+        start_pos, end_pos = alt["start_pos"], alt["end_pos"]
+        manual_span = True
+
+    wants_span = manual_span
+    wants_code = code_id is not None or code_name is not None
+    if not wants_span and not wants_code:
+        return json.dumps({
+            "error": "Nothing to change — pass start_pos/end_pos/"
+                     "segment_text, use_alternative, and/or "
+                     "code_id/code_name"
+        })
+
+    ro_db = get_db()
+    changes: Dict[str, Any] = {}
+    result: Dict[str, Any] = {"session_id": session_id,
+                              "guid": sugg.guid}
+
+    # --- code change (existing codes only, record_suggestions rules) ---
+    new_code = None
+    if wants_code:
+        codes = ro_db.list_codes()
+        if code_id is not None:
+            if not isinstance(code_id, int) or isinstance(code_id, bool):
+                return json.dumps({"error": "code_id must be an integer"})
+            new_code = next((c for c in codes if c["id"] == code_id), None)
+            if new_code is None:
+                return json.dumps({"error": f"code_id {code_id} does not exist"})
+        else:
+            new_code = next(
+                (c for c in codes
+                 if c["name"].lower() == str(code_name).lower()), None)
+            if new_code is None:
+                return json.dumps({
+                    "error": f"code '{code_name}' not found",
+                    "available_codes": sorted(c["name"] for c in codes)[:50],
+                })
+
+    # --- span change (same position machinery as record_suggestions) ---
+    new_start, new_end, corrected = sugg.start_pos, sugg.end_pos, False
+    fulltext = None
+    if wants_span:
+        file_content = ro_db.get_file_content(sugg.file_id)
+        fulltext = (file_content or {}).get("content") or ""
+        if file_content is None or not file_content.get("is_text") or not fulltext:
+            return json.dumps({
+                "error": f"file_id {sugg.file_id} no longer exists or is "
+                         f"not a text source"
+            })
+        for label, v in (("start_pos", start_pos), ("end_pos", end_pos)):
+            if v is not None and (not isinstance(v, int) or isinstance(v, bool)):
+                return json.dumps({"error": f"{label} must be an integer"})
+        if segment_text is not None:
+            if not isinstance(segment_text, str) or not segment_text.strip():
+                return json.dumps({
+                    "error": "segment_text must be a non-empty string"})
+            ok, new_start, new_end, corrected, pos_error = \
+                _resolve_segment_positions(fulltext, start_pos, end_pos,
+                                           segment_text)
+            if not ok:
+                details = {k: v for k, v in pos_error.items()
+                           if k != "reason"}
+                return json.dumps({"error": pos_error["reason"], **details})
+        else:
+            new_start = start_pos if start_pos is not None else sugg.start_pos
+            new_end = end_pos if end_pos is not None else sugg.end_pos
+            if not (0 <= new_start < new_end <= len(fulltext)):
+                return json.dumps({
+                    "error": f"positions must satisfy 0 <= start < end <= "
+                             f"{len(fulltext)} (file length), got "
+                             f"{new_start}-{new_end}"
+                })
+
+    final_code_id = new_code["id"] if new_code else sugg.code_id
+    if (new_start, new_end, final_code_id) == (
+            sugg.start_pos, sugg.end_pos, sugg.code_id):
+        return json.dumps({"error": "No effective change — the span and "
+                                    "code are unchanged"})
+
+    # Refuse an edit that lands exactly on another suggestion
+    for other in session.suggestions:
+        if (other.guid != sugg.guid and other.file_id == sugg.file_id
+                and other.code_id == final_code_id
+                and other.start_pos == new_start
+                and other.end_pos == new_end):
+            return json.dumps({
+                "error": f"That edit would duplicate suggestion "
+                         f"{other.guid} ({other.code_name}, "
+                         f"{other.start_pos}-{other.end_pos}, "
+                         f"{other.status}) — reject this one instead"
+            })
+
+    if wants_span:
+        changes["span"] = {"from": f"{sugg.start_pos}-{sugg.end_pos}",
+                           "to": f"{new_start}-{new_end}"}
+        if use_alternative is not None:
+            changes["span"]["via"] = f"use_alternative={use_alternative}"
+        sugg.start_pos, sugg.end_pos = new_start, new_end
+        # Authoritative slice + refreshed context, as at record time;
+        # alternatives recomputed for the new span
+        sugg.segment_text = fulltext[new_start:new_end]
+        sugg.context_before = fulltext[max(0, new_start - 100):new_start]
+        sugg.context_after = fulltext[new_end:new_end + 100]
+        sugg.span_alternatives = _compute_span_alternatives(
+            fulltext, new_start, new_end)
+        if not db_position_safe(fulltext):
+            result["position_safety_warning"] = (
+                f"File '{sugg.file_name}' contains \r\n or characters "
+                f"beyond U+FFFF; codings on it may render shifted in "
+                f"QualCoder's editor. Relay this to the user."
+            )
+    if new_code is not None and new_code["id"] != sugg.code_id:
+        changes["code"] = {"from": sugg.code_name, "to": new_code["name"]}
+        sugg.code_id = new_code["id"]
+        sugg.code_name = new_code["name"]
+
+    session.last_modified = datetime.now().isoformat()
+    session_manager.save_session(session)
+
+    result.update({
+        "success": True,
+        "changes": changes,
+        "positions_corrected": corrected,
+        "segment_text": sugg.segment_text,
+        "span_alternatives": [{"label": a["label"],
+                               "length": a["length"]}
+                              for a in sugg.span_alternatives],
+        "status": sugg.status,
+        "next_step": "Still pending — approve with update_suggestion_status "
+                     "when the user is happy with it.",
+    })
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -3574,10 +3994,60 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "1. Run analyze_for_coding on your files",
                 "2. Record the suggestions with record_suggestions",
                 "3. Review with review_suggestions",
-                "4. Approve/reject with update_suggestion_status",
-                "5. Apply approved codings with apply_codings",
-                "6. A backup is created automatically before writing; "
+                "4. Adjust spans/codes in place with edit_suggestion",
+                "5. Approve/reject with update_suggestion_status",
+                "6. Apply approved codings with apply_codings",
+                "7. A backup is created automatically before writing; "
                 "delete_coding / restore_backup undo mistakes"
+            ]
+        },
+        "edit_suggestion": {
+            "purpose": "Adjust a PENDING suggestion's span (extend/shrink/"
+                       "move) and/or its code during review, before approval",
+            "when_to_use": "When the researcher wants a wider quote, a "
+                           "tighter span, or a different code on a "
+                           "suggestion — instead of rejecting and "
+                           "re-recording",
+            "notes": [
+                "Pending suggestions only: applied ones are immutable, "
+                "approved/rejected ones reflect a decision already made",
+                "use_alternative='shorter'|'longer' applies a ready-made "
+                "span the server computed (core sentence / enclosing "
+                "paragraph) — the one-call answer to 'make it "
+                "shorter/longer'; alternatives are recomputed after every "
+                "edit",
+                "New spans are re-verified against the file text with the "
+                "same machinery as record_suggestions",
+                "Proposal evidence spans are edited the same way via "
+                "update_proposal(example_segments=...)"
+            ]
+        },
+        "coding_style_guidance": {
+            "purpose": "How to calibrate span length and multi-coding "
+                       "(learned from real researcher use)",
+            "span_style": [
+                "Prefer complete-thought spans: a full sentence or small "
+                "paragraph that stands alone as a quotable extract — not "
+                "a minimal phrase",
+                "Set the style once per session via analyze_for_coding's "
+                "instruction parameter, e.g. instruction='code generous "
+                "spans, full paragraphs' — then honor it in every "
+                "suggestion",
+                "Researchers can widen or narrow any span at review time "
+                "with edit_suggestion; every suggestion carries "
+                "server-computed shorter/longer alternatives applied in "
+                "one call with use_alternative",
+                "Present alternatives compactly (one line, lengths only) "
+                "and proactively only after the researcher has adjusted "
+                "spans in this session — avoid decision fatigue"
+            ],
+            "co_coding": [
+                "Actively consider MULTIPLE codes per segment — record one "
+                "suggestion per code on the same span; this is normal "
+                "qualitative practice and the schema supports it",
+                "When the researcher adds a second code to a fragment "
+                "during review, treat it as a calibration signal for "
+                "subsequent suggestions"
             ]
         }
     }
@@ -3598,6 +4068,8 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "analyze_for_coding",
                 "record_suggestions",
                 "review_suggestions",
+                "edit_suggestion",
+                "coding_style_guidance",
                 "update_suggestion_status",
                 "apply_codings",
                 "delete_coding",
@@ -3850,14 +4322,19 @@ def update_proposal(session_id: str, proposal_guid: str,
                     name: Optional[str] = None,
                     color: Optional[str] = None,
                     category: Optional[str] = None,
-                    memo: Optional[str] = None) -> str:
+                    memo: Optional[str] = None,
+                    example_segments: Optional[List[Dict[str, Any]]] = None
+                    ) -> str:
     """Refine a proposed code BEFORE it is created — rename, recolour,
-    recategorise, or rewrite its definition.
+    recategorise, rewrite its definition, or replace its evidence spans.
 
     Session-only (writes nothing to the project). Only the provided
     fields change. Pass category="" to make the proposal uncategorised.
-    Proposals already CREATED are immutable here — edit the real code
-    with the codebook tools instead.
+    example_segments REPLACES the proposal's evidence wholesale — pass
+    the full corrected list (e.g. with widened spans); each span is
+    verified against the file text with the same machinery as
+    propose_codes. Proposals already CREATED are immutable here — edit
+    the real code with the codebook tools instead.
 
     Args:
         session_id: The session ID
@@ -3866,6 +4343,9 @@ def update_proposal(session_id: str, proposal_guid: str,
         color: New #RRGGBB colour
         category: Existing category name, or "" to clear
         memo: New definition text
+        example_segments: Replacement evidence spans
+            [{file_id, start_pos, end_pos, segment_text}] — positions
+            optional when the excerpt is unique in the file
     """
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
@@ -3924,10 +4404,29 @@ def update_proposal(session_id: str, proposal_guid: str,
     if memo is not None:
         changes["memo"] = ("(previous definition)", memo)
         proposal.memo = str(memo)
+    evidence_rejected = []
+    unsafe_files: Dict[int, str] = {}
+    if example_segments is not None:
+        if not isinstance(example_segments, list):
+            return json.dumps({"error": "example_segments must be a list "
+                                        "of evidence objects"})
+        kept, evidence_rejected, unsafe_files = _validate_proposal_evidence(
+            get_db(), example_segments, {})
+        if example_segments and not kept and evidence_rejected:
+            return json.dumps({
+                "error": "None of the replacement evidence spans verified "
+                         "against the file text — evidence unchanged",
+                "evidence_rejected": evidence_rejected,
+            })
+        changes["example_segments"] = (
+            f"{len(proposal.example_segments)} span(s)",
+            f"{len(kept)} span(s)")
+        proposal.example_segments = kept
 
     if not changes:
         return json.dumps({"error": "Nothing to change — pass at least one "
-                                    "of name/color/category/memo"})
+                                    "of name/color/category/memo/"
+                                    "example_segments"})
     session.last_modified = datetime.now().isoformat()
     session_manager.save_session(session)
 
@@ -3936,6 +4435,14 @@ def update_proposal(session_id: str, proposal_guid: str,
                           for k, v in changes.items()}}
     if proposal.collides_with:
         result["collides_with"] = proposal.collides_with
+    if evidence_rejected:
+        result["evidence_rejected"] = evidence_rejected
+    if unsafe_files:
+        result["position_safety_warning"] = (
+            f"Evidence file(s) {sorted(unsafe_files.values())} contain "
+            f"\\r\\n or characters beyond U+FFFF; codings on them may "
+            f"render shifted in QualCoder's editor. Relay this to the user."
+        )
     return json.dumps(result, indent=2)
 
 
