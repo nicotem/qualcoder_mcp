@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — backup retention (v0.8 phase C)
+
+- `prune_backups(keep_last, older_than_days, confirm)`: prune this
+  server's own backup snapshots by retention policy, with the
+  preview → confirm gate. When both criteria are given a backup is
+  removed only if it fails BOTH (conservative intersection); the newest
+  MCP backup is always kept unless `keep_last=0` is explicit; removing
+  the latest pre-restore safety snapshot is flagged. QualCoder's own
+  `_BKUP_` backups are NEVER touched. Works even while QualCoder has the
+  project open (the live database is never involved).
+- `list_backups` entries now carry `age_days`, and its notes disclose
+  that MCP backups accumulate until pruned (closes the long-standing D7
+  compat item).
+
 ## [0.7.0-alpha] - 2026-07-17
 
 Adds memo writing and full codebook editing, implemented against

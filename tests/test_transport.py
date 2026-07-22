@@ -7,7 +7,7 @@ the tool functions in-process), this module launches the server as a real
 subprocess and drives it over the genuine stdio JSON-RPC transport using the
 `mcp` Python SDK's stdio client.  It exercises:
 
-  1. Handshake: initialize + tools/list  (exactly 48 tools, every inputSchema
+  1. Handshake: initialize + tools/list  (exactly 49 tools, every inputSchema
      a well-formed JSON Schema, no empty descriptions).
   2. resources/list (6 concrete) + resources/templates/list (3) = 9 resources,
      prompts/list (4).
@@ -57,7 +57,7 @@ RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))  # generated artefacts
 PROJECTS_DIR = RUN_DIR / "projects"
 HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
 
-EXPECTED_TOOLS = 48
+EXPECTED_TOOLS = 49
 EXPECTED_CONCRETE_RESOURCES = 6
 EXPECTED_RESOURCE_TEMPLATES = 3
 EXPECTED_RESOURCES_TOTAL = 9

@@ -134,7 +134,7 @@ class TestMemoGotchas:
         import asyncio
         names = {t.name for t in asyncio.run(server.mcp.list_tools())}
         assert not any("annotation" in n for n in names)
-        assert len(names) == 48
+        assert len(names) == 49
 
     @pytest.mark.parametrize("target_type,table,id_col,target_id", MEMO_FIXTURES)
     def test_m4_clear_stores_empty_string_never_null(

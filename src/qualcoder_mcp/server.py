@@ -2893,11 +2893,37 @@ def list_backups() -> str:
         })
 
     project_folder = validate_qda_path(current_project_path).parent
+    backups = _collect_backups(project_folder)
 
-    backups = []
-    # Two backup families exist side by side: this server's
-    # {name}_backup_{YYYYMMDD_HHMMSS}.qda and QualCoder's own
-    # {name}_BKUP_{YYYYMMDD_HH}[suffix].qda open-time backups.
+    return json.dumps({
+        "project": project_folder.stem,
+        "backup_count": len(backups),
+        "backups": backups,
+        "notes": [
+            "kind='qualcoder' backups are made by QualCoder itself on "
+            "project open; they may exclude audio/video files and QualCoder "
+            "deletes them again when a session made no changes.",
+            "QualCoder may also store its backups in its settings "
+            "'directory' — only backups next to the project are listed here.",
+            "MCP backups (kind='mcp') accumulate until pruned — use "
+            "prune_backups(keep_last=..., older_than_days=...) to reclaim "
+            "disk space (retention never touches QualCoder's own backups)."
+        ],
+        "hint": "Use restore_backup(backup_path) to roll the project back "
+                "to one of these snapshots."
+    }, indent=2)
+
+
+def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
+    """Collect both backup families next to the project, newest first.
+
+    Families: this server's {name}_backup_{ts}[...].qda (kind 'mcp' —
+    including the *_prerestore safety copies) and QualCoder's own
+    {name}_BKUP_{...}.qda (kind 'qualcoder'). Each entry carries name,
+    path, kind, created, age_days and size_mb.
+    """
+    backups: List[Dict[str, Any]] = []
+    now = datetime.now()
     for prefix, kind in ((f"{project_folder.stem}_backup_", "mcp"),
                          (f"{project_folder.stem}_BKUP_", "qualcoder")):
         for entry in project_folder.parent.glob(f"{prefix}*.qda"):
@@ -2913,6 +2939,8 @@ def list_backups() -> str:
                     "path": str(entry),
                     "kind": kind,
                     "created": created.strftime("%Y-%m-%d %H:%M:%S"),
+                    "age_days": round(
+                        max(0.0, (now - created).total_seconds()) / 86400, 1),
                     "size_mb": round(size_bytes / (1024 * 1024), 2),
                 })
             except OSError as e:
@@ -2920,21 +2948,155 @@ def list_backups() -> str:
                 continue
 
     backups.sort(key=lambda b: b["created"], reverse=True)
+    return backups
 
-    return json.dumps({
-        "project": project_folder.stem,
-        "backup_count": len(backups),
-        "backups": backups,
-        "notes": [
-            "kind='qualcoder' backups are made by QualCoder itself on "
-            "project open; they may exclude audio/video files and QualCoder "
-            "deletes them again when a session made no changes.",
-            "QualCoder may also store its backups in its settings "
-            "'directory' — only backups next to the project are listed here."
-        ],
-        "hint": "Use restore_backup(backup_path) to roll the project back "
-                "to one of these snapshots."
-    }, indent=2)
+
+@mcp.tool()
+@_tool_guard
+def prune_backups(keep_last: Optional[int] = None,
+                  older_than_days: Optional[float] = None,
+                  confirm: bool = False) -> str:
+    """Delete this project's own backup snapshots to reclaim disk space.
+
+    DESTRUCTIVE to your recovery points — preview first, then confirm.
+    Every write creates a full-project backup copy and they accumulate
+    forever; this tool prunes them by a retention policy you choose:
+
+    - keep_last=N: keep only the N newest MCP backups
+    - older_than_days=D: remove MCP backups older than D days
+    - both: a backup is removed only if it fails BOTH criteria (beyond the
+      newest N AND older than D days) — the conservative intersection
+
+    Safety rules:
+    - ONLY this server's backups are touched (the {project}_backup_*
+      family, including *_prerestore safety copies). QualCoder's own
+      _BKUP_ backups are NEVER removed.
+    - At least the newest MCP backup is always kept, unless you
+      explicitly pass keep_last=0.
+    - Call once without confirm to see exactly which folders would be
+      removed and how much space is reclaimed; then call again with
+      confirm=true.
+
+    This does not touch the live project database, so it works even while
+    QualCoder has the project open.
+
+    Args:
+        keep_last: Keep only this many newest MCP backups (0 allowed, but
+                   must be explicit)
+        older_than_days: Remove MCP backups older than this many days
+        confirm: Must be true to actually delete (default: preview only)
+
+    Returns:
+        JSON preview (requires_confirmation) or the removal result
+    """
+    if current_project_path is None:
+        return json.dumps({
+            "error": "No Qualcoder project selected. Use 'list_available_projects' "
+                     "and 'select_project' to open one."
+        })
+
+    if keep_last is None and older_than_days is None:
+        return json.dumps({
+            "error": "Provide a retention policy: keep_last and/or "
+                     "older_than_days. Refusing a policy-less prune."
+        })
+    if keep_last is not None and (
+            not isinstance(keep_last, int) or isinstance(keep_last, bool)
+            or keep_last < 0):
+        return json.dumps({"error": "keep_last must be a non-negative integer"})
+    if older_than_days is not None and (
+            not isinstance(older_than_days, (int, float))
+            or isinstance(older_than_days, bool) or older_than_days < 0):
+        return json.dumps({"error": "older_than_days must be a non-negative number"})
+
+    project_folder = validate_qda_path(current_project_path).parent
+    mcp_backups = [b for b in _collect_backups(project_folder)
+                   if b["kind"] == "mcp"]  # newest first; _BKUP_ never touched
+
+    # Apply the policy. With both criteria, a backup is pruned only if it
+    # fails BOTH (conservative intersection).
+    to_remove = []
+    for index, backup in enumerate(mcp_backups):
+        beyond_keep = keep_last is not None and index >= keep_last
+        too_old = (older_than_days is not None
+                   and backup["age_days"] > older_than_days)
+        if keep_last is not None and older_than_days is not None:
+            prune = beyond_keep and too_old
+        else:
+            prune = beyond_keep or too_old
+        if prune:
+            to_remove.append(backup)
+
+    # Floor: always keep the newest MCP backup unless keep_last=0 explicit
+    if (mcp_backups and keep_last != 0
+            and any(b["name"] == mcp_backups[0]["name"] for b in to_remove)):
+        to_remove = [b for b in to_remove
+                     if b["name"] != mcp_backups[0]["name"]]
+
+    kept = [b for b in mcp_backups
+            if not any(r["name"] == b["name"] for r in to_remove)]
+    reclaimed_mb = round(sum(b["size_mb"] for b in to_remove), 2)
+
+    notes = []
+    prerestore_removed = [b for b in to_remove if "_prerestore" in b["name"]]
+    if prerestore_removed:
+        newest_prerestore = next(
+            (b for b in mcp_backups if "_prerestore" in b["name"]), None)
+        if newest_prerestore and any(
+                b["name"] == newest_prerestore["name"]
+                for b in prerestore_removed):
+            notes.append(
+                "This removes your most recent pre-restore safety snapshot — "
+                "the state saved just before the last restore_backup."
+            )
+
+    if not to_remove:
+        return json.dumps({
+            "success": True,
+            "message": "Nothing to prune — every MCP backup satisfies the "
+                       "retention policy.",
+            "kept_count": len(kept),
+        }, indent=2)
+
+    if not confirm:
+        preview = {
+            "requires_confirmation": True,
+            "would_remove": [
+                {"name": b["name"], "age_days": b["age_days"],
+                 "size_mb": b["size_mb"]} for b in to_remove],
+            "would_keep": [b["name"] for b in kept],
+            "reclaimed_mb": reclaimed_mb,
+            "hint": "Call prune_backups again with confirm=true to delete "
+                    "these backup folders. QualCoder's own _BKUP_ backups "
+                    "are never touched.",
+        }
+        if notes:
+            preview["notes"] = notes
+        return json.dumps(preview, indent=2)
+
+    removed, failed = [], []
+    for backup in to_remove:
+        try:
+            shutil.rmtree(backup["path"])
+            removed.append(backup["name"])
+        except OSError as e:
+            logger.error(f"Failed to remove backup {backup['name']}: {e}")
+            failed.append(backup["name"])
+
+    result: Dict[str, Any] = {
+        "success": not failed,
+        "removed": removed,
+        "reclaimed_mb": round(sum(b["size_mb"] for b in to_remove
+                                  if b["name"] in removed), 2),
+        "kept_count": len(kept),
+    }
+    if failed:
+        result["failed_to_remove"] = failed
+        result["error"] = ("Some backup folders could not be removed — "
+                           "check permissions.")
+    if notes:
+        result["notes"] = notes
+    return json.dumps(result, indent=2)
 
 
 def _project_is_write_locked(data_qda: Path) -> bool:

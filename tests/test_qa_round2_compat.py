@@ -457,10 +457,6 @@ class TestValiditySemantics:
 
 class TestBackupAndExportPolicy:
 
-    @pytest.mark.xfail(reason="COMPAT D7 unmet: no retention/prune policy "
-                       "for MCP *_backup_* folders — they accumulate full "
-                       "project copies forever (QualCoder prunes its own "
-                       "family to 5).", strict=True)
     def test_d7_backup_retention(self, setup_server, qualcoder_db_path):
         for i in range(7):
             json.loads(server.import_text_file(f"d7_{i}.txt", "x"))

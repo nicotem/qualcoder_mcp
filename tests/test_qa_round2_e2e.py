@@ -59,6 +59,8 @@ EXPECTED_TOOLS = {
     "create_category", "rename_category", "move_category",
     # codebook editing — destructive, preview->confirm (3)
     "merge_codes", "delete_code", "delete_category",
+    # backup retention (v0.8 phase C)
+    "prune_backups",
 }
 
 
@@ -84,7 +86,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 48
+        assert len(names) == 49
 
 
 class TestEndToEndLoop:
