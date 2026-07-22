@@ -1,6 +1,7 @@
 """Qualcoder MCP Server - Expose Qualcoder data via Model Context Protocol."""
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -27,7 +28,8 @@ from .database import (
     QUALCODER_LOCK_FILENAME,
     position_safe as db_position_safe,
 )
-from .sessions import SessionManager, AICodingSession, CodingSuggestion
+from .sessions import (SessionManager, AICodingSession, CodingSuggestion,
+                       ProposedCode)
 
 # Set up logging
 logging.basicConfig(
@@ -1885,6 +1887,61 @@ Once Claude records and presents suggestions, you can:
     return json.dumps(envelope, indent=2)
 
 
+def _code_name_collisions(name: str) -> Optional[str]:
+    """Existing code name(s) a proposal name collides with (QA5-1 style:
+    exact match first, else case-insensitive matches), or None."""
+    codes = get_db().list_codes()
+    exact = [c["name"] for c in codes if c["name"] == name]
+    if exact:
+        return exact[0]
+    ci = [c["name"] for c in codes if c["name"].lower() == name.lower()]
+    return ", ".join(ci) if ci else None
+
+
+def _validate_proposal_evidence(ro_db, items, file_cache):
+    """Validate a proposal's evidence spans exactly like record_suggestions
+    validates suggestion positions. Returns (kept, rejected, unsafe_files)."""
+    kept, rejected = [], []
+    unsafe_files: Dict[int, str] = {}
+    for idx, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            rejected.append({"index": idx, "reason": "evidence must be an object"})
+            continue
+        file_id = item.get("file_id")
+        if not isinstance(file_id, int) or isinstance(file_id, bool):
+            rejected.append({"index": idx, "reason": "file_id (integer) is required"})
+            continue
+        if file_id not in file_cache:
+            file_cache[file_id] = ro_db.get_file_content(file_id)
+        fc = file_cache[file_id]
+        fulltext = (fc or {}).get("content") or ""
+        if fc is None or not fc.get("is_text") or not fulltext:
+            rejected.append({"index": idx,
+                             "reason": f"file_id {file_id} is not a text source"})
+            continue
+        segment_text = item.get("segment_text")
+        if not isinstance(segment_text, str) or not segment_text.strip():
+            rejected.append({"index": idx,
+                             "reason": "segment_text (non-empty string) is required"})
+            continue
+        ok, start, end, corrected, pos_error = _resolve_segment_positions(
+            fulltext, item.get("start_pos"), item.get("end_pos"), segment_text)
+        if not ok:
+            rejected.append({"index": idx, **pos_error})
+            continue
+        if file_id not in unsafe_files and not db_position_safe(fulltext):
+            unsafe_files[file_id] = fc["name"]
+        kept.append({
+            "file_id": file_id,
+            "file_name": fc["name"],
+            "start_pos": start,
+            "end_pos": end,
+            "segment_text": fulltext[start:end],   # authoritative slice
+            "positions_corrected": corrected,
+        })
+    return kept, rejected, unsafe_files
+
+
 @mcp.tool()
 @_tool_guard
 def record_suggestions(
@@ -3566,6 +3623,576 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             ],
             "tip": "Use explain_ai_coding_tools() with no arguments for an overview"
         }, indent=2)
+
+
+# ============================================================================
+# INDUCTIVE / OPEN CODING (v0.8 phase A) — propose new codes from the data
+# ============================================================================
+
+@mcp.tool()
+@_tool_guard
+def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
+                  replace: bool = False) -> str:
+    """Record BRAND-NEW code proposals discovered in the data (inductive
+    coding). Writes NOTHING to the project database — proposals live in
+    the session for the user to review, refine and approve; only
+    create_proposed_codes (after approval) touches the codebook.
+
+    WORKFLOW: analyze_for_coding creates a session -> you (Claude) read
+    the files and record the codes you see emerging with this tool ->
+    present them -> the user refines (update_proposal / merge_proposals)
+    and decides (update_proposal_status) -> create_proposed_codes writes
+    the approved ones.
+
+    Args:
+        session_id: The session ID from analyze_for_coding
+        proposals: List of proposal objects with keys:
+            name (required) — the proposed code name
+            memo — the code definition (what belongs under this code)
+            rationale — why this code emerges from the data
+            color — optional #RRGGBB (default: QualCoder palette pick at
+            creation)
+            category — optional EXISTING category name to place it in
+            example_segments — optional evidence spans
+            [{file_id, start_pos, end_pos, segment_text}], each verified
+            against the file text like record_suggestions verifies
+            positions
+        replace: Discard previously recorded PENDING proposals first
+                 (approved/rejected/created are always kept)
+
+    Returns:
+        JSON with recorded proposals (GUIDs for review/approval),
+        per-item rejections, and collides_with flags where a proposal
+        name matches an existing code (creation will refuse those unless
+        renamed — consider applying the existing code instead). If it
+        contains `position_safety_warning`, you MUST relay it to the
+        user before proceeding.
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({
+            "error": f"Session {session_id} not found",
+            "available_sessions": session_manager.list_sessions()
+        })
+    session = session_manager.load_session(session_id)
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+    if not isinstance(proposals, list) or not proposals:
+        return json.dumps({
+            "error": "proposals must be a non-empty list of proposal objects"
+        })
+
+    ro_db = get_db()
+    cats = ro_db.list_categories()
+
+    removed_pending = 0
+    if replace:
+        before = len(session.proposed_codes)
+        session.proposed_codes = [p for p in session.proposed_codes
+                                  if p.status != "pending"]
+        removed_pending = before - len(session.proposed_codes)
+
+    recorded, rejected = [], []
+    unsafe_files: Dict[int, str] = {}
+    file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    seen_names = {p.name.strip().lower() for p in session.proposed_codes
+                  if p.status != "rejected"}
+
+    for idx, item in enumerate(proposals):
+        if not isinstance(item, dict):
+            rejected.append({"index": idx, "reason": "each proposal must be an object"})
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            rejected.append({"index": idx, "reason": "name (non-empty string) is required"})
+            continue
+        name = name.strip()
+        if name.lower() in seen_names:
+            rejected.append({"index": idx,
+                             "reason": f"a proposal named '{name}' already "
+                                       f"exists in this session"})
+            continue
+        color = item.get("color")
+        if color is not None and (not isinstance(color, str)
+                                  or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color)):
+            rejected.append({"index": idx,
+                             "reason": f"color must be #RRGGBB, got {color!r}"})
+            continue
+        category = item.get("category")
+        if category is not None:
+            match = next((c for c in cats
+                          if c["name"].lower() == str(category).lower()), None)
+            if match is None:
+                rejected.append({
+                    "index": idx,
+                    "reason": f"category '{category}' not found — proposals "
+                              f"may only target existing categories "
+                              f"(create_category first if needed)",
+                    "available_categories": sorted(c["name"] for c in cats)[:50],
+                })
+                continue
+            category = match["name"]  # canonical spelling
+
+        evidence, evidence_rejected, unsafe = _validate_proposal_evidence(
+            ro_db, item.get("example_segments"), file_cache)
+        unsafe_files.update(unsafe)
+
+        proposal = ProposedCode(
+            name=name,
+            memo=str(item.get("memo", "") or item.get("definition", "")),
+            rationale=str(item.get("rationale", "")),
+            color=color,
+            category=category,
+            example_segments=evidence,
+            collides_with=_code_name_collisions(name),
+        )
+        session.add_proposal(proposal)
+        seen_names.add(name.lower())
+        entry = {"guid": proposal.guid, "name": name,
+                 "category": category, "evidence_count": len(evidence)}
+        if proposal.collides_with:
+            entry["collides_with"] = proposal.collides_with
+        if evidence_rejected:
+            entry["evidence_rejected"] = evidence_rejected
+        recorded.append(entry)
+
+    session_manager.save_session(session)
+
+    result: Dict[str, Any] = {
+        "session_id": session_id,
+        "recorded_count": len(recorded),
+        "recorded": recorded,
+        "rejected_count": len(rejected),
+        "rejected": rejected,
+        "proposal_statistics": session.proposal_statistics(),
+        "next_step": "Present the proposals to the user; refine with "
+                     "update_proposal / merge_proposals, decide with "
+                     "update_proposal_status, then write the approved ones "
+                     "with create_proposed_codes.",
+    }
+    if replace:
+        result["replaced_pending"] = removed_pending
+    if any(e.get("collides_with") for e in recorded):
+        result["collision_note"] = (
+            "Proposals flagged collides_with match an existing code "
+            "(case-insensitively). Creation will refuse them unless renamed "
+            "— consider applying the existing code via the normal coding "
+            "loop instead of creating a near-duplicate."
+        )
+    if unsafe_files:
+        result["position_safety_warning"] = (
+            f"Evidence file(s) {sorted(unsafe_files.values())} contain "
+            f"\\r\\n or characters beyond U+FFFF; codings on them may render "
+            f"shifted in QualCoder's editor. Relay this to the user."
+        )
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def review_proposals(session_id: str,
+                     proposal_guids: Optional[List[str]] = None,
+                     show_examples: bool = False) -> str:
+    """Review proposed codes in detail before deciding on them.
+
+    Read-only. Shows each proposal's name, colour, category, definition,
+    rationale, status, any collision with an existing code, and (with
+    show_examples) the evidence spans.
+
+    Args:
+        session_id: The session ID
+        proposal_guids: Specific proposals to show (default: all)
+        show_examples: Include the evidence segments (default: False)
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+    session = session_manager.load_session(session_id)
+
+    if proposal_guids:
+        proposals = [p for g in proposal_guids
+                     if (p := session.get_proposal_by_guid(g)) is not None]
+    else:
+        proposals = session.proposed_codes
+    if not proposals:
+        return "No proposals found."
+
+    lines = [f"**Review of {len(proposals)} Code Proposal(s)**\n"]
+    for i, p in enumerate(proposals, 1):
+        lines.append("=" * 70)
+        lines.append(f"**Proposal {i}** (GUID: `{p.guid}`)")
+        lines.append(f"Status: {p.status.upper()}")
+        lines.append(f"🏷️  **Name:** {p.name}")
+        lines.append(f"🎨 Color: {p.color or '(palette pick at creation)'}")
+        lines.append(f"📁 Category: {p.category or '(uncategorised)'}")
+        if p.memo:
+            lines.append(f"**Definition:** {p.memo}")
+        if p.rationale:
+            lines.append(f"**Rationale:** {p.rationale}")
+        if p.collides_with:
+            lines.append(f"⚠️  Collides with existing code: {p.collides_with}")
+        if p.created_code_id is not None:
+            lines.append(f"Created as code id {p.created_code_id}")
+        lines.append(f"Evidence segments: {len(p.example_segments)}")
+        if show_examples:
+            for seg in p.example_segments:
+                lines.append(f"  - {seg['file_name']} "
+                             f"[{seg['start_pos']}-{seg['end_pos']}]: "
+                             f"\u201c{seg['segment_text'][:200]}\u201d")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_guard
+def update_proposal(session_id: str, proposal_guid: str,
+                    name: Optional[str] = None,
+                    color: Optional[str] = None,
+                    category: Optional[str] = None,
+                    memo: Optional[str] = None) -> str:
+    """Refine a proposed code BEFORE it is created — rename, recolour,
+    recategorise, or rewrite its definition.
+
+    Session-only (writes nothing to the project). Only the provided
+    fields change. Pass category="" to make the proposal uncategorised.
+    Proposals already CREATED are immutable here — edit the real code
+    with the codebook tools instead.
+
+    Args:
+        session_id: The session ID
+        proposal_guid: The proposal to refine
+        name: New name (collision flag is refreshed)
+        color: New #RRGGBB colour
+        category: Existing category name, or "" to clear
+        memo: New definition text
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+    session = session_manager.load_session(session_id)
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+    proposal = session.get_proposal_by_guid(proposal_guid)
+    if proposal is None:
+        return json.dumps({"error": f"Proposal {proposal_guid} not found"})
+    if proposal.status == "created":
+        return json.dumps({
+            "error": f"Proposal '{proposal.name}' was already created as code "
+                     f"id {proposal.created_code_id} — edit the code itself "
+                     f"with rename_code / recolor_code / "
+                     f"move_code_to_category / set_memo."
+        })
+
+    changes = {}
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            return json.dumps({"error": "name must be a non-empty string"})
+        new_name = name.strip()
+        clash = any(p.guid != proposal.guid
+                    and p.status != "rejected"
+                    and p.name.strip().lower() == new_name.lower()
+                    for p in session.proposed_codes)
+        if clash:
+            return json.dumps({
+                "error": f"Another proposal in this session is already named "
+                         f"'{new_name}'"
+            })
+        changes["name"] = (proposal.name, new_name)
+        proposal.name = new_name
+        proposal.collides_with = _code_name_collisions(new_name)
+    if color is not None:
+        if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+            return json.dumps({"error": f"color must be #RRGGBB, got {color!r}"})
+        changes["color"] = (proposal.color, color)
+        proposal.color = color
+    if category is not None:
+        if category == "":
+            changes["category"] = (proposal.category, None)
+            proposal.category = None
+        else:
+            cats = get_db().list_categories()
+            match = next((c for c in cats
+                          if c["name"].lower() == str(category).lower()), None)
+            if match is None:
+                return json.dumps({
+                    "error": f"Category '{category}' not found",
+                    "available_categories": sorted(c["name"] for c in cats)[:50],
+                })
+            changes["category"] = (proposal.category, match["name"])
+            proposal.category = match["name"]
+    if memo is not None:
+        changes["memo"] = ("(previous definition)", memo)
+        proposal.memo = str(memo)
+
+    if not changes:
+        return json.dumps({"error": "Nothing to change — pass at least one "
+                                    "of name/color/category/memo"})
+    session.last_modified = datetime.now().isoformat()
+    session_manager.save_session(session)
+
+    result = {"success": True, "guid": proposal.guid,
+              "changes": {k: {"from": v[0], "to": v[1]}
+                          for k, v in changes.items()}}
+    if proposal.collides_with:
+        result["collides_with"] = proposal.collides_with
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def merge_proposals(session_id: str, from_proposal_guid: str,
+                    into_proposal_guid: str) -> str:
+    """Combine two code PROPOSALS before creation.
+
+    Session-only (writes nothing to the project; entirely distinct from
+    merge_codes, which merges real codes in the codebook). The target
+    proposal keeps its name/colour/category/definition and gains the
+    source's evidence segments (deduplicated by file and span); the
+    source proposal is marked rejected so it is never created.
+
+    Args:
+        session_id: The session ID
+        from_proposal_guid: The proposal merged away (becomes rejected)
+        into_proposal_guid: The proposal that absorbs the evidence
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+    session = session_manager.load_session(session_id)
+    source = session.get_proposal_by_guid(from_proposal_guid)
+    target = session.get_proposal_by_guid(into_proposal_guid)
+    if source is None or target is None:
+        return json.dumps({"error": "Both proposals must exist in this session"})
+    if from_proposal_guid == into_proposal_guid:
+        return json.dumps({"error": "Cannot merge a proposal into itself"})
+    for p in (source, target):
+        if p.status == "created":
+            return json.dumps({
+                "error": f"Proposal '{p.name}' was already created — merge "
+                         f"the real codes with merge_codes instead."
+            })
+
+    existing_spans = {(s["file_id"], s["start_pos"], s["end_pos"])
+                      for s in target.example_segments}
+    moved = 0
+    for seg in source.example_segments:
+        key = (seg["file_id"], seg["start_pos"], seg["end_pos"])
+        if key not in existing_spans:
+            target.example_segments.append(seg)
+            existing_spans.add(key)
+            moved += 1
+    source.status = "rejected"
+    session.last_modified = datetime.now().isoformat()
+    session_manager.save_session(session)
+    return json.dumps({
+        "success": True,
+        "message": f"Merged proposal '{source.name}' into '{target.name}'",
+        "evidence_moved": moved,
+        "target": {"guid": target.guid, "name": target.name,
+                   "evidence_count": len(target.example_segments)},
+        "source_status": "rejected",
+    }, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def update_proposal_status(session_id: str,
+                           approve: Optional[List[str]] = None,
+                           reject: Optional[List[str]] = None) -> str:
+    """Approve or reject code proposals — record the USER'S decisions.
+
+    Approve only the proposals the user has actually reviewed and
+    confirmed — do not approve on their behalf. Proposals already
+    CREATED are immutable and skipped (skipped_created). Rejected
+    proposals (and their evidence) are simply never created.
+
+    Args:
+        session_id: The session ID
+        approve: Proposal GUIDs the user approved
+        reject: Proposal GUIDs the user rejected
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+    session = session_manager.load_session(session_id)
+    result = session.update_proposals_by_guid(approve=approve, reject=reject)
+    session_manager.save_session(session)
+    stats = session.proposal_statistics()
+    return json.dumps({
+        "success": True,
+        **result,
+        "proposal_statistics": stats,
+        "next_step": "Use create_proposed_codes to write the approved "
+                     "proposals to the codebook."
+    }, indent=2)
+
+
+@mcp.tool()
+@_tool_guard
+def create_proposed_codes(session_id: str,
+                          apply_coded_segments: bool = False,
+                          create_backup: bool = True) -> str:
+    """Create the APPROVED code proposals in the project codebook.
+
+    THIS WRITES TO THE DATABASE — the write step of the inductive loop.
+    Each approved proposal becomes a real code (palette colour if none
+    chosen, placed in its category). With apply_coded_segments=true the
+    proposal's evidence spans are ALSO written as codings under the new
+    code; the default (false) creates the codes only, so the user can
+    review them before any codings land — the normal
+    record_suggestions -> apply_codings loop can then apply the
+    now-existing codes.
+
+    Every approved proposal is validated BEFORE the backup and the write:
+    the name must still be unique against the live codebook (exact AND
+    case-variant collisions refuse — rename the proposal first), the
+    category must exist, and (when applying) every evidence span must
+    still match the file text. Any failure -> nothing is written.
+    Rejected proposals and their evidence are never created.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry.
+
+    Args:
+        session_id: The session with approved proposals
+        apply_coded_segments: Also write the evidence spans as codings
+                              (default: False — codes only)
+        create_backup: Create a timestamped backup before writing (default True)
+
+    Returns:
+        JSON with the created codes (proposal guid -> real code id),
+        codings applied (if any), and per-proposal failures. If it
+        contains `position_safety_warning`, relay it to the user.
+    """
+    if not session_manager.session_exists(session_id):
+        return json.dumps({"error": f"Session {session_id} not found"})
+    session = session_manager.load_session(session_id)
+    mismatch = _check_session_project(session)
+    if mismatch is not None:
+        return json.dumps(mismatch, indent=2)
+
+    approved = [p for p in session.proposed_codes if p.status == "approved"]
+    if not approved:
+        created_n = len([p for p in session.proposed_codes
+                         if p.status == "created"])
+        message = ("No approved proposals to create. Use "
+                   "update_proposal_status to approve proposals first.")
+        if created_n:
+            message = (f"No approved proposals to create — {created_n} "
+                       f"proposal(s) in this session were already created.")
+        return json.dumps({"error": message,
+                           "proposal_statistics": session.proposal_statistics()},
+                          indent=2)
+
+    # ---- pre-validation on the read-only connection (before backup) ----
+    ro_db = get_db()
+    cats = ro_db.list_categories()
+    failures = []
+    batch_names: set = set()
+    file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    unsafe_files: Dict[int, str] = {}
+    category_ids: Dict[str, int] = {}
+
+    for p in approved:
+        problem = None
+        key = p.name.strip().lower()
+        collision = _code_name_collisions(p.name)
+        if collision:
+            problem = (f"name collides with existing code '{collision}' — "
+                       f"rename the proposal (update_proposal) or apply the "
+                       f"existing code instead")
+        elif key in batch_names:
+            problem = "another approved proposal in this batch has the same name"
+        elif p.category is not None:
+            match = next((c for c in cats
+                          if c["name"].lower() == p.category.lower()), None)
+            if match is None:
+                problem = (f"category '{p.category}' does not exist — create "
+                           f"it first with create_category")
+            else:
+                category_ids[p.category] = match["id"]
+        if problem is None and apply_coded_segments:
+            for seg in p.example_segments:
+                fid = seg["file_id"]
+                if fid not in file_cache:
+                    file_cache[fid] = ro_db.get_file_content(fid)
+                fc = file_cache[fid]
+                fulltext = (fc or {}).get("content") or ""
+                if fc is None or not fulltext:
+                    problem = f"evidence file {fid} no longer exists or has no text"
+                    break
+                if fulltext[seg["start_pos"]:seg["end_pos"]] != seg["segment_text"]:
+                    problem = (f"evidence in '{seg['file_name']}' no longer "
+                               f"matches the file text — re-propose or drop it")
+                    break
+                if fid not in unsafe_files and not db_position_safe(fulltext):
+                    unsafe_files[fid] = fc["name"]
+        if problem is not None:
+            failures.append({"guid": p.guid, "name": p.name, "reason": problem})
+        else:
+            batch_names.add(key)
+
+    if failures:
+        return json.dumps({
+            "error": f"{len(failures)} approved proposal(s) failed validation "
+                     f"— nothing was written and no backup was created.",
+            "failures": failures,
+        }, indent=2)
+
+    owner = _default_owner()
+
+    def _op(wdb):
+        created = []
+        codings_applied = 0
+        for p in approved:
+            cid = wdb.add_code(
+                name=p.name.strip(),
+                owner=owner,
+                memo=p.memo or "",
+                category_id=(category_ids.get(p.category)
+                             if p.category else None),
+                color=p.color,
+                auto_commit=False,
+            )
+            p.created_code_id = cid
+            created.append({"proposal_guid": p.guid, "code_id": cid,
+                            "name": p.name.strip(),
+                            "category": p.category})
+            if apply_coded_segments:
+                for seg in p.example_segments:
+                    memo = (f"{p.rationale}\n\n[AI proposed code]"
+                            if p.rationale else "[AI proposed code]")
+                    wdb.add_coding(
+                        file_id=seg["file_id"],
+                        code_id=cid,
+                        start_pos=seg["start_pos"],
+                        end_pos=seg["end_pos"],
+                        selected_text=seg["segment_text"],
+                        owner="AI Coding Assistant",
+                        memo=memo,
+                        auto_commit=False,
+                    )
+                    codings_applied += 1
+        return {"success": True,
+                "message": f"Created {len(created)} code(s)"
+                           + (f" and applied {codings_applied} coding(s)"
+                              if apply_coded_segments else ""),
+                "created_codes": created,
+                "codings_applied": codings_applied}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="no codes were created")
+
+    if "error" not in result:
+        for p in approved:
+            p.status = "created"
+        session.last_modified = datetime.now().isoformat()
+        session_manager.save_session(session)
+        result["proposal_statistics"] = session.proposal_statistics()
+        if unsafe_files:
+            result["position_safety_warning"] = (
+                f"File(s) {sorted(unsafe_files.values())} are position-unsafe "
+                f"(emoji/CRLF); the applied codings may render shifted in "
+                f"QualCoder's editor. Relay this to the user."
+            )
+    return json.dumps(result, indent=2)
 
 
 # ============================================================================

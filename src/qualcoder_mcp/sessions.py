@@ -106,6 +106,73 @@ class CodingSuggestion:
         )
 
 
+class ProposedCode:
+    """A brand-new code the AI proposes from the data (inductive coding).
+
+    Distinct from a CodingSuggestion: a proposal carries a code definition
+    (name/colour/category/memo) plus evidence spans, and only becomes a
+    real code when the user approves it and create_proposed_codes runs.
+    Status lifecycle: pending -> approved/rejected -> created.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        memo: str = "",
+        rationale: str = "",
+        color: Optional[str] = None,
+        category: Optional[str] = None,
+        status: str = "pending",
+        example_segments: Optional[List[Dict[str, Any]]] = None,
+        collides_with: Optional[str] = None,
+        created_code_id: Optional[int] = None,
+        guid: Optional[str] = None,
+    ):
+        self.name = name
+        self.memo = memo                    # the code definition
+        self.rationale = rationale          # why this code emerges
+        self.color = color                  # None -> palette pick at creation
+        self.category = category            # existing category NAME or None
+        self.status = status                # pending/approved/rejected/created
+        self.example_segments = example_segments or []
+        self.collides_with = collides_with  # existing code name, if any
+        self.created_code_id = created_code_id
+        self.guid = guid or str(uuid.uuid4())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "guid": self.guid,
+            "name": self.name,
+            "memo": self.memo,
+            "rationale": self.rationale,
+            "color": self.color,
+            "category": self.category,
+            "status": self.status,
+            "example_segments": self.example_segments,
+            "collides_with": self.collides_with,
+            "created_code_id": self.created_code_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ProposedCode':
+        if not isinstance(data, dict):
+            raise TypeError("ProposedCode data must be a dictionary")
+        if "name" not in data:
+            raise ValueError("Missing required field: name")
+        return cls(
+            name=data["name"],
+            memo=data.get("memo", ""),
+            rationale=data.get("rationale", ""),
+            color=data.get("color"),
+            category=data.get("category"),
+            status=data.get("status", "pending"),
+            example_segments=data.get("example_segments", []),
+            collides_with=data.get("collides_with"),
+            created_code_id=data.get("created_code_id"),
+            guid=data.get("guid"),
+        )
+
+
 class AICodingSession:
     """Manages a session of AI coding suggestions."""
 
@@ -128,6 +195,7 @@ class AICodingSession:
         self.instruction = instruction
         self.min_confidence = min_confidence
         self.suggestions: List[CodingSuggestion] = []
+        self.proposed_codes: List[ProposedCode] = []
         self.created_at = datetime.now().isoformat()
         self.last_modified = self.created_at
 
@@ -135,6 +203,57 @@ class AICodingSession:
         """Add a coding suggestion to the session."""
         self.suggestions.append(suggestion)
         self.last_modified = datetime.now().isoformat()
+
+    def add_proposal(self, proposal: 'ProposedCode'):
+        """Add a proposed code to the session."""
+        self.proposed_codes.append(proposal)
+        self.last_modified = datetime.now().isoformat()
+
+    def get_proposal_by_guid(self, guid: str) -> Optional['ProposedCode']:
+        for p in self.proposed_codes:
+            if p.guid == guid:
+                return p
+        return None
+
+    def proposal_statistics(self) -> Dict[str, int]:
+        counts = {"total_proposals": len(self.proposed_codes),
+                  "pending": 0, "approved": 0, "rejected": 0, "created": 0}
+        for p in self.proposed_codes:
+            if p.status in counts:
+                counts[p.status] += 1
+        return counts
+
+    def update_proposals_by_guid(
+        self,
+        approve: Optional[List[str]] = None,
+        reject: Optional[List[str]] = None
+    ) -> Dict[str, int]:
+        """Approve/reject proposals. CREATED proposals are immutable
+        (they are already in the codebook) and are skipped, mirroring the
+        applied-immutable rule for suggestions (QA2-2)."""
+        approved_count = rejected_count = skipped_created = 0
+        if approve:
+            for guid in approve:
+                p = self.get_proposal_by_guid(guid)
+                if p:
+                    if p.status == "created":
+                        skipped_created += 1
+                        continue
+                    p.status = "approved"
+                    approved_count += 1
+        if reject:
+            for guid in reject:
+                p = self.get_proposal_by_guid(guid)
+                if p:
+                    if p.status == "created":
+                        skipped_created += 1
+                        continue
+                    p.status = "rejected"
+                    rejected_count += 1
+        if approved_count or rejected_count:
+            self.last_modified = datetime.now().isoformat()
+        return {"approved": approved_count, "rejected": rejected_count,
+                "skipped_created": skipped_created}
 
     def get_suggestions_by_file(self, file_id: int) -> List[CodingSuggestion]:
         """Get all suggestions for a specific file."""
@@ -312,7 +431,9 @@ class AICodingSession:
             "instruction": self.instruction,
             "min_confidence": self.min_confidence,
             "suggestions": [s.to_dict() for s in self.suggestions],
-            "statistics": self.get_statistics()
+            "proposed_codes": [p.to_dict() for p in self.proposed_codes],
+            "statistics": self.get_statistics(),
+            "proposal_statistics": self.proposal_statistics()
         }
 
     _REQUIRED_FIELDS = {
@@ -350,6 +471,10 @@ class AICodingSession:
         for s_data in data.get("suggestions", []):
             suggestion = CodingSuggestion.from_dict(s_data)
             session.suggestions.append(suggestion)
+
+        # Load proposed codes (absent in pre-v0.8 sessions -> [])
+        for p_data in data.get("proposed_codes", []):
+            session.proposed_codes.append(ProposedCode.from_dict(p_data))
 
         return session
 

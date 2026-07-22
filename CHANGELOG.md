@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — inductive / open coding (v0.8 phase A)
+
+Six new tools close the loop the AI coding surface was missing: until
+now Claude could only APPLY codes that already existed in the codebook —
+it can now propose brand-new codes it finds in the data, with the same
+review-first discipline as coding suggestions.
+
+- **`propose_codes`**: records brand-new code proposals (name,
+  definition, rationale, optional colour/category, evidence spans) on
+  the existing AI-coding session — **nothing touches the project
+  database**. Evidence spans get the full record_suggestions treatment:
+  exact-match verification, unique-locate correction, authoritative
+  slices, and the position-safety relay. Proposal names that collide
+  with existing codes (case-insensitively) are **flagged, not blocked**,
+  so the user can decide between renaming and applying the existing
+  code.
+- **`review_proposals`**: detailed read-only review (definitions,
+  rationales, collisions, evidence) for the approval conversation.
+- **`update_proposal`** / **`merge_proposals`**: the session-only refine
+  loop — rename (collision flag refreshed), recolour, recategorise
+  (existing categories only), rewrite the definition, or fold two
+  proposals into one (evidence deduplicated by span, source marked
+  rejected). Proposals already created are immutable — the real
+  codebook tools take over.
+- **`update_proposal_status`**: records the USER'S approve/reject
+  decisions, mirroring update_suggestion_status (created proposals are
+  skipped, never reopened).
+- **`create_proposed_codes`**: the single write step. Every approved
+  proposal is validated against the live project BEFORE the backup and
+  the write (name collisions now **block** — flag-then-block; missing
+  categories refuse; evidence must still match the file text) so the
+  batch lands atomically or not at all. Colours default to QualCoder's
+  own palette. `apply_coded_segments=False` by default: codes only,
+  so the freshly created codes flow through the normal
+  record_suggestions → apply_codings review loop; opt in to write the
+  evidence spans as codings (owner "AI Coding Assistant") in the same
+  transaction.
+
 ### Added — write-surface completions (v0.8 phase D1)
 
 - **Annotations** (per the QualCoder 3.8.2 ground-truth contract):
