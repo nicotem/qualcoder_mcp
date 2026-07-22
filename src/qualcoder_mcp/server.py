@@ -591,21 +591,47 @@ def _resolve_segment_positions(
 
 
 # ---------------------------------------------------------------------------
-# Span alternatives (v0.8 tester-feedback amendment): whenever a span is
-# verified, precompute up to two ready-made adjustments so a researcher can
-# fix span length with one pick instead of describing offsets. Deterministic,
-# code-point-safe, no dependencies: paragraphs are bounded by blank lines
-# (\n{2,}) or U+2029 (the same paragraph-separator awareness as the rest of
-# the position system); sentences end at [.!?]+ runs followed by whitespace
-# or end-of-text. All alternative spans are verbatim fulltext slices —
-# position-verified by construction.
+# Span alternatives (v0.8 tester-feedback amendment, design-panel revision):
+# whenever a span is verified, precompute up to two ready-made adjustments so
+# a researcher can fix span length with one pick instead of describing
+# offsets. Stored copies are PRESENTATIONAL — use_alternative recomputes from
+# the current fulltext at edit time. Deterministic, code-point-safe, no new
+# dependencies. Heuristics (documented):
+# - Sentences: ONE global segmentation of the fulltext; sentence ends are
+#   [.!?]+ runs, optionally followed by closing quotes/brackets, before
+#   whitespace or end-of-text. Abbreviation over-splitting ("Dr.") is
+#   tolerated because "shorter" picks the LONGEST wholly-contained sentence
+#   (fragments lose).
+# - Paragraphs: blank lines in any newline convention (\r\n\r\n, \n\n) or
+#   U+2029. If the file has NO blank-line boundary at all (single-newline
+#   speaker-turn transcripts), a single newline IS the boundary — the
+#   speaker turn is the quotable unit.
+# - Speaker labels ("Name:", "**Name:**", "NAME [00:01:23]:") are stripped
+#   from the front of "longer" spans so quotes start with speech, and the
+#   ±1-sentence fallback never crosses into another speaker's turn.
+# - Floors: "shorter" is omitted when degenerate (< 40 code points or < 25%
+#   of the span); any alternative is omitted when its boundaries move by
+#   < 15 code points or < 10% of the span (no filler alternatives).
 # ---------------------------------------------------------------------------
 
-_SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
-_PARAGRAPH_SEP_RE = re.compile(r"\n{2,}|\u2029")
-# How far beyond the span to look for the previous/next sentence when the
-# span already fills its paragraph (bounds the scan on huge files)
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"'\u201d\u2019)\]]*(?=\s|$)")
+_PARAGRAPH_SEP_RE = re.compile(r"(?:\r?\n){2,}|\u2029")
+_SINGLE_NEWLINE_RE = re.compile(r"\r?\n")
+# Deterministic speaker-label prefix: optional **, a name, optional
+# [timestamp], a colon (optionally inside the closing **), trailing blanks
+_SPEAKER_LABEL_RE = re.compile(
+    r"(?:\*\*)?[A-Za-z][A-Za-z0-9 ._\-]{0,40}?(?:\*\*)?"
+    r"(?:\s*\[[^\]\n]{1,40}\])?\s*:(?:\*\*)?[ \t]*")
+# How far beyond the span the ±1-sentence fallback may reach
 _ALTERNATIVE_SCAN_WINDOW = 2000
+# Enclosing-paragraph size cap (code points): beyond max(this, 4x span) the
+# paragraph is unhelpfully large -> fall back to ±1 sentence
+_PARAGRAPH_CAP = 1500
+# Materiality floor: an alternative must move the boundaries by at least
+# this many code points AND at least 10% of the span length
+_MATERIALITY_CP = 15
+# "shorter" degeneracy floor
+_SHORTER_MIN_CP = 40
 
 
 def _trim_span(fulltext: str, start: int, end: int):
@@ -617,93 +643,162 @@ def _trim_span(fulltext: str, start: int, end: int):
     return start, end
 
 
-def _sentence_spans(fulltext: str, start: int, end: int):
-    """Trimmed sentence [s,e) spans within fulltext[start:end]."""
+def _sentence_spans_global(fulltext: str):
+    """The single deterministic sentence segmentation of the fulltext."""
     spans = []
-    s = start
-    for m in _SENTENCE_END_RE.finditer(fulltext, start, end):
+    s = 0
+    for m in _SENTENCE_END_RE.finditer(fulltext):
         s2, e2 = _trim_span(fulltext, s, m.end())
         if s2 < e2:
             spans.append((s2, e2))
         s = m.end()
-    s2, e2 = _trim_span(fulltext, s, end)
+    s2, e2 = _trim_span(fulltext, s, len(fulltext))
     if s2 < e2:
         spans.append((s2, e2))
     return spans
 
 
-def _paragraph_bounds(fulltext: str, start: int, end: int):
-    """Trimmed bounds of the paragraph(s) containing [start,end)."""
-    para_start = 0
-    for m in _PARAGRAPH_SEP_RE.finditer(fulltext, 0, start):
-        para_start = m.end()
-    m = _PARAGRAPH_SEP_RE.search(fulltext, end)
-    para_end = m.start() if m else len(fulltext)
-    return _trim_span(fulltext, para_start, para_end)
+def _crosses_speaker_turn(fulltext: str, lo: int, hi: int) -> bool:
+    """True if (lo,hi) contains a newline that starts a speaker-label line
+    — extending a quote across it would splice another speaker's words."""
+    i = fulltext.find("\n", max(0, lo), hi)
+    while i != -1:
+        if _SPEAKER_LABEL_RE.match(fulltext, i + 1):
+            return True
+        i = fulltext.find("\n", i + 1, hi)
+    return False
 
 
 def _span_preview(text: str, head: int = 60, tail: int = 60) -> str:
-    """Token-frugal preview: first ~60 + last ~60 chars of long spans."""
+    """Token-frugal preview: newline-flattened, first+last ~60 chars."""
+    text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= head + tail + 5:
         return text
     return f"{text[:head]} […] {text[-tail:]}"
 
 
-def _alternative_entry(label: str, fulltext: str, start: int, end: int):
+def _material(alt_start: int, alt_end: int, start: int, end: int) -> bool:
+    """Materiality floor: boundaries must move >= 15 cp and >= 10% of span."""
+    movement = abs(alt_start - start) + abs(alt_end - end)
+    span_len = end - start
+    return movement >= _MATERIALITY_CP and movement >= 0.10 * span_len
+
+
+def _alternative_entry(label: str, unit: str, fulltext: str,
+                       start: int, end: int):
     return {
         "label": label,
+        "unit": unit,                       # render gloss, e.g. "1 sentence"
         "start_pos": start,
         "end_pos": end,
         "preview": _span_preview(fulltext[start:end]),
-        "length": end - start,
+        "length": end - start,              # code points
     }
 
 
 def _compute_span_alternatives(fulltext: str, start: int, end: int):
     """Up to two deterministic span adjustments for [start,end).
 
-    - "shorter": the span's most-central sentence (the one containing the
-      span midpoint) when the span holds more than one sentence; omitted
-      for single-sentence spans (no meaningless alternative).
-    - "longer": the enclosing paragraph when it extends beyond the span;
-      if the span already fills its paragraph, ± one sentence (previous
-      and next within a bounded scan window); omitted at file boundaries
-      where no meaningful expansion exists.
+    - "shorter": the LONGEST sentence wholly contained in the span (tie ->
+      earliest), from the global segmentation; omitted when no complete
+      sentence fits, when it equals the trimmed span, or when degenerate.
+    - "longer": the enclosing paragraph (capped; speaker label stripped so
+      the quote starts with speech), else ± one sentence without crossing
+      into another speaker's turn; omitted at document boundaries or when
+      it would add only a label. All slices verbatim fulltext.
     """
     alternatives = []
     n = len(fulltext)
     start, end = max(0, start), min(end, n)
     if start >= end:
         return alternatives
+    t_start, t_end = _trim_span(fulltext, start, end)
+    span_len = end - start
+    sentences = _sentence_spans_global(fulltext)
 
-    # -- shorter --
-    sentences = _sentence_spans(fulltext, start, end)
-    if len(sentences) > 1:
-        mid = (start + end) // 2
-        core = next((sp for sp in sentences if sp[0] <= mid < sp[1]), None)
-        if core is None:
-            core = min(sentences,
-                       key=lambda sp: min(abs(sp[0] - mid), abs(sp[1] - mid)))
-        if core != (start, end):
-            alternatives.append(
-                _alternative_entry("shorter", fulltext, core[0], core[1]))
+    # ---- shorter ----
+    contained = [sp for sp in sentences
+                 if sp[0] >= t_start and sp[1] <= t_end]
+    if contained:
+        # longest wins (abbreviation fragments lose); tie -> earliest
+        core = max(contained, key=lambda sp: (sp[1] - sp[0], -sp[0]))
+        c_len = core[1] - core[0]
+        if (core != (t_start, t_end)
+                and c_len >= _SHORTER_MIN_CP
+                and c_len >= 0.25 * span_len
+                and _material(core[0], core[1], start, end)):
+            alternatives.append(_alternative_entry(
+                "shorter", "1 sentence", fulltext, core[0], core[1]))
 
-    # -- longer --
-    p0, p1 = _paragraph_bounds(fulltext, start, end)
-    if p0 <= start and end <= p1 and (p0, p1) != (start, end):
-        alternatives.append(_alternative_entry("longer", fulltext, p0, p1))
-    else:
-        prev = _sentence_spans(fulltext,
-                               max(0, start - _ALTERNATIVE_SCAN_WINDOW), start)
-        nxt = _sentence_spans(fulltext, end,
-                              min(n, end + _ALTERNATIVE_SCAN_WINDOW))
-        new_start = prev[-1][0] if prev else start
-        new_end = nxt[0][1] if nxt else end
-        if (new_start, new_end) != (start, end):
-            alternatives.append(
-                _alternative_entry("longer", fulltext, new_start, new_end))
+    # ---- longer ----
+    sep_re = _PARAGRAPH_SEP_RE
+    turn_mode = False
+    if not sep_re.search(fulltext) and "\n" in fulltext:
+        # No blank-line boundaries anywhere: single newlines delimit
+        # speaker turns — the turn is the quotable unit
+        sep_re = _SINGLE_NEWLINE_RE
+        turn_mode = True
+    para_start = 0
+    for m in sep_re.finditer(fulltext, 0, start):
+        para_start = m.end()
+    m = sep_re.search(fulltext, end)
+    para_end = m.start() if m else n
+    para_start, para_end = _trim_span(fulltext, para_start, para_end)
+
+    longer_span = None
+    longer_unit = None
+    cap = max(_PARAGRAPH_CAP, 4 * span_len)
+    if (para_start <= t_start and t_end <= para_end
+            and (para_start, para_end) != (t_start, t_end)
+            and (para_end - para_start) <= cap):
+        s0 = para_start
+        label_stripped = False
+        if s0 == 0 or fulltext[s0 - 1] in "\n\u2029":
+            lm = _SPEAKER_LABEL_RE.match(fulltext, s0, para_end)
+            # strip only a label that lies entirely BEFORE the chosen span
+            if lm and lm.end() <= t_start and lm.end() < para_end:
+                s0 = lm.end()
+                label_stripped = True
+        s0, e0 = _trim_span(fulltext, s0, para_end)
+        if _material(s0, e0, start, end):
+            longer_span = (s0, e0)
+            longer_unit = ("full speaker turn"
+                           if (turn_mode or label_stripped) else "paragraph")
+    if longer_span is None:
+        # ± one sentence, never crossing into another speaker's turn
+        prev_candidates = [sp for sp in sentences
+                           if sp[1] <= t_start
+                           and t_start - sp[0] <= _ALTERNATIVE_SCAN_WINDOW]
+        next_candidates = [sp for sp in sentences
+                           if sp[0] >= t_end
+                           and sp[1] - t_end <= _ALTERNATIVE_SCAN_WINDOW]
+        cand_start, cand_end = t_start, t_end
+        if prev_candidates:
+            prev = prev_candidates[-1]
+            if not _crosses_speaker_turn(fulltext, prev[0] - 1, t_start):
+                cand_start = prev[0]
+        if next_candidates:
+            nxt = next_candidates[0]
+            if not _crosses_speaker_turn(fulltext, t_end, nxt[1]):
+                cand_end = nxt[1]
+        cand_start, cand_end = _trim_span(fulltext, cand_start, cand_end)
+        if ((cand_start, cand_end) != (t_start, t_end)
+                and _material(cand_start, cand_end, start, end)):
+            longer_span = (cand_start, cand_end)
+            longer_unit = "±1 sentence"
+    if longer_span is not None:
+        existing = {(a["start_pos"], a["end_pos"]) for a in alternatives}
+        if longer_span not in existing:
+            alternatives.append(_alternative_entry(
+                "longer", longer_unit, fulltext,
+                longer_span[0], longer_span[1]))
 
     return alternatives
+
+
+def _alternative_gloss(alt: Dict[str, Any]) -> str:
+    """Render form: 'shorter (1 sentence, 89 chars)' — chars = code points."""
+    return f"{alt['label']} ({alt['unit']}, {alt['length']} chars)"
 
 
 # ============================================================================
@@ -2135,6 +2230,12 @@ def record_suggestions(
     Returns:
         JSON with recorded suggestions (GUIDs for approval), per-item
         rejections with reasons, duplicate count, and session statistics.
+        Each recorded item lists its available span alternatives by label
+        only ("alternatives": ["shorter","longer"]). Do NOT print the
+        alternative texts. End your summary with ONE line, e.g.: "Any
+        span can be widened or narrowed — just say e.g. longer on #2."
+        When the user asks for longer/shorter, call edit_suggestion with
+        use_alternative — never ask them for character positions.
         If it contains `position_safety_warning`, you MUST relay that
         warning to the user before proceeding to approval — codings on the
         named files can render shifted or unhighlighted in QualCoder's
@@ -2339,15 +2440,18 @@ def review_suggestions(
     wider?). Use this to examine suggestions before approving/rejecting;
     if a span needs adjusting, edit_suggestion changes it in place.
 
-    SPAN ALTERNATIVES: each suggestion may carry ready-made
-    shorter/longer spans (core sentence / enclosing paragraph). Present
-    them COMPACTLY — a one-line "want it shorter (N chars) or longer
-    (M chars)?" affordance, never three full quotes per suggestion
-    (decision fatigue). Surface them proactively only when the
-    researcher has already adjusted spans this session (the calibration
-    signal) or asks about context; otherwise mention once that
-    alternatives exist. One pick applies via
-    edit_suggestion(use_alternative="shorter"|"longer").
+    SPAN ALTERNATIVES: each pending, not-yet-adjusted suggestion may
+    carry ready-made shorter/longer spans (core sentence / enclosing
+    paragraph or speaker turn). Present them COMPACTLY — a one-line
+    "want it shorter (1 sentence, 89 chars) or longer (paragraph,
+    412 chars)?" affordance, never full alternative quotes per
+    suggestion (decision fatigue). Surface them proactively only when
+    the researcher has already adjusted spans this session (the
+    calibration signal) or asks about context; otherwise mention once
+    that alternatives exist. One pick applies via
+    edit_suggestion(use_alternative="shorter"|"longer"). Suggestions
+    the researcher already adjusted show "(adjusted)" and get no offers
+    — do not offer to undo their decision.
 
     Args:
         session_id: The session ID from analyze_for_coding
@@ -2379,10 +2483,14 @@ def review_suggestions(
 
     output = [f"**Review of {len(suggestions)} Suggestion(s)**\n"]
 
+    small_subset = bool(suggestion_guids) and len(suggestions) <= 5
+
     for i, sugg in enumerate(suggestions, 1):
         output.append(f"\n{'='*70}")
         output.append(f"**Suggestion {i}** (GUID: `{sugg.guid}`)")
-        output.append(f"Status: {sugg.status.upper()}")
+        adjusted = getattr(sugg, "adjusted", False)
+        output.append(f"Status: {sugg.status.upper()}"
+                      + (" (adjusted)" if adjusted else ""))
         output.append(f"\n📄 **File:** {sugg.file_name} (ID: {sugg.file_id})")
         output.append(f"🏷️  **Code:** {sugg.code_name} (ID: {sugg.code_id})")
         output.append(f"📍 **Position:** {sugg.start_pos}-{sugg.end_pos}")
@@ -2400,14 +2508,21 @@ def review_suggestions(
                 output.append(f"\n**Context After:**")
                 output.append(f"```\n{sugg.context_after}\n```")
 
+        # Span alternatives: one line each, unit-glossed; previews only in
+        # the show_context detail view for small guid subsets (token cost);
+        # nothing in the compact listing; no offers on adjusted spans
         alternatives = getattr(sugg, "span_alternatives", None) or []
-        if alternatives and sugg.status == "pending":
-            picks = " / ".join(
-                f"{a['label']} ({a['start_pos']}-{a['end_pos']}, "
-                f"{a['length']} chars)" for a in alternatives)
-            output.append(
-                f"\n↔ Span alternatives: {picks} — apply with "
-                f"edit_suggestion(use_alternative=...)")
+        if (alternatives and sugg.status == "pending" and not adjusted
+                and show_context):
+            if small_subset:
+                for a in alternatives:
+                    output.append(f"↔ {_alternative_gloss(a)}: "
+                                  f"“{a['preview']}”")
+            else:
+                picks = " / ".join(_alternative_gloss(a)
+                                   for a in alternatives)
+                output.append(f"↔ Span alternatives: {picks} — apply with "
+                              f"edit_suggestion(use_alternative=...)")
 
     return "\n".join(output)
 
@@ -2433,10 +2548,8 @@ def edit_suggestion(
     project database until apply_codings.
 
     Span editing accepts one of:
-    - use_alternative="shorter" or "longer" — one-call apply of a
-      ready-made alternative the server computed when the span was
-      recorded (core sentence / enclosing paragraph). The quickest
-      answer to "make it shorter/longer".
+    - use_alternative="shorter"|"longer" — the one-call answer to
+      "make it shorter/longer" (details under Args);
     - new start_pos and/or end_pos ("extend it to position 120"; an
       omitted bound keeps its current value) — the stored text becomes
       the exact file slice for the new span;
@@ -2446,6 +2559,11 @@ def edit_suggestion(
       the excerpt is unique.
     The surrounding context shown by review_suggestions is refreshed,
     and the shorter/longer alternatives are recomputed for the new span.
+
+    Edits are not reversible via the alternatives: they recompute from
+    the CURRENT span (shorter after longer is the new paragraph's core
+    sentence, not the original span). To undo, use the previous span in
+    the result's changes.span.from.
 
     Only PENDING suggestions are editable: applied ones are immutable
     (the coding is in the database — use delete_coding + record again),
@@ -2458,9 +2576,17 @@ def edit_suggestion(
         start_pos: New start position (code-point offset, 0-based)
         end_pos: New end position (end-exclusive)
         segment_text: New exact excerpt (alternative to positions)
-        use_alternative: "shorter" or "longer" — apply a stored span
-                         alternative (mutually exclusive with manual
-                         start_pos/end_pos/segment_text)
+        use_alternative: "shorter" | "longer" — apply the
+            server-precomputed span alternative (shorter = the span
+            trimmed to its core sentence; longer = the enclosing
+            paragraph, else ± one sentence). This is the preferred
+            response to "make #3 longer" / "widen that one": one call,
+            no positions needed. Not every suggestion has both: shorter
+            is absent when the span is already one sentence, longer at
+            document boundaries — on a miss the error lists which
+            labels exist; fall back to explicit start_pos/end_pos or
+            segment_text. Mutually exclusive with the manual span
+            parameters.
         code_id: Change the code by id (existing codes only)
         code_name: Change the code by name (case-insensitive match
                    against the live codebook)
@@ -2510,14 +2636,28 @@ def edit_suggestion(
                 "error": "use_alternative is mutually exclusive with manual "
                          "start_pos/end_pos/segment_text — pick one"
             })
-        alt = next((a for a in sugg.span_alternatives
+        # Recompute from the CURRENT fulltext (stored span_alternatives are
+        # presentational only — the file may have changed, and pre-v0.8
+        # sessions have none stored)
+        alt_content = get_db().get_file_content(sugg.file_id)
+        alt_fulltext = (alt_content or {}).get("content") or ""
+        if alt_content is None or not alt_content.get("is_text") \
+                or not alt_fulltext:
+            return json.dumps({
+                "error": f"file_id {sugg.file_id} no longer exists or is "
+                         f"not a text source"
+            })
+        current_alts = _compute_span_alternatives(
+            alt_fulltext, sugg.start_pos, sugg.end_pos)
+        alt = next((a for a in current_alts
                     if a.get("label") == use_alternative), None)
         if alt is None:
             return json.dumps({
-                "error": f"No '{use_alternative}' alternative is stored for "
-                         f"this suggestion",
-                "available_alternatives": [a.get("label") for a in
-                                           sugg.span_alternatives],
+                "error": f"No '{use_alternative}' span alternative exists "
+                         f"for this suggestion",
+                "available_alternatives": [a["label"] for a in current_alts],
+                "hint": "Fall back to explicit start_pos/end_pos or "
+                        "segment_text for an arbitrary adjustment.",
             })
         start_pos, end_pos = alt["start_pos"], alt["end_pos"]
         manual_span = True
@@ -2634,6 +2774,45 @@ def edit_suggestion(
         sugg.code_id = new_code["id"]
         sugg.code_name = new_code["name"]
 
+    sugg.adjusted = True
+
+    # Affordance bookkeeping (server-emitted hints — the pattern that
+    # actually steers clients, per the track4 audit): the first MANUAL span
+    # edit triggers the shortcut hint once; three same-direction alternative
+    # picks trigger the calibration-escalation hint once.
+    stats = getattr(session, "span_edit_stats", None)
+    if stats is None:
+        stats = {"manual_edits": 0, "shorter_picks": 0, "longer_picks": 0}
+        session.span_edit_stats = stats
+    if wants_span:
+        if use_alternative is None:
+            stats["manual_edits"] = stats.get("manual_edits", 0) + 1
+            if stats["manual_edits"] == 1:
+                result["span_shortcut_hint"] = (
+                    "The researcher is adjusting spans. From now on, when "
+                    "presenting suggestions add one line offering the "
+                    "shortcut: every suggestion has precomputed "
+                    "shorter/longer spans — they can just say 'longer on "
+                    "#N'."
+                )
+        elif use_alternative in ("shorter", "longer"):
+            key = f"{use_alternative}_picks"
+            stats[key] = stats.get(key, 0) + 1
+            if stats[key] == 3:
+                fix = ("re-record the remaining suggestions at paragraph "
+                       "level, or set the session instruction to 'code "
+                       "paragraph-level spans'"
+                       if use_alternative == "longer" else
+                       "re-record the remaining suggestions at sentence "
+                       "level, or set the session instruction to 'code "
+                       "tight single-sentence spans'")
+                result["calibration_hint"] = (
+                    f"That is the third '{use_alternative}' pick this "
+                    f"session — the default span length is miscalibrated. "
+                    f"Offer the session-level fix instead of continuing "
+                    f"per-item picks: {fix}."
+                )
+
     session.last_modified = datetime.now().isoformat()
     session_manager.save_session(session)
 
@@ -2642,8 +2821,8 @@ def edit_suggestion(
         "changes": changes,
         "positions_corrected": corrected,
         "segment_text": sugg.segment_text,
-        "span_alternatives": [{"label": a["label"],
-                               "length": a["length"]}
+        # compact render forms only (label + unit gloss + code points)
+        "span_alternatives": [_alternative_gloss(a)
                               for a in sugg.span_alternatives],
         "status": sugg.status,
         "next_step": "Still pending — approve with update_suggestion_status "

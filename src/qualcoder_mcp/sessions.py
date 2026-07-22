@@ -29,7 +29,8 @@ class CodingSuggestion:
         context_before: str = "",
         context_after: str = "",
         guid: Optional[str] = None,
-        span_alternatives: Optional[List[Dict[str, Any]]] = None
+        span_alternatives: Optional[List[Dict[str, Any]]] = None,
+        adjusted: bool = False
     ):
         self.file_id = file_id
         self.file_name = file_name
@@ -45,9 +46,13 @@ class CodingSuggestion:
         self.context_before = context_before  # Text before for context
         self.context_after = context_after  # Text after for context
         self.guid = guid or str(uuid.uuid4())
-        # Server-computed ready-made span adjustments (shorter/longer),
-        # recomputed whenever the span changes; [] for old sessions
+        # Server-computed ready-made span adjustments (shorter/longer).
+        # Presentational only: use_alternative recomputes from the current
+        # fulltext at edit time. [] for pre-v0.8 sessions (zero migration).
         self.span_alternatives = span_alternatives or []
+        # True once the researcher edited this suggestion (span or code) —
+        # review stops offering alternatives on decided-and-adjusted spans
+        self.adjusted = bool(adjusted)
 
         # For backwards compatibility with old ai_memo field
         self.ai_memo = reasoning
@@ -68,7 +73,8 @@ class CodingSuggestion:
             "context_before": self.context_before,
             "context_after": self.context_after,
             "guid": self.guid,
-            "span_alternatives": self.span_alternatives
+            "span_alternatives": self.span_alternatives,
+            "adjusted": self.adjusted
         }
 
     _REQUIRED_FIELDS = {
@@ -108,7 +114,8 @@ class CodingSuggestion:
             context_before=data.get("context_before", ""),
             context_after=data.get("context_after", ""),
             guid=data.get("guid"),
-            span_alternatives=data.get("span_alternatives")
+            span_alternatives=data.get("span_alternatives"),
+            adjusted=data.get("adjusted", False)
         )
 
 
@@ -202,6 +209,11 @@ class AICodingSession:
         self.min_confidence = min_confidence
         self.suggestions: List[CodingSuggestion] = []
         self.proposed_codes: List[ProposedCode] = []
+        # Span-affordance bookkeeping (tester-feedback amendment): counts
+        # drive the one-time shortcut hint (first manual span edit) and the
+        # calibration-escalation hint (3 same-direction alternative picks)
+        self.span_edit_stats: Dict[str, int] = {
+            "manual_edits": 0, "shorter_picks": 0, "longer_picks": 0}
         self.created_at = datetime.now().isoformat()
         self.last_modified = self.created_at
 
@@ -438,6 +450,7 @@ class AICodingSession:
             "min_confidence": self.min_confidence,
             "suggestions": [s.to_dict() for s in self.suggestions],
             "proposed_codes": [p.to_dict() for p in self.proposed_codes],
+            "span_edit_stats": self.span_edit_stats,
             "statistics": self.get_statistics(),
             "proposal_statistics": self.proposal_statistics()
         }
@@ -472,6 +485,14 @@ class AICodingSession:
         )
         session.created_at = data["created_at"]
         session.last_modified = data["last_modified"]
+        # Absent in pre-v0.8 sessions -> fresh counters (zero migration)
+        stats = data.get("span_edit_stats")
+        if isinstance(stats, dict):
+            session.span_edit_stats = {
+                "manual_edits": int(stats.get("manual_edits", 0)),
+                "shorter_picks": int(stats.get("shorter_picks", 0)),
+                "longer_picks": int(stats.get("longer_picks", 0)),
+            }
 
         # Load suggestions
         for s_data in data.get("suggestions", []):

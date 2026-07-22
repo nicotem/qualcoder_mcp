@@ -23,15 +23,25 @@ review time.
   approved/rejected ones reflect a decision already made and carry
   per-status hints.
 - **Server-computed span alternatives**: every verified span (coding
-  suggestions AND proposal evidence) now carries up to two ready-made,
-  deterministic adjustments — "shorter" (the span's most-central
-  sentence) and "longer" (the enclosing paragraph, or ± one sentence
-  when the span already fills its paragraph) — with token-frugal
-  truncated previews. One call applies one:
-  `edit_suggestion(use_alternative="shorter"|"longer")`; alternatives
-  are recomputed after every edit. Paragraph/sentence boundaries are
-  code-point-safe (blank lines or U+2029; `[.!?]+` sentence ends) with
-  no new dependencies.
+  suggestions AND proposal evidence) carries up to two ready-made,
+  deterministic adjustments — "shorter" (the LONGEST sentence wholly
+  inside the span, so abbreviation fragments like "Dr." can never win)
+  and "longer" (the enclosing paragraph with any speaker label stripped
+  so quotes start with speech; in blank-line-free speaker-turn
+  transcripts the turn IS the paragraph; else ± one sentence, never
+  splicing across another speaker's turn). Degeneracy and materiality
+  floors mean no filler alternatives, previews are truncated and
+  newline-flattened for token cost, and `length` is a code-point count.
+  One call applies one: `edit_suggestion(use_alternative="shorter"|
+  "longer")` — recomputed from the CURRENT fulltext at use time, so
+  pre-v0.8 session files work unchanged. Boundaries handle \r\n\r\n,
+  \n\n and U+2029 uniformly; no new dependencies.
+- **Server-emitted affordance hints**: the first manual span edit in a
+  session emits a hint teaching the shorter/longer shortcut; the third
+  same-direction alternative pick emits a calibration-escalation hint
+  (offer the session-level fix — e.g. "code paragraph-level spans" —
+  instead of continuing per-item picks). Suggestions the researcher
+  already adjusted render "(adjusted)" and get no further offers.
 - **`update_proposal(example_segments=...)`**: proposal evidence spans
   are editable the same way — the replacement list is validated with
   the same position machinery.
