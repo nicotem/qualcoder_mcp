@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — opt-in CSV formula sanitization (V8-1)
+
+All four report exporters gain `sanitize_formulas` (default **False**).
+CSV cells whose text starts with `=` `+` `-` `@` tab or CR are treated
+as live formulas by Excel/LibreOffice/Google Sheets (CSV injection,
+CWE-1236) — and quoting does not defuse them. Pass
+`sanitize_formulas=true` to neutralize every such cell with the
+standard `'` prefix (applied to all DB-derived text: code/category/
+case/coder names, memos, and coded seltext — raw source text, the
+sharpest vector). The default stays **verbatim** because these
+exporters exist for byte-parity with QualCoder's own exports (which do
+not escape either): default preserves parity, one word turns on
+safety. Every export response discloses which mode produced the file.
+
 ### Added — report exports (v0.8 phase B, per the reporting ground-truth dossier)
 
 Four read-only file exporters whose numbers and columns match

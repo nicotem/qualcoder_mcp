@@ -5735,16 +5735,50 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
     return out_file, None
 
 
-def _write_csv_file(out_file: Path, rows, quote_all: bool):
+# CSV formula/DDE injection triggers (SEC V8-1, CWE-1236): a cell whose
+# text begins with one of these is evaluated as a formula by Excel /
+# LibreOffice / Google Sheets — CSV quoting does NOT prevent it.
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _defuse_formula_cell(value):
+    """OWASP CSV-injection defusal: prefix a single quote so the
+    spreadsheet treats the cell as text. Applied to every string cell
+    (DB-derived names, memos, seltext, coder names — and headers built
+    from them) when sanitize_formulas is on."""
+    if isinstance(value, str) and value.startswith(_FORMULA_TRIGGER_CHARS):
+        return f"'{value}"
+    return value
+
+
+def _write_csv_file(out_file: Path, rows, quote_all: bool,
+                    sanitize: bool = False):
     """QualCoder CSV conventions: utf-8-sig (BOM), CRLF rows; QUOTE_ALL
-    for the coded report (report_codes.py:877-881), minimal otherwise."""
+    for the coded report (report_codes.py:877-881), minimal otherwise.
+    sanitize=True applies the V8-1 formula defusal to every cell."""
     import csv
     with open(out_file, "w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.writer(
             fh, delimiter=",", quotechar='"',
             quoting=csv.QUOTE_ALL if quote_all else csv.QUOTE_MINIMAL)
         for row in rows:
+            if sanitize:
+                row = [_defuse_formula_cell(cell) for cell in row]
             writer.writerow(row)
+
+
+def _sanitization_note(sanitize: bool, is_csv: bool = True) -> str:
+    """The disclosure every export result carries about V8-1 mode."""
+    if not is_csv:
+        return ("sanitize_formulas applies to CSV cells only — this "
+                "format has no spreadsheet cells")
+    if sanitize:
+        return ("formulas sanitized for spreadsheet safety: cells starting "
+                "with = + - @ tab or CR are prefixed with ' (this "
+                "deliberately breaks byte-parity with QualCoder's own "
+                "export)")
+    return ("verbatim export — cells starting with = are evaluated by "
+            "Excel; pass sanitize_formulas=true to neutralize")
 
 
 def _resolve_names_ci(requested, available, kind: str):
@@ -5822,6 +5856,7 @@ def _category_chain(cat_by_id, category_id):
 @_tool_guard
 def export_codebook(output_path: str, format: str = "csv",
                     include_memos: bool = True,
+                    sanitize_formulas: bool = False,
                     overwrite: bool = False) -> str:
     """Export the full codebook (codes + category tree) to a file.
 
@@ -5845,10 +5880,16 @@ def export_codebook(output_path: str, format: str = "csv",
                      etc. is used, with `_0`, `_1` collision suffixes
         format: "csv" (default), "txt" or "md"
         include_memos: Include code/category memos (default True)
+        sanitize_formulas: Neutralize spreadsheet formula injection in
+            CSV cells (values starting with = + - @ tab or CR get a '
+            prefix). Default False = byte-parity with QualCoder's own
+            export; one word turns on safety when the data may contain
+            untrusted text.
         overwrite: Allow replacing an existing file (default False)
 
     Returns:
-        JSON with output_path, counts, and the counting rule used.
+        JSON with output_path, counts, the counting rule used, and
+        which sanitization mode was applied.
     """
     if format not in ("csv", "txt", "md"):
         return json.dumps({"error": "format must be 'csv', 'txt' or 'md'"})
@@ -5882,7 +5923,8 @@ def export_codebook(output_path: str, format: str = "csv",
             if include_memos:
                 row.append(item.get("memo") or "")
             rows.append(row)
-        _write_csv_file(out_file, rows, quote_all=False)
+        _write_csv_file(out_file, rows, quote_all=False,
+                        sanitize=sanitize_formulas)
     else:
         lines = [f"Codebook: {project}", ""]
         for depth, kind, item in _codebook_tree(ro_db):
@@ -5927,6 +5969,8 @@ def export_codebook(output_path: str, format: str = "csv",
         "counting_rule": "QualCoder Codebook parity: text + image + A/V "
                          "codings, all coders, no filters, orphaned "
                          "codings included",
+        "sanitization": _sanitization_note(sanitize_formulas,
+                                           is_csv=(format == "csv")),
     }, indent=2)
 
 
@@ -5942,6 +5986,7 @@ def export_coded_segments_report(
     important: bool = False,
     include_variables: bool = False,
     format: str = "csv",
+    sanitize_formulas: bool = False,
     overwrite: bool = False,
 ) -> str:
     """Export the coded-segments-with-quotes report (QualCoder's Coding
@@ -5979,6 +6024,11 @@ def export_coded_segments_report(
                            mode, `CaseVar_{name}`) with attribute values
                            per row — QualCoder's "variables" checkbox
         format: "csv" (default) or "txt"
+        sanitize_formulas: Neutralize spreadsheet formula injection in
+            CSV cells (values starting with = + - @ tab or CR get a '
+            prefix — coded seltext is untrusted source text and the
+            sharpest vector). Default False = byte-parity with
+            QualCoder's own export; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
 
     Returns:
@@ -6071,7 +6121,10 @@ def export_coded_segments_report(
                     row += [case_attr_cache[caseid].get(n, "")
                             for n in case_vars]
             out_rows.append(row)
-        _write_csv_file(out_file, out_rows, quote_all=True)
+        # NOTE: QUOTE_ALL does NOT defuse formulas — Excel evaluates a
+        # quoted "=..." cell all the same (SEC V8-1)
+        _write_csv_file(out_file, out_rows, quote_all=True,
+                        sanitize=sanitize_formulas)
     else:  # txt — the on-screen report serialization
         total_codes = len(all_codes)
         lines = ["Search parameters", "=" * 10]
@@ -6116,6 +6169,8 @@ def export_coded_segments_report(
             "Codings on deleted files are excluded (source join), exactly "
             "as QualCoder's report",
         ],
+        "sanitization": _sanitization_note(sanitize_formulas,
+                                           is_csv=(format == "csv")),
     }
     if case_mode:
         result["counting_rule"] = (
@@ -6132,6 +6187,7 @@ def export_coded_segments_report(
 @mcp.tool()
 @_tool_guard
 def export_frequencies_csv(output_path: str,
+                           sanitize_formulas: bool = False,
                            overwrite: bool = False) -> str:
     """Export the code-frequencies table (QualCoder's Code Frequencies
     report) as CSV.
@@ -6155,6 +6211,10 @@ def export_frequencies_csv(output_path: str,
     Args:
         output_path: Target .csv file, or an existing directory (default
                      name `Code_frequencies.csv`, `_0` suffixes)
+        sanitize_formulas: Neutralize spreadsheet formula injection
+            (cells starting with = + - @ tab or CR get a ' prefix —
+            code and coder names are DB-derived text). Default False =
+            byte-parity with QualCoder; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
     """
     out_file, err = _resolve_export_path(
@@ -6213,7 +6273,8 @@ def export_frequencies_csv(output_path: str,
                             + [str(n) for n in per] + [str(total)])
 
     walk(None, 0)
-    _write_csv_file(out_file, rows, quote_all=False)
+    _write_csv_file(out_file, rows, quote_all=False,
+                    sanitize=sanitize_formulas)
 
     return json.dumps({
         "success": True,
@@ -6221,6 +6282,7 @@ def export_frequencies_csv(output_path: str,
         "codes": len(codes),
         "categories": len(cats),
         "coders": coders,
+        "sanitization": _sanitization_note(sanitize_formulas),
         "counting_rule": "QualCoder Code Frequencies parity: one count "
                          "per coding row over code_text + code_image + "
                          "code_av, per coder; category rows are recursive "
@@ -6235,6 +6297,7 @@ def export_frequencies_csv(output_path: str,
 @mcp.tool()
 @_tool_guard
 def export_case_code_matrix_csv(output_path: str,
+                                sanitize_formulas: bool = False,
                                 overwrite: bool = False) -> str:
     """Export the case × code cross-tab as CSV.
 
@@ -6254,6 +6317,10 @@ def export_case_code_matrix_csv(output_path: str,
     Args:
         output_path: Target .csv file, or an existing directory (default
                      name `Case_code_matrix.csv`, `_0` suffixes)
+        sanitize_formulas: Neutralize spreadsheet formula injection
+            (cells starting with = + - @ tab or CR get a ' prefix —
+            case and code names are DB-derived text). Default False =
+            byte-parity with QualCoder; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
     """
     out_file, err = _resolve_export_path(
@@ -6268,13 +6335,15 @@ def export_case_code_matrix_csv(output_path: str,
         cells = data["matrix"].get(case["id"], {})
         rows.append([case["name"]]
                     + [str(cells.get(c["id"], 0)) for c in codes])
-    _write_csv_file(out_file, rows, quote_all=False)
+    _write_csv_file(out_file, rows, quote_all=False,
+                    sanitize=sanitize_formulas)
 
     return json.dumps({
         "success": True,
         "output_path": str(out_file),
         "cases": len(data["cases"]),
         "codes": len(codes),
+        "sanitization": _sanitization_note(sanitize_formulas),
         "counting_rule": "CONTAINMENT: a coding counts for a case iff "
                          "fully inside one of the case's text spans on "
                          "the same file (QualCoder coding-report rule; "

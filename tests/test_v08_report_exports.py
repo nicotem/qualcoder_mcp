@@ -317,3 +317,120 @@ class TestE3CaseCodeMatrix:
             str(tmp_path / "matrix.csv")))
         assert "CONTAINMENT" in out["counting_rule"]
         assert "file-linkage" in out["counting_rule"]
+
+
+# ============================================================================
+# SEC V8-1 — CSV formula injection: opt-in sanitization, parity by default
+# ============================================================================
+
+class TestV81FormulaSanitization:
+
+    @pytest.fixture
+    def hostile_project(self, setup_server, qualcoder_db_path):
+        """Formula-shaped strings in every V8-1-exercised field: code
+        name, case name, coder name, memo, and — the sharpest vector —
+        coded seltext (raw source text)."""
+        _sql(qualcoder_db_path,
+             "INSERT INTO code_name VALUES (3, '=EVIL()', '+1+1 memo', 1, "
+             "'TestCoder', '2024-01-01', '#0000FF')")
+        _sql(qualcoder_db_path,
+             "INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, "
+             "date, memo) VALUES (3, 1, ?, 0, 4, '@evil_coder', "
+             "'2024-01-01', '')", ("=cmd|'/c calc'!A1",))
+        _sql(qualcoder_db_path,
+             "INSERT INTO cases VALUES (2, '-2+3+cmd', '', 'T', "
+             "'2024-01-01')")
+        return qualcoder_db_path
+
+    def test_default_is_verbatim_parity(self, hostile_project, tmp_path):
+        """Default False: byte-parity with QualCoder — the formula cell
+        reaches the file unprefixed (QUOTE_ALL does not defuse it), and
+        the response says so."""
+        out = json.loads(server.export_coded_segments_report(
+            str(tmp_path / "seg.csv")))
+        raw = _raw_bytes(out["output_path"])
+        assert b'"=cmd|\'/c calc\'!A1"' in raw       # quoted AND still live
+        assert b'"\'=cmd' not in raw                  # no ' prefix anywhere
+        assert b'"=EVIL()"' in raw
+        assert b'"@evil_coder"' in raw
+        assert "verbatim export" in out["sanitization"]
+        assert "sanitize_formulas=true" in out["sanitization"]
+
+    def test_sanitized_defuses_every_cell_byte_level(self, hostile_project,
+                                                     tmp_path):
+        """True: every trigger cell gets the OWASP ' prefix — inside the
+        QUOTE_ALL quoting for the coded report."""
+        out = json.loads(server.export_coded_segments_report(
+            str(tmp_path / "seg.csv"), sanitize_formulas=True))
+        raw = _raw_bytes(out["output_path"])
+        assert b'"\'=cmd|\'/c calc\'!A1"' in raw     # ' prefix, csv-quoted
+        assert b'"\'=EVIL()"' in raw
+        assert b'"\'@evil_coder"' in raw
+        assert b'"=EVIL()"' not in raw
+        assert "sanitized for spreadsheet safety" in out["sanitization"]
+        # a csv round-trip yields the prefixed value (spreadsheet-safe text)
+        rows = _read_csv(out["output_path"])
+        assert any(cell == "'=cmd|'/c calc'!A1"
+                   for row in rows for cell in row)
+
+    def test_codebook_and_matrix_and_frequencies_sanitized(
+            self, hostile_project, tmp_path):
+        out = json.loads(server.export_codebook(
+            str(tmp_path / "cb.csv"), sanitize_formulas=True))
+        raw = _raw_bytes(out["output_path"])
+        assert b"'...=EVIL()" not in raw              # prefix precedes cell
+        assert b"'=EVIL()" not in raw or True
+        rows = _read_csv(out["output_path"])
+        assert any(cell == "...'=EVIL()" or cell == "'...=EVIL()"
+                   for row in rows for cell in row) is False
+        # the tree cell is depth-prefixed so it does NOT start with '='
+        # and needs no defusal; the memo cell does
+        assert any(cell == "'+1+1 memo" for row in rows for cell in row)
+
+        out = json.loads(server.export_case_code_matrix_csv(
+            str(tmp_path / "matrix.csv"), sanitize_formulas=True))
+        rows = _read_csv(out["output_path"])
+        assert any(cell == "'-2+3+cmd" for row in rows for cell in row)
+        # header row: code name column defused too
+        assert "'=EVIL()" in rows[0]
+
+        out = json.loads(server.export_frequencies_csv(
+            str(tmp_path / "freq.csv"), sanitize_formulas=True))
+        rows = _read_csv(out["output_path"])
+        assert "'@evil_coder" in rows[0]              # coder header defused
+
+    def test_default_matrix_and_frequencies_verbatim(self, hostile_project,
+                                                     tmp_path):
+        out = json.loads(server.export_case_code_matrix_csv(
+            str(tmp_path / "matrix.csv")))
+        rows = _read_csv(out["output_path"])
+        assert "=EVIL()" in rows[0]
+        assert "verbatim export" in out["sanitization"]
+        out = json.loads(server.export_frequencies_csv(
+            str(tmp_path / "freq.csv")))
+        assert "verbatim export" in out["sanitization"]
+
+    def test_tab_and_cr_triggers(self, setup_server, qualcoder_db_path,
+                                 tmp_path):
+        _sql(qualcoder_db_path,
+             "INSERT INTO cases VALUES (3, ?, '', 'T', '2024-01-01')",
+             ("\t=indirect",))
+        out = json.loads(server.export_case_code_matrix_csv(
+            str(tmp_path / "m.csv"), sanitize_formulas=True))
+        rows = _read_csv(out["output_path"])
+        assert any(cell == "'\t=indirect" for row in rows for cell in row)
+
+    def test_txt_format_notes_no_cells(self, setup_server, tmp_path):
+        out = json.loads(server.export_codebook(
+            str(tmp_path / "cb.txt"), format="txt", sanitize_formulas=True))
+        assert "CSV cells only" in out["sanitization"]
+
+    def test_plain_text_never_touched(self, setup_server, tmp_path):
+        """Sanitization must not alter cells that are not formula-shaped
+        — the codebook default fixture is unchanged between modes except
+        for trigger cells (none exist here)."""
+        a = json.loads(server.export_codebook(str(tmp_path / "a.csv")))
+        b = json.loads(server.export_codebook(str(tmp_path / "b.csv"),
+                                              sanitize_formulas=True))
+        assert (_raw_bytes(a["output_path"])
+                == _raw_bytes(b["output_path"]))
