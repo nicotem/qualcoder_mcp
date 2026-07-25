@@ -11,7 +11,9 @@ ideas are genuinely wanted — they directly shape what gets built next.
 - **Bug reports** — please include what you did (the tool calls or the
   conversation step), what you expected, and what happened instead.
   Never paste sensitive research data into an issue; a synthetic or
-  redacted example is perfect.
+  redacted example is perfect. (For what happens to research data when
+  you USE the tool — what is transmitted to Anthropic and what stays
+  local — see [PRIVACY.md](PRIVACY.md).)
 - **Questions** — check the [README](README.md) troubleshooting section
   and [AI_CODING_WORKFLOW.md](AI_CODING_WORKFLOW.md) first, then open an
   issue. Questions are welcome; yours is probably the next person's too.
