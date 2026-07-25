@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0-alpha] - 2026-07-25
+
+Inductive coding, report exports, and the write-surface completions —
+implemented against QualCoder 3.8.2 source ground truth, shaped by the
+first tester's feedback, and gated through independent QA and security
+review plus six-platform CI. Tool surface: 48 → 67.
+
 ### Security — opt-in CSV formula sanitization (V8-1)
 
 All four report exporters gain `sanitize_formulas` (default **False**).
