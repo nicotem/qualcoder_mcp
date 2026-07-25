@@ -44,6 +44,28 @@ reply. GitHub Issues is where everything is read and tracked.
 
 See [SUPPORT.md](SUPPORT.md) for the full policy.
 
+## Data Flow & Privacy — read this before using research data
+
+The server runs entirely on your machine and adds no telemetry, no
+analytics, and no cloud path of its own. **But everything a tool
+returns — coded segments, interview excerpts, file contents, memos,
+frequencies — enters your Claude conversation, and conversation
+content is transmitted to Anthropic** and processed like any other
+chat/API content. Reading a transcript through this tool sends the
+returned portions of that transcript to Anthropic. Backups, exports
+and session files stay local.
+
+Your participants may not have consented to third-party AI processing.
+It is the researcher's responsibility to check what this flow means
+for your consent language, data-management plan, ethics/IRB approvals
+and (for EU/UK researchers) GDPR position. This tool makes the flow
+explicit precisely so you can make that decision — many AI
+integrations don't.
+
+**Read [PRIVACY.md](PRIVACY.md)** for the full disclosure and
+practical mitigations (pseudonymized copies, per-file control, who to
+consult).
+
 ## Prerequisites
 
 - **macOS** (or Linux/Windows with appropriate paths)
@@ -191,6 +213,21 @@ Everything in this guide — the tools, the review-first workflow, the
 safety gates — behaves identically in any client.
 
 The MCP server should now be connected! You'll see it listed in the MCP section if you look at the settings.
+
+## Updating to a new version
+
+QualCoder MCP is installed from this git repository, so **updates are manual** — a new release does not update automatically. When a new version is announced, update in three steps:
+
+```bash
+cd ~/Documents/qualcoder_mcp   # wherever you installed it
+git pull                        # fetch the latest code
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -e .                # picks up any new dependencies
+```
+
+Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code.
+
+To check which version is running, ask Claude: *"What version of the QualCoder server is running?"* — it will report the version (e.g. `0.8.0a0`). You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](CHANGELOG.md).
 
 ## Usage
 
