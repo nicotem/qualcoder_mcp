@@ -49,9 +49,11 @@ answer belongs in:
   processing by an AI service?)
 - your **data-management plan**
 - your **ethics / IRB approvals**
-- for EU/UK researchers, your **GDPR position**: you remain the data
-  controller for your research data; Anthropic's processing terms
-  differ by plan and product.
+- for EU/UK researchers, your **GDPR position**: your institution is
+  normally the data *controller* and a provider like Anthropic a
+  *processor* — which usually requires an institution-level
+  data-processing agreement and a valid transfer safeguard (see the next
+  section), not something an individual researcher can arrange alone.
 
 For what Anthropic does with conversation content — retention,
 processing, and how terms differ between consumer plans, the API, and
@@ -61,10 +63,47 @@ documentation** for the current terms:
 change over time; this document deliberately does not characterize
 them.
 
+## Before you use real participant data — check these
+
+These are the questions your ethics committee or Data Protection Officer
+will ask, and the summary above depends on them:
+
+- **Your Claude plan's terms differ — and matter.** For *your* account,
+  verify whether inputs (a) may be used to train or improve models,
+  (b) how long they are retained, and (c) whether they can be reviewed by
+  people. These differ materially between consumer plans (Free/Pro) and
+  Team/Enterprise/API terms. Inputs being used for model training would
+  almost never be covered by existing participant consent — an ethics
+  board asks this first.
+- **Controller / processor, and a written agreement.** Your institution
+  is normally the data controller and Anthropic a processor. UK/EU GDPR
+  (Art. 28) then requires a written data-processing agreement, and a
+  UK/EU→US transfer needs a valid safeguard (UK IDTA, SCCs, or an
+  adequacy/data-bridge mechanism). A personal or consumer account almost
+  certainly has **no such agreement** — so this is an institution-level
+  decision you cannot clear alone.
+- **Special-category data.** Interviews routinely carry health, sexuality,
+  religion, ethnicity, political opinion and similar — often disclosed
+  incidentally — which has a higher legal bar (GDPR Art. 9).
+- **Consent is not compliance.** Participant consent to AI processing
+  addresses the ethics limb; it does not by itself provide your lawful
+  basis, your transfer safeguard, or the processing agreement.
+- **You cannot claw it back.** Content already sent generally cannot be
+  retracted — which can make it impossible to honour a participant's
+  withdrawal or erasure request, or a retention limit you promised in a
+  consent form or ethics application.
+- **Secondary use.** Re-analysing data gathered for one study with AI may
+  go beyond the original consent and ethics approval, and may itself need
+  review.
+
 ## Practical mitigations
 
-- **Work on pseudonymized or de-identified copies** of your projects
-  where possible.
+- **Prefer synthetic or truly anonymised data.** Removing names does *not*
+  make a transcript safe to send: pseudonymised (name-stripped)
+  qualitative data is **still personal data** and is often re-identifiable
+  from context (role, locality, events, relationships, distinctive
+  phrasing). Treat pseudonymisation as risk-reduction only — synthetic or
+  genuinely anonymised data is the safe path for experimentation.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is
   asked for — a session that never touches file 7 never transmits

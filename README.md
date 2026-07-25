@@ -62,9 +62,9 @@ and (for EU/UK researchers) GDPR position. This tool makes the flow
 explicit precisely so you can make that decision — many AI
 integrations don't.
 
-**Read [PRIVACY.md](PRIVACY.md)** for the full disclosure and
-practical mitigations (pseudonymized copies, per-file control, who to
-consult).
+**Read [PRIVACY.md](PRIVACY.md)** for the full disclosure — what to
+check with your Claude plan and your institution's DPO, why pseudonymised
+data is *not* automatically safe to send, and practical mitigations.
 
 ## Prerequisites
 
