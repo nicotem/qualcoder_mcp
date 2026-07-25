@@ -225,9 +225,12 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -e .                # picks up any new dependencies
 ```
 
-Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code.
+Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code. **New tools only appear after the client restart** — the client starts the server once per session, so an update takes effect on the next launch, not mid-conversation.
 
 To check which version is running, ask Claude: *"What version of the QualCoder server is running?"* — it will report the version (e.g. `0.8.0a0`). You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](CHANGELOG.md).
+
+Updates never touch your data: the server is code-only, so your
+QualCoder projects and their backups stay exactly where they are.
 
 ## Usage
 
@@ -626,7 +629,10 @@ For AI-assisted coding with direct database writes:
 5. 🔒 **Verify in Qualcoder** - Open project after AI coding to confirm results
 
 **General Safety:**
-- 🔒 Data stays local - never sent anywhere except to Claude via MCP
+- 🔒 The server runs locally and adds no cloud path of its own — but
+  tool results enter the Claude conversation and are transmitted to
+  Anthropic. **See [PRIVACY.md](PRIVACY.md)** for what this means for
+  research data.
 - 🔒 Regular Qualcoder backups recommended
 - 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
 - 🔒 Session logs: `~/.qualcoder_mcp/sessions/`
@@ -708,23 +714,24 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Attribute queries with operators (contains, gt/gte/lt/lte)
 - ✅ Old-schema/corrupt/locked projects fail with clear, actionable errors
 
-**Completed in v0.7.0 (this release):**
+**Completed in v0.7.0:**
 - ✅ Memo writing (`set_memo`) and research journal (`add_journal_entry`)
 - ✅ Codebook editing: create/rename/recolour/move codes and categories
 - ✅ Destructive codebook ops with preview → confirm → safety backup (`merge_codes`, `delete_code`, `delete_category`), matching QualCoder's own semantics
 - ✅ Category cycle guard (which QualCoder itself lacks)
 
-**Future Enhancements (v0.8.0+):**
-- [ ] Inductive/open coding — AI proposes brand-new codes for approval
-- [ ] Image/audio/video/PDF region coding
-- [ ] Document/CSV report exports (codebook, coded segments, matrices)
-- [ ] Case creation and attribute-schema editing
-- [ ] Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
-- [ ] HTML review interface for visual approval/rejection of suggestions
-- [ ] Media segment access (images, audio, video)
-- [ ] Timeline analysis
-- [ ] Saved queries execution
-- [ ] Batch export functionality
+**Completed in v0.8.0 (this release):**
+- ✅ Inductive/open coding — AI proposes brand-new codes; you refine, approve, and create them
+- ✅ Review-time span editing (`edit_suggestion`) with server-computed shorter/longer alternatives
+- ✅ Report exports: codebook, coded segments, frequencies, case×code matrix (CSV/txt/md, QualCoder-parity numbers)
+- ✅ Annotations, category merge, case creation, attribute schema and values
+- ✅ Backup retention (`prune_backups`) and opt-in CSV formula sanitization
+
+**Planned for v0.9:**
+- 📦 **PyPI packaging** — `pip install qualcoder-mcp` (or a one-command `uvx` install): no git clone, no manual venv, and far simpler updating
+- 🤝 Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
+- 🖼️ Media region coding (images, audio/video, PDF)
+- 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
 
 ## Disclaimer
 

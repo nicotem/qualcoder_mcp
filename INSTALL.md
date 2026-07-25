@@ -346,7 +346,8 @@ Create a case-code matrix
 
 ## Updating the MCP Server
 
-When new versions are released:
+Updates are manual (a new release does not install itself). When new
+versions are released:
 
 ```bash
 # Go to the installation folder
@@ -360,9 +361,18 @@ git pull
 
 # Reinstall
 pip install -e .
-
-# Restart Claude Desktop
 ```
+
+Then **fully quit and relaunch your Claude client** (Claude Desktop:
+Cmd+Q, then reopen; Claude Code: restart the session). New tools only
+appear after the restart — the client launches the server once per
+session.
+
+To confirm the update took, ask Claude: *"What version of the
+QualCoder server is running?"*
+
+Updating never touches your data: the server is code-only, and your
+QualCoder projects and backups stay exactly where they are.
 
 ---
 

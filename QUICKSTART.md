@@ -108,6 +108,15 @@ What codes do I have?
 Show me the most frequently used codes
 ```
 
+## Updating Later
+
+When a new version is released: `cd` into the cloned folder, run
+`git pull`, then `venv/bin/pip install -e .`, and **fully quit and
+relaunch your Claude client** — new tools only appear after the
+restart. Ask Claude *"what version of the qualcoder server is
+running?"* to confirm. Updates never touch your projects or backups
+(the server is code-only).
+
 ## Troubleshooting
 
 ### Connection Issues
