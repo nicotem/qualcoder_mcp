@@ -18,6 +18,34 @@ Before starting, make sure you have:
 
 ---
 
+## Recommended: Install from PyPI
+
+*PyPI publication lands with v0.9.0 — until that release is out, use
+the step-by-step (git) install below.*
+
+If you just want to USE the server (no code changes), you don't need
+git or this repository at all:
+
+```bash
+# Plain pip, in its own virtual environment:
+python3 -m venv ~/qualcoder-mcp-venv
+~/qualcoder-mcp-venv/bin/pip install qualcoder-mcp
+
+# Or one command with pipx / uv:
+pipx install qualcoder-mcp
+uv tool install qualcoder-mcp
+```
+
+This gives you a `qualcoder-mcp` command; get its absolute path with
+`which qualcoder-mcp` and use THAT as the `command` in the Claude
+configuration of Step 6 (no `args` needed). Everything else in this
+guide — project configuration, testing, updating — applies unchanged.
+
+The step-by-step install below is the **contributor path**: use it if
+you want to read or modify the source, or run the test suite.
+
+---
+
 ## Step-by-Step Installation
 
 ### Step 1: Open Terminal
@@ -346,8 +374,17 @@ Create a case-code matrix
 
 ## Updating the MCP Server
 
-Updates are manual (a new release does not install itself). When new
-versions are released:
+Updates are manual (a new release does not install itself).
+
+**PyPI install** — one command:
+
+```bash
+~/qualcoder-mcp-venv/bin/pip install --upgrade qualcoder-mcp
+# pipx:  pipx upgrade qualcoder-mcp
+# uv:    uv tool upgrade qualcoder-mcp
+```
+
+**Git (contributor) install** — when new versions are released:
 
 ```bash
 # Go to the installation folder

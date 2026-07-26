@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PyPI packaging (v0.9 headline)
+
+- Distribution metadata completed for PyPI: PEP 639 SPDX license
+  expression (`license = "MIT"` + `license-files`; the deprecated
+  license classifier is intentionally omitted), Trove classifiers
+  (Alpha, Science/Research, Python 3.10–3.13, OS Independent,
+  Scientific/Engineering), keywords, and project URLs (Homepage,
+  Repository, Issues, Changelog, Privacy).
+- README links converted to absolute GitHub URLs so the PyPI project
+  page (which renders the README without the repo around it) never
+  shows broken SUPPORT/PRIVACY/CHANGELOG links.
+- `.github/workflows/publish.yml`: build + `twine check --strict`,
+  then publish via **PyPI Trusted Publishing** (OIDC, no stored
+  tokens) — TestPyPI on manual dispatch (environment `testpypi`),
+  real PyPI on GitHub Release published (environment `pypi`).
+- Verified end to end without publishing: `python -m build` +
+  `twine check` pass, and the wheel installed into a fresh
+  non-editable venv runs the `qualcoder-mcp` console script over real
+  stdio (handshake, 67 tools, live tool calls) against a synthetic
+  project.
+- Docs: `pip install qualcoder-mcp` (or pipx/uvx) documented as the
+  RECOMMENDED install with git demoted to the contributor path;
+  client config examples gain the `qualcoder-mcp` console-script
+  form; updating via `pip install --upgrade qualcoder-mcp`.
+- `build` and `twine` added to the dev extra.
+
 ## [0.8.0-alpha] - 2026-07-25
 
 Inductive coding, report exports, and the write-surface completions —
