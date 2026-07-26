@@ -3,12 +3,43 @@ name = "qualcoder-mcp"
 version = "0.8.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
 authors = [{name = "Niccolo Tempini", email = "n.tempini@exeter.ac.uk"}]
-license = {text = "MIT"}
+# PEP 639 SPDX license expression (setuptools >= 77). The old
+# "License :: OSI Approved :: MIT License" classifier is deprecated in
+# favour of this expression and deliberately NOT listed below.
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = [
+    "qualitative research",
+    "qualcoder",
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "qda",
+    "caqdas",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "mcp>=1.2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nicotem/qualcoder_mcp"
+Repository = "https://github.com/nicotem/qualcoder_mcp"
+Issues = "https://github.com/nicotem/qualcoder_mcp/issues"
+Changelog = "https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md"
+Privacy = "https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md"
 
 [project.optional-dependencies]
 dev = [
@@ -16,6 +47,8 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "xmlschema>=3.0.0",
     "hypothesis>=6.100",
+    "build>=1.2",
+    "twine>=6.1",
 ]
 
 [tool.pytest.ini_options]
@@ -24,7 +57,7 @@ markers = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -42,7 +42,7 @@ the package metadata and LICENSE is an authorship signature, not a
 support channel — support requests sent by email will not receive a
 reply. GitHub Issues is where everything is read and tracked.
 
-See [SUPPORT.md](SUPPORT.md) for the full policy.
+See [SUPPORT.md](https://github.com/nicotem/qualcoder_mcp/blob/main/SUPPORT.md) for the full policy.
 
 ## Data Flow & Privacy — read this before using research data
 
@@ -62,7 +62,7 @@ and (for EU/UK researchers) GDPR position. This tool makes the flow
 explicit precisely so you can make that decision — many AI
 integrations don't.
 
-**Read [PRIVACY.md](PRIVACY.md)** for the full disclosure — what to
+**Read [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md)** for the full disclosure — what to
 check with your Claude plan and your institution's DPO, why pseudonymised
 data is *not* automatically safe to send, and practical mitigations.
 
@@ -75,7 +75,38 @@ data is *not* automatically safe to send, and practical mitigations.
 
 ## Installation
 
-### Step 1: Clone or Download This Repository
+### Recommended: install from PyPI
+
+*PyPI publication lands with v0.9.0 — until that release is out, use
+the contributor (git) install below.*
+
+The simplest install is a plain pip install into a virtual
+environment — no git, no source tree:
+
+```bash
+python3 -m venv ~/qualcoder-mcp-venv
+~/qualcoder-mcp-venv/bin/pip install qualcoder-mcp
+```
+
+Or, if you use [pipx](https://pipx.pypa.io) or [uv](https://docs.astral.sh/uv/),
+one command gives you an isolated install with the `qualcoder-mcp`
+command on your PATH:
+
+```bash
+pipx install qualcoder-mcp
+# or
+uv tool install qualcoder-mcp
+```
+
+Either way you end up with a **`qualcoder-mcp` console command** — find
+its absolute path with `which qualcoder-mcp` (you'll need it for the
+client configuration below).
+
+### Contributor install (from source)
+
+Use this path if you want to modify the code or run the test suite.
+
+**Step 1: Clone or Download This Repository**
 
 ```bash
 cd ~/Documents  # or wherever you want to install
@@ -83,7 +114,7 @@ git clone https://github.com/nicotem/qualcoder_mcp.git
 cd qualcoder_mcp
 ```
 
-### Step 2: Create a Virtual Environment and Install
+**Step 2: Create a Virtual Environment and Install**
 
 ```bash
 # Create virtual environment
@@ -93,8 +124,8 @@ python3 -m venv venv
 source venv/bin/activate  # On Mac/Linux
 # or on Windows: venv\Scripts\activate
 
-# Install the package
-pip install -e .
+# Install the package (editable, with dev tools)
+pip install -e ".[dev]"
 ```
 
 ### Step 3: Configure Claude Desktop
@@ -105,7 +136,23 @@ You have **two options** for configuring project access:
 
 If you work with multiple Qualcoder projects, this is the easiest approach - Claude will discover projects and let you switch between them.
 
-**Configuration** (no project path needed):
+**Configuration** (no project path needed).
+
+With a **PyPI install** (pip/pipx/uv), point the client straight at the
+installed `qualcoder-mcp` command — use the absolute path from
+`which qualcoder-mcp`:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/qualcoder-mcp-venv/bin/qualcoder-mcp"
+    }
+  }
+}
+```
+
+With a **source (git) install**:
 
 ```json
 {
@@ -118,7 +165,8 @@ If you work with multiple Qualcoder projects, this is the easiest approach - Cla
 }
 ```
 
-**Replace**: `YOUR_USERNAME` with your actual Mac username
+**Replace**: `YOUR_USERNAME` with your actual Mac username (use an
+absolute path — Claude Desktop does not inherit your shell's PATH)
 
 **Usage**: After restarting Claude Desktop:
 ```
@@ -134,7 +182,7 @@ Switch projects anytime:
 Switch to "Different Project"
 ```
 
-See [`PROJECT_SELECTION_GUIDE.md`](PROJECT_SELECTION_GUIDE.md) for full details.
+See [`PROJECT_SELECTION_GUIDE.md`](https://github.com/nicotem/qualcoder_mcp/blob/main/PROJECT_SELECTION_GUIDE.md) for full details.
 
 #### Option B: Fixed Project (Simpler for Single Project)
 
@@ -145,14 +193,14 @@ Your Qualcoder project is a **folder** with a `.qda` extension containing a `dat
 - `~/Documents/QualCoder_projects/MyProject/MyProject.qda/` (folder)
 - `~/QualCoder/ProjectName/ProjectName.qda/` (folder)
 
-**Configuration**:
+**Configuration** (PyPI install — for a source install use the
+`venv/bin/python` + `-m qualcoder_mcp.server` form from Option A):
 
 ```json
 {
   "mcpServers": {
     "qualcoder": {
-      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
-      "args": ["-m", "qualcoder_mcp.server"],
+      "command": "/Users/YOUR_USERNAME/qualcoder-mcp-venv/bin/qualcoder-mcp",
       "env": {
         "QUALCODER_PROJECT_PATH": "/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda"
       }
@@ -163,7 +211,7 @@ Your Qualcoder project is a **folder** with a `.qda` extension containing a `dat
 
 **Replace**:
 - `YOUR_USERNAME` - your actual Mac username
-- `/Users/YOUR_USERNAME/Documents/qualcoder_mcp` - where you installed this
+- the `command` path - the output of `which qualcoder-mcp` (or your source install's venv python)
 - `/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda` - path to your `.qda` project folder
 
 **Editing the Config**:
@@ -187,10 +235,11 @@ The server speaks standard MCP over stdio, so **any MCP client works** —
 Claude Desktop is simply the most common host. Researchers also run it
 under Claude Code (including in editor side panels such as Obsidian's).
 
-**Claude Code — one command:**
+**Claude Code — one command** (PyPI install; for a source install
+substitute `<repo>/venv/bin/python -m qualcoder_mcp.server`):
 
 ```bash
-claude mcp add qualcoder -- /Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server
+claude mcp add qualcoder -- qualcoder-mcp
 ```
 
 **Or per-project** with a `.mcp.json` in the folder you run Claude Code
@@ -200,12 +249,14 @@ from:
 {
   "mcpServers": {
     "qualcoder": {
-      "command": "/Users/YOUR_USERNAME/Documents/qualcoder_mcp/venv/bin/python",
-      "args": ["-m", "qualcoder_mcp.server"]
+      "command": "qualcoder-mcp"
     }
   }
 }
 ```
+
+(Claude Code resolves commands on your shell PATH; if in doubt, use the
+absolute path from `which qualcoder-mcp`.)
 
 Both accept the same optional `env` block
 (`QUALCODER_PROJECT_PATH`) as the Desktop configurations above.
@@ -216,7 +267,18 @@ The MCP server should now be connected! You'll see it listed in the MCP section 
 
 ## Updating to a new version
 
-QualCoder MCP is installed from this git repository, so **updates are manual** — a new release does not update automatically. When a new version is announced, update in three steps:
+Updates are manual — a new release does not install itself.
+
+**PyPI install** (recommended path) — one command, into the same
+environment you installed with:
+
+```bash
+~/qualcoder-mcp-venv/bin/pip install --upgrade qualcoder-mcp
+# pipx:  pipx upgrade qualcoder-mcp
+# uv:    uv tool upgrade qualcoder-mcp
+```
+
+**Source (git) install** — update in three steps:
 
 ```bash
 cd ~/Documents/qualcoder_mcp   # wherever you installed it
@@ -227,7 +289,7 @@ pip install -e .                # picks up any new dependencies
 
 Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code. **New tools only appear after the client restart** — the client starts the server once per session, so an update takes effect on the next launch, not mid-conversation.
 
-To check which version is running, ask Claude: *"What version of the QualCoder server is running?"* — it will report the version (e.g. `0.8.0a0`). You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](CHANGELOG.md).
+To check which version is running, ask Claude: *"What version of the QualCoder server is running?"* — it will report the version (e.g. `0.8.0a0`). You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
 
 Updates never touch your data: the server is code-only, so your
 QualCoder projects and their backups stay exactly where they are.
@@ -447,7 +509,7 @@ Never work on your original projects with AI coding! Always:
 3. Review results in Qualcoder
 4. If good, replace original OR keep both versions
 
-For comprehensive workflow documentation, see [AI_CODING_WORKFLOW.md](AI_CODING_WORKFLOW.md).
+For comprehensive workflow documentation, see [AI_CODING_WORKFLOW.md](https://github.com/nicotem/qualcoder_mcp/blob/main/AI_CODING_WORKFLOW.md).
 
 ## Available Resources
 
@@ -631,7 +693,7 @@ For AI-assisted coding with direct database writes:
 **General Safety:**
 - 🔒 The server runs locally and adds no cloud path of its own — but
   tool results enter the Claude conversation and are transmitted to
-  Anthropic. **See [PRIVACY.md](PRIVACY.md)** for what this means for
+  Anthropic. **See [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md)** for what this means for
   research data.
 - 🔒 Regular Qualcoder backups recommended
 - 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
@@ -739,7 +801,7 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [LICENSE](https://github.com/nicotem/qualcoder_mcp/blob/main/LICENSE) file for details.
 
 ## Acknowledgments
 
@@ -756,7 +818,7 @@ If you encounter issues:
 4. Open an issue on [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues)
 
 All support goes through GitHub Issues — not email. See
-[Support & Feedback](#support--feedback) above and [SUPPORT.md](SUPPORT.md).
+[Support & Feedback](#support--feedback) above and [SUPPORT.md](https://github.com/nicotem/qualcoder_mcp/blob/main/SUPPORT.md).
 
 ## See Also
 
