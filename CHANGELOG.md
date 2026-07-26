@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — whole-codebase audit follow-ups (C-1 / P-1 / hardening)
+
+The whole-codebase security audit returned a ship-the-alpha verdict with
+three confirmed findings; all three are fixed here so the first PyPI
+publish includes them.
+
+- **C-1 (medium) — write-safety `finally` discipline extended to the
+  three older bespoke write tools.** `import_text_file`,
+  `link_file_to_case` and `delete_coding` predated the `_perform_write`
+  helper and lacked its unconditional cleanup, so a commit-time
+  `sqlite3.Error` (disk-full / IO / BUSY) — caught by none of their
+  handlers — could leave the global connection read-write with an open
+  transaction, which a later write would reuse and silently co-commit.
+  `delete_coding` and `link_file_to_case` now route through
+  `_perform_write` (one write path); `import_text_file` keeps its
+  bespoke error contract but gained the identical `try/finally`
+  (roll back if uncommitted, then always downgrade to read-only). All
+  three now behave identically to the `_perform_write`-native tools
+  under the same fault. Regression tests inject the fault through each
+  tool and pin the clean-state guarantee **and** the no-co-commit
+  property (the actual harm).
+- **P-1 (low) — export path containment hardened against a directory
+  symlink.** `_resolve_export_path`'s directory branch now `.resolve()`s
+  the joined candidate before the project-folder containment guard,
+  mirroring the file branch. A dangling symlink named like the export
+  file (whose target lies inside the project folder) is now collapsed
+  and refused instead of being followed by `open()`.
+- **Hardening — GitHub Actions SHA-pinned + Dependabot.** Every action
+  in `ci.yml` and `publish.yml` is pinned to a full commit SHA (with the
+  human-readable version in a trailing comment), and a
+  `.github/dependabot.yml` (github-actions, weekly) keeps the pins
+  maintained.
+
 ### Added — PyPI packaging (v0.9 headline)
 
 - Distribution metadata completed for PyPI: PEP 639 SPDX license

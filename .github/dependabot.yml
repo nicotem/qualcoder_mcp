@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions in ci.yml / publish.yml current.
+  # Dependabot reads the "# vX.Y.Z" comment beside each pinned SHA to know
+  # the version, and opens a PR (SHA + comment) when a newer one ships.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
