@@ -1,0 +1,92 @@
+name: Publish to PyPI
+
+# Two publish paths, both via PyPI Trusted Publishing (OIDC — no tokens,
+# no secrets stored in the repo):
+#
+#   1. TestPyPI — manual dry-run: trigger the workflow by hand
+#      (workflow_dispatch) and it publishes to test.pypi.org.
+#   2. PyPI — the real thing: publishing happens automatically when a
+#      GitHub Release is PUBLISHED.
+#
+# The owner must configure two trusted publishers on (Test)PyPI, both
+# pointing at this repository + this workflow file (publish.yml):
+#   - test.pypi.org  → project qualcoder-mcp, environment "testpypi"
+#   - pypi.org       → project qualcoder-mcp, environment "pypi"
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distributions
+        run: python -m twine check --strict dist/*
+
+      - name: Store distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-testpypi:
+    name: Publish to TestPyPI (manual dry-run)
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/qualcoder-mcp
+    permissions:
+      id-token: write  # mandatory for Trusted Publishing (OIDC)
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-to-pypi:
+    name: Publish to PyPI (on GitHub Release)
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qualcoder-mcp
+    permissions:
+      id-token: write  # mandatory for Trusted Publishing (OIDC)
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
