@@ -3246,7 +3246,19 @@ def import_text_file(
     # Upgrade to read-write mode
     write_db = get_db(read_only=False)
 
+    # SEC C-1: this tool keeps its bespoke error contract (TypeError and a
+    # "Database error:" prefix on RuntimeError, and a two-write transaction),
+    # so it is NOT migrated to _perform_write — but it now carries the
+    # IDENTICAL finally-block discipline: on EVERY exit path, roll back an
+    # uncommitted transaction and downgrade to read-only. A commit-time
+    # sqlite3.Error (disk-full/IO/BUSY) is caught by none of the inner
+    # handlers below; previously it skipped the trailing downgrade and left
+    # the global connection read-write with a pending transaction (the M-1
+    # class). The finally (with the committed-flag guard) closes that.
     backup_path = None
+    committed = False
+    result = None
+    case_link = None
     try:
         with hold_project_lock(project_folder) as lock_held:
             # Create backup
@@ -3255,7 +3267,6 @@ def import_text_file(
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
                     logger.error(f"Failed to create backup: {e}")
-                    _downgrade_to_readonly()
                     return json.dumps({
                         "error": "Failed to create a backup — check disk space "
                                  "and permissions. Nothing was written.",
@@ -3272,7 +3283,6 @@ def import_text_file(
                     memo=memo,
                     auto_commit=False
                 )
-                case_link = None
                 if case is not None:
                     case_link = write_db.link_file_to_case(
                         case_id=case["id"],
@@ -3282,32 +3292,24 @@ def import_text_file(
                     )
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
+                committed = True
             except DatabaseLockedError:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
                 raise
             except (ValueError, TypeError) as e:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                _downgrade_to_readonly()
                 return json.dumps({"error": str(e)})
             except RuntimeError as e:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                _downgrade_to_readonly()
                 return json.dumps({"error": f"Database error: {str(e)}"})
-    except DatabaseLockedError:
+    finally:
+        # Unconditional cleanup on EVERY exit path (SEC M-1 / C-1): roll back
+        # anything still in flight (skipped after a successful commit by the
+        # committed guard), then always return the connection to read-only.
+        if not committed:
+            try:
+                if write_db.conn is not None and write_db.conn.in_transaction:
+                    write_db.conn.rollback()
+            except Exception:
+                pass
         _downgrade_to_readonly()
-        raise
-
-    # Downgrade back to read-only
-    _downgrade_to_readonly()
 
     # Format success response
     output = {
@@ -3383,66 +3385,27 @@ def link_file_to_case(
     if ro_db.get_file_content(file_id) is None:
         return json.dumps({"error": f"File ID {file_id} does not exist"})
 
-    # Refuse on pre-v14 schemas and while QualCoder has the project open
-    lock_error = _write_gate_error()
-    if lock_error is not None:
-        return json.dumps(lock_error)
+    # SEC C-1: route through _perform_write for the same finally-block
+    # rollback+downgrade guarantee as the newer tools (covers a commit-time
+    # sqlite3.Error, the M-1 class this tool previously missed). Its inner
+    # handler already matched the helper exactly.
+    def _op(write_db):
+        link = write_db.link_file_to_case(
+            case_id=case["id"],
+            file_id=file_id,
+            owner="MCP Import",
+            auto_commit=False
+        )
+        return {
+            "success": True,
+            "message": f"Linked '{link['file_name']}' to case "
+                       f"'{link['case_name']}'",
+            "link": link,
+        }
 
-    project_folder = _current_project_folder()
-
-    write_db = get_db(read_only=False)
-
-    backup_path = None
-    try:
-        with hold_project_lock(project_folder) as lock_held:
-            if create_backup:
-                try:
-                    backup_path = write_db.backup_before_write()
-                except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
-                    _downgrade_to_readonly()
-                    return json.dumps({
-                        "error": "Failed to create a backup — check disk space "
-                                 "and permissions. Nothing was written.",
-                        "message": "Aborting to protect your data — nothing was linked."
-                    })
-
-            try:
-                link = write_db.link_file_to_case(
-                    case_id=case["id"],
-                    file_id=file_id,
-                    owner="MCP Import",
-                    auto_commit=False
-                )
-                _recheck_lock_before_commit(project_folder, lock_held)
-                write_db.conn.commit()
-            except DatabaseLockedError:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                raise
-            except (ValueError, RuntimeError) as e:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                _downgrade_to_readonly()
-                return json.dumps({"error": str(e)})
-    except DatabaseLockedError:
-        _downgrade_to_readonly()
-        raise
-
-    _downgrade_to_readonly()
-
-    output = {
-        "success": True,
-        "message": f"Linked '{link['file_name']}' to case '{link['case_name']}'",
-        "link": link,
-    }
-    if backup_path:
-        output["backup_path"] = str(backup_path)
-    return json.dumps(output, indent=2)
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="nothing was linked")
+    return json.dumps(result, indent=2)
 
 
 # ============================================================================
@@ -3480,62 +3443,23 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     if existing is None:
         return json.dumps({"error": f"Coding ID {coding_id} does not exist"})
 
-    # Refuse on pre-v14 schemas and while QualCoder has the project open
-    lock_error = _write_gate_error()
-    if lock_error is not None:
-        return json.dumps(lock_error)
+    # SEC C-1: route through _perform_write so the unconditional
+    # rollback-if-uncommitted + downgrade discipline (its finally block)
+    # covers a commit-time sqlite3.Error too — the M-1 class this tool
+    # previously missed. Its inner handler was already exactly
+    # (ValueError, RuntimeError) -> {"error": str(e)}, matching the helper.
+    def _op(write_db):
+        deleted = write_db.delete_coding(coding_id, auto_commit=False)
+        return {
+            "success": True,
+            "message": f"Deleted coding {coding_id} "
+                       f"('{deleted['code_name']}' on '{deleted['file_name']}')",
+            "deleted_coding": deleted,
+        }
 
-    project_folder = _current_project_folder()
-
-    write_db = get_db(read_only=False)
-
-    backup_path = None
-    try:
-        with hold_project_lock(project_folder) as lock_held:
-            if create_backup:
-                try:
-                    backup_path = write_db.backup_before_write()
-                except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
-                    _downgrade_to_readonly()
-                    return json.dumps({
-                        "error": "Failed to create a backup — check disk space "
-                                 "and permissions. Nothing was written.",
-                        "message": "Aborting to protect your data — nothing was deleted."
-                    })
-
-            try:
-                deleted = write_db.delete_coding(coding_id, auto_commit=False)
-                _recheck_lock_before_commit(project_folder, lock_held)
-                write_db.conn.commit()
-            except DatabaseLockedError:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                raise
-            except (ValueError, RuntimeError) as e:
-                try:
-                    write_db.conn.rollback()
-                except Exception:
-                    pass
-                _downgrade_to_readonly()
-                return json.dumps({"error": str(e)})
-    except DatabaseLockedError:
-        _downgrade_to_readonly()
-        raise
-
-    _downgrade_to_readonly()
-
-    output = {
-        "success": True,
-        "message": f"Deleted coding {coding_id} "
-                   f"('{deleted['code_name']}' on '{deleted['file_name']}')",
-        "deleted_coding": deleted,
-    }
-    if backup_path:
-        output["backup_path"] = str(backup_path)
-    return json.dumps(output, indent=2)
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="nothing was deleted")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()

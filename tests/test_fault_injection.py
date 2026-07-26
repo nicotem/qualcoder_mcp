@@ -1300,3 +1300,153 @@ class TestPerformWriteUnexpectedException:
         monkeypatch.undo()
         out = json.loads(server.set_memo("code", 1, "after", create_backup=False))
         assert out.get("success") is True
+
+
+# ---------------------------------------------------------------------------
+# SEC C-1 regression: the three bespoke write tools now carry the M-1
+# finally-block discipline. A commit-time sqlite3.OperationalError
+# (disk-full/IO/BUSY) is caught by none of their inner handlers; it must
+# STILL leave the global connection read-only with no pending transaction,
+# and a subsequent unrelated write must NOT co-commit the failed op's rows
+# (the actual harm the audit pinned). delete_coding and link_file_to_case
+# were migrated to _perform_write; import_text_file keeps its bespoke error
+# contract but gained the identical try/finally. All three verified here to
+# behave identically to the _perform_write-native tools under the same fault.
+# ---------------------------------------------------------------------------
+
+class TestBespokeWriteToolsC1Cleanup:
+
+    # (tool label, thunk(env) -> result str)  — each drives one failing write
+    def _import(self, env):
+        return server.import_text_file("ghost.txt", "ghost body",
+                                       create_backup=False)
+
+    def _link(self, env):
+        return server.link_file_to_case(file_id=2, case_name="Case A",
+                                        create_backup=False)
+
+    def _delete(self, env):
+        return server.delete_coding(1, create_backup=False)
+
+    def _tools(self):
+        return [("import_text_file", self._import),
+                ("link_file_to_case", self._link),
+                ("delete_coding", self._delete)]
+
+    def test_commit_time_error_leaves_clean_state(self, fi_env, write_faults):
+        """Literal commit-time fault: conn.commit() itself raises
+        sqlite3.OperationalError. Each tool -> sanitized error, DB
+        byte-identical, connection read-only with no open transaction."""
+        for label, thunk in self._tools():
+            env = fi_env
+            pre = env.hash()
+            before = env.backup_names()
+            write_faults(commit_exc=sqlite3.OperationalError(DISK_ERR))
+
+            result = thunk(env)
+
+            assert_structured_error(result)                    # sanitized, no traceback
+            assert env.hash() == pre, f"{label}: DB changed despite commit fault"
+            assert env.backup_names() == before
+            assert server.db.read_only is True, f"{label}: left read-write"
+            assert server.db.conn.in_transaction is False, \
+                f"{label}: pending transaction after fault"
+            assert_connection_recovered(env)
+
+    def test_recheck_time_error_leaves_clean_state(self, fi_env, monkeypatch):
+        """The M-1 injection shape (sqlite3.Error raised at the pre-commit
+        re-check, escaping every inner handler) applied to each bespoke
+        tool: identical clean-state guarantee."""
+        def boom(folder, held):
+            raise sqlite3.OperationalError("disk I/O error")
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", boom)
+
+        for label, thunk in self._tools():
+            env = fi_env
+            pre = env.hash()
+            result = thunk(env)
+            assert_structured_error(result)
+            assert env.hash() == pre, f"{label}: DB changed"
+            assert server.db.read_only is True, f"{label}: left read-write"
+            assert server.db.conn.in_transaction is False, \
+                f"{label}: pending transaction"
+
+    def test_import_failure_does_not_co_commit(self, fi_env, monkeypatch):
+        """The exact C-1 exploit shape for import_text_file: after the
+        commit-time fault, a later unrelated write must not carry the
+        stale INSERTs — 'ghost.txt' must never appear."""
+        env = fi_env
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            lambda f, h: (_ for _ in ()).throw(
+                                sqlite3.OperationalError("disk I/O error")))
+        server.import_text_file("ghost.txt", "ghost body", create_backup=False)
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", _ORIG_RECHECK)
+
+        out = json.loads(server.set_memo("code", 2, "legit memo",
+                                         create_backup=False))
+        assert out.get("success") is True
+
+        con = sqlite3.connect(str(env.folder / "data.qda"))
+        try:
+            ghost = con.execute(
+                "SELECT COUNT(*) FROM source WHERE name='ghost.txt'").fetchone()[0]
+            memo = con.execute(
+                "SELECT memo FROM code_name WHERE cid=2").fetchone()[0]
+        finally:
+            con.close()
+        assert ghost == 0, "failed import's INSERT was co-committed"
+        assert memo == "legit memo"
+
+    def test_link_failure_does_not_co_commit(self, fi_env, monkeypatch):
+        """C-1 shape for link_file_to_case: the stale case_text INSERT must
+        not ride a later write."""
+        env = fi_env
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            lambda f, h: (_ for _ in ()).throw(
+                                sqlite3.OperationalError("disk I/O error")))
+        server.link_file_to_case(file_id=2, case_name="Case A",
+                                 create_backup=False)
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", _ORIG_RECHECK)
+
+        out = json.loads(server.set_memo("code", 2, "legit memo",
+                                         create_backup=False))
+        assert out.get("success") is True
+
+        con = sqlite3.connect(str(env.folder / "data.qda"))
+        try:
+            links = con.execute(
+                "SELECT COUNT(*) FROM case_text WHERE fid=2").fetchone()[0]
+        finally:
+            con.close()
+        assert links == 0, "failed link's INSERT was co-committed"
+
+    def test_delete_failure_does_not_co_commit(self, fi_env, monkeypatch):
+        """C-1 shape for delete_coding: the stale DELETE must not ride a
+        later write — coding 1 must survive."""
+        env = fi_env
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            lambda f, h: (_ for _ in ()).throw(
+                                sqlite3.OperationalError("disk I/O error")))
+        server.delete_coding(1, create_backup=False)
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", _ORIG_RECHECK)
+
+        out = json.loads(server.set_memo("code", 2, "legit memo",
+                                         create_backup=False))
+        assert out.get("success") is True
+
+        assert _count_codings(env) == 1, "failed delete's DELETE was co-committed"
+
+    def test_import_preserves_database_error_contract(self, fi_env,
+                                                      write_faults):
+        """The wrap (not migration) keeps import's bespoke 'Database error:'
+        prefix on a RuntimeError tail — regression guard for the reason it
+        was wrapped rather than routed through _perform_write."""
+        env = fi_env
+        write_faults(execute_faults=[
+            ExecFault("insert into source",
+                      sqlite3.IntegrityError("NOT NULL constraint failed: source.owner")),
+        ])
+        result = server.import_text_file("x.txt", "body", create_backup=False)
+        assert_structured_error(result, "Database error", "Failed to import text file")
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
