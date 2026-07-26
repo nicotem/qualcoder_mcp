@@ -5634,7 +5634,19 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
                 return None, {"error": "Too many existing exports with "
                                        "this name — clean up or give a "
                                        "full file path"}
-        out_file = candidate
+        # SEC P-1: the join above tacks a fresh final component onto the
+        # already-resolved directory, so it is NOT itself resolved — a
+        # dangling/traversing symlink named like the export file
+        # (candidate.exists() stat-follows and returns False for a dangling
+        # link, so the uniquify loop is skipped) would leave the symlink
+        # path un-collapsed and slip the containment guard below, which only
+        # tests lexical parents; open() would then follow it, e.g. into the
+        # project folder. Resolve the final candidate so the guard sees the
+        # real target — mirroring the file branch, which resolves at 5623.
+        try:
+            out_file = candidate.resolve()
+        except (OSError, RuntimeError):
+            return None, {"error": "Invalid output path"}
     else:
         if out_file.suffix.lower() != suffix:
             return None, {"error": f"output_path must end in {suffix} "

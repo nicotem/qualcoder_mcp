@@ -9,6 +9,7 @@ QualCoder's directory-default + _0/_1 collision convention).
 
 import csv
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -79,6 +80,42 @@ class TestExportPathPosture:
         out = json.loads(server.export_codebook(
             str(Path(qualcoder_db_path) / "codebook.csv")))
         assert "project folder" in out["error"]
+
+    def test_directory_symlink_into_project_refused(self, setup_server,
+                                                    qualcoder_db_path,
+                                                    tmp_path):
+        """SEC P-1: a dangling symlink named like the export file, planted
+        in the (legitimate) export directory and pointing INTO the project
+        folder, must not slip the containment guard. Directory mode now
+        resolves the joined candidate before the guard, so the symlink is
+        collapsed to its in-project target and refused — instead of
+        open() following it and clobbering a file inside the project."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        # DANGLING link (target does not exist) — the exact P-1 shape:
+        # candidate.exists() is False so the uniquify loop is skipped and
+        # the raw symlink would otherwise be the write target.
+        target = Path(qualcoder_db_path) / "clobber.csv"   # inside project
+        os.symlink(target, export_dir / "Codebook.csv")
+
+        out = json.loads(server.export_codebook(str(export_dir)))
+        assert "project folder" in out["error"], out
+        # nothing was written through the symlink into the project folder
+        assert not target.exists()
+
+    def test_directory_symlink_outside_still_allowed(self, setup_server,
+                                                     qualcoder_db_path,
+                                                     tmp_path):
+        """A symlink resolving OUTSIDE the project is legitimate — the guard
+        only forbids in-project targets, so the export proceeds (writing to
+        the resolved target)."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        real_target = tmp_path / "elsewhere.csv"
+        os.symlink(real_target, export_dir / "Codebook.csv")
+        out = json.loads(server.export_codebook(str(export_dir)))
+        assert out.get("success") is True, out
+        assert real_target.exists()
 
     def test_all_exports_write_bom(self, setup_server, tmp_path):
         """utf-8-sig everywhere in the reporting surface (§7)."""
