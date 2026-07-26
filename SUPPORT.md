@@ -40,6 +40,10 @@ Issues help everyone, permanently. Please use
 - This is alpha software: **always work on copies of your projects**
   (the `copy_project_to_workspace` tool exists for exactly this), and
   keep your own backups of important data.
+- Remember the data flow: **using this tool sends your project content —
+  including interview text — to Claude/Anthropic for analysis.** Prefer
+  synthetic or consented data, and check your ethics/GDPR position before
+  using real participant data — see [PRIVACY.md](PRIVACY.md).
 - Make sure QualCoder is closed for the project you're working with —
   writes are refused while it has the project open, by design.
 - Include your QualCoder version (3.8.x is the supported line) and the
