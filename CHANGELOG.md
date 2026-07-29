@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Existing testers: how to upgrade (flag for the v0.9.0 release notes)
+
+If you installed a pre-0.9 version via `git clone` + `pip install -e .`:
+either stay on git (`git pull` + `pip install -e .` in the clone —
+config unchanged, keeps working) or switch to the PyPI install in a
+**fresh** venv/pipx/uv and point your client config's `command` at the
+installed `qualcoder-mcp` (dropping the `args: ["-m", ...]` line). Do
+NOT plain-`pip install qualcoder-mcp` into the old venv — pip reports
+"Requirement already satisfied" and silently does nothing. Full
+before/after steps: INSTALL.md § "Upgrading from an earlier (git)
+install". Upgrading only replaces server code: QualCoder projects and
+AI-coding session files are untouched, and 0.6/0.7/0.8 sessions load
+on 0.9 unchanged (verified end-to-end) — there is no migration step.
+
 ### Security — whole-codebase audit follow-ups (C-1 / P-1 / hardening)
 
 The whole-codebase security audit returned a ship-the-alpha verdict with

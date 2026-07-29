@@ -269,6 +269,12 @@ The MCP server should now be connected! You'll see it listed in the MCP section 
 
 Updates are manual — a new release does not install itself.
 
+> **Upgrading from a pre-0.9 git install?** See
+> ["Upgrading from an earlier (git) install"](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#upgrading-from-an-earlier-git-install)
+> in INSTALL.md — how to move to the PyPI install (or stay on git),
+> with the exact client-config change. Your projects and session
+> files are untouched either way.
+
 **PyPI install** (recommended path) — one command, into the same
 environment you installed with:
 

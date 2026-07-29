@@ -413,6 +413,134 @@ QualCoder projects and backups stay exactly where they are.
 
 ---
 
+## Upgrading from an earlier (git) install
+
+*For everyone who installed a pre-0.9 version with `git clone` +
+`pip install -e .` and configured their Claude client with
+`venv/bin/python` + `"args": ["-m", "qualcoder_mcp.server"]`.*
+
+**First, the reassurance: upgrading only replaces the SERVER code.**
+It never touches your QualCoder projects (the `.qda` folders) or your
+AI-coding session files (`~/.qualcoder_mcp/sessions/`) — both live
+outside the install, and both were verified untouched across every
+install/upgrade path below. Jumping from 0.6, 0.7 or 0.8 straight to
+0.9 in one step is fine: there is no data or session migration step,
+and pre-0.9 session files load unchanged (verified end-to-end, a
+0.6-era session file drives the full current workflow).
+
+You have two paths. Both work; pick one.
+
+### Path A — stay on the git install (simplest, no config change)
+
+```bash
+cd ~/Documents/qualcoder_mcp   # your clone
+git pull
+venv/bin/pip install -e .
+```
+
+Then fully quit and relaunch your Claude client. Your existing
+configuration keeps working unchanged, forever. Good if you don't want
+to touch your setup.
+
+### Path B — switch to the PyPI install (recommended going forward)
+
+*Available from v0.9.0 (the first release published to PyPI).*
+
+**Use a FRESH environment — do not install into the old clone's venv.**
+(If you run `pip install qualcoder-mcp` inside the old venv, pip sees
+the editable install, reports "Requirement already satisfied", and
+silently does nothing — you'd still be running the old code. Verified
+behaviour, and the reason these instructions exist.)
+
+**1. Install into a fresh venv (or pipx/uv):**
+
+```bash
+python3 -m venv ~/qualcoder-mcp-venv
+~/qualcoder-mcp-venv/bin/pip install qualcoder-mcp
+# or:  pipx install qualcoder-mcp
+# or:  uv tool install qualcoder-mcp
+```
+
+**2. Find the command path:**
+
+```bash
+ls ~/qualcoder-mcp-venv/bin/qualcoder-mcp   # plain venv
+which qualcoder-mcp                          # pipx / uv
+```
+
+**3. Update your Claude client config** — change `command` to that
+path and REMOVE the `args` line.
+
+Claude Desktop, before:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOU/Documents/qualcoder_mcp/venv/bin/python",
+      "args": ["-m", "qualcoder_mcp.server"]
+    }
+  }
+}
+```
+
+Claude Desktop, after:
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOU/qualcoder-mcp-venv/bin/qualcoder-mcp"
+    }
+  }
+}
+```
+
+(Keep your `env` block with `QUALCODER_PROJECT_PATH`, if you had one —
+it works the same.)
+
+Claude Code: re-register once —
+
+```bash
+claude mcp remove qualcoder
+claude mcp add qualcoder -- ~/qualcoder-mcp-venv/bin/qualcoder-mcp
+```
+
+(or edit `.mcp.json` the same way as the Desktop config above).
+
+**4. Fully quit and relaunch the client**, then confirm by asking
+Claude: *"What version of the qualcoder server is running?"*
+
+**5. Optional cleanup, once the new install is confirmed working:**
+delete the old clone and its venv. Keeping them around breaks nothing.
+
+<details>
+<summary>Insisting on reusing the old venv? (works, but read this)</summary>
+
+The plain install silently no-ops (above), so you must either upgrade
+explicitly:
+
+```bash
+~/Documents/qualcoder_mcp/venv/bin/pip install --upgrade qualcoder-mcp
+```
+
+or uninstall the editable first:
+
+```bash
+~/Documents/qualcoder_mcp/venv/bin/pip uninstall qualcoder-mcp
+~/Documents/qualcoder_mcp/venv/bin/pip install qualcoder-mcp
+```
+
+Both verified: pip cleanly removes the editable hooks and the wheel
+takes over (your existing `venv/bin/python -m qualcoder_mcp.server`
+config even keeps working). The catch — and why the fresh venv is
+recommended instead: from that moment `git pull` in the clone no
+longer affects what runs, which is a confusing state to leave lying
+around.
+</details>
+
+---
+
 ## Getting Help
 
 - **Technical Issues**: Check the main README.md troubleshooting section
