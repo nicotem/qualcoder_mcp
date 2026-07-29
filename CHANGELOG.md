@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-alpha] - 2026-07-29
+
+PyPI packaging (`pip install qualcoder-mcp`), a whole-codebase security
+audit with three fixes, and a migration guide for existing testers —
+plus a critical dependency cap (`mcp<2`, since mcp 2.0.0 removed the
+FastMCP module the server is built on).
+
 ### Existing testers: how to upgrade (flag for the v0.9.0 release notes)
 
 If you installed a pre-0.9 version via `git clone` + `pip install -e .`:
