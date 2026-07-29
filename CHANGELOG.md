@@ -65,6 +65,13 @@ publish includes them.
   client config examples gain the `qualcoder-mcp` console-script
   form; updating via `pip install --upgrade qualcoder-mcp`.
 - `build` and `twine` added to the dev extra.
+- **Dependency capped: `mcp>=1.2.0,<2`.** The mcp SDK's 2.0.0 release
+  (July 2026) removed `mcp.server.fastmcp`; with the previous uncapped
+  bound a fresh install resolved to 2.x and the server could not even
+  import (caught empirically in a throwaway venv during migration-guide
+  verification — existing venvs were unaffected because they hold 1.x).
+  Migrating to the 2.x API is future work; the cap keeps every new
+  install on the working 1.x line.
 
 ## [0.8.0-alpha] - 2026-07-25
 
