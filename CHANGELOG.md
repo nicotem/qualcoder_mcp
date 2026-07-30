@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0-alpha] - 2026-07-29
+## [0.9.0-alpha] - 2026-07-30
 
 PyPI packaging (`pip install qualcoder-mcp`), a whole-codebase security
 audit with three fixes, and a migration guide for existing testers —
