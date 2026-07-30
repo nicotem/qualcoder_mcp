@@ -77,9 +77,6 @@ data is *not* automatically safe to send, and practical mitigations.
 
 ### Recommended: install from PyPI
 
-*PyPI publication lands with v0.9.0 — until that release is out, use
-the contributor (git) install below.*
-
 The simplest install is a plain pip install into a virtual
 environment — no git, no source tree:
 
@@ -788,15 +785,19 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Destructive codebook ops with preview → confirm → safety backup (`merge_codes`, `delete_code`, `delete_category`), matching QualCoder's own semantics
 - ✅ Category cycle guard (which QualCoder itself lacks)
 
-**Completed in v0.8.0 (this release):**
+**Completed in v0.8.0:**
 - ✅ Inductive/open coding — AI proposes brand-new codes; you refine, approve, and create them
 - ✅ Review-time span editing (`edit_suggestion`) with server-computed shorter/longer alternatives
 - ✅ Report exports: codebook, coded segments, frequencies, case×code matrix (CSV/txt/md, QualCoder-parity numbers)
 - ✅ Annotations, category merge, case creation, attribute schema and values
 - ✅ Backup retention (`prune_backups`) and opt-in CSV formula sanitization
 
-**Planned for v0.9:**
-- 📦 **PyPI packaging** — `pip install qualcoder-mcp` (or a one-command `uvx` install): no git clone, no manual venv, and far simpler updating
+**Completed in v0.9.0 (this release):**
+- ✅ **PyPI packaging** — `pip install qualcoder-mcp` (or a one-command `pipx`/`uvx` install): no git clone, no manual venv, and updates via `pip install --upgrade`
+- ✅ Whole-codebase security audit with three fixes; SHA-pinned CI actions
+- ✅ Upgrade guide for existing (git-install) testers
+
+**Planned for v0.10:**
 - 🤝 Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
 - 🖼️ Media region coding (images, audio/video, PDF)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
