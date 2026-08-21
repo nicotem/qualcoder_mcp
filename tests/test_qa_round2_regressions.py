@@ -142,6 +142,7 @@ class TestF3CorruptedDatabase:
         dbf = folder / "data.qda"
         conn = sqlite3.connect(str(dbf))
         conn.execute("CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, codername TEXT)")
+        conn.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
         conn.execute("INSERT INTO project (databaseversion) VALUES ('v14')")
         conn.execute("CREATE TABLE filler (t TEXT)")
         conn.execute("INSERT INTO filler VALUES (?)", ("x" * 8000,))
@@ -178,9 +179,13 @@ class TestF4OldSchema:
         return str(dest)
 
     def _v13_version_string_only(self, qualcoder_db_path, tmp_path) -> str:
+        """A REAL pre-v14 project: no coder_names table (upstream's own v14
+        marker) plus the old version string. Since the probe-gate change
+        (S1), a re-stamped string alone no longer refuses writes."""
         dest = tmp_path / "v13_verstring.qda"
         shutil.copytree(qualcoder_db_path, dest)
         conn = sqlite3.connect(str(dest / "data.qda"))
+        conn.execute("DROP TABLE coder_names")
         conn.execute("UPDATE project SET databaseversion = 'v13'")
         conn.commit()
         conn.close()
@@ -206,7 +211,7 @@ class TestF4OldSchema:
         n_backups = len(_backups(path))
         out = json.loads(server.import_text_file("nope.txt", "content"))
         assert "error" in out
-        assert "v14" in out["error"]
+        assert "pre-v14" in out["error"]
         assert len(_backups(path)) == n_backups  # refused before any backup
 
 

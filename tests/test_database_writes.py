@@ -167,6 +167,7 @@ def write_test_db_path(tmp_path):
             owner TEXT
         )
     """)
+    cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
 
     cursor.execute("""
         CREATE TABLE attribute_type (

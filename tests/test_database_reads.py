@@ -282,6 +282,7 @@ def qualcoder_db_path(tmp_path):
             owner TEXT
         )
     """)
+    cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
     journal_entries = [
         (1, "Project Start", "Beginning analysis of workplace stress interviews.", "2024-01-15", "TestCoder"),
         (2, "Initial Coding", "Completed first round of coding on 3 interviews.", "2024-01-17", "TestCoder"),

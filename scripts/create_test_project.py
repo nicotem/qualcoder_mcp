@@ -165,6 +165,7 @@ def create_test_project(project_folder: str):
             owner text
         )
     """)
+    cur.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
 
     conn.commit()
 

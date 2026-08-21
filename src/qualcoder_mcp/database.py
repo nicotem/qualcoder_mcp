@@ -1,6 +1,7 @@
 """Database interface for Qualcoder .qda files."""
 
 import bisect
+import os
 import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
@@ -22,9 +23,58 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 5000
-# Only v14 (QualCoder 3.8.x) is tested. Older versions log a warning; the
-# functional gate is the required-column check in _check_required_columns().
-SUPPORTED_DB_VERSIONS = ['v14']
+# Schemas verified for reading AND writing: v14 (QualCoder 3.8.x) through
+# v17 (unreleased QualCoder master, version string "QualCoder 4.0 Beta",
+# pinned commit 7b074d2). The version string is INFORMATIONAL: the write
+# gate and every version-dependent recipe key on capability probes (column
+# and table existence, SchemaCapabilities below), exactly as upstream's own
+# migration ladder does (master __main__.py:2296-2346). The one place the
+# string still has teeth is the forward guard: a version newer than the
+# verified ceiling refuses writes unless explicitly overridden, because
+# probes prove the columns we know about, never the absence of a future
+# semantic change.
+SUPPORTED_DB_VERSIONS = ['v14', 'v15', 'v16', 'v17']
+MAX_VERIFIED_SCHEMA = 17
+VERIFIED_MASTER_COMMIT = "7b074d2"
+_VERSION_STRING_RE = re.compile(r"^v(\d+)$")
+# Environment override for the forward guard (v18+/unparseable versions)
+ALLOW_UNKNOWN_SCHEMA_ENV = "QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA"
+
+
+class SchemaCapabilities:
+    """What this database can do, derived from column/table EXISTENCE.
+
+    Probed once per connection (one sqlite_master scan plus PRAGMA
+    table_info per probed table). All QualCoder migrations v14 to v17 are
+    purely additive, so existence is a sound and stable discriminator
+    (master __main__.py:2296-2346). Marks in comments are informational;
+    behaviour keys on the individual booleans, never on the version string.
+    """
+
+    def __init__(self, has_coder_names=False, has_av_bookmarks=False,
+                 has_avbookmarktextpos=False, has_supercid=False,
+                 has_graph_labels=False, has_gr_memo_item=False,
+                 tables=frozenset()):
+        self.has_coder_names = has_coder_names          # v14 floor
+        self.has_av_bookmarks = has_av_bookmarks        # v15 (informational)
+        self.has_avbookmarktextpos = has_avbookmarktextpos  # v15 repair
+        self.has_supercid = has_supercid                # v16 SUB-CODES switch
+        self.has_graph_labels = has_graph_labels        # v17 (informational)
+        self.has_gr_memo_item = has_gr_memo_item        # v17 (informational)
+        self.tables = frozenset(tables)                 # for guarded cleanups
+
+    def table_exists(self, name: str) -> bool:
+        return name in self.tables
+
+    def to_dict(self) -> Dict[str, bool]:
+        return {
+            "has_coder_names": self.has_coder_names,
+            "has_av_bookmarks": self.has_av_bookmarks,
+            "has_avbookmarktextpos": self.has_avbookmarktextpos,
+            "has_supercid": self.has_supercid,
+            "has_graph_labels": self.has_graph_labels,
+            "has_gr_memo_item": self.has_gr_memo_item,
+        }
 
 # Columns this server reads or writes that older QualCoder schemas lack.
 # If any are missing, the project must be opened and saved in QualCoder 3.8
@@ -647,6 +697,9 @@ class QualcoderDatabase:
         # Check database version
         self._check_version()
 
+        # Probe schema capabilities (column/table existence: the real gate)
+        self._probe_capabilities()
+
         # Gate on required columns (older QualCoder schemas lack them)
         self._check_required_columns()
 
@@ -724,6 +777,104 @@ class QualcoderDatabase:
             logger.warning(f"Could not determine database version: {e}")
         except sqlite3.Error as e:
             logger.warning(f"Could not determine database version: {e}")
+
+    def _probe_capabilities(self):
+        """Populate self.capabilities from column/table existence.
+
+        One sqlite_master scan plus PRAGMA table_info on the probed tables.
+        Additive migrations make existence a stable discriminator; the
+        probes mirror upstream's own detection (e.g. master probes
+        sub-code support by selecting supercid, __main__.py:2326-2329).
+        """
+        self.capabilities = SchemaCapabilities()
+        try:
+            tables = {row[0] for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+            ).fetchall()}
+
+            def cols(table):
+                if table not in tables:
+                    return set()
+                return {r[1] for r in self.conn.execute(
+                    f"PRAGMA table_info({table})").fetchall()}
+
+            project_cols = cols("project")
+            code_cols = cols("code_name")
+            line_cols = cols("gr_cdct_line_item")
+            self.capabilities = SchemaCapabilities(
+                has_coder_names="coder_names" in tables,
+                has_av_bookmarks="avbookmarkfile" in project_cols,
+                has_avbookmarktextpos="avbookmarktextpos" in project_cols,
+                has_supercid="supercid" in code_cols,
+                has_graph_labels="label" in line_cols,
+                has_gr_memo_item="gr_memo_item" in tables,
+                tables=tables,
+            )
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.warning(f"Could not probe schema capabilities: {e}")
+        except sqlite3.Error as e:
+            logger.warning(f"Could not probe schema capabilities: {e}")
+
+    def _unknown_future_schema(self) -> bool:
+        """True when databaseversion names a schema newer than the verified
+        ceiling, or does not parse as v{N} at all. The probes prove the
+        columns we know about; they cannot prove the absence of a future
+        semantic change (v16 changed the MEANING of catid rows without
+        touching a column we write), so the unknown is refused, not
+        allowlisted."""
+        match = _VERSION_STRING_RE.match(self.db_version or "")
+        if not match:
+            return True
+        return int(match.group(1)) > MAX_VERIFIED_SCHEMA
+
+    def write_support(self):
+        """(supported, reason, overridden) for writing to this database.
+
+        Capability-probe gate (S1): v14 floor = the coder_names table
+        exists (upstream's own v14 trigger); anything at or above the
+        floor is writable through the verified ceiling. Versions beyond
+        the ceiling (or unparseable version strings) are refused unless
+        the QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA=1 environment override is
+        set, in which case writes proceed but carry a prominent warning.
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_coder_names:
+            return (False,
+                    "This project uses a pre-v14 schema; open it once in "
+                    "QualCoder 3.8 or newer to migrate it, then retry.",
+                    False)
+        if self._unknown_future_schema():
+            version = self.db_version or "unknown"
+            if os.environ.get(ALLOW_UNKNOWN_SCHEMA_ENV, "") == "1":
+                return (True, self._unknown_schema_warning(), True)
+            return (False,
+                    f"This project reports database schema '{version}', "
+                    f"newer than the schemas this server is verified "
+                    f"against (v14 through v{MAX_VERIFIED_SCHEMA}, "
+                    f"QualCoder master commit {VERIFIED_MASTER_COMMIT}). "
+                    f"Writes are refused to protect the data. Set "
+                    f"{ALLOW_UNKNOWN_SCHEMA_ENV}=1 in the server "
+                    f"environment to override at your own risk.",
+                    False)
+        return (True, None, False)
+
+    def _unknown_schema_warning(self) -> str:
+        return (f"WARNING: this project reports database schema "
+                f"'{self.db_version or 'unknown'}', newer than the verified "
+                f"ceiling (v{MAX_VERIFIED_SCHEMA}, QualCoder master commit "
+                f"{VERIFIED_MASTER_COMMIT}); writes proceeded only because "
+                f"{ALLOW_UNKNOWN_SCHEMA_ENV}=1 is set. Verify results in "
+                f"QualCoder and keep backups.")
+
+    def schema_write_warning(self):
+        """The override warning when writing to an unknown-future schema,
+        else None. Every write result must carry it (plan section 1.2)."""
+        supported, reason, overridden = self.write_support()
+        if supported and overridden:
+            return reason
+        return None
 
     def _check_required_columns(self):
         """Ensure the schema has the columns this server reads and writes.
@@ -2623,13 +2774,9 @@ class QualcoderDatabase:
             RuntimeError: If database is in read-only mode
             UnsupportedSchemaError: If the schema is older than v14
         """
-        if getattr(self, "db_version", None) != "v14":
-            raise UnsupportedSchemaError(
-                f"This project uses database schema "
-                f"{getattr(self, 'db_version', None) or 'unknown'}; writes "
-                f"require schema v14. Open and save the project in QualCoder "
-                f"3.8 to upgrade it, then try again."
-            )
+        supported, reason, _overridden = self.write_support()
+        if not supported:
+            raise UnsupportedSchemaError(reason)
         if self.read_only:
             raise RuntimeError(
                 "Database is in read-only mode. To modify data, reopen with "
@@ -2755,6 +2902,7 @@ class QualcoderDatabase:
         memo: Optional[str] = None,
         category_id: Optional[int] = None,
         color: Optional[str] = None,
+        parent_code_id: Optional[int] = None,
         auto_commit: bool = True
     ) -> int:
         """Add a new code to the project.
@@ -2796,6 +2944,29 @@ class QualcoderDatabase:
             if not cat_check:
                 raise ValueError(f"Category ID {category_id} does not exist")
 
+        # Sub-code creation (S10, v16+ only): parent code XOR category,
+        # mirroring upstream's own MCP contract (ai_mcp_server.py:963-975,
+        # 1480-1525; GUI insert code_tree.py:753-756)
+        if parent_code_id is not None:
+            if category_id is not None:
+                raise ValueError(
+                    "A code cannot have both a parent code and a category; "
+                    "give parent_code_id or category_id, not both")
+            caps = getattr(self, "capabilities", None)
+            if caps is None or not caps.has_supercid:
+                raise ValueError(
+                    "Sub-codes need a project with schema v16 or newer "
+                    "(the code_name.supercid column); this project does "
+                    "not have it. Open the project in a QualCoder version "
+                    "that supports sub-codes to migrate it first.")
+            parent_code_id = validate_id(parent_code_id, "parent_code_id")
+            parent_check = self.conn.execute(
+                "SELECT cid FROM code_name WHERE cid = ?", (parent_code_id,)
+            ).fetchone()
+            if not parent_check:
+                raise ValueError(
+                    f"Parent code ID {parent_code_id} does not exist")
+
         # Default to a random QualCoder palette color (what the GUI does);
         # validate strictly - '#zzzzzz' passed the old prefix/length check
         # but renders black/undefined in QualCoder's QColor/luminance math
@@ -2808,10 +2979,18 @@ class QualcoderDatabase:
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         try:
-            cursor = self.conn.execute("""
-                INSERT INTO code_name (name, memo, catid, owner, date, color)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (name, memo or "", category_id, owner, date_str, color))
+            if parent_code_id is not None:
+                cursor = self.conn.execute("""
+                    INSERT INTO code_name
+                        (name, memo, catid, owner, date, color, supercid)
+                    VALUES (?, ?, NULL, ?, ?, ?, ?)
+                """, (name, memo or "", owner, date_str, color,
+                      parent_code_id))
+            else:
+                cursor = self.conn.execute("""
+                    INSERT INTO code_name (name, memo, catid, owner, date, color)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (name, memo or "", category_id, owner, date_str, color))
 
             if auto_commit:
                 self.conn.commit()
@@ -3527,6 +3706,80 @@ class QualcoderDatabase:
         return {"code_id": code_id, "name": old["name"],
                 "old_color": old["color"], "new_color": color}
 
+    # ------------------------------------------------------------------
+    # Sub-code hierarchy helpers (v16+ code_name.supercid; master parity)
+    # ------------------------------------------------------------------
+
+    def _supercid_children(self) -> Dict[int, List[int]]:
+        """parent cid -> child cids map; empty when supercid is absent."""
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_supercid:
+            return {}
+        children: Dict[int, List[int]] = {}
+        for row in self.conn.execute(
+                "SELECT cid, supercid FROM code_name "
+                "WHERE supercid IS NOT NULL").fetchall():
+            children.setdefault(row[1], []).append(row[0])
+        return children
+
+    def code_is_descendant(self, candidate_cid: int,
+                           ancestor_cid: int) -> bool:
+        """True if candidate is the ancestor itself or one of its
+        transitive sub-codes (upstream code_tree.py:619-641; cycle-safe)."""
+        if candidate_cid == ancestor_cid:
+            return True
+        children = self._supercid_children()
+        stack = list(children.get(ancestor_cid, []))
+        seen = set()
+        while stack:
+            cid = stack.pop()
+            if cid == candidate_cid:
+                return True
+            if cid in seen:
+                continue
+            seen.add(cid)
+            stack.extend(children.get(cid, []))
+        return False
+
+    def get_branch_cids(self, root_cid: int) -> List[int]:
+        """The code plus every transitive sub-code, read fresh from the DB
+        (upstream code_tree.py:796-818; iterative, cycle-safe). On schemas
+        without supercid this is just [root_cid]."""
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_supercid:
+            return [root_cid]
+        rows = self.conn.execute(
+            "SELECT cid, supercid FROM code_name").fetchall()
+        cids = [root_cid]
+        i = 0
+        while i < len(cids):
+            for cid, supercid in rows:
+                if supercid == cids[i] and cid not in cids:
+                    cids.append(cid)
+            i += 1
+        return cids
+
+    def _cleanup_graph_rows_for_cid(self, cid: int) -> None:
+        """Master-parity saved-graph cleanup after a code disappears
+        (code_tree.py:855-858, 1567-1570). Part of the v16+ recipe set:
+        gated on the supercid probe so v14/v15 deletes stay byte-exact
+        with QualCoder 3.8.2 (which leaves graph rows alone), and
+        additionally guarded by table existence."""
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_supercid:
+            return
+        if caps.table_exists("gr_cdct_text_item"):
+            self.conn.execute(
+                "DELETE FROM gr_cdct_text_item WHERE cid = ?", (cid,))
+        if caps.table_exists("gr_cdct_line_item"):
+            self.conn.execute(
+                "DELETE FROM gr_cdct_line_item WHERE fromcid = ? OR tocid = ?",
+                (cid, cid))
+        if caps.table_exists("gr_free_line_item"):
+            self.conn.execute(
+                "DELETE FROM gr_free_line_item WHERE fromcid = ? OR tocid = ?",
+                (cid, cid))
+
     def move_code_to_category(self, code_id: int,
                               category_id: Optional[int],
                               auto_commit: bool = True) -> Dict[str, Any]:
@@ -3539,10 +3792,22 @@ class QualcoderDatabase:
             old = self._get_code_row(code_id)
             if category_id is not None:
                 self._get_category_row(category_id)  # existence check
-            self.conn.execute(
-                "UPDATE code_name SET catid = ? WHERE cid = ?",
-                (category_id, code_id)
-            )
+            caps = getattr(self, "capabilities", None)
+            if caps is not None and caps.has_supercid:
+                # S2: parent pointers are mutually exclusive; every move
+                # writes BOTH in one statement (upstream code_tree.py:
+                # 1235/1245; open-time repair would otherwise DISCARD our
+                # catid on a sub-code, __main__.py:2380-2381)
+                self.conn.execute(
+                    "UPDATE code_name SET catid = ?, supercid = NULL "
+                    "WHERE cid = ?",
+                    (category_id, code_id)
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE code_name SET catid = ? WHERE cid = ?",
+                    (category_id, code_id)
+                )
             if auto_commit:
                 self.conn.commit()
             logger.info(f"Moved code {code_id} to category {category_id}")
@@ -3723,6 +3988,13 @@ class QualcoderDatabase:
         into_code_id = validate_id(into_code_id, "into_code_id")
         if from_code_id == into_code_id:
             raise ValueError("Cannot merge a code into itself")
+        # S3 cycle guard (v16+): merging into one of the source's own
+        # descendant sub-codes would orphan the chain (upstream refuses,
+        # code_tree.py:1505-1510). No-op on schemas without supercid.
+        if self.code_is_descendant(into_code_id, from_code_id):
+            raise ValueError(
+                "Cannot merge a code into itself or one of its own "
+                "sub-codes")
         src = self._get_code_row(from_code_id)
         dest = self._get_code_row(into_code_id)
         text_n = self.conn.execute(
@@ -3789,7 +4061,42 @@ class QualcoderDatabase:
                 "UPDATE code_image SET cid = ? WHERE cid = ?",
                 (into_code_id, from_code_id)
             )
-            # 4. delete the merged-away code definition
+            # 4 (v16+). Master-parity extras, gated on the supercid probe:
+            #    reparent the source's sub-codes onto the target (S3, no
+            #    orphans: code_tree.py:1564-1566), append the provenance
+            #    block to the target memo (code_tree.py:1521-1538), and
+            #    clean saved-graph rows for the dead cid. On v14/v15 the
+            #    3.8.2-parity recipe stays byte-exact (no memo concat).
+            caps = getattr(self, "capabilities", None)
+            subcodes_reparented = 0
+            provenance_memo_added = False
+            if caps is not None and caps.has_supercid:
+                cur = self.conn.execute(
+                    "UPDATE code_name SET supercid = ?, catid = NULL "
+                    "WHERE supercid = ?",
+                    (into_code_id, from_code_id))
+                subcodes_reparented = cur.rowcount
+                source_row = self.conn.execute(
+                    "SELECT name, memo, owner FROM code_name WHERE cid = ?",
+                    (from_code_id,)).fetchone()
+                target_memo_row = self.conn.execute(
+                    "SELECT memo FROM code_name WHERE cid = ?",
+                    (into_code_id,)).fetchone()
+                if source_row is not None and target_memo_row is not None:
+                    merge_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    source_memo = (source_row["memo"] or "").strip()
+                    block = (f"\n\n[Merged from code: {source_row['name']}, "
+                             f"Coder: {source_row['owner']}, "
+                             f"Merger date: {merge_date}]")
+                    if source_memo:
+                        block += f"\n{source_memo}"
+                    new_memo = ((target_memo_row["memo"] or "") + block).strip()
+                    self.conn.execute(
+                        "UPDATE code_name SET memo = ? WHERE cid = ?",
+                        (new_memo, into_code_id))
+                    provenance_memo_added = True
+                self._cleanup_graph_rows_for_cid(from_code_id)
+            # 5. delete the merged-away code definition
             self.conn.execute(
                 "DELETE FROM code_name WHERE cid = ?", (from_code_id,)
             )
@@ -3802,55 +4109,97 @@ class QualcoderDatabase:
             except Exception:
                 pass
             _raise_query_error(e, "merge_codes", "Failed to merge codes")
-        return {"merged": True, **preview}
+        result = {"merged": True, **preview}
+        if subcodes_reparented:
+            result["subcodes_reparented_to_target"] = subcodes_reparented
+        if provenance_memo_added:
+            result["provenance_memo_added"] = True
+        return result
 
     def preview_delete_code(self, code_id: int) -> Dict[str, Any]:
-        """Count the coded data a code delete would destroy (read-only)."""
+        """Count the coded data a code delete would destroy (read-only).
+
+        On v16+ (supercid probe) the preview always reports the WHOLE
+        BRANCH: the code plus every transitive sub-code, and coding counts
+        over all branch cids, so the confirm gate never undercounts the
+        blast radius (S4; upstream get_branch_cids code_tree.py:796-818).
+        """
         code_id = validate_id(code_id, "code_id")
         code = self._get_code_row(code_id)
+        branch = self.get_branch_cids(code_id)
+        marks = ",".join("?" * len(branch))
         text_n = self.conn.execute(
-            "SELECT COUNT(*) FROM code_text WHERE cid = ?", (code_id,)
+            f"SELECT COUNT(*) FROM code_text WHERE cid IN ({marks})", branch
         ).fetchone()[0]
         av_n = self.conn.execute(
-            "SELECT COUNT(*) FROM code_av WHERE cid = ?", (code_id,)
+            f"SELECT COUNT(*) FROM code_av WHERE cid IN ({marks})", branch
         ).fetchone()[0]
         img_n = self.conn.execute(
-            "SELECT COUNT(*) FROM code_image WHERE cid = ?", (code_id,)
+            f"SELECT COUNT(*) FROM code_image WHERE cid IN ({marks})", branch
         ).fetchone()[0]
-        return {
+        preview = {
             "code": {"id": code_id, "name": code["name"]},
             "text_codings_to_delete": text_n,
             "av_codings_to_delete": av_n,
             "image_codings_to_delete": img_n,
             "total_codings_to_delete": text_n + av_n + img_n,
         }
+        if len(branch) > 1:
+            names = self.conn.execute(
+                f"SELECT name FROM code_name WHERE cid IN ({marks}) "
+                f"AND cid != ?", branch + [code_id]).fetchall()
+            preview["subcode_count"] = len(branch) - 1
+            preview["subcodes"] = sorted(r[0] for r in names)
+            preview["note"] = (
+                f"{len(branch) - 1} sub-code(s) hang under this code. "
+                f"Deleting requires cascade=true (the whole branch and all "
+                f"its codings die, exactly as QualCoder's own delete), or "
+                f"move the sub-codes first if they are needed.")
+        return preview
 
-    def delete_code(self, code_id: int,
+    def delete_code(self, code_id: int, cascade: bool = False,
                     auto_commit: bool = True) -> Dict[str, Any]:
-        """Delete a code AND all its codings (code-edits.md §7).
+        """Delete a code AND all its codings (code-edits.md §7; S4 on v16+).
 
         Bulk data destruction, matching QualCoder: removes the code_name row
-        plus every code_text/code_av/code_image row for the cid. Categories,
-        annotations, case links and graph rows are deliberately NOT touched
-        (QualCoder leaves them; do not add cleanup it omits). Atomic.
+        plus every code_text/code_av/code_image row for the cid. On v16+
+        (supercid probe), a code with sub-codes is REFUSED unless
+        cascade=True, which then deletes the WHOLE BRANCH and its codings
+        in one transaction exactly as upstream (code_tree.py:820-883),
+        including saved-graph row cleanup per deleted cid. No delete may
+        ever leave a dangling supercid. recently_used_codes is left alone
+        (W14: no project-table writes; QualCoder self-heals). Categories,
+        annotations and case links are never touched. Atomic.
         """
         self._require_write_access()
         preview = self.preview_delete_code(code_id)
+        branch = self.get_branch_cids(code_id)
+        if len(branch) > 1 and not cascade:
+            raise ValueError(
+                f"{len(branch) - 1} sub-code(s) will also be deleted. Move "
+                f"the sub-codes first if they are needed, or call again "
+                f"with cascade=true to delete the whole branch and all its "
+                f"codings.")
         try:
-            self.conn.execute("DELETE FROM code_text WHERE cid = ?", (code_id,))
-            self.conn.execute("DELETE FROM code_av WHERE cid = ?", (code_id,))
-            self.conn.execute("DELETE FROM code_image WHERE cid = ?", (code_id,))
-            self.conn.execute("DELETE FROM code_name WHERE cid = ?", (code_id,))
+            for cid in branch:
+                self.conn.execute("DELETE FROM code_text WHERE cid = ?", (cid,))
+                self.conn.execute("DELETE FROM code_av WHERE cid = ?", (cid,))
+                self.conn.execute("DELETE FROM code_image WHERE cid = ?", (cid,))
+                self.conn.execute("DELETE FROM code_name WHERE cid = ?", (cid,))
+                self._cleanup_graph_rows_for_cid(cid)
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Deleted code {code_id} and its codings")
+            logger.info(f"Deleted code branch {branch} and its codings")
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
             except Exception:
                 pass
             _raise_query_error(e, "delete_code", "Failed to delete code")
-        return {"deleted": True, **preview}
+        result = {"deleted": True, **preview}
+        if len(branch) > 1:
+            result["branch_deleted"] = True
+        return result
 
     def preview_delete_category(self, category_id: int) -> Dict[str, Any]:
         """Count what a category delete would reparent (read-only)."""

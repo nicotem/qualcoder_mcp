@@ -628,7 +628,28 @@ class TestValidityAndDiscovery:
 class TestWriteVersionGate:
 
     def test_pre_v14_write_refused(self, setup_server, qualcoder_db_path, tmp_path):
+        """A REAL pre-v14 project (no coder_names table, upstream's own v14
+        marker) refuses writes. The version string alone no longer gates:
+        support is decided by capability probes (S1)."""
         old = tmp_path / "old_v13.qda"
+        shutil.copytree(qualcoder_db_path, old)
+        con = sqlite3.connect(str(old / "data.qda"))
+        con.execute("DROP TABLE coder_names")
+        con.execute("UPDATE project SET databaseversion = 'v13'")
+        con.commit()
+        con.close()
+        json.loads(server.select_project(str(old)))
+        result = json.loads(server.import_text_file(
+            "y.txt", "content", create_backup=False))
+        assert "pre-v14 schema" in result["error"]
+        assert "QualCoder 3.8 or newer" in result["error"]
+
+    def test_restamped_version_string_does_not_gate(self, setup_server,
+                                                    qualcoder_db_path,
+                                                    tmp_path):
+        """A capability-v14 project mis-stamped 'v13' stays writable: the
+        probes, not the string, decide (S1)."""
+        old = tmp_path / "stamped_v13.qda"
         shutil.copytree(qualcoder_db_path, old)
         con = sqlite3.connect(str(old / "data.qda"))
         con.execute("UPDATE project SET databaseversion = 'v13'")
@@ -637,5 +658,4 @@ class TestWriteVersionGate:
         json.loads(server.select_project(str(old)))
         result = json.loads(server.import_text_file(
             "y.txt", "content", create_backup=False))
-        assert "require schema v14" in result["error"]
-        assert "QualCoder 3.8" in result["error"]
+        assert result.get("success") is True

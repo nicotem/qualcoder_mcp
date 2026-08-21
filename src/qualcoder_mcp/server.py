@@ -308,23 +308,41 @@ def _qualcoder_open_error() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _write_gate_error() -> Optional[Dict[str, Any]]:
-    """Combined pre-write gate: schema version + QualCoder lock file.
+def _schema_block() -> Dict[str, Any]:
+    """The schema report for get_current_project / get_project_summary:
+    version string (informational), the capability probes that actually
+    decide behaviour, and the write-support verdict with its reason, so
+    an AI consumer can explain the situation instead of guessing."""
+    db = get_db()
+    supported, reason, overridden = db.write_support()
+    caps = getattr(db, "capabilities", None)
+    block: Dict[str, Any] = {
+        "databaseversion": getattr(db, "db_version", None),
+        "capabilities": caps.to_dict() if caps is not None else {},
+        "write_support": supported,
+    }
+    if reason:
+        block["reason"] = reason
+    if overridden:
+        block["override_active"] = True
+    return block
 
-    Returns an error dict when the project's schema is older than v14
-    (writes are only supported against the tested schema) or when
-    QualCoder currently has the project open. The database layer enforces
-    the same schema gate in _require_write_access (defense in depth); the
-    early check here produces a clean error before any backup is made.
+
+def _write_gate_error() -> Optional[Dict[str, Any]]:
+    """Combined pre-write gate: schema capabilities + QualCoder lock file.
+
+    Returns an error dict when the project's schema is below the v14
+    capability floor (the coder_names table, upstream's own v14 marker),
+    or reports a version newer than the verified ceiling without the
+    explicit override, or when QualCoder currently has the project open.
+    Capability probes, never version strings, decide support (S1); the
+    database layer enforces the same gate in _require_write_access
+    (defense in depth); the early check here produces a clean error
+    before any backup is made.
     """
-    version = getattr(get_db(), "db_version", None)
-    if version != "v14":
-        return {
-            "error": f"This project uses database schema "
-                     f"{version or 'unknown'}; writes require schema v14. "
-                     f"Open and save the project in QualCoder 3.8 to upgrade "
-                     f"it, then try again."
-        }
+    supported, reason, _overridden = get_db().write_support()
+    if not supported:
+        return {"error": reason}
     return _qualcoder_open_error()
 
 
@@ -470,6 +488,9 @@ def _perform_write(op, create_backup: bool = True,
 
     if backup_path:
         result["backup_path"] = str(backup_path)
+    schema_warning = write_db.schema_write_warning()
+    if schema_warning and isinstance(result, dict) and "error" not in result:
+        result["schema_warning"] = schema_warning
     return result
 
 
@@ -1095,7 +1116,8 @@ def get_current_project() -> str:
         result = {
             "current_project": current_project_path,
             "project_name": Path(current_project_path).stem,
-            "project_info": project_info
+            "project_info": project_info,
+            "schema": _schema_block(),
         }
 
         # QualCoder-open state, cheap to re-check after the user says
@@ -1641,6 +1663,7 @@ def get_project_summary() -> str:
 
     summary = {
         "project_info": project_info,
+        "schema": _schema_block(),
         "statistics": {
             "total_files": len(files),
             "total_codes": len(codes),
@@ -4913,12 +4936,18 @@ def add_journal_entry(name: str, entry: str,
 @_tool_guard
 def create_code(name: str, category: Optional[str] = None,
                 color: Optional[str] = None, memo: Optional[str] = None,
+                parent_code_id: Optional[int] = None,
                 create_backup: bool = True) -> str:
     """Create a new code in the codebook.
 
     THIS WRITES TO THE DATABASE. Adds a code that can then be applied to
     segments. Code names are unique. The color defaults to a random pick
     from QualCoder's own palette (like GUI-created codes).
+
+    SUB-CODES (projects with schema v16 or newer only): pass
+    parent_code_id to nest the new code under an existing CODE instead of
+    a category. A code has either a parent code or a category, never
+    both; on projects without sub-code support the parameter is refused.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -4930,6 +4959,8 @@ def create_code(name: str, category: Optional[str] = None,
                   case-insensitively; must already exist)
         color: Optional #RRGGBB hex color (default: random palette color)
         memo: Optional code definition/memo
+        parent_code_id: Optional cid of an existing code to nest under
+                        (v16+ sub-code; mutually exclusive with category)
         create_backup: Create a timestamped backup before writing (default True)
 
     Returns:
@@ -4940,6 +4971,11 @@ def create_code(name: str, category: Optional[str] = None,
     """
     category_id = None
     if category is not None:
+        if parent_code_id is not None:
+            return json.dumps({
+                "error": "Give parent_code_id or category, not both: a "
+                         "code has one parent, either a code or a category."
+            })
         category_id, err = _resolve_category_by_name(str(category))
         if err is not None:
             return json.dumps(err, indent=2)
@@ -4949,6 +4985,7 @@ def create_code(name: str, category: Optional[str] = None,
     def _op(wdb):
         cid = wdb.add_code(name=name, owner=owner, memo=memo,
                            category_id=category_id, color=color,
+                           parent_code_id=parent_code_id,
                            auto_commit=False)
         details = wdb.get_code_details(cid)
         return {
@@ -4958,6 +4995,7 @@ def create_code(name: str, category: Optional[str] = None,
                 "id": cid,
                 "name": details["name"],
                 "category": details.get("category"),
+                "parent_code_id": parent_code_id,
                 "color": details.get("color"),
                 "memo": details.get("memo", ""),
             },
@@ -5229,12 +5267,20 @@ def merge_codes(from_code_id: int, into_code_id: int,
 
 @mcp.tool()
 @_tool_guard
-def delete_code(code_id: int, confirm: bool = False) -> str:
+def delete_code(code_id: int, confirm: bool = False,
+                cascade: bool = False) -> str:
     """Delete a code AND all its codings. DESTRUCTIVE — preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a code removes the code itself and
     EVERY coded segment made with it (text, audio/video, and image codings).
     Categories, annotations, case links and other codes are not affected.
+
+    SUB-CODES (projects with schema v16 or newer): a code that has
+    sub-codes is REFUSED unless cascade=true, which then deletes the
+    whole branch (the code, every transitive sub-code, and all their
+    codings) in one transaction, exactly as QualCoder's own delete. The
+    preview always reports the branch, so review it before confirming.
+    Move the sub-codes first if they are needed.
 
     Call once without confirm to see how many codings will be destroyed, then
     again with confirm=true. A backup is created first, so a mistaken delete
@@ -5247,14 +5293,18 @@ def delete_code(code_id: int, confirm: bool = False) -> str:
     Args:
         code_id: The code's cid
         confirm: Must be true to actually delete (default: preview only)
+        cascade: Must be true to delete a code that has sub-codes (the
+                 whole branch dies; default false refuses instead)
     """
     result = _guarded_destructive(
         preview_fn=lambda ro: ro.preview_delete_code(code_id),
         op_fn=lambda wdb: {"success": True, "message": "Deleted code",
-                           **wdb.delete_code(code_id, auto_commit=False)},
+                           **wdb.delete_code(code_id, cascade=cascade,
+                                             auto_commit=False)},
         confirm=confirm,
         backup_fail_detail="the code was not deleted",
-        confirm_hint="This will destroy the code and all its coded segments. "
+        confirm_hint="This will destroy the code and all its coded segments "
+                     "(and, with cascade=true, its whole sub-code branch). "
                      "Review total_codings_to_delete, then call delete_code "
                      "again with confirm=true. A backup is made first.",
     )
@@ -5270,6 +5320,11 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
     your coding: its codes and its direct sub-categories are moved to the top
     level (never deleted, never reparented to a grandparent), then the
     category itself is removed. No coded data is lost.
+
+    Version note: this matches QualCoder 3.8.2's category delete.
+    QualCoder 4.0's tree UI instead deletes the whole branch INCLUDING
+    codes and codings; this tool deliberately does not do that (the safe
+    detach is valid on every schema and never destroys coded data).
 
     Call once without confirm to see how many codes and sub-categories will be
     moved to the top level, then again with confirm=true. A backup is made

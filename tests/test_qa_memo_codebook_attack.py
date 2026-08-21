@@ -211,6 +211,7 @@ class TestWriteDisciplineAcrossNewSurface:
         old = tmp_path / "old_version.qda"
         shutil.copytree(qualcoder_db_path, old)
         conn = sqlite3.connect(str(old / "data.qda"))
+        conn.execute("DROP TABLE coder_names")  # REAL pre-v14 (probe gate, S1)
         conn.execute("UPDATE project SET databaseversion = 'v13'")
         conn.commit()
         conn.close()
@@ -221,7 +222,7 @@ class TestWriteDisciplineAcrossNewSurface:
                            ("merge_codes", lambda: server.merge_codes(1, 2, confirm=True)),
                            ("delete_category", lambda: server.delete_category(1, confirm=True))]:
             out = json.loads(call())
-            assert "error" in out and "v14" in out["error"], name
+            assert "error" in out and "pre-v14" in out["error"], name
         assert len(sorted(old.parent.glob(f"{old.stem}_backup_*.qda"))) == n_backups
 
     def test_connection_read_only_after_every_new_tool(self, setup_server,

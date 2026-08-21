@@ -58,6 +58,7 @@ SCHEMA_SQL = [
     """CREATE TABLE annotation (anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER,
         pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)""",
     """CREATE TABLE journal (jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT)""",
+    """CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))""",
     """CREATE TABLE attribute_type (name TEXT PRIMARY KEY, date TEXT, owner TEXT,
         memo TEXT, caseOrFile TEXT, valuetype TEXT)""",
     """CREATE TABLE attribute (attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT,

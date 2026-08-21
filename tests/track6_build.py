@@ -49,6 +49,7 @@ DDL = [
     "owner text,date text, color text, unique(name))",
     "CREATE TABLE journal (jid integer primary key, name text, jentry text, date text, owner text, "
     "unique(name))",
+    "CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))",
     "CREATE TABLE stored_sql (title text, description text, grouper text, ssql text, unique(title))",
 ]
 
