@@ -542,7 +542,12 @@ def backup_project(project_path: Union[str, Path]) -> Path:
         # restored folder triggers its "not properly closed" prompt
         shutil.copytree(
             project_path, backup_path,
-            ignore=shutil.ignore_patterns("*.lock")
+            # Ignore union (D3): *.lock for 3.8.x parity, plus master's
+            # sqlite sidecar exclusions (app.py:1619-1625) - the AI
+            # vectorstore sidecar can be large and mid-write
+            ignore=shutil.ignore_patterns(
+                "*.lock", "search.sqlite", "search.sqlite-*",
+                "*.sqlite-shm", "*.sqlite-wal", "*.sqlite-journal")
         )
         logger.info(f"Backup created successfully: {backup_path}")
         return backup_path
@@ -2554,9 +2559,11 @@ class QualcoderDatabase:
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
                     -- full CONTAINMENT, matching QualCoder's own reports
-                    -- (report_codes.py:1640); note QualCoder's whole-file
-                    -- case links end at len(fulltext)-1, so a coding that
-                    -- includes the file's last character is excluded there
+                    -- (report_codes.py:1640). The end-of-file caveat is
+                    -- PER ROW, not per version: on an old-convention
+                    -- whole-file link (pos1 = len-1) a coding including
+                    -- the file's last character is excluded; on a
+                    -- pos1 = len row it is included
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 GROUP BY cs.caseid, ct.cid
             """)
@@ -2599,9 +2606,11 @@ class QualcoderDatabase:
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
                     -- full CONTAINMENT, matching QualCoder's own reports
-                    -- (report_codes.py:1640); note QualCoder's whole-file
-                    -- case links end at len(fulltext)-1, so a coding that
-                    -- includes the file's last character is excluded there
+                    -- (report_codes.py:1640). The end-of-file caveat is
+                    -- PER ROW, not per version: on an old-convention
+                    -- whole-file link (pos1 = len-1) a coding including
+                    -- the file's last character is excluded; on a
+                    -- pos1 = len row it is included
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN code_name c ON ct.cid = c.cid
                 LEFT JOIN code_cat cat ON c.catid = cat.catid
@@ -2645,9 +2654,11 @@ class QualcoderDatabase:
                 FROM case_text cs
                 JOIN code_text ct ON cs.fid = ct.fid
                     -- full CONTAINMENT, matching QualCoder's own reports
-                    -- (report_codes.py:1640); note QualCoder's whole-file
-                    -- case links end at len(fulltext)-1, so a coding that
-                    -- includes the file's last character is excluded there
+                    -- (report_codes.py:1640). The end-of-file caveat is
+                    -- PER ROW, not per version: on an old-convention
+                    -- whole-file link (pos1 = len-1) a coding including
+                    -- the file's last character is excluded; on a
+                    -- pos1 = len row it is included
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN cases c ON cs.caseid = c.caseid
                 WHERE ct.cid = ?
@@ -3263,7 +3274,9 @@ class QualcoderDatabase:
         # diverge from birth (text-positions.md RISK-TP2).
         if content.startswith("\ufeff"):
             content = content[1:]
-        content = content.replace("\r\n", "\n")
+        # Master normalizes BOTH \r\n and lone \r on every non-PDF text
+        # import (manage_files.py:3337-3343); upstream parity (P7/T13)
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3325,11 +3338,12 @@ class QualcoderDatabase:
     ) -> Dict[str, Any]:
         """Link a whole source file to a case (QualCoder case_text row).
 
-        Matches QualCoder's own "Case file manager" whole-file link exactly
-        (case_file_manager.py:197-236): one case_text row with pos0=0 and
-        pos1=len(fulltext)-1 for text sources (QualCoder's GUI convention -
-        note the -1), or pos0=pos1=0 for non-text sources. Without this row
-        the file is invisible to every case-based analysis.
+        Writes one case_text row with pos0=0 and pos1=len(fulltext) for
+        text sources (the convention QualCoder master unified on, and the
+        one 3.8.2's file manager already used), or pos0=pos1=0 for
+        non-text sources. 3.8.2's case file manager wrote len-1; the
+        duplicate check treats both spellings as the same link. Without
+        this row the file is invisible to every case-based analysis.
 
         case_text has NO unique constraint, so the duplicate check here is
         the only protection against double-linking (matching QualCoder's
@@ -3370,12 +3384,15 @@ class QualcoderDatabase:
         if not file_row:
             raise ValueError(f"File ID {file_id} does not exist")
 
-        # Whole-file span, QualCoder GUI convention
+        # Whole-file span. Write convention standardized on
+        # pos1 = len(fulltext): master's unified choice
+        # (case_file_manager.py:208-210) and already 3.8.2's own file
+        # manager convention (3.8.2:manage_files.py:755-764). The old
+        # 3.8.2 case-manager convention (len-1) coexists in real data;
+        # the duplicate pre-check below treats both as the same link.
         fulltext = file_row["fulltext"]
         pos0 = 0
-        pos1 = len(fulltext) - 1 if fulltext else 0
-        if pos1 < 0:
-            pos1 = 0
+        pos1 = len(fulltext) if fulltext else 0
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3389,10 +3406,14 @@ class QualcoderDatabase:
             # constraint, so this app-side probe is the only protection:
             # treat ANY existing row that already covers the whole file
             # (either convention, or a superset span) as a duplicate.
+            # (0, len-1) and (0, len) are the SAME whole-file link (W12):
+            # the threshold is the smaller convention so either spelling,
+            # from any QualCoder version or this server, is caught.
+            dedupe_floor = max(0, pos1 - 1)
             existing = self.conn.execute(
                 "SELECT id, pos0, pos1 FROM case_text WHERE caseid = ? "
                 "AND fid = ? AND pos0 <= 0 AND pos1 >= ?",
-                (case_id, file_id, pos1)
+                (case_id, file_id, dedupe_floor)
             ).fetchone()
             if existing:
                 convention = ""

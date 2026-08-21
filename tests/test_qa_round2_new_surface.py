@@ -236,15 +236,17 @@ class TestDeleteCoding:
 
 class TestLinkFileToCase:
 
-    def test_text_file_link_uses_gui_len_minus_one(self, setup_server,
-                                                   qualcoder_db_path):
-        # file 2 ('notes.txt') is not linked to any case in the fixture
+    def test_text_file_link_uses_unified_len_convention(self, setup_server,
+                                                        qualcoder_db_path):
+        # file 2 ('notes.txt') is not linked to any case in the fixture.
+        # W12: write convention standardized on pos1 = len(fulltext)
+        # (master's unified choice; 3.8.2's file manager already used it)
         out = json.loads(server.link_file_to_case(2, case_name="case a"))
         assert out["success"] is True
         link = out["link"]
         notes_len = len("Field notes from observation session.")
         assert link["position_start"] == 0
-        assert link["position_end"] == notes_len - 1  # QualCoder's -1 quirk
+        assert link["position_end"] == notes_len
 
     def test_duplicate_link_refused_row_count_stable(self, setup_server,
                                                      qualcoder_db_path):
@@ -282,7 +284,7 @@ class TestLinkFileToCase:
         rows = _sql(qualcoder_db_path,
                     "SELECT * FROM case_text WHERE fid = ?", (out["file_id"],))
         assert len(rows) == 1
-        assert rows[0]["pos1"] == len("Some interview content here.") - 1
+        assert rows[0]["pos1"] == len("Some interview content here.")  # W12 len
 
 
 # =============================================================================

@@ -524,8 +524,9 @@ class TestCaseLinkage:
         assert result["success"] is True
         link = result["linked_to_case"]
         assert link["case_name"] == "Case A"
-        # QualCoder GUI convention: pos1 = len(fulltext) - 1
-        assert link["position_end"] == len("Dana talks at length here.") - 1
+        # Write convention standardized on pos1 = len(fulltext) (W12:
+        # master's unified choice; 3.8.2's file manager already used it)
+        assert link["position_end"] == len("Dana talks at length here.")
 
     def test_import_unknown_case_no_write(self, setup_server, qualcoder_db_path):
         result = json.loads(server.import_text_file(

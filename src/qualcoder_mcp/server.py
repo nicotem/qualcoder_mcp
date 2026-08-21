@@ -3516,8 +3516,10 @@ def list_backups() -> str:
             "kind='qualcoder' backups are made by QualCoder itself on "
             "project open; they may exclude audio/video files and QualCoder "
             "deletes them again when a session made no changes.",
-            "QualCoder may also store its backups in its settings "
-            "'directory' — only backups next to the project are listed here.",
+            "QualCoder 3.8.0 through 3.8.2 may also store backups in the "
+            "QualCoder settings 'directory' (not listed here); newer "
+            "QualCoder builds write _BKUP_ backups next to the project "
+            "again, and those ARE listed with kind='qualcoder'.",
             "MCP backups (kind='mcp') accumulate until pruned — use "
             "prune_backups(keep_last=..., older_than_days=...) to reclaim "
             "disk space (retention never touches QualCoder's own backups)."

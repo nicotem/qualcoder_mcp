@@ -424,8 +424,10 @@ class TestValiditySemantics:
         # the fixture's Stress coding (24..55) straddles too -> excluded
         assert not any(c["code_id"] == 1 for c in codes)
 
-        # quirk parity: whole-file link is (0, len-1); a coding ending at len
-        # is excluded, exactly as in QualCoder's report engine
+        # V4 quirk is PER ROW (W12): the MCP now writes the unified
+        # pos1=len convention, so a coding ending at len IS included on
+        # OUR links; the len-1 exclusion is pinned below on a hand-made
+        # old-convention row instead.
         _exec(qualcoder_db_path,
               "INSERT INTO cases VALUES (2, 'Whole file', '', 'qa', '2024')")
         json.loads(server.link_file_to_case(1, case_id=2, create_backup=False))
@@ -436,8 +438,21 @@ class TestValiditySemantics:
         server.switch_project(qualcoder_db_path)
         codes2 = json.loads(server.get_codes_by_case(2))
         stress = next((c for c in codes2 if c["code_id"] == 1), None)
+        # our link spans (0, len): BOTH 24..55 and 60..len are contained
+        assert stress is not None and stress["occurrence_count"] == 2
+
+        # the len-1 exclusion still applies PER ROW: an old-convention
+        # (3.8.2 case-manager) link excludes the coding ending at len
+        _exec(qualcoder_db_path,
+              "INSERT INTO cases VALUES (3, 'Old convention', '', 'qa', '2024')")
+        _exec(qualcoder_db_path,
+              "INSERT INTO case_text (caseid, fid, pos0, pos1, memo, owner, date) "
+              "VALUES (3, 1, 0, ?, '', 'qa', '2024')", (len(FULLTEXT) - 1,))
+        server.switch_project(qualcoder_db_path)
+        codes3 = json.loads(server.get_codes_by_case(3))
+        stress3 = next((c for c in codes3 if c["code_id"] == 1), None)
         # 24..55 counts; 60..79 (== len) does NOT (79 > 78 = len-1)
-        assert stress is not None and stress["occurrence_count"] == 1
+        assert stress3 is not None and stress3["occurrence_count"] == 1
 
     def test_v3_non_qualcoder_about_flagged(self, setup_server,
                                             qualcoder_db_path, tmp_path):

@@ -97,16 +97,16 @@ class TestS26CaseLinkDedupe:
 
     FULLTEXT_LEN = 79  # conftest interview.txt
 
-    def test_len_convention_row_detected(self, setup_server,
-                                         qualcoder_db_path):
-        """A GUI 'Assign case' / survey-import row uses pos1=len (not
-        len-1); each upstream probe only matches its own convention. Our
-        link must refuse on EITHER convention."""
+    def test_other_convention_row_detected(self, setup_server,
+                                           qualcoder_db_path):
+        """The MCP now writes pos1=len (W12); a 3.8.2 case-manager row
+        uses len-1. Each upstream probe only matches its own convention;
+        our link must refuse on EITHER."""
         conn = _conn(qualcoder_db_path)
         conn.execute(
             "INSERT INTO case_text (caseid, fid, pos0, pos1, memo, owner, "
             "date) VALUES (1, 2, 0, ?, '', 'TestCoder', '2024-01-15')",
-            (len("Field notes from observation session."),))
+            (len("Field notes from observation session.") - 1,))
         conn.commit()
         conn.close()
         out = json.loads(server.link_file_to_case(2, case_id=1,
