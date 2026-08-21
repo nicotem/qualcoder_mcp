@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Experimental): multi-host support and the core toolset
+
+- **`QUALCODER_MCP_TOOLSET` environment variable** (`core` | `full`,
+  default `full`): `core` registers only the 20-tool supervised
+  coding set (project open/select, summary, file search and
+  read-with-coding, coded-text retrieval, frequencies, the full
+  suggestion loop including edit_suggestion, create_code, set_memo,
+  and the safety pair copy_project_to_workspace / delete_coding /
+  list_backups). Required for local models, optional elsewhere;
+  unknown values fail loudly at startup; resources and prompts are
+  unaffected. Measured serialized tool JSON: full = 91,111 chars
+  (about 22.8k tokens at chars/4); core = 33,006 chars (about 8.3k
+  tokens). Functionally tested end to end over stdio in core mode.
+- **Host-choice documentation**: README "Choosing your AI host:
+  data-governance options", a four-rung governance ladder in
+  PRIVACY.md (consumer plans, API key, Team/Enterprise, fully local)
+  quoting official pages verbatim with URLs and pull dates, and two
+  INSTALL.md recipes: "Claude Code with an Anthropic API key" and
+  "LM Studio (fully local)", plus host-agnostic wording throughout.
+- **Marked Experimental deliberately**: the recipes are written from
+  official documentation and the server side is functionally tested,
+  but end-to-end host verification is pending and no local model has
+  been capability-evaluated with this server yet. The docs say so
+  rather than claiming any model "works well".
+
 ## [0.9.0-alpha] - 2026-07-30
 
 PyPI packaging (`pip install qualcoder-mcp`), a whole-codebase security

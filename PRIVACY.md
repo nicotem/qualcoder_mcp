@@ -21,10 +21,12 @@ must understand:
 > Whatever a tool returns — coded segments, interview excerpts, file
 > contents, memos, journal entries, code names, frequencies, case and
 > attribute data — is delivered into the conversation, and
-> conversation content is **transmitted to Anthropic and processed
-> like any other chat or API content**. Reading a transcript through
-> this tool sends the returned portions of that transcript to
-> Anthropic.
+> conversation content is **transmitted to whichever AI provider your
+> host uses and processed like any other chat or API content**. For
+> Claude hosts that provider is Anthropic; with a fully local host
+> (rung 4 below) there is no external provider at all. Reading a
+> transcript through this tool sends the returned portions of that
+> transcript to that provider.
 
 What stays local, always:
 
@@ -36,6 +38,120 @@ What stays local, always:
 What leaves your machine: **only what tools return into the
 conversation** — but for qualitative research, that can be the most
 sensitive content you hold.
+
+## Your governance options, from default to fully local (Experimental)
+
+Which terms govern the AI processing is decided by the host you run and
+the account you sign into, not by this server. Four rungs, each with
+what changes and what to check. Discipline note: we quote official
+pages verbatim with their URLs and never characterize terms in our own
+voice; every quote below was pulled on 2026-08-17, terms change, and
+the linked pages govern. (The multi-host support itself is Experimental
+and not yet capability-evaluated; see the INSTALL.md recipes.)
+
+### Rung 1: Claude consumer plans (Free/Pro/Max, including Claude Code signed in with them)
+
+Do not assume what your account's training default is. Open
+<https://claude.ai/settings/data-privacy-controls> and check the Model
+Improvement setting yourself. The governing documents:
+
+- Consumer Terms of Service (effective date shown: October 8, 2025):
+  <https://www.anthropic.com/legal/consumer-terms>, which state:
+  > "We may use Materials to provide, maintain, and improve the
+  > Services, including training our models, unless you opt out"
+- Privacy Policy (effective date shown: July 8, 2026):
+  <https://www.anthropic.com/legal/privacy>
+- Privacy Center article "Is my data used for model training?":
+  <https://privacy.claude.com/en/articles/10023580-is-my-data-used-for-model-training>
+
+Exceptions that apply regardless of the setting (Consumer Terms,
+quoted 2026-08-17):
+
+> "Even if you opt out, we will use Materials for model training when:
+> (1) you provide Feedback to us regarding any Materials, or (2) your
+> Materials are flagged for safety review"
+
+### Rung 2: Anthropic API key (commercial-terms route)
+
+Using Claude Code with a Console API key routes traffic under the
+Commercial Terms (<https://www.anthropic.com/legal/commercial-terms>,
+effective date shown: June 17, 2025), which state (quoted 2026-08-17):
+
+> "Anthropic may not train models on Customer Content from Services."
+
+The commercial-products Privacy Center article
+(<https://privacy.claude.com/en/articles/7996885-how-do-you-use-personal-data-in-model-training>)
+states: "We will not use your chats or coding sessions to train our
+models, unless you choose to participate in our Development Partner
+Program." A Data Processing Addendum exists on the commercial side
+(<https://www.anthropic.com/legal/data-processing-addendum>, effective
+date shown: February 24, 2025); it is the instrument an institution's
+DPO will ask about.
+
+**The individual-account wrinkle, presented without resolving it.**
+The Consumer Terms' scope clause includes:
+
+> "Claude.ai, Claude Pro, and other products and services that we may
+> offer for individuals (including any Anthropic API key and the
+> Anthropic Console, when used by individuals)"
+
+while the Commercial Terms state "Services under these Terms are not
+for consumer use." For unambiguous commercial-terms coverage, use a
+Console account created for the institution or research group, and let
+your DPO read the current versions of both pages. Mechanics: the
+INSTALL.md recipe "Claude Code with an Anthropic API key".
+
+### Rung 3: Team/Enterprise (Claude for Work)
+
+Same commercial-terms footing. The August 2025 consumer announcement
+(<https://www.anthropic.com/news/updates-to-our-consumer-terms>,
+quoted 2026-08-17) lists what the consumer training changes do NOT
+touch:
+
+> "These updates do not apply to services under our Commercial Terms,
+> including: Claude for Work, which includes our Team and Enterprise
+> plans; Our API, Amazon Bedrock, or Google Cloud's Vertex API; Claude
+> Gov and Claude for Education"
+
+If your institution already has a Team or Enterprise deployment, using
+this server through Claude Desktop or Claude Code under that account
+is already commercial-terms coverage; no API key is needed.
+
+### Rung 4: fully local models (Experimental)
+
+The rung where the third-party-processor question disappears: model
+inference and every qualcoder-mcp operation happen on your machine. LM
+Studio's documentation states (quoted 2026-08-17,
+<https://lmstudio.ai/docs/app/offline>) that LM Studio "can operate
+entirely offline" and that "Nothing you enter into LM Studio when
+chatting with LLMs leaves your device". That is the vendor's statement,
+not our certification: verify offline operation yourself (disconnect
+and work) and record it as a data-management-plan evidence point.
+
+The trade is stated plainly: a narrower workflow with more supervision,
+the reduced core toolset required (`QUALCODER_MCP_TOOLSET=core`), and,
+importantly, **we have not yet evaluated how well any local model
+performs with this server**. That evaluation is pending; until then
+local-model behaviour is unverified, which is why this rung is marked
+Experimental. Mechanics: the INSTALL.md recipe "LM Studio (fully
+local)".
+
+### Cross-rung cautions
+
+- Feedback mechanisms, safety flagging, and opt-in programs can pierce
+  every Anthropic route. Never use feedback features (thumbs,
+  /feedback, /bug) in sessions containing participant data.
+- Claude Code has side channels: error reporting, session surveys,
+  /feedback retention, and local plaintext transcripts under
+  `~/.claude/projects/`. Mitigations:
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `cleanupPeriodDays`
+  (see <https://code.claude.com/docs/en/data-usage>).
+- Commercial-terms coverage is not GDPR compliance. The DPA exists;
+  controller/processor analysis and executing or relying on the DPA
+  remain institution-level work.
+- All quotes above were pulled 2026-08-17. Terms change; the linked
+  pages govern. The Privacy Center now lives at privacy.claude.com
+  (older privacy.anthropic.com links redirect there).
 
 ## What this means for research data
 

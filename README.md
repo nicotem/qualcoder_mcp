@@ -1,10 +1,10 @@
 # Qualcoder MCP Server
 
-A Model Context Protocol (MCP) server that connects [Claude Desktop](https://claude.ai/download) to [Qualcoder](https://github.com/ccbogel/QualCoder), enabling AI-assisted qualitative data analysis.
+A Model Context Protocol (MCP) server that connects an MCP host (Claude Desktop, Claude Code, LM Studio, and others) to [Qualcoder](https://github.com/ccbogel/QualCoder), enabling AI-assisted qualitative data analysis.
 
 ## What is this?
 
-This MCP server allows Claude (via Claude Desktop) to directly access and analyze your Qualcoder projects. Claude can:
+This MCP server lets an AI assistant directly access and analyze your Qualcoder projects. Claude Desktop is the primary worked example throughout these docs, but any MCP host works (see "Choosing your AI host" below). The assistant can:
 
 - 📊 Read your codes, categories, and coding structure
 - 📝 Access coded text segments and original source documents
@@ -49,11 +49,14 @@ See [SUPPORT.md](https://github.com/nicotem/qualcoder_mcp/blob/main/SUPPORT.md) 
 The server runs entirely on your machine and adds no telemetry, no
 analytics, and no cloud path of its own. **But everything a tool
 returns — coded segments, interview excerpts, file contents, memos,
-frequencies — enters your Claude conversation, and conversation
-content is transmitted to Anthropic** and processed like any other
-chat/API content. Reading a transcript through this tool sends the
-returned portions of that transcript to Anthropic. Backups, exports
-and session files stay local.
+frequencies — enters your AI conversation, and conversation
+content is transmitted to whichever AI provider your host uses**
+(Anthropic for Claude hosts; no external provider at all with a fully
+local host) and processed like any other chat/API content. Reading a
+transcript through this tool sends the returned portions of that
+transcript to that provider. Backups, exports and session files stay
+local. Which provider, and under which terms, is decided by your host
+and account, not by this server: see "Choosing your AI host" below.
 
 Your participants may not have consented to third-party AI processing.
 It is the researcher's responsibility to check what this flow means
@@ -66,11 +69,30 @@ integrations don't.
 check with your Claude plan and your institution's DPO, why pseudonymised
 data is *not* automatically safe to send, and practical mitigations.
 
+## Choosing your AI host: data-governance options (Experimental)
+
+This server is host-agnostic stdio MCP. Which AI processes your data,
+and under which terms, is decided by the host you run and the account
+you sign into, not by this server. The terms attach to the account and
+product line, not to the client application. Three routes, from easiest
+to most private:
+
+| Route | What it means | Where to read more |
+|---|---|---|
+| **Claude consumer plans** (claude.ai, Claude Desktop, Claude Code with a Free/Pro/Max login) | The easiest path. Check your own Model Improvement setting at [claude.ai/settings/data-privacy-controls](https://claude.ai/settings/data-privacy-controls); do not assume a default. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rung 1 |
+| **Anthropic commercial-terms routes** (Claude Code with a Console API key; Team/Enterprise accounts) | Same Claude capability; different terms attach to the traffic. Institutions should prefer organizational accounts. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rungs 2 and 3; [INSTALL.md API-key recipe](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#claude-code-with-an-anthropic-api-key-experimental) |
+| **Fully local models** (LM Studio and similar MCP hosts) | Participant data is never sent to any AI provider. The trade is capability: local models are markedly weaker on many-tool work, and we have not yet evaluated any local model with this server (evaluation pending; that is why this is Experimental). Requires the reduced core toolset. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rung 4; [INSTALL.md LM Studio recipe](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#lm-studio-fully-local-experimental) |
+
+The multi-host support (the core toolset and the two recipes) is
+**Experimental**: written from official documentation, functionally
+tested at the server level, but not yet exercised end to end on every
+host and not capability-evaluated on local models.
+
 ## Prerequisites
 
 - **macOS** (or Linux/Windows with appropriate paths)
 - **Python 3.10 or higher**
-- **Claude Desktop** installed ([download here](https://claude.ai/download))
+- **An MCP host**: Claude Desktop is the most common ([download here](https://claude.ai/download)); see "Choosing your AI host" above for alternatives
 - **Qualcoder** with at least one project created ([download here](https://github.com/ccbogel/QualCoder))
 
 ## Installation
@@ -532,6 +554,18 @@ The MCP server exposes these resources (read-only data):
 
 Claude can use these tools to analyze your data:
 
+> **Reduced toolset for local models (Experimental):** with
+> `QUALCODER_MCP_TOOLSET=core` in the server's environment, only the
+> 20-tool supervised coding set is registered: list_available_projects,
+> select_project, get_current_project, get_project_summary,
+> search_files, analyze_file_with_coding, search_coded_text,
+> get_coded_segments, get_coding_frequencies, analyze_for_coding,
+> record_suggestions, review_suggestions, edit_suggestion,
+> update_suggestion_status, apply_codings, create_code, set_memo,
+> copy_project_to_workspace, delete_coding, list_backups.
+> Required for local models, optional elsewhere; unknown values fail
+> loudly at startup. The default (`full`) is everything below.
+
 **Project Management:**
 - `list_available_projects(search_directories)` - Discover Qualcoder projects on your system
 - `select_project(project_path)` - Open/switch to a different project
@@ -694,10 +728,10 @@ For AI-assisted coding with direct database writes:
 5. 🔒 **Verify in Qualcoder** - Open project after AI coding to confirm results
 
 **General Safety:**
-- 🔒 The server runs locally and adds no cloud path of its own — but
-  tool results enter the Claude conversation and are transmitted to
-  Anthropic. **See [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md)** for what this means for
-  research data.
+- 🔒 The server runs locally and adds no cloud path of its own, but
+  tool results enter the conversation and are transmitted to whichever
+  AI provider your host uses (none, with a fully local host). **See
+  [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md)** for what this means for research data.
 - 🔒 Regular Qualcoder backups recommended
 - 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
 - 🔒 Session logs: `~/.qualcoder_mcp/sessions/`

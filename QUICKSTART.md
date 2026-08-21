@@ -11,6 +11,10 @@ This guide will get you up and running with the Qualcoder MCP server in 10 minut
       (see "Using with Claude Code" in the README)
 - [ ] At least one Qualcoder project created (`.qda` file)
 
+> Choosing between Claude plans, an API key, or a fully local model?
+> See "Choosing your AI host: data-governance options" in the README
+> (the API-key and LM Studio routes are Experimental).
+
 ## Installation Steps
 
 ### 1. Install the MCP Server

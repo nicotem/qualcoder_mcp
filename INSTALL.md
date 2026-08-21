@@ -20,9 +20,6 @@ Before starting, make sure you have:
 
 ## Recommended: Install from PyPI
 
-*PyPI publication lands with v0.9.0 — until that release is out, use
-the step-by-step (git) install below.*
-
 If you just want to USE the server (no code changes), you don't need
 git or this repository at all:
 
@@ -239,6 +236,203 @@ Or add a `.mcp.json` to the folder you run Claude Code from:
 
 The optional `env` block with `QUALCODER_PROJECT_PATH` (Option B above)
 works the same way. Every feature behaves identically in any client.
+
+---
+
+## Claude Code with an Anthropic API key (Experimental)
+
+> **Status: Experimental.** Written from Claude Code's official
+> documentation (pages verified 2026-08-17). The end-to-end run of this
+> recipe is pending verification; steps may be adjusted after that pass.
+
+Running Claude Code with an API key from the Anthropic Console, instead
+of a Free/Pro/Max login, routes your usage through a different set of
+terms. What that means for research data is laid out in
+[PRIVACY.md](PRIVACY.md) (see "Your governance options"); this section
+is only the mechanics.
+
+**1. Install qualcoder-mcp** as described above (PyPI install
+recommended).
+
+**2. Authenticate with the API key.** Get a key from the Console at
+<https://platform.claude.com/settings/keys>, then:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+claude
+```
+
+Approve the key when prompted (Claude Code asks once and remembers the
+choice). If you ALSO have a Pro/Max subscription login, the
+[authentication docs](https://code.claude.com/docs/en/authentication)
+state that the API key takes precedence once approved; run `unset
+ANTHROPIC_API_KEY` to switch back to the subscription. Verify which
+credential is active with `/status`: an "API key" row appears when an
+API key is in use.
+
+**3. Register the server** (same as any Claude Code setup):
+
+```bash
+claude mcp add qualcoder -- qualcoder-mcp
+```
+
+Verify with `claude mcp list` (the server should show as Connected) and
+`/mcp` inside a session. See <https://code.claude.com/docs/en/mcp>.
+
+**4. Strict posture (optional, recommended for participant data).**
+Claude Code has side channels documented on its
+[data-usage page](https://code.claude.com/docs/en/data-usage): error
+reporting, session surveys, `/feedback` retention, and local plaintext
+transcripts under `~/.claude/projects/`. Mitigations:
+
+```bash
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+```
+
+and set `cleanupPeriodDays` in your Claude Code settings to shorten the
+local transcript cache. Never use feedback features (thumbs, /feedback,
+/bug) in sessions containing participant data.
+
+**5. Governance note.** For unambiguous commercial-terms coverage, use
+an organizational Console account rather than a personal one;
+[PRIVACY.md](PRIVACY.md) quotes the two scope clauses that make the
+difference and deliberately does not resolve them for you.
+
+Caveats: the terminal interface is a real usability step down from
+Claude Desktop; claude.ai connectors and the `/schedule` feature are
+unavailable with a non-login credential; locally configured MCP servers
+like this one work identically.
+
+---
+
+## LM Studio (fully local) (Experimental)
+
+> **Status: Experimental.** Written from LM Studio's official
+> documentation (pages verified 2026-08-17; instructions written against
+> LM Studio 0.4.21, which requires 0.3.17 or newer for MCP). Hands-on
+> verification of this recipe is pending, and we have not yet evaluated
+> how well any local model performs with this server. Expect to
+> supervise closely and report what you find.
+
+[LM Studio](https://lmstudio.ai) runs open-weight models entirely on
+your machine and can host MCP servers. With this setup your interview
+data, your codings, and the model itself all stay on your computer. LM
+Studio's own documentation states that it "can operate entirely
+offline" and that "Nothing you enter into LM Studio when chatting with
+LLMs leaves your device" (<https://lmstudio.ai/docs/app/offline>,
+quoted 2026-08-17). That is their statement, not our certification:
+verify offline operation yourself (Step 7) if your data-management plan
+depends on it.
+
+Requirements: a machine that can run a mid-size local model (16 GB RAM
+is a realistic minimum), LM Studio installed, Python 3.10+.
+
+**Step 1. Install qualcoder-mcp** (same as for any host):
+
+```bash
+pipx install qualcoder-mcp
+# or: python3 -m venv ~/qualcoder-mcp-venv && ~/qualcoder-mcp-venv/bin/pip install qualcoder-mcp
+```
+
+Find the absolute path of the command (`which qualcoder-mcp`). LM
+Studio launches MCP servers itself and may not see your shell's PATH,
+so the config below must use the absolute path.
+
+**Step 2. Download a tool-capable model.** In LM Studio's Discover tab,
+pick a model with the hammer badge (native tool use). LM Studio's docs
+list Qwen2.5-7B-Instruct, Llama-3.1-8B-Instruct, and Ministral-8B as
+examples and warn that "Smaller models and models that were not trained
+for tool use may output improperly formatted tool calls"
+(<https://lmstudio.ai/docs/developer/openai-compat/tools>). Community
+reports place the practical minimum for many-tool MCP work around 14B
+parameters. We have not evaluated specific models with this server;
+that evaluation is planned, which is one reason this recipe is marked
+Experimental.
+
+**Step 3. Use the core toolset.** This server exposes 67 tools by
+default, and the serialized tool definitions alone measure about 91,000
+characters, roughly 23k tokens. That exceeds LM Studio's 8k default
+context before you type a word, and tool counts this size are far past
+where small-model tool selection degrades. Set
+`QUALCODER_MCP_TOOLSET=core` (in the config of Step 5) to register only
+the 20-tool supervised coding set, measured at about 33,000 characters,
+roughly 8.3k tokens.
+
+**Step 4. Raise the context length.** Even the core toolset's ~8.3k
+tokens of schema exceed the 8k default context. When loading the model,
+set the context length to at least 16k for the core toolset (leaving
+roughly half the window for your transcript excerpts and conversation),
+or 32k+ if you must run the full surface. Use the model load settings
+dialog or a per-model default
+(<https://lmstudio.ai/docs/app/advanced/per-model>).
+
+**Step 5. Add the server.** Open the Program tab in the right sidebar,
+click Install > Edit mcp.json, and add (LM Studio follows Cursor's
+mcp.json notation, per <https://lmstudio.ai/docs/app/mcp>):
+
+```json
+{
+  "mcpServers": {
+    "qualcoder": {
+      "command": "/Users/YOUR_USERNAME/qualcoder-mcp-venv/bin/qualcoder-mcp",
+      "env": {
+        "QUALCODER_PROJECT_PATH": "/Users/YOUR_USERNAME/Documents/QualCoder_projects/MyProject/MyProject.qda",
+        "QUALCODER_MCP_TOOLSET": "core"
+      }
+    }
+  }
+}
+```
+
+With a source (git) install, use `"command":
+"/path/to/qualcoder_mcp/venv/bin/python"` with `"args": ["-m",
+"qualcoder_mcp.server"]` and the same `env` block. Replace the paths
+with your own; if the file already has other entries under
+`mcpServers`, add only the `"qualcoder"` block. LM Studio loads the
+server when you save.
+
+**Step 6. Keep tool confirmations on.** When the model calls a tool, LM
+Studio shows a confirmation dialog where you can inspect and edit the
+arguments and allow the call once or always. Keep confirmations on:
+they are your audit point for what the model is doing to your project.
+If your LM Studio build offers per-chat or per-tool toggles for MCP
+servers, disable the server in chats that do not need it (we have not
+yet click-verified the exact toggle granularity in the current build;
+this sentence will be updated after the hands-on pass).
+
+**Step 7. Verify offline (recommended for data-governance records).**
+Disconnect from the network and work. Model inference, chats, and all
+qualcoder-mcp operations are local; LM Studio states it needs the
+internet only for model search/downloads, runtime downloads, and update
+checks (<https://lmstudio.ai/docs/app/offline>). A note that you
+verified this yourself is good evidence for a data-management plan.
+
+**What to expect (honest, unverified).** We have not yet evaluated
+local models with this server, which is why the feature is
+Experimental. From the published evidence on many-tool MCP use, expect
+a narrower workflow than with Claude: use the core toolset, work one
+document or one code at a time, and verify codings as you go. Long
+transcripts should be worked in sections. Multi-step batch operations
+(recode across a project, cross-case reports) are not realistic
+targets for local models today. Nothing leaves your machine; the
+tradeoff is that you supervise more, and until an evaluation exists,
+treat every result as needing review.
+
+Troubleshooting: a context overflow typically appears as the model
+ignoring tools, emitting malformed tool calls, or the host reporting an
+overflow; lower the tool surface (core mode), raise the context, or
+shorten the chat. After editing mcp.json or upgrading the package,
+toggle the server off and on or restart LM Studio (community-reported
+stdio lifecycle rough edges: lmstudio-bug-tracker issues #731, #732).
+
+---
+
+## Other MCP hosts
+
+Any MCP host that can run local stdio servers can host qualcoder-mcp
+with the same command/env pattern shown above. Recipes for other
+open-source hosts are planned once they have been tested hands-on;
+technically comfortable users can adapt the pattern today.
 
 ---
 
