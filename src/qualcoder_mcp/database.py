@@ -929,6 +929,83 @@ class QualcoderDatabase:
             }
         return {}
 
+    def _hierarchy_maps(self):
+        """(codes, cats) lookup maps for path/chain building.
+
+        codes: cid -> {name, catid, supercid} (supercid None when the
+        column is absent, i.e. v14/v15); cats: catid -> {name, supercatid}.
+        """
+        caps = getattr(self, "capabilities", None)
+        has_supercid = caps is not None and caps.has_supercid
+        if has_supercid:
+            code_rows = self.conn.execute(
+                "SELECT cid, name, catid, supercid FROM code_name").fetchall()
+        else:
+            code_rows = self.conn.execute(
+                "SELECT cid, name, catid FROM code_name").fetchall()
+        codes = {}
+        for row in code_rows:
+            codes[row["cid"]] = {
+                "name": row["name"],
+                "catid": row["catid"],
+                "supercid": row["supercid"] if has_supercid else None,
+            }
+        cats = {}
+        for row in self.conn.execute(
+                "SELECT catid, name, supercatid FROM code_cat").fetchall():
+            cats[row["catid"]] = {"name": row["name"],
+                                  "supercatid": row["supercatid"]}
+        return codes, cats
+
+    def _top_ancestor_cid(self, cid, codes) -> int:
+        """Walk supercid to the top ancestor CODE (cycle-safe)."""
+        seen = set()
+        current = cid
+        while current in codes and current not in seen:
+            seen.add(current)
+            parent = codes[current]["supercid"]
+            if parent is None or parent not in codes:
+                return current
+            current = parent
+        return current
+
+    def effective_category(self, cid, maps=None):
+        """(catid, name) of the code's TOP ANCESTOR code's category — how
+        master attributes sub-code counts (reports.py:287-313). (None,
+        None) for uncategorised chains; identical to the direct category
+        on v14/v15 (no supercid)."""
+        codes, cats = maps if maps is not None else self._hierarchy_maps()
+        top = self._top_ancestor_cid(cid, codes)
+        catid = codes.get(top, {}).get("catid")
+        if catid is None or catid not in cats:
+            return None, None
+        return catid, cats[catid]["name"]
+
+    def code_path(self, cid, maps=None) -> str:
+        """Rendered location like master's memo.py:255-274:
+        "Category > Sub-category > Parent code > Code"."""
+        codes, cats = maps if maps is not None else self._hierarchy_maps()
+        code_names = []
+        seen = set()
+        current = cid
+        while current in codes and current not in seen:
+            seen.add(current)
+            code_names.append(codes[current]["name"])
+            parent = codes[current]["supercid"]
+            if parent is None:
+                break
+            current = parent
+        top = current
+        cat_names = []
+        catid = codes.get(top, {}).get("catid")
+        cseen = set()
+        while catid in cats and catid not in cseen:
+            cseen.add(catid)
+            cat_names.append(cats[catid]["name"])
+            catid = cats[catid]["supercatid"]
+        return " > ".join(list(reversed(cat_names))
+                          + list(reversed(code_names)))
+
     def list_codes(self) -> List[Dict[str, Any]]:
         """Get all codes with their categories.
 
@@ -950,9 +1027,14 @@ class QualcoderDatabase:
             ORDER BY cat.name, c.name
         """)
 
+        caps = getattr(self, "capabilities", None)
+        has_supercid = caps is not None and caps.has_supercid
+        maps = self._hierarchy_maps() if has_supercid else None
+        code_map = maps[0] if maps else {}
+
         codes = []
         for row in cursor.fetchall():
-            codes.append({
+            entry = {
                 "id": row["cid"],
                 "name": row["name"],
                 "memo": row["memo"] or "",
@@ -961,7 +1043,17 @@ class QualcoderDatabase:
                 "date": row["date"],
                 "category": row["category_name"],
                 "category_id": row["category_id"]
-            })
+            }
+            if has_supercid:
+                # S5: a sub-code is never presented as merely
+                # "category: null" — its real location is exposed
+                supercid = code_map.get(row["cid"], {}).get("supercid")
+                entry["parent_code_id"] = supercid
+                entry["parent_code_name"] = (
+                    code_map.get(supercid, {}).get("name")
+                    if supercid is not None else None)
+                entry["path"] = self.code_path(row["cid"], maps)
+            codes.append(entry)
         return codes
 
     def list_categories(self) -> List[Dict[str, Any]]:
@@ -1050,7 +1142,7 @@ class QualcoderDatabase:
                 (code_id,)
             ).fetchone()["cnt"]
 
-            return {
+            details = {
                 "id": row["cid"],
                 "name": row["name"],
                 "memo": row["memo"] or "",
@@ -1065,6 +1157,16 @@ class QualcoderDatabase:
                     "total": text_count + image_count + av_count
                 }
             }
+            caps = getattr(self, "capabilities", None)
+            if caps is not None and caps.has_supercid:
+                maps = self._hierarchy_maps()
+                supercid = maps[0].get(code_id, {}).get("supercid")
+                details["parent_code_id"] = supercid
+                details["parent_code_name"] = (
+                    maps[0].get(supercid, {}).get("name")
+                    if supercid is not None else None)
+                details["path"] = self.code_path(code_id, maps)
+            return details
         except sqlite3.Error as e:
             _raise_query_error(e, "get_code_details", "Failed to retrieve code details")
 
@@ -1563,15 +1665,26 @@ class QualcoderDatabase:
             ORDER BY text_count DESC, c.name
         """)
 
+        caps = getattr(self, "capabilities", None)
+        has_supercid = caps is not None and caps.has_supercid
+        maps = self._hierarchy_maps() if has_supercid else None
+
         frequencies = []
         for row in cursor.fetchall():
-            frequencies.append({
+            entry = {
                 "code_id": row["cid"],
                 "code_name": row["name"],
                 "code_color": row["color"],
                 "category": row["category"],
                 "frequency": row["text_count"]
-            })
+            }
+            if has_supercid:
+                # S6: attribute each code to its TOP ANCESTOR code's
+                # category, as master's frequencies report does
+                # (reports.py:287-313); counts stay per-cid
+                _catid, cat_name = self.effective_category(row["cid"], maps)
+                entry["category"] = cat_name
+            frequencies.append(entry)
 
         total = sum(f["frequency"] for f in frequencies)
 

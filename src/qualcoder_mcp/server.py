@@ -5806,32 +5806,49 @@ def _resolve_names_ci(requested, available, kind: str):
 def _codebook_tree(ro_db):
     """Depth-first codebook walk: at each level, sub-categories and codes
     together, sorted case-insensitively by name (the GUI tree's resting
-    order). Yields (depth, kind, item) with kind 'category'|'code'."""
+    order). Yields (depth, kind, item) with kind 'category'|'code'.
+
+    Sub-codes (S7, v16+): after a code, its sub-codes are yielded one
+    level deeper, exactly as master's codebook re-parents them before
+    the walk (codebook.py:54-101). A top-level code has neither a
+    category nor a parent code."""
     cats = ro_db.list_categories()
     codes = ro_db.list_codes()
     child_cats: Dict[Any, list] = {}
     for c in cats:
         child_cats.setdefault(c["parent_id"], []).append(c)
+    code_children: Dict[Any, list] = {}
     cat_codes: Dict[Any, list] = {}
     for c in codes:
-        cat_codes.setdefault(c["category_id"], []).append(c)
+        parent_code = c.get("parent_code_id")
+        if parent_code is not None:
+            code_children.setdefault(parent_code, []).append(c)
+        else:
+            cat_codes.setdefault(c["category_id"], []).append(c)
+
+    def walk_code(code, depth):
+        yield depth, "code", code
+        for sub in sorted(code_children.get(code["id"], []),
+                          key=lambda s: s["name"].lower()):
+            yield from walk_code(sub, depth + 1)
 
     def walk(parent_id, depth):
         children = ([("category", c) for c in child_cats.get(parent_id, [])]
                     + [("code", c) for c in cat_codes.get(parent_id, [])])
         for kind, item in sorted(children,
                                  key=lambda kc: kc[1]["name"].lower()):
-            yield depth, kind, item
             if kind == "category":
+                yield depth, kind, item
                 yield from walk(item["id"], depth + 1)
+            else:
+                yield from walk_code(item, depth)
 
     yield from walk(None, 0)
 
 
 def _category_chain(cat_by_id, category_id):
-    """Category names, immediate parent first, up to the root — the exact
-    column order of QualCoder's coded-report CSV (report_codes.py:
-    1003-1030)."""
+    """Category names, immediate parent first, up to the root (the
+    category leg of the coded-report chain)."""
     chain = []
     seen = set()
     current = category_id
@@ -5843,6 +5860,26 @@ def _category_chain(cat_by_id, category_id):
         chain.append(cat["name"])
         current = cat["parent_id"]
     return chain
+
+
+def _code_report_chain(cat_by_id, code_by_id, cid):
+    """The coded-report Category-column chain for one code, following
+    master's categories_of_code (report_codes.py:1131-1175): parent CODE
+    names first (immediate parent upward), then the category lineage of
+    the TOP ancestor code, leaf to root. On v14/v15 rows (no parent
+    code info) this reduces to the plain category chain."""
+    path_codes = []
+    seen = set()
+    current = cid
+    while current in code_by_id and current not in seen:
+        seen.add(current)
+        parent = code_by_id[current].get("parent_code_id")
+        if parent is None or parent not in code_by_id:
+            break
+        path_codes.append(code_by_id[parent]["name"])
+        current = parent
+    top_catid = code_by_id.get(current, {}).get("category_id")
+    return path_codes + _category_chain(cat_by_id, top_catid)
 
 
 @mcp.tool()
@@ -6061,9 +6098,11 @@ def export_coded_segments_report(
 
     cats = ro_db.list_categories()
     cat_by_id = {c["id"]: c for c in cats}
-    code_cat = {c["id"]: c["category_id"] for c in all_codes}
+    code_by_id = {c["id"]: c for c in all_codes}
     result_cids = {r["cid"] for r in rows}
-    chains = {cid: _category_chain(cat_by_id, code_cat.get(cid))
+    # S8: chain = parent code names first, then the top ancestor's
+    # category lineage (master's categories_of_code)
+    chains = {cid: _code_report_chain(cat_by_id, code_by_id, cid)
               for cid in result_cids}
     max_depth = max((len(ch) for ch in chains.values()), default=0)
 
@@ -6227,18 +6266,34 @@ def export_frequencies_csv(output_path: str,
     child_cats: Dict[Any, list] = {}
     for c in cats:
         child_cats.setdefault(c["parent_id"], []).append(c)
+    # Sub-codes (S6/S7, v16+): nest under their parent CODE in the tree
+    # and attribute their counts to the top ancestor's category, as
+    # master's frequencies report does (reports.py:287-313, 575-622).
+    code_children: Dict[Any, list] = {}
     cat_codes: Dict[Any, list] = {}
     for c in codes:
-        cat_codes.setdefault(c["category_id"], []).append(c)
+        parent_code = c.get("parent_code_id")
+        if parent_code is not None:
+            code_children.setdefault(parent_code, []).append(c)
+        else:
+            cat_codes.setdefault(c["category_id"], []).append(c)
 
     def code_row_counts(cid):
         per = [counts.get((cid, coder), 0) for coder in coders]
         return per, sum(per)
 
+    def code_branch_counts(cid):
+        """This code plus all its sub-code descendants, per coder."""
+        per, _total = code_row_counts(cid)
+        for sub in code_children.get(cid, []):
+            sper = code_branch_counts(sub["id"])
+            per = [a + b for a, b in zip(per, sper)]
+        return per
+
     def subtree_counts(catid):
         per = [0] * len(coders)
         for c in cat_codes.get(catid, []):
-            cper, _ = code_row_counts(c["id"])
+            cper = code_branch_counts(c["id"])
             per = [a + b for a, b in zip(per, cper)]
         for sub in child_cats.get(catid, []):
             sper = subtree_counts(sub["id"])
@@ -6246,6 +6301,16 @@ def export_frequencies_csv(output_path: str,
         return per
 
     rows = [["Code Tree", "Id"] + coders + ["Total"]]
+
+    def emit_code(item, depth):
+        prefix = "--" * depth
+        per, total = code_row_counts(item["id"])
+        rows.append([f"{prefix}{item['name']}",
+                     f"cid:{item['id']}"]
+                    + [str(n) for n in per] + [str(total)])
+        for sub in sorted(code_children.get(item["id"], []),
+                          key=lambda s: s["name"].lower()):
+            emit_code(sub, depth + 1)
 
     def walk(parent_id, depth):
         children = ([("category", c) for c in child_cats.get(parent_id, [])]
@@ -6260,10 +6325,7 @@ def export_frequencies_csv(output_path: str,
                             + [str(n) for n in per] + [str(sum(per))])
                 walk(item["id"], depth + 1)
             else:
-                per, total = code_row_counts(item["id"])
-                rows.append([f"{prefix}{item['name']}",
-                             f"cid:{item['id']}"]
-                            + [str(n) for n in per] + [str(total)])
+                emit_code(item, depth)
 
     walk(None, 0)
     _write_csv_file(out_file, rows, quote_all=False,

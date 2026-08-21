@@ -163,6 +163,14 @@ class RefiQdaExporter:
         convention on both export and import), so referenced codes are
         emitted inside their full category chain.
 
+        Sub-codes (S9, v16+): a referenced sub-code is emitted NESTED
+        inside its parent code's codable Code element, recursively, with
+        the whole parent-code chain included, matching master's export
+        (refi.py:3228-3248; top-level condition :3279-3281). Master's
+        importer reconstructs supercid from codable children of codable
+        codes (refi.py:242-254), so a correct export round-trips instead
+        of silently flattening the hierarchy.
+
         Args:
             root: Root XML element
             suggestions: List of coding suggestions
@@ -176,9 +184,23 @@ class RefiQdaExporter:
         all_codes = {c["id"]: c for c in self.db.list_codes()}
         all_categories = {c["id"]: c for c in self.db.list_categories()}
 
-        # Which categories are needed? Walk each referenced code's chain up
-        needed_categories: Set[int] = set()
+        # Sub-codes: pull each referenced code's parent-code chain into the
+        # export too (the sub-code must nest inside its parent element)
+        needed_codes: Set[int] = set()
         for code_id in code_ids:
+            current = code_id
+            seen_codes: Set[int] = set()
+            while current in all_codes and current not in seen_codes:
+                seen_codes.add(current)
+                needed_codes.add(current)
+                parent = all_codes[current].get("parent_code_id")
+                if parent is None:
+                    break
+                current = parent
+
+        # Which categories are needed? Walk each needed code's chain up
+        needed_categories: Set[int] = set()
+        for code_id in needed_codes:
             code = all_codes.get(code_id)
             if not code:
                 continue
@@ -221,18 +243,29 @@ class RefiQdaExporter:
         for cat_id in needed_categories:
             _category_elem(cat_id)
 
-        # Emit the referenced codes inside their categories
-        for code_id in sorted(code_ids):
+        # Emit the needed codes: a top-level code goes inside its category
+        # chain (or Codes root); a sub-code nests inside its parent code's
+        # element, recursively (S9)
+        code_elems: Dict[int, ET.Element] = {}
+
+        def _code_elem(code_id: int):
+            if code_id in code_elems:
+                return code_elems[code_id]
             code = all_codes.get(code_id)
             if not code:
                 logger.warning(f"Could not export code {code_id}: not found")
-                continue
+                return None
+            parent_code = code.get("parent_code_id")
+            if parent_code is not None and parent_code in needed_codes:
+                parent_elem = _code_elem(parent_code)
+                if parent_elem is None:
+                    parent_elem = codes_elem
+            else:
+                cat_id = code.get("category_id")
+                parent_elem = (category_elems.get(cat_id, codes_elem)
+                               if cat_id is not None else codes_elem)
 
-            cat_id = code.get("category_id")
-            parent_elem = (category_elems.get(cat_id, codes_elem)
-                           if cat_id is not None else codes_elem)
-
-            code_elem = ET.SubElement(
+            elem = ET.SubElement(
                 parent_elem,
                 f"{{{NAMESPACE}}}Code",
                 attrib={
@@ -241,16 +274,19 @@ class RefiQdaExporter:
                     "isCodable": "true"
                 }
             )
-
             # Add color only when it is a valid RGBType value
             color = code.get("color")
             if color and _COLOR_RE.match(str(color)):
-                code_elem.set("color", str(color))
-
+                elem.set("color", str(color))
             # Add description (memo) only when non-empty
             if code.get("memo"):
-                desc_elem = ET.SubElement(code_elem, f"{{{NAMESPACE}}}Description")
+                desc_elem = ET.SubElement(elem, f"{{{NAMESPACE}}}Description")
                 desc_elem.text = _xml_safe(code["memo"])
+            code_elems[code_id] = elem
+            return elem
+
+        for code_id in sorted(needed_codes):
+            _code_elem(code_id)
 
     def _add_sources_section(
         self,
