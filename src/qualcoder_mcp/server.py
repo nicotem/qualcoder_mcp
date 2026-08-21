@@ -6396,9 +6396,79 @@ Provide a detailed case profile with specific examples from the data."""
 # Main entry point
 # ============================================================================
 
+# ============================================================================
+# Toolset modes (EXPERIMENTAL): QUALCODER_MCP_TOOLSET=core|full
+# ============================================================================
+# Local models break on large tool surfaces long before frontier models do:
+# tool-selection accuracy collapses as the menu grows, and the full 67-tool
+# schema payload alone exceeds default local context windows (see the
+# multi-host research dossiers). QUALCODER_MCP_TOOLSET=core registers only
+# the supervised-coding-loop subset below; the default remains the full
+# surface (backward compatible). Required for local models, optional
+# elsewhere. Resources and prompts are unaffected.
+
+CORE_TOOLSET = frozenset({
+    # project open/select
+    "list_available_projects", "select_project", "get_current_project",
+    "get_project_summary",
+    # file search and read-with-coding
+    "search_files", "analyze_file_with_coding",
+    # coded-text retrieval and frequencies
+    "search_coded_text", "get_coded_segments", "get_coding_frequencies",
+    # the supervised suggestion loop
+    "analyze_for_coding", "record_suggestions", "review_suggestions",
+    "edit_suggestion", "update_suggestion_status", "apply_codings",
+    # minimal codebook/memo writes a coding session needs
+    "create_code", "set_memo",
+    # the safety pair: workspace isolation and undo
+    "copy_project_to_workspace", "delete_coding", "list_backups",
+})
+
+_VALID_TOOLSET_MODES = ("full", "core")
+
+
+def _resolve_toolset_mode() -> str:
+    """Read QUALCODER_MCP_TOOLSET (default full); unknown values raise."""
+    raw = os.environ.get("QUALCODER_MCP_TOOLSET", "full").strip().lower()
+    if raw not in _VALID_TOOLSET_MODES:
+        raise ValueError(
+            f"Unknown QUALCODER_MCP_TOOLSET value {raw!r}: valid values "
+            f"are 'full' (default, all tools) and 'core' (the reduced "
+            f"supervised-coding set for local models)."
+        )
+    return raw
+
+
+def _apply_toolset(mode: str) -> Dict[str, Any]:
+    """Restrict the registered tool surface to the requested mode.
+
+    Returns the removed tools keyed by name so tests can restore them.
+    Idempotent for mode='full' (removes nothing).
+    """
+    removed: Dict[str, Any] = {}
+    if mode == "core":
+        for name in sorted(mcp._tool_manager._tools.keys()):
+            if name not in CORE_TOOLSET:
+                removed[name] = mcp._tool_manager._tools[name]
+                mcp.remove_tool(name)
+    active = len(mcp._tool_manager._tools)
+    logger.info(f"Toolset mode: {mode} ({active} tools registered)")
+    return removed
+
+
 def main():
     """Main entry point for the MCP server."""
     # Check for optional pre-configured project (Option B: Fixed Project)
+    # EXPERIMENTAL: reduced tool surface for local-model hosts. Fail
+    # loudly on unknown values; a silent fallback would give a researcher
+    # the wrong tool surface without their knowledge.
+    try:
+        toolset_mode = _resolve_toolset_mode()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    _apply_toolset(toolset_mode)
+
     db_path = os.environ.get("QUALCODER_PROJECT_PATH")
 
     if db_path:
