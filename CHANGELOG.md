@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added: QualCoder schema v14 through v17 support (sub-codes; capability probes)
+
+Ground-truthed against the unreleased QualCoder development tree
+(version string "QualCoder 4.0 Beta", schema v17) at pinned commit
+7b074d2, alongside the released 3.8.2 (schema v14). Highlights:
+
+- **Capability-probe gate**: write support and every version-dependent
+  recipe now key on column/table existence probes (upstream's own
+  technique), never on the version string. v14 through v17 write; a
+  REAL pre-v14 project refuses with corrected guidance; schemas newer
+  than v17 refuse unless QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA=1 is set
+  (then every write result carries a warning). get_current_project and
+  get_project_summary report a schema block with the probe results and
+  the write-support verdict.
+- **Sub-code support (v16+)**: create sub-codes
+  (create_code parent_code_id), move without hierarchy loss (both
+  parent pointers written together), merge with descendant-cycle
+  refusal and sub-code reparenting (plus QualCoder's merge provenance
+  memo and saved-graph cleanup), delete with branch preview and an
+  explicit cascade=true for whole-branch deletion; listings expose
+  parent_code_id/parent_code_name and a rendered path; frequencies
+  attribute sub-codes to their top ancestor's category; codebook,
+  coded-segments report chains and REFI-QDA export all preserve the
+  nesting (REFI round-trips into QualCoder's importer).
+- **Parity hardening**: whole-file case links standardized on
+  pos1=len(fulltext) with a dedupe that treats both historical
+  spellings as the same link; import normalizes lone CR too; backups
+  ignore sqlite sidecar files; backup notes version-scoped; journal
+  attribute domain and new system owner names tolerated everywhere.
+- **Concurrency posture for QualCoder 4.0**: the 4.0 development
+  builds removed the lock file, so an open 4.0 window cannot be
+  detected. Text-anchored writes now re-verify inside the write
+  transaction that the file text still matches what positions were
+  validated against, rolling back with a clear error if an editor
+  raced the write; docs and tool descriptions state the limitation
+  plainly.
+- **Nothing regresses for v14/3.8.2 users**: v14/v15 recipes are
+  byte-exact to 3.8.2 (verified by differential tests); all
+  hierarchy-aware behavior activates only when the project actually
+  has the sub-code column.
+- Deferred: pseudonymise_source moves to v0.11 (contract note only).
+
 ### Added (Experimental): multi-host support and the core toolset
 
 - **`QUALCODER_MCP_TOOLSET` environment variable** (`core` | `full`,

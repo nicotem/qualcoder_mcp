@@ -95,6 +95,31 @@ host and not capability-evaluated on local models.
 - **An MCP host**: Claude Desktop is the most common ([download here](https://claude.ai/download)); see "Choosing your AI host" above for alternatives
 - **Qualcoder** with at least one project created ([download here](https://github.com/ccbogel/QualCoder))
 
+## Supported QualCoder versions
+
+> qualcoder-mcp is ground-truthed against QualCoder 3.8.2, the latest released
+> version (project schema v14), and additionally verified against the unreleased
+> QualCoder development tree (version string "QualCoder 4.0 Beta") at commit
+> `7b074d2`, whose projects use schema v17. Project schemas v14 through v17 are
+> supported for reading and writing. Support is determined by inspecting the
+> project database itself (capability probes), not by version numbers, so
+> projects migrated by either QualCoder version work interchangeably.
+>
+> Because QualCoder 4.0 is not yet released, its behavior may change before
+> release. Claims about 4.0 compatibility are valid as of commit `7b074d2` and
+> will be re-verified against the final release. One known limitation: released
+> QualCoder versions signal "project open" through a lock file, which qualcoder-mcp
+> honors; the 4.0 development builds no longer use a lock file, so qualcoder-mcp
+> cannot detect that a 4.0 build has the project open. Do not run qualcoder-mcp
+> writes while any QualCoder window has the same project open.
+
+Sub-codes (a code nested under another code, schema v16 and newer) are
+fully supported: creating them, moving and merging without hierarchy
+loss, branch-aware deletion, and nesting-aware listings, reports,
+codebook and REFI-QDA exports. Projects newer than schema v17 refuse
+writes until this server has been verified against them (an explicit
+override exists for the adventurous; the tool output explains it).
+
 ## Installation
 
 ### Recommended: install from PyPI
