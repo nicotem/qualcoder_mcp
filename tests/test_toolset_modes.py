@@ -73,6 +73,24 @@ def _text_of(result) -> str:
                    if getattr(b, "type", None) == "text")
 
 
+def _server_env(home: Path, project: Path, toolset=None) -> dict:
+    """Subprocess env for the spawned server, Windows-portable.
+
+    Start from os.environ.copy() rather than a minimal dict: Windows
+    Python subprocesses crash at startup without SYSTEMROOT (and need
+    TEMP etc.), and expanduser() there uses USERPROFILE, not HOME —
+    the exact pattern the Windows-green transport tests use.
+    """
+    env = os.environ.copy()
+    env["HOME"] = str(home)          # POSIX ~
+    env["USERPROFILE"] = str(home)   # Windows ~
+    env["QUALCODER_PROJECT_PATH"] = str(project)
+    env.pop("QUALCODER_MCP_TOOLSET", None)
+    if toolset is not None:
+        env["QUALCODER_MCP_TOOLSET"] = toolset
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Unit level
 # ---------------------------------------------------------------------------
@@ -133,17 +151,16 @@ class TestStartupFailsLoudly:
 
     def test_unknown_toolset_exits_nonzero_with_clear_message(self, tmp_path):
         project = _build_project(tmp_path)
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": str(tmp_path / "home"),
-            "QUALCODER_PROJECT_PATH": str(project),
-            "QUALCODER_MCP_TOOLSET": "banana",
-        }
-        (tmp_path / "home").mkdir()
+        home = tmp_path / "home"
+        home.mkdir()
+        env = _server_env(home, project, toolset="banana")
         proc = subprocess.run(
             [str(VENV_PY), "-m", "qualcoder_mcp.server"],
-            env=env, capture_output=True, text=True, timeout=60,
+            env=env, capture_output=True, timeout=60,
             cwd=str(tmp_path),
+            # decode captured output as UTF-8 explicitly: Windows would
+            # otherwise use cp1252 and can garble server banners
+            encoding="utf-8", errors="replace",
         )
         assert proc.returncode == 1
         assert "Unknown QUALCODER_MCP_TOOLSET" in proc.stderr
@@ -164,12 +181,7 @@ class TestCoreModeEndToEnd:
         params = StdioServerParameters(
             command=str(VENV_PY),
             args=["-m", "qualcoder_mcp.server"],
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "HOME": str(home),
-                "QUALCODER_PROJECT_PATH": str(project),
-                "QUALCODER_MCP_TOOLSET": "core",
-            },
+            env=_server_env(home, project, toolset="core"),
         )
 
         async def drive():

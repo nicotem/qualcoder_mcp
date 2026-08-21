@@ -62,11 +62,15 @@ def _session_lists(tmp_path, toolset_value):
     project = _project(tmp_path)
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": str(home),
-        "QUALCODER_PROJECT_PATH": str(project),
-    }
+    # Windows-portable subprocess env: inherit os.environ (a minimal dict
+    # drops SYSTEMROOT, which crashes Windows Python children at startup)
+    # and set USERPROFILE alongside HOME (expanduser() on Windows), the
+    # same pattern as the Windows-green transport tests.
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env["QUALCODER_PROJECT_PATH"] = str(project)
+    env.pop("QUALCODER_MCP_TOOLSET", None)
     if toolset_value is not None:
         env["QUALCODER_MCP_TOOLSET"] = toolset_value
     params = StdioServerParameters(command=str(VENV_PY),
