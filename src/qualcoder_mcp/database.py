@@ -929,6 +929,49 @@ class QualcoderDatabase:
             }
         return {}
 
+    # ------------------------------------------------------------------
+    # C7: data-precondition re-check for text-anchored writes.
+    # The lock gate detects released QualCoder (3.x) only; QualCoder 4.0
+    # development builds removed the lock protocol entirely, so a
+    # concurrent editor there is undetectable. Verifying that the
+    # fulltext still matches what positions were validated against,
+    # INSIDE the write transaction (after the write statements have
+    # taken SQLite's reserved lock, so no other writer can slip in
+    # afterwards), converts the undetectable-writer race into a
+    # detectable data-precondition failure for the one write class that
+    # can actually corrupt (the snapshot-rewrite editor,
+    # edit_textfile.py:596). Probes data, not versions: works against
+    # any QualCoder.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def fingerprint_of_text(text: str):
+        """(length, sha256) of a fulltext, as captured at validation."""
+        return (len(text),
+                hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+    def fulltext_fingerprint(self, file_id: int):
+        """Current (length, sha256) of a file's fulltext, or None."""
+        row = self.conn.execute(
+            "SELECT fulltext FROM source WHERE id = ?", (file_id,)
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return self.fingerprint_of_text(row[0])
+
+    def verify_fulltext_unchanged(self, file_id: int, fingerprint) -> None:
+        """Raise if the file's fulltext no longer matches the captured
+        fingerprint (C7). Call inside the write transaction, after the
+        write statements, before commit."""
+        current = self.fulltext_fingerprint(file_id)
+        if current != fingerprint:
+            raise ValueError(
+                f"The text of file id {file_id} changed while this write "
+                f"was being prepared (another program, possibly an open "
+                f"QualCoder window, edited it). Nothing was written: "
+                f"re-read the file and retry. Note that QualCoder 4.0 "
+                f"development builds cannot be detected by the lock gate.")
+
     def _hierarchy_maps(self):
         """(codes, cats) lookup maps for path/chain building.
 
@@ -4512,6 +4555,10 @@ class QualcoderDatabase:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (file_id, start_pos, end_pos, memo, owner, date_str)
             )
+            # C7: the INSERT above took the write lock; re-verify the
+            # fulltext the positions were validated against before commit
+            self.verify_fulltext_unchanged(
+                file_id, self.fingerprint_of_text(fulltext))
             if auto_commit:
                 self.conn.commit()
             anid = cursor.lastrowid
