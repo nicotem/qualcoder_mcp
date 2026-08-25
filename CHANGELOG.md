@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0-alpha] - 2026-08-25
+
+QualCoder schema v14 through v17 support with full sub-code handling,
+determined by capability probes rather than version strings, plus the
+Experimental multi-host support (core toolset, LM Studio and API-key
+recipes, the data-governance ladder). Ground-truthed against released
+3.8.2 and the unreleased 4.0 Beta at pinned commit 7b074d2, and gated
+through QA, security review, and six-platform CI.
+
 ### Added: QualCoder schema v14 through v17 support (sub-codes; capability probes)
 
 Ground-truthed against the unreleased QualCoder development tree
