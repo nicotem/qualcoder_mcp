@@ -851,12 +851,19 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Annotations, category merge, case creation, attribute schema and values
 - ✅ Backup retention (`prune_backups`) and opt-in CSV formula sanitization
 
-**Completed in v0.9.0 (this release):**
+**Completed in v0.9.0:**
 - ✅ **PyPI packaging** — `pip install qualcoder-mcp` (or a one-command `pipx`/`uvx` install): no git clone, no manual venv, and updates via `pip install --upgrade`
 - ✅ Whole-codebase security audit with three fixes; SHA-pinned CI actions
 - ✅ Upgrade guide for existing (git-install) testers
 
-**Planned for v0.10:**
+**Completed in v0.10.0 (this release):**
+- ✅ **QualCoder schema v14 through v17 support**, including full sub-code handling, determined by capability probes rather than version numbers
+- ✅ Write protection for lockless QualCoder 4.0 development builds (text re-verified inside the write transaction)
+- ✅ **Multi-host support (Experimental)**: the reduced core toolset (`QUALCODER_MCP_TOOLSET=core`) plus setup recipes for [LM Studio (fully local)](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#lm-studio-fully-local-experimental) and [Claude Code with an Anthropic API key](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#claude-code-with-an-anthropic-api-key-experimental)
+
+**Planned for v0.11:**
+- 🤝 QualCoder 4.0 interoperability conventions (memo privacy, attribution, coexistence with QualCoder's own built-in AI)
+- 🕵️ Pseudonymisation tooling (retroactive, position-preserving)
 - 🤝 Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
 - 🖼️ Media region coding (images, audio/video, PDF)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
