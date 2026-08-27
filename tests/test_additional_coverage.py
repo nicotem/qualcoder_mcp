@@ -658,7 +658,7 @@ class TestApplyCodingsRollback:
 
         # Call apply_codings -- should fail and roll back
         result = server.apply_codings(
-            session_id=session.session_id,
+            coding_session_id=session.session_id,
             create_backup=False,
             owner="Rollback Tester"
         )
@@ -732,7 +732,7 @@ class TestRWConnectionDowngrade:
 
         # Apply codings (should succeed)
         result = server.apply_codings(
-            session_id=session.session_id,
+            coding_session_id=session.session_id,
             create_backup=False,
             owner="Downgrade Tester"
         )
@@ -767,7 +767,7 @@ class TestRWConnectionDowngrade:
 
         # Apply codings (should fail)
         result = server.apply_codings(
-            session_id=session.session_id,
+            coding_session_id=session.session_id,
             create_backup=False,
             owner="Downgrade Tester"
         )
@@ -803,7 +803,7 @@ class TestRWConnectionDowngrade:
 
         # Apply codings (should succeed and downgrade)
         server.apply_codings(
-            session_id=session.session_id,
+            coding_session_id=session.session_id,
             create_backup=False,
             owner="Write Rejection Tester"
         )

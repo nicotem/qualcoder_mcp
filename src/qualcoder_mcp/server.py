@@ -1442,7 +1442,7 @@ def export_code_report(code_name: str) -> str:
 @_tool_guard
 def export_refi_qda(
     output_path: str,
-    session_id: Optional[str] = None,
+    coding_session_id: Optional[str] = None,
     overwrite: bool = False
 ) -> str:
     """Export codings as a REFI-QDA .qdpx file for other QDA software.
@@ -1453,9 +1453,9 @@ def export_refi_qda(
     descriptions).
 
     Two modes:
-    - Default (no session_id): exports ALL text codings of the currently
+    - Default (no coding_session_id): exports ALL text codings of the currently
       open project.
-    - With session_id: exports that AI coding session's suggestions
+    - With coding_session_id: exports that AI coding session's suggestions
       (all statuses) — useful for reviewing suggestions in another tool
       before applying them.
 
@@ -1472,7 +1472,7 @@ def export_refi_qda(
     Args:
         output_path: Where to write the .qdpx file (must end in .qdpx; the
                      directory must already exist)
-        session_id: Optional AI coding session to export instead of the
+        coding_session_id: Optional AI coding session to export instead of the
                     project's codings
         overwrite: Allow replacing an existing file (default: False)
 
@@ -1482,6 +1482,10 @@ def export_refi_qda(
     Example:
         "Export my codings as REFI-QDA to ~/Desktop/study.qdpx"
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     from .refi_export import RefiQdaExporter
 
     ro_db = get_db()
@@ -2113,6 +2117,7 @@ action_required: {action_required}
 📊 **ANALYSIS SESSION CREATED**
 
 Session ID: `{session.session_id}`
+(pass it to the other coding tools as coding_session_id)
 
 **Analysis Parameters:**
 - Files: {len(files_to_analyze)} files ({', '.join(f['name'] for f in files_to_analyze)})
@@ -2147,7 +2152,8 @@ Once Claude records and presents suggestions, you can:
     # banner is preserved in `instructions` (and still contains the literal
     # `qualcoder_open: true` / `action_required:` markers).
     envelope: Dict[str, Any] = {
-        "session_id": session.session_id,
+        "coding_session_id": session.session_id,
+        "session_id": session.session_id,  # deprecated duplicate of coding_session_id (kept one release)
         # Always present (false when clear), matching get_current_project's
         # always-present field so structured consumers get a consistent
         # shape (QA6-1)
@@ -2219,7 +2225,7 @@ def _validate_proposal_evidence(ro_db, items, file_cache):
 @mcp.tool()
 @_tool_guard
 def record_suggestions(
-    session_id: str,
+    coding_session_id: str,
     suggestions: List[Dict[str, Any]],
     replace: bool = False
 ) -> str:
@@ -2257,7 +2263,7 @@ def record_suggestions(
     suggestions.
 
     Args:
-        session_id: The session ID from analyze_for_coding
+        coding_session_id: The session ID from analyze_for_coding
         suggestions: List of suggestion objects with keys:
             file_id (int, required), code_id (int) or code_name (str),
             start_pos/end_pos (int, optional if the excerpt is unique),
@@ -2282,11 +2288,15 @@ def record_suggestions(
         editor (reports and exports are unaffected).
 
     Example:
-        record_suggestions(session_id="...", suggestions=[
+        record_suggestions(coding_session_id="...", suggestions=[
             {"file_id": 4, "code_name": "Burnout", "start_pos": 96,
              "end_pos": 129, "segment_text": "by Thursday I am running on fumes",
              "reasoning": "Explicit exhaustion metaphor", "confidence": 0.9}])
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({
             "error": f"Session {session_id} not found",
@@ -2441,7 +2451,8 @@ def record_suggestions(
     session_manager.save_session(session)
 
     result = {
-        "session_id": session_id,
+        "coding_session_id": session_id,
+        "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
         "recorded_count": len(recorded),
         "recorded": recorded,
         "rejected_count": len(rejected),
@@ -2468,7 +2479,7 @@ def record_suggestions(
 @mcp.tool()
 @_tool_guard
 def review_suggestions(
-    session_id: str,
+    coding_session_id: str,
     suggestion_guids: Optional[List[str]] = None,
     show_context: bool = True
 ) -> str:
@@ -2494,7 +2505,7 @@ def review_suggestions(
     — do not offer to undo their decision.
 
     Args:
-        session_id: The session ID from analyze_for_coding
+        coding_session_id: The session ID from analyze_for_coding
         suggestion_guids: Optional list of specific suggestion GUIDs to review
         show_context: Include surrounding text context (default: True;
                       pass False for a compact listing)
@@ -2506,6 +2517,10 @@ def review_suggestions(
         "Show me more details about suggestion abc-123-def"
         "Review all pending suggestions with context"
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
 
@@ -2570,7 +2585,7 @@ def review_suggestions(
 @mcp.tool()
 @_tool_guard
 def edit_suggestion(
-    session_id: str,
+    coding_session_id: str,
     suggestion_guid: str,
     start_pos: Optional[int] = None,
     end_pos: Optional[int] = None,
@@ -2611,7 +2626,7 @@ def edit_suggestion(
     (change the decision with update_suggestion_status, then edit).
 
     Args:
-        session_id: The session ID from analyze_for_coding
+        coding_session_id: The session ID from analyze_for_coding
         suggestion_guid: The suggestion to edit
         start_pos: New start position (code-point offset, 0-based)
         end_pos: New end position (end-exclusive)
@@ -2637,6 +2652,10 @@ def edit_suggestion(
         positions_corrected if the excerpt was re-located. If it
         contains `position_safety_warning`, relay it to the user.
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({
             "error": f"Session {session_id} not found",
@@ -2713,7 +2732,8 @@ def edit_suggestion(
 
     ro_db = get_db()
     changes: Dict[str, Any] = {}
-    result: Dict[str, Any] = {"session_id": session_id,
+    result: Dict[str, Any] = {"coding_session_id": session_id,
+                              "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
                               "guid": sugg.guid}
 
     # --- code change (existing codes only, record_suggestions rules) ---
@@ -2874,7 +2894,7 @@ def edit_suggestion(
 @mcp.tool()
 @_tool_guard
 def update_suggestion_status(
-    session_id: str,
+    coding_session_id: str,
     approve: Optional[List[str]] = None,
     reject: Optional[List[str]] = None
 ) -> str:
@@ -2889,7 +2909,7 @@ def update_suggestion_status(
     use delete_coding.
 
     Args:
-        session_id: The session ID from analyze_for_coding
+        coding_session_id: The session ID from analyze_for_coding
         approve: List of suggestion GUIDs the user approved
         reject: List of suggestion GUIDs the user rejected
 
@@ -2899,9 +2919,13 @@ def update_suggestion_status(
 
     Example:
         User says "the first two look right, drop the third" ->
-        update_suggestion_status(session_id, approve=[guid1, guid2],
+        update_suggestion_status(coding_session_id, approve=[guid1, guid2],
         reject=[guid3])
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
 
@@ -2948,7 +2972,7 @@ Use `apply_codings` with session ID `{session_id}` to write approved suggestions
 @mcp.tool()
 @_tool_guard
 def apply_codings(
-    session_id: str,
+    coding_session_id: str,
     create_backup: bool = True,
     owner: str = "AI Coding Assistant"
 ) -> str:
@@ -2980,7 +3004,7 @@ def apply_codings(
       the codings may render shifted in QualCoder's editor.
 
     Args:
-        session_id: The session ID with approved suggestions
+        coding_session_id: The session ID with approved suggestions
         create_backup: Create timestamped backup before writing (default: True)
         owner: Coder name for attribution (default: "AI Coding Assistant")
 
@@ -2991,6 +3015,10 @@ def apply_codings(
         "Apply the approved codings to the project"
         "Write these codings to the database"
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
 
@@ -3915,14 +3943,14 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
 
 @mcp.tool()
 @_tool_guard
-def get_coding_session_info(session_id: str) -> str:
+def get_coding_session_info(coding_session_id: str) -> str:
     """Get detailed information about a coding session.
 
     Shows all the suggestions, statistics, and metadata for a session.
     Useful for reviewing what was suggested before exporting.
 
     Args:
-        session_id: The session ID to query
+        coding_session_id: The session ID to query
 
     Returns:
         JSON with complete session details including all suggestions
@@ -3931,6 +3959,10 @@ def get_coding_session_info(session_id: str) -> str:
         "Show me session abc123"
         "What's in coding session xyz789?"
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     try:
         # Load session
         if not session_manager.session_exists(session_id):
@@ -3941,8 +3973,12 @@ def get_coding_session_info(session_id: str) -> str:
 
         session = session_manager.load_session(session_id)
 
-        # Return full session data
-        return json.dumps(session.to_dict(), indent=2)
+        # Return full session data. The on-disk format keeps its
+        # "session_id" key (internal schema unchanged); the API-facing
+        # primary key is coding_session_id.
+        payload = {"coding_session_id": session.session_id}
+        payload.update(session.to_dict())
+        return json.dumps(payload, indent=2)
 
     except Exception as e:
         logger.error(f"Error in get_coding_session_info: {e}")
@@ -3985,6 +4021,9 @@ def list_coding_sessions(
                 }
             }, indent=2)
 
+        for entry in sessions:
+            if isinstance(entry, dict) and "session_id" in entry:
+                entry["coding_session_id"] = entry["session_id"]
         return json.dumps({
             "session_count": len(sessions),
             "sessions": sessions
@@ -3997,13 +4036,13 @@ def list_coding_sessions(
 
 @mcp.tool()
 @_tool_guard
-def delete_coding_session(session_id: str) -> str:
+def delete_coding_session(coding_session_id: str) -> str:
     """Delete a saved coding session.
 
     Permanently removes a session file from disk. Use with caution!
 
     Args:
-        session_id: The session ID to delete
+        coding_session_id: The session ID to delete
 
     Returns:
         JSON with success status
@@ -4011,6 +4050,10 @@ def delete_coding_session(session_id: str) -> str:
     Example:
         "Delete session abc123"
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     try:
         deleted = session_manager.delete_session(session_id)
 
@@ -4018,7 +4061,8 @@ def delete_coding_session(session_id: str) -> str:
             return json.dumps({
                 "success": True,
                 "message": f"Session {session_id} deleted",
-                "session_id": session_id
+                "coding_session_id": session_id,
+                "session_id": session_id  # deprecated duplicate of coding_session_id (kept one release)
             }, indent=2)
         else:
             return json.dumps({
@@ -4140,7 +4184,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "Be specific in your instruction for better results",
                 "Start with one file to test before batch coding",
                 "Use min_confidence to filter low-quality suggestions",
-                "Save the session_id - you'll need it for all follow-up actions"
+                "Save the session id and pass it to every follow-up tool as coding_session_id"
             ]
         },
         "apply_codings": {
@@ -4262,7 +4306,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
 
 @mcp.tool()
 @_tool_guard
-def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
+def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
                   replace: bool = False) -> str:
     """Record BRAND-NEW code proposals discovered in the data (inductive
     coding). Writes NOTHING to the project database — proposals live in
@@ -4276,7 +4320,7 @@ def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
     the approved ones.
 
     Args:
-        session_id: The session ID from analyze_for_coding
+        coding_session_id: The session ID from analyze_for_coding
         proposals: List of proposal objects with keys:
             name (required) — the proposed code name
             memo — the code definition (what belongs under this code)
@@ -4299,6 +4343,10 @@ def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
         contains `position_safety_warning`, you MUST relay it to the
         user before proceeding.
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({
             "error": f"Session {session_id} not found",
@@ -4390,7 +4438,8 @@ def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
     session_manager.save_session(session)
 
     result: Dict[str, Any] = {
-        "session_id": session_id,
+        "coding_session_id": session_id,
+        "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
         "recorded_count": len(recorded),
         "recorded": recorded,
         "rejected_count": len(rejected),
@@ -4421,7 +4470,7 @@ def propose_codes(session_id: str, proposals: List[Dict[str, Any]],
 
 @mcp.tool()
 @_tool_guard
-def review_proposals(session_id: str,
+def review_proposals(coding_session_id: str,
                      proposal_guids: Optional[List[str]] = None,
                      show_examples: bool = False) -> str:
     """Review proposed codes in detail before deciding on them.
@@ -4431,10 +4480,14 @@ def review_proposals(session_id: str,
     show_examples) the evidence spans.
 
     Args:
-        session_id: The session ID
+        coding_session_id: The session ID
         proposal_guids: Specific proposals to show (default: all)
         show_examples: Include the evidence segments (default: False)
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
     session = session_manager.load_session(session_id)
@@ -4474,7 +4527,7 @@ def review_proposals(session_id: str,
 
 @mcp.tool()
 @_tool_guard
-def update_proposal(session_id: str, proposal_guid: str,
+def update_proposal(coding_session_id: str, proposal_guid: str,
                     name: Optional[str] = None,
                     color: Optional[str] = None,
                     category: Optional[str] = None,
@@ -4493,7 +4546,7 @@ def update_proposal(session_id: str, proposal_guid: str,
     the real code with the codebook tools instead.
 
     Args:
-        session_id: The session ID
+        coding_session_id: The session ID
         proposal_guid: The proposal to refine
         name: New name (collision flag is refreshed)
         color: New #RRGGBB colour
@@ -4503,6 +4556,10 @@ def update_proposal(session_id: str, proposal_guid: str,
             [{file_id, start_pos, end_pos, segment_text}] — positions
             optional when the excerpt is unique in the file
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
     session = session_manager.load_session(session_id)
@@ -4604,7 +4661,7 @@ def update_proposal(session_id: str, proposal_guid: str,
 
 @mcp.tool()
 @_tool_guard
-def merge_proposals(session_id: str, from_proposal_guid: str,
+def merge_proposals(coding_session_id: str, from_proposal_guid: str,
                     into_proposal_guid: str) -> str:
     """Combine two code PROPOSALS before creation.
 
@@ -4615,10 +4672,14 @@ def merge_proposals(session_id: str, from_proposal_guid: str,
     source proposal is marked rejected so it is never created.
 
     Args:
-        session_id: The session ID
+        coding_session_id: The session ID
         from_proposal_guid: The proposal merged away (becomes rejected)
         into_proposal_guid: The proposal that absorbs the evidence
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
     session = session_manager.load_session(session_id)
@@ -4659,7 +4720,7 @@ def merge_proposals(session_id: str, from_proposal_guid: str,
 
 @mcp.tool()
 @_tool_guard
-def update_proposal_status(session_id: str,
+def update_proposal_status(coding_session_id: str,
                            approve: Optional[List[str]] = None,
                            reject: Optional[List[str]] = None) -> str:
     """Approve or reject code proposals — record the USER'S decisions.
@@ -4670,10 +4731,14 @@ def update_proposal_status(session_id: str,
     proposals (and their evidence) are simply never created.
 
     Args:
-        session_id: The session ID
+        coding_session_id: The session ID
         approve: Proposal GUIDs the user approved
         reject: Proposal GUIDs the user rejected
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
     session = session_manager.load_session(session_id)
@@ -4691,7 +4756,7 @@ def update_proposal_status(session_id: str,
 
 @mcp.tool()
 @_tool_guard
-def create_proposed_codes(session_id: str,
+def create_proposed_codes(coding_session_id: str,
                           apply_coded_segments: bool = False,
                           create_backup: bool = True) -> str:
     """Create the APPROVED code proposals in the project codebook.
@@ -4717,7 +4782,7 @@ def create_proposed_codes(session_id: str,
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
 
     Args:
-        session_id: The session with approved proposals
+        coding_session_id: The session with approved proposals
         apply_coded_segments: Also write the evidence spans as codings
                               (default: False — codes only)
         create_backup: Create a timestamped backup before writing (default True)
@@ -4727,6 +4792,10 @@ def create_proposed_codes(session_id: str,
         codings applied (if any), and per-proposal failures. If it
         contains `position_safety_warning`, relay it to the user.
     """
+    # Bridge fix: some MCP middleware strips arguments named
+    # 'session_id' (reserved for its own routing); the tool
+    # argument is coding_session_id, aliased for the body.
+    session_id = coding_session_id
     if not session_manager.session_exists(session_id):
         return json.dumps({"error": f"Session {session_id} not found"})
     session = session_manager.load_session(session_id)

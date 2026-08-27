@@ -470,7 +470,7 @@ def test_write_path_approval_flow(write_project):
             sid = m.group(1)
 
             rec = json.loads(text_of(await s.call_tool("record_suggestions", {
-                "session_id": sid,
+                "coding_session_id": sid,
                 "suggestions": [{
                     "file_id": 1,
                     "code_name": "Coping",
@@ -484,11 +484,11 @@ def test_write_path_approval_flow(write_project):
 
             # update_suggestion_status returns formatted text, not JSON.
             upd = text_of(await s.call_tool("update_suggestion_status", {
-                "session_id": sid, "approve": [guid],
+                "coding_session_id": sid, "approve": [guid],
             }))
 
             applied = text_of(await s.call_tool("apply_codings", {
-                "session_id": sid, "create_backup": True,
+                "coding_session_id": sid, "create_backup": True,
             }))
 
             # Independent verification: read Coping segments back over the wire.

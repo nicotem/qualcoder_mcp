@@ -213,7 +213,7 @@ class TestCoreModeEndToEnd:
 
                     out = _text_of(await session.call_tool(
                         "record_suggestions", {
-                            "session_id": sid,
+                            "coding_session_id": sid,
                             "suggestions": [{
                                 "file_id": 1, "code_name": "Stress",
                                 "segment_text":
@@ -227,24 +227,24 @@ class TestCoreModeEndToEnd:
                     guid = rec["recorded"][0]["guid"]
 
                     out = _text_of(await session.call_tool(
-                        "review_suggestions", {"session_id": sid}))
+                        "review_suggestions", {"coding_session_id": sid}))
                     assert "Stress" in out
 
                     out = _text_of(await session.call_tool(
                         "edit_suggestion", {
-                            "session_id": sid, "suggestion_guid": guid,
+                            "coding_session_id": sid, "suggestion_guid": guid,
                             "use_alternative": "longer",
                         }))
                     assert json.loads(out).get("success") is True
 
                     out = _text_of(await session.call_tool(
                         "update_suggestion_status",
-                        {"session_id": sid, "approve": [guid]}))
+                        {"coding_session_id": sid, "approve": [guid]}))
                     assert "error" not in out.lower() or "approved" in out
 
                     out = _text_of(await session.call_tool(
                         "apply_codings",
-                        {"session_id": sid, "create_backup": True}))
+                        {"coding_session_id": sid, "create_backup": True}))
                     assert "CODINGS APPLIED" in out
 
                     # undo half of the safety pair works too
@@ -255,7 +255,7 @@ class TestCoreModeEndToEnd:
                     # an excluded tool is genuinely not callable
                     result = await session.call_tool(
                         "propose_codes",
-                        {"session_id": sid, "proposals": [{"name": "X"}]})
+                        {"coding_session_id": sid, "proposals": [{"name": "X"}]})
                     blob = _text_of(result).lower()
                     assert result.isError or "unknown tool" in blob \
                         or "not found" in blob

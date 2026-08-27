@@ -217,7 +217,7 @@ class TestUnhappyPaths:
 
         # session-mode REFI export refuses too
         exp = json.loads(server.export_refi_qda(
-            str(tmp_path / "x.qdpx"), session_id=sid))
+            str(tmp_path / "x.qdpx"), coding_session_id=sid))
         assert "different project" in exp["error"]
 
     def test_toctou_qualcoder_opens_mid_write(self, setup_server,

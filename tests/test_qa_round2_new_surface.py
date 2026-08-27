@@ -535,7 +535,7 @@ class TestExportRefiQda:
         server.switch_project(qualcoder_db_path)
 
         out_path = tmp_path / "stale.qdpx"
-        out = json.loads(server.export_refi_qda(str(out_path), session_id=sid))
+        out = json.loads(server.export_refi_qda(str(out_path), coding_session_id=sid))
         assert "Export validation failed" in out["error"]
         assert not out_path.exists()   # never a partial archive
 
@@ -543,7 +543,7 @@ class TestExportRefiQda:
                                              qualcoder_db_path, tmp_path):
         sid = _sid()
         out = json.loads(server.export_refi_qda(
-            str(tmp_path / "empty_session.qdpx"), session_id=sid))
+            str(tmp_path / "empty_session.qdpx"), coding_session_id=sid))
         assert "no suggestions" in out["error"]
 
         _exec(qualcoder_db_path, "DELETE FROM code_text")

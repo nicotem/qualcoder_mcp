@@ -254,7 +254,7 @@ class TestInductiveLoop:
         import uuid
         sid = str(uuid.uuid4())
         v07 = {
-            "session_id": sid,
+            "session_id": sid,   # on-disk session format: key UNCHANGED
             "created_at": "2026-07-10T10:00:00",
             "last_modified": "2026-07-10T10:00:00",
             "project_path": server.current_project_path,

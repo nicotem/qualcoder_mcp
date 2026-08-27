@@ -45,11 +45,11 @@ def _exec(project_path, query, args=()):
     conn.close()
 
 
-def _export_and_validate(refi_schema, tmp_path, name, session_id=None):
+def _export_and_validate(refi_schema, tmp_path, name, coding_session_id=None):
     """Run the export tool and schema-validate the project.qde inside."""
     out_file = tmp_path / f"{name}.qdpx"
     result = json.loads(server.export_refi_qda(
-        str(out_file), session_id=session_id, overwrite=True))
+        str(out_file), coding_session_id=coding_session_id, overwrite=True))
     assert result.get("success") is True, result
     xml_text = zipfile.ZipFile(out_file).read("project.qde").decode("utf-8")
     # Raises XMLSchemaValidationError with a precise diagnosis on failure
@@ -157,4 +157,4 @@ class TestExportValidatesAgainstXsd:
         }]))
         assert rec["recorded_count"] == 1
         _export_and_validate(refi_schema, tmp_path, "session",
-                             session_id=sid)
+                             coding_session_id=sid)
