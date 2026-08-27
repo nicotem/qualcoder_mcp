@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1-alpha] - 2026-08-31
+
+### Fixed: session tools unusable behind middleware that reserves `session_id`
+
+Field bug from live testing: some MCP middleware (verified with
+Anthropic's remote-devices bridge, but the collision class applies to
+ANY middleware that reserves the name for its own routing) STRIPS a
+tool argument named `session_id` before it reaches the server. The
+server then received the call without that key, which broke the entire
+suggest/review/apply and proposal pipelines for anyone behind such a
+bridge. Sibling parameters arrived intact; only `session_id` vanished;
+clean stdio was unaffected (our transport suite proves the argument
+arrives there).
+
+- **All 14 session tools renamed their parameter `session_id` to
+  `coding_session_id`**: record_suggestions, review_suggestions,
+  edit_suggestion, update_suggestion_status, apply_codings,
+  get_coding_session_info, delete_coding_session, export_refi_qda,
+  propose_codes, review_proposals, update_proposal, merge_proposals,
+  update_proposal_status, create_proposed_codes. Docstrings and
+  examples updated; analyze_for_coding's banner names the parameter.
+- **Responses**: envelopes and results now emit `coding_session_id` as
+  the primary key and keep `session_id` as a DEPRECATED duplicate for
+  one release (responses are not stripped; the duplicate eases
+  transition for scripted consumers). The duplicate will be removed in
+  a future release.
+- **On-disk session files are unchanged** (the internal JSON schema
+  keeps its `session_id` key); pre-rename session files work through
+  the renamed tools without migration (verified by test).
+- Swept all tools for other commonly-reserved routing names
+  (`request_id`, `conversation_id`, `user_id`, `context`, `metadata`):
+  none exist as tool arguments.
+
+If your session tools suddenly receive "Session None not found" style
+errors behind a gateway or bridge, this collision is the likely cause;
+upgrade to this release.
+
 ## [0.10.0-alpha] - 2026-08-25
 
 QualCoder schema v14 through v17 support with full sub-code handling,
