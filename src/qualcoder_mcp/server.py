@@ -56,6 +56,62 @@ current_project_path: Optional[str] = None
 # Global session manager for AI coding
 session_manager = SessionManager()
 
+# P1-6: most-recently-used project hint. Recorded on every successful
+# select_project in the existing on-disk state home (~/.qualcoder_mcp/),
+# and appended to "no project selected" errors so a client whose host
+# recycled the server process (observed with LM Studio) can recover with
+# ONE deterministic select_project call. The selection itself is NEVER
+# auto-restored (owner-rejected: it would break explicit-selection
+# semantics, and concurrent hosts would clobber each other).
+_MRU_FILE = Path.home() / ".qualcoder_mcp" / "mru_project.json"
+
+
+def _remember_mru_project(project_path: str) -> None:
+    """Record the machine's most-recently-used project (best effort).
+
+    Failures never break project selection; a corrupt or unwritable
+    state file just means no hint later.
+    """
+    try:
+        _MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "project_path": str(project_path),
+            "updated": datetime.now().isoformat(timespec="seconds"),
+        }
+        tmp = _MRU_FILE.with_name(_MRU_FILE.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        tmp.replace(_MRU_FILE)
+    except Exception as e:
+        logger.debug(f"Could not record MRU project: {e}")
+
+
+def _mru_hint() -> str:
+    """A recovery hint naming the machine's last-used project, or ''.
+
+    The hint appears only when the recorded path still exists; missing
+    or corrupt MRU state degrades silently to the plain error text.
+    """
+    try:
+        with open(_MRU_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        path = data.get("project_path")
+        if isinstance(path, str) and path.strip() and Path(path).exists():
+            return (f" The last project used on this machine was {path}. "
+                    f"Use select_project with that path to continue "
+                    f"with it.")
+    except Exception:
+        pass
+    return ""
+
+
+def _no_project_message() -> str:
+    """The uniform "no project selected" error text (with MRU hint)."""
+    return ("No Qualcoder project selected. Use 'list_available_projects' "
+            "to discover projects, then 'select_project' to choose one. "
+            "Or set QUALCODER_PROJECT_PATH environment variable."
+            + _mru_hint())
+
 
 def _tool_guard(fn):
     """Convert anticipated exceptions into sanitized error JSON.
@@ -245,11 +301,7 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
         db_path = os.environ.get("QUALCODER_PROJECT_PATH")
 
         if not db_path:
-            raise ValueError(
-                "No Qualcoder project selected. Use 'list_available_projects' "
-                "to discover projects, then 'select_project' to choose one. "
-                "Or set QUALCODER_PROJECT_PATH environment variable."
-            )
+            raise ValueError(_no_project_message())
 
         try:
             db = QualcoderDatabase(db_path, read_only=read_only)
@@ -601,7 +653,7 @@ def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]
     if current_project_path is None:
         return {
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
-                     "and 'select_project' to open one."
+                     "and 'select_project' to open one." + _mru_hint()
         }
     try:
         session_db_path = validate_qda_path(session.project_path)
@@ -1119,6 +1171,10 @@ def select_project(project_path: str) -> str:
             "project_info": project_info
         }
 
+        # P1-6: remember the selection for the MRU recovery hint (the
+        # canonical data.qda path, which select_project accepts back)
+        _remember_mru_project(str(validate_qda_path(project_path)))
+
         warnings = []
 
         # Reads are safe while QualCoder is open, but warn: data may change
@@ -1273,7 +1329,7 @@ def get_current_project() -> str:
             return json.dumps({
                 "current_project": None,
                 "message": "No project currently open. Use 'list_available_projects' "
-                          "and 'select_project' to open one."
+                          "and 'select_project' to open one." + _mru_hint()
             }, indent=2)
 
         project_info = get_db().get_project_info()
@@ -3882,7 +3938,7 @@ def list_backups() -> str:
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
-                     "and 'select_project' to open one."
+                     "and 'select_project' to open one." + _mru_hint()
         })
 
     project_folder = validate_qda_path(current_project_path).parent
@@ -3993,7 +4049,7 @@ def prune_backups(keep_last: Optional[int] = None,
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
-                     "and 'select_project' to open one."
+                     "and 'select_project' to open one." + _mru_hint()
         })
 
     if keep_last is None and older_than_days is None:
@@ -4154,7 +4210,7 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
-                     "and 'select_project' to open one."
+                     "and 'select_project' to open one." + _mru_hint()
         })
 
     project_data = validate_qda_path(current_project_path)

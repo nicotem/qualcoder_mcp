@@ -14,6 +14,18 @@ from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mru_state(tmp_path, monkeypatch):
+    """Keep the P1-6 MRU state file out of the real ~/.qualcoder_mcp.
+
+    select_project records the most-recently-used project on disk;
+    without this, every test that selects a fixture project would
+    overwrite the developer's real MRU state.
+    """
+    monkeypatch.setattr(server, "_MRU_FILE",
+                        tmp_path / "mru_state" / "mru_project.json")
+
+
 # =============================================================================
 # SESSION FIXTURES (used by test_sessions.py, test_integration_ai_coding.py)
 # =============================================================================
