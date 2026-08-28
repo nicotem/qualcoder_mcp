@@ -174,11 +174,14 @@ class TestT18CreateProposedCodesPrecondition:
 class TestT17DocsPosture:
 
     def test_write_docstrings_name_the_master_gap(self):
+        # P1-5 posture: 4.0 has no lock file; detection is best-effort
+        # heuristics, and every write docstring says so
         for tool in (server.apply_codings, server.set_memo,
                      server.import_text_file, server.delete_coding,
                      server.merge_codes, server.create_code):
             doc = tool.__doc__ or ""
-            assert "CANNOT be detected" in doc, tool.__name__
+            assert "best-effort" in doc, tool.__name__
+            assert "4.0" in doc, tool.__name__
 
     def test_select_project_names_the_limitation(self, setup_server,
                                                  qualcoder_db_path,
@@ -188,5 +191,10 @@ class TestT17DocsPosture:
         shutil.copytree(qualcoder_db_path, dest)
         out = json.loads(server.select_project(str(dest)))
         warning = out.get("warning", "")
-        assert "cannot be detected" in warning
+        # With no heuristic signals the limitation is named; with
+        # signals the appears-open warning replaces it. Either way the
+        # heuristic posture and 4.0 are named, never certainty.
+        assert ("best-effort" in warning
+                or "APPEARS to be open" in warning)
         assert "4.0" in warning
+        assert "qualcoder_gui_signals" in out

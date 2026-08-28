@@ -24,6 +24,7 @@ from .database import (
     backup_project,
     qualcoder_lock_state,
     qualcoder_open_message,
+    qualcoder_gui_signals,
     hold_project_lock,
     QUALCODER_LOCK_FILENAME,
     position_safe as db_position_safe,
@@ -1132,15 +1133,29 @@ def select_project(project_path: str) -> str:
                 f"work but may return changing data."
             )
         else:
-            # C5/T17 limitation: only released QualCoder (3.x) signals
-            # "open" via the lock file; QualCoder 4.0 development builds
-            # removed the protocol and CANNOT be detected
-            warnings.append(
-                "Lock-gate limitation: an open QualCoder 4.0 development "
-                "build cannot be detected (it no longer writes a lock "
-                "file). Confirm with the user that no QualCoder window has "
-                "this project open before writing."
-            )
+            # C5/T17 + P1-5: only released QualCoder (3.x) signals "open"
+            # via the lock file; 4.0 removed the protocol, so detection
+            # falls back to best-effort heuristics (WARN rung only; the
+            # C7 in-transaction fingerprints stay the write-time backstop)
+            signals = qualcoder_gui_signals(_current_project_folder())
+            result["qualcoder_gui_signals"] = signals
+            if signals:
+                warnings.append(
+                    "This project APPEARS to be open in QualCoder: "
+                    + "; ".join(signals) + ". This is a heuristic (4.0 "
+                    "writes no lock file), so confirm with the user before "
+                    "any write. Also note: an open QualCoder 4.0 window "
+                    "will not display external changes until the project "
+                    "is reopened there."
+                )
+            else:
+                warnings.append(
+                    "Lock-gate limitation: QualCoder 4.0 builds write no "
+                    "lock file, so 4.0 detection is best-effort (no "
+                    "open-GUI signals right now). Confirm with the user "
+                    "that no QualCoder window has this project open "
+                    "before writing."
+                )
 
         # QualCoder's own open check requires "QualCoder" in project.about
         # and refuses otherwise ("This is not a QualCoder database") —
@@ -1174,19 +1189,61 @@ def select_project(project_path: str) -> str:
     except (ValueError, FileNotFoundError) as e:
         # Log full error for debugging, but don't expose internal paths to user
         logger.error(f"Failed to select project: {e}")
-        return json.dumps({
+        result = {
             "success": False,
             "error": "Invalid project path or project not found. "
                      "Use 'list_available_projects' to find valid projects."
-        })
+        }
+        # P1-5: a QualCoder 4.0 window mid-write leaves a hot journal
+        # that makes even the read-only validation open fail; when the
+        # heuristics see an open-GUI signal, say that instead of
+        # blaming the path
+        try:
+            folder = Path(project_path)
+            if folder.name == "data.qda":
+                folder = folder.parent
+            if folder.is_dir():
+                signals = qualcoder_gui_signals(folder)
+                if signals:
+                    result["qualcoder_gui_signals"] = signals
+                    result["error"] = (
+                        "The project could not be opened, and it APPEARS "
+                        "to be open in QualCoder right now ("
+                        + "; ".join(signals) + "). Ask the user to close "
+                        "the project in QualCoder, then retry."
+                    )
+        except Exception:
+            pass
+        return json.dumps(result)
     except sqlite3.Error as e:
         # e.g. "database disk image is malformed" surfacing mid-read (F3)
         logger.error(f"SQLite error while opening project: {e}")
-        return json.dumps({
+        result = {
             "success": False,
             "error": "The project database appears to be damaged or unreadable. "
                      "Try opening it in QualCoder, or restore a backup."
-        })
+        }
+        # P1-5: a QualCoder 4.0 window mid-write leaves sidecar files
+        # that can make a read-only open fail exactly like corruption
+        # would; say so when the heuristics see one
+        try:
+            folder = Path(project_path)
+            if folder.name == "data.qda":
+                folder = folder.parent
+            signals = qualcoder_gui_signals(folder)
+            if signals:
+                result["qualcoder_gui_signals"] = signals
+                result["error"] = (
+                    "The project database could not be opened, and it "
+                    "APPEARS to be open in QualCoder right now ("
+                    + "; ".join(signals) + "). Ask the user to close the "
+                    "project in QualCoder, then retry; only if that does "
+                    "not help, consider a damaged database or a backup "
+                    "restore."
+                )
+        except Exception:
+            pass
+        return json.dumps(result)
     except RuntimeError as e:
         logger.error(f"Failed to open project database: {e}")
         return json.dumps({
@@ -1247,6 +1304,20 @@ def get_current_project() -> str:
                 "note": "A leftover lock file from a QualCoder session that "
                         "did not close cleanly — writes proceed normally."
             }
+
+        # P1-5: best-effort 4.0 GUI-open heuristics (4.0 writes no lock
+        # file). WARN-level only; writes are still gated by the lock file
+        # and the C7 in-transaction text fingerprints.
+        signals = qualcoder_gui_signals(_current_project_folder())
+        result["qualcoder_gui_signals"] = signals
+        if signals and state != "active":
+            result["qualcoder_gui_hint"] = (
+                "This project APPEARS to be open in QualCoder ("
+                + "; ".join(signals) + "). This is a heuristic: confirm "
+                "with the user before writing. An open QualCoder 4.0 "
+                "window will not display external changes until the "
+                "project is reopened there."
+            )
 
         return _ai_json(result, indent=2)
 
@@ -2396,6 +2467,22 @@ Once Claude records and presents suggestions, you can:
     }
     if state == "active":
         envelope["action_required"] = action_required
+    else:
+        # P1-5: the ask rung of the ladder also listens to the 4.0
+        # GUI-open heuristics (4.0 writes no lock file). WARN-level: ask
+        # the user, never refuse on a heuristic.
+        signals = qualcoder_gui_signals(_current_project_folder())
+        envelope["qualcoder_gui_signals"] = signals
+        if signals:
+            envelope["qualcoder_gui_hint"] = (
+                "This project APPEARS to be open in QualCoder ("
+                + "; ".join(signals) + "). That is a heuristic (QualCoder "
+                "4.0 writes no lock file), so ASK THE USER whether a "
+                "QualCoder window has this project open before "
+                "continuing; writes into a live 4.0 session can be lost "
+                "or corrupted, and an open 4.0 window will not display "
+                "external changes until the project is reopened."
+            )
     envelope["instructions"] = output
     return json.dumps(envelope, indent=2)
 
@@ -3216,8 +3303,9 @@ def apply_codings(
     THIS WRITES TO THE DATABASE. This is the final step that actually modifies
     your project. Only approved suggestions will be applied. A backup is created
     first by default for safety. The lock gate detects released QualCoder
-    (3.x) only: QualCoder 4.0 development builds no longer use a lock file
-    and CANNOT be detected, so never write while any QualCoder window has
+    (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0
+    detection is best-effort heuristics (qualcoder_gui_signals in
+    get_current_project); never write while any QualCoder window has
     this project open.
 
     Safety guarantees:
@@ -3502,7 +3590,7 @@ def import_text_file(
     IMPORTANT: Make sure you're working on a copy of your project in the
     MCP workspace (~/Documents/Qualcoder MCP Projects/)
 
-    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         filename: Name for the new file (must include extension, e.g., "interview_04.txt")
@@ -3661,7 +3749,7 @@ def link_file_to_case(
     and every other case-based analysis. Files imported with
     import_text_file are NOT linked to any case by default.
 
-    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         file_id: The source file to link
@@ -3738,7 +3826,7 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     the code itself, the source file, or any other coding.
 
     A backup is created first by default, so the deletion can be undone with
-    restore_backup if needed. Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    restore_backup if needed. Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         coding_id: The ctid of the coding to delete. You can find ctids in
@@ -5034,7 +5122,7 @@ def create_proposed_codes(coding_session_id: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         coding_session_id: The session with approved proposals
@@ -5216,7 +5304,7 @@ def set_memo(target_type: str, target_id: int, memo: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         target_type: What to attach the memo to — one of 'code', 'category',
@@ -5262,7 +5350,7 @@ def add_journal_entry(name: str, entry: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         name: A short unique title for the entry
@@ -5313,7 +5401,7 @@ def create_code(name: str, category: Optional[str] = None,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         name: The code name (must be unique among codes)
@@ -5376,7 +5464,7 @@ def rename_code(code_id: int, new_name: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
@@ -5401,7 +5489,7 @@ def recolor_code(code_id: int, color: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
@@ -5429,7 +5517,7 @@ def move_code_to_category(code_id: int,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
@@ -5466,7 +5554,7 @@ def create_category(name: str, parent_category: Optional[str] = None,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         name: The category name (unique among categories)
@@ -5502,7 +5590,7 @@ def rename_category(category_id: int, new_name: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         category_id: The category's catid
@@ -5532,7 +5620,7 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         category_id: The category to move (its catid)
@@ -5606,7 +5694,7 @@ def merge_codes(from_code_id: int, into_code_id: int,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         from_code_id: The code to merge away (deleted afterwards)
@@ -5650,7 +5738,7 @@ def delete_code(code_id: int, confirm: bool = False,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
@@ -5694,7 +5782,7 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         category_id: The category's catid
@@ -5730,7 +5818,7 @@ def merge_category(from_category_id: int,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         from_category_id: The category to merge away (deleted afterwards)
@@ -5779,7 +5867,7 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         file_id: The text file to annotate
@@ -5835,7 +5923,7 @@ def update_annotation(annotation_id: int, memo: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         annotation_id: The annotation's anid (from analyze_file_with_coding
@@ -5864,7 +5952,7 @@ def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         annotation_id: The annotation's anid
@@ -5899,7 +5987,7 @@ def create_case(name: str, memo: Optional[str] = None,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         name: The case name (unique among cases)
@@ -5943,7 +6031,7 @@ def create_attribute_type(name: str, applies_to: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         name: The attribute name (unique across ALL domains)
@@ -5998,7 +6086,7 @@ def set_attribute(target_type: str, target_id: int, attribute_name: str,
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
-    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         target_type: 'case', 'file' or 'journal'

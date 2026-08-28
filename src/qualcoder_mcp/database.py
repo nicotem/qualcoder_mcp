@@ -215,6 +215,163 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
     return ("active" if age <= QUALCODER_LOCK_TIMEOUT else "stale"), holder
 
 
+# ----------------------------------------------------------------------------
+# QC 4.0 GUI-open heuristics (P1-5)
+#
+# QualCoder 4.0 deleted the project_in_use.lock protocol entirely (no
+# matches in the pinned tree at 9bddf17), so the lock gate above is blind
+# against a 4.0 GUI. These heuristics give the concurrency ladder a
+# best-effort WARN signal. They are HEURISTICS: wording must always say
+# "appears", they never hard-refuse on their own, and the C7
+# in-transaction text fingerprints remain the write-time backstop.
+# Signals evaluated against the pinned source:
+# - data.qda sidecars: 4.0 connects plainly (no WAL pragma), so a
+#   data.qda-journal exists only during an active write or after a
+#   crash; -wal/-shm would mean some tool switched the DB to WAL mode.
+# - ai_data/search.sqlite-wal/-shm: the AI vector store opens
+#   search.sqlite in WAL mode (ai_vectorstore.py:472-477), so these
+#   sidecars persist while a 4.0 GUI with AI enabled has the project
+#   open (and after an unclean exit; freshness is reported).
+# - ai_data/chat_history.sqlite mtime: the chat panel keeps this store
+#   open and writes on every message (ai_chat.py:1682-1718); a recent
+#   mtime means recent AI chat activity on this project.
+# - A best-effort local process scan for a running QualCoder
+#   (platform-guarded, optional, cached; never a hard dependency and
+#   never allowed to crash or block, including on Windows CI runners).
+# ----------------------------------------------------------------------------
+
+GUI_SIGNAL_FRESH_SECONDS = 15 * 60  # recency window for mtime signals
+_PROCESS_SCAN_CACHE_SECONDS = 5.0
+_process_scan_cache: Dict[str, Any] = {"at": 0.0, "lines": []}
+
+
+def _mtime_age_seconds(path: Path) -> Optional[float]:
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _filter_qualcoder_processes(lines) -> List[str]:
+    """Pure filter: process lines that look like a running QualCoder.
+
+    This server's own name contains 'qualcoder', so every spelling of
+    the server/package name is blanked out of a line before matching;
+    what remains must still say 'qualcoder' to count.
+    """
+    hits = []
+    for line in lines:
+        try:
+            folded = str(line).lower()
+        except Exception:
+            continue
+        for own in ("qualcoder_mcp", "qualcoder-mcp", "qualcoder mcp"):
+            folded = folded.replace(own, "")
+        if "qualcoder" in folded:
+            hits.append(str(line).strip()[:200])
+    return hits
+
+
+def _qualcoder_process_hits() -> List[str]:
+    """Best-effort scan for running QualCoder processes (cached).
+
+    psutil when available, else one short-lived ps/tasklist call with a
+    hard timeout. Any failure whatsoever returns no hits.
+    """
+    now = time.monotonic()
+    if now - _process_scan_cache["at"] < _PROCESS_SCAN_CACHE_SECONDS:
+        return _process_scan_cache["lines"]
+    lines: List[str] = []
+    try:
+        try:
+            import psutil  # optional, never a hard dependency
+        except ImportError:
+            psutil = None
+        if psutil is not None:
+            own_pid = os.getpid()
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    if proc.info.get("pid") == own_pid:
+                        continue
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    lines.append(f"{proc.info.get('name', '')} {cmdline}")
+                except Exception:
+                    continue
+        else:
+            import subprocess
+            if os.name == "nt":
+                cmd = ["tasklist", "/fo", "csv"]
+            else:
+                cmd = ["ps", "-axo", "args"]
+            completed = subprocess.run(
+                cmd, capture_output=True, timeout=3, check=False)
+            lines = completed.stdout.decode(
+                "utf-8", errors="replace").splitlines()
+    except Exception:
+        lines = []
+    hits = _filter_qualcoder_processes(lines)
+    _process_scan_cache["at"] = now
+    _process_scan_cache["lines"] = hits
+    return hits
+
+
+def qualcoder_gui_signals(project_dir: Union[str, Path],
+                          include_process_scan: bool = True) -> List[str]:
+    """Best-effort signals that QualCoder may have this project open.
+
+    Returns human-readable signal descriptions (empty when nothing
+    suggests an open GUI). Heuristic by design: a signal means the
+    project APPEARS to be open, never that it certainly is. This
+    function never raises.
+    """
+    signals: List[str] = []
+    try:
+        project = Path(project_dir)
+
+        # 1. Hot write on the project database itself
+        for sidecar in ("data.qda-journal", "data.qda-wal", "data.qda-shm"):
+            if (project / sidecar).exists():
+                signals.append(
+                    f"the project database has an active or interrupted "
+                    f"write ({sidecar} present)")
+                break
+
+        # 2. The 4.0 AI search index is open in WAL mode
+        ai_data = project / "ai_data"
+        for sidecar in ("search.sqlite-wal", "search.sqlite-shm"):
+            sc_path = ai_data / sidecar
+            if sc_path.exists():
+                age = _mtime_age_seconds(sc_path)
+                if age is not None and age <= GUI_SIGNAL_FRESH_SECONDS:
+                    signals.append(
+                        "the QualCoder 4.0 AI search index is open "
+                        f"({sidecar} present and recently written)")
+                else:
+                    signals.append(
+                        "the QualCoder 4.0 AI search index has a leftover "
+                        f"{sidecar} (an open window, or an unclean exit)")
+                break
+
+        # 3. Recent AI chat activity
+        chat = ai_data / "chat_history.sqlite"
+        age = _mtime_age_seconds(chat) if chat.exists() else None
+        if age is not None and age <= GUI_SIGNAL_FRESH_SECONDS:
+            signals.append(
+                f"the QualCoder 4.0 AI chat history was modified "
+                f"{int(age // 60)} minute(s) ago")
+
+        # 4. A QualCoder process is running on this machine
+        if include_process_scan:
+            hits = _qualcoder_process_hits()
+            if hits:
+                signals.append(
+                    f"a process that looks like QualCoder is running on "
+                    f"this machine ({len(hits)} match(es))")
+    except Exception as e:  # never let a heuristic break a tool
+        logger.debug(f"GUI-open heuristics failed: {e}")
+    return signals
+
+
 @contextmanager
 def hold_project_lock(project_dir: Union[str, Path]):
     """Hold QualCoder's project lock for the duration of an MCP write.
@@ -1016,7 +1173,9 @@ class QualcoderDatabase:
                 f"was being prepared (another program, possibly an open "
                 f"QualCoder window, edited it). Nothing was written: "
                 f"re-read the file and retry. Note that QualCoder 4.0 "
-                f"development builds cannot be detected by the lock gate.")
+                f"builds write no lock file, so the lock gate cannot see "
+                f"them; check qualcoder_gui_signals in "
+                f"get_current_project and confirm with the user.")
 
     def _hierarchy_maps(self):
         """(codes, cats) lookup maps for path/chain building.

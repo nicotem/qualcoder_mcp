@@ -110,8 +110,20 @@ host and not capability-evaluated on local models.
 > will be re-verified against the final release. One known limitation: released
 > QualCoder versions signal "project open" through a lock file, which qualcoder-mcp
 > honors; the 4.0 development builds no longer use a lock file, so qualcoder-mcp
-> cannot detect that a 4.0 build has the project open. Do not run qualcoder-mcp
-> writes while any QualCoder window has the same project open.
+> falls back to best-effort heuristics there (reported as
+> `qualcoder_gui_signals` by `select_project` and `get_current_project`:
+> database write sidecars, AI search index and chat-history activity, and a
+> best-effort process scan). Heuristics can miss an open window, so do not run
+> qualcoder-mcp writes while any QualCoder window has the same project open.
+>
+> Two facts about how the tools relate. QualCoder 4.0 ships its own embedded
+> AI assistant, built on an internal MCP server that serves only the GUI (it
+> has no external transport); qualcoder-mcp is the external MCP surface for
+> QualCoder projects, for Claude-family and other MCP hosts, automation, and
+> headless work. And an open QualCoder 4.0 window will not display changes
+> written by external tools (its views refresh through an internal event bus
+> only), so changes written by qualcoder-mcp appear after the project is
+> closed and reopened in QualCoder.
 
 Sub-codes (a code nested under another code, schema v16 and newer) are
 fully supported: creating them, moving and merging without hierarchy
