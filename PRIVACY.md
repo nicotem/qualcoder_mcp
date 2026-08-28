@@ -39,6 +39,33 @@ What leaves your machine: **only what tools return into the
 conversation** — but for qualitative research, that can be the most
 sensitive content you hold.
 
+## Keeping notes private from the AI: the '#####' memo convention
+
+QualCoder 4.0 introduces a marker for memos: everything from the first
+`#####` onward is a private zone that its built-in AI never sees. This
+server honors the same convention, so a project touched by both tools
+keeps the same promise:
+
+- **Reads**: every tool and resource that returns memo content (code,
+  category, file, case, and coding memos, annotations, journal
+  entries, the project memo) returns only the text before the first
+  `#####`. The strip is silent: results do not flag that anything was
+  held back, and memo searches neither match nor preview the private
+  zone.
+- **Writes**: memo-writing tools (set_memo, update_annotation, and the
+  provenance notes merges append) replace only the public text. An
+  existing private zone survives every AI write verbatim, and a
+  `#####` in AI-supplied text is not written, so the AI can never
+  create, read, replace, or delete a private zone.
+- **The exception, deliberately**: exported FILES (REFI-QDA `.qdpx`,
+  codebook, and report exports) keep memos in full, private zone
+  included, because QualCoder's own exports do and export parity
+  governs. The export tools say so in their descriptions. Treat
+  exported files with the same care as the project itself.
+
+The private zone stays in your project database on disk; this
+convention controls only what enters the AI conversation.
+
 ## Your governance options, from default to fully local (Experimental)
 
 Which terms govern the AI processing is decided by the host you run and

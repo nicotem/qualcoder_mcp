@@ -18,6 +18,12 @@ import shutil
 from datetime import datetime
 from contextlib import contextmanager
 
+from .memo_privacy import (
+    extract_ai_memo,
+    merge_public_memo,
+    split_public_private_memo,
+)
+
 logger = logging.getLogger(__name__)
 
 # Configuration constants
@@ -1757,6 +1763,18 @@ class QualcoderDatabase:
 
         results = []
 
+        # Memo privacy ('#####'): match against the PUBLIC part only and
+        # return the public part only. The SQL LIKE runs over the full
+        # column (a cheap superset filter); the re-check below drops rows
+        # whose match lives only in the private suffix, so the search
+        # cannot be used as an oracle on private content.
+        query_folded = query.lower()
+
+        def _public_hit(raw_memo):
+            """(matches, public_text) for one candidate memo."""
+            public = extract_ai_memo(raw_memo or "")
+            return query_folded in public.lower(), public
+
         try:
             # Search code memos
             cursor = self.conn.execute("""
@@ -1773,11 +1791,14 @@ class QualcoderDatabase:
             """, (f"%{escaped_query}%", limit))
 
             for row in cursor.fetchall():
+                matches, public_memo = _public_hit(row["memo"])
+                if not matches:
+                    continue
                 results.append({
                     "type": row["type"],
                     "id": row["id"],
                     "name": row["name"],
-                    "memo": row["memo"],
+                    "memo": public_memo,
                     "owner": row["owner"],
                     "date": row["date"]
                 })
@@ -1798,11 +1819,14 @@ class QualcoderDatabase:
                 """, (f"%{escaped_query}%", limit - len(results)))
 
                 for row in cursor.fetchall():
+                    matches, public_memo = _public_hit(row["memo"])
+                    if not matches:
+                        continue
                     results.append({
                         "type": row["type"],
                         "id": row["id"],
                         "name": row["name"],
-                        "memo": row["memo"],
+                        "memo": public_memo,
                         "owner": row["owner"],
                         "date": row["date"]
                     })
@@ -1826,11 +1850,14 @@ class QualcoderDatabase:
                 """, (f"%{escaped_query}%", limit - len(results)))
 
                 for row in cursor.fetchall():
+                    matches, public_memo = _public_hit(row["memo"])
+                    if not matches:
+                        continue
                     results.append({
                         "type": row["type"],
                         "id": row["id"],
                         "name": row["name"],
-                        "memo": row["memo"],
+                        "memo": public_memo,
                         "owner": row["owner"],
                         "date": row["date"],
                         "position_start": row["pos0"],
@@ -2079,9 +2106,11 @@ class QualcoderDatabase:
                         match_count += 1
                         start_pos = pos + 1
 
-                # Search memo
+                # Search memo. Memo privacy ('#####'): match against the
+                # public part only and preview the public part only, so a
+                # private suffix can neither be found nor shown.
                 if search_memo:
-                    memo_text = row["memo"] or ""
+                    memo_text = extract_ai_memo(row["memo"] or "")
                     search_memo_text = memo_text if case_sensitive else memo_text.lower()
 
                     if search_pattern in search_memo_text:
@@ -3037,11 +3066,16 @@ class QualcoderDatabase:
         # Current timestamp
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Memo privacy ('#####'): a fresh AI-written memo is reduced to its
+        # public part, so an AI write can never create a private zone
+        # (upstream applies _memo_update_text on every create)
+        memo = extract_ai_memo(memo or "")
+
         try:
             cursor = self.conn.execute("""
                 INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo, important)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo or "",
+            """, (code_id, file_id, selected_text, start_pos, end_pos, owner, date_str, memo,
                   1 if important else None))
 
             if auto_commit:
@@ -3145,19 +3179,23 @@ class QualcoderDatabase:
         # Current timestamp
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding)
+        memo = extract_ai_memo(memo or "")
+
         try:
             if parent_code_id is not None:
                 cursor = self.conn.execute("""
                     INSERT INTO code_name
                         (name, memo, catid, owner, date, color, supercid)
                     VALUES (?, ?, NULL, ?, ?, ?, ?)
-                """, (name, memo or "", owner, date_str, color,
+                """, (name, memo, owner, date_str, color,
                       parent_code_id))
             else:
                 cursor = self.conn.execute("""
                     INSERT INTO code_name (name, memo, catid, owner, date, color)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (name, memo or "", category_id, owner, date_str, color))
+                """, (name, memo, category_id, owner, date_str, color))
 
             if auto_commit:
                 self.conn.commit()
@@ -3194,12 +3232,16 @@ class QualcoderDatabase:
         if not isinstance(memo, str):
             raise ValueError("memo must be a string")
 
-        # Verify coding exists
+        # Verify coding exists (and read the memo for the privacy merge)
         coding_check = self.conn.execute(
-            "SELECT ctid FROM code_text WHERE ctid = ?", (coding_id,)
+            "SELECT ctid, memo FROM code_text WHERE ctid = ?", (coding_id,)
         ).fetchone()
         if not coding_check:
             raise ValueError(f"Coding ID {coding_id} does not exist")
+
+        # Memo privacy ('#####'): preserve any private suffix, drop any
+        # marker in the AI-provided text (see set_memo)
+        stored_memo = merge_public_memo(coding_check["memo"], memo)
 
         try:
             # Content-only: QualCoder's coded-text memo edit updates ONLY
@@ -3209,7 +3251,7 @@ class QualcoderDatabase:
             # the coding's "coded on" timestamp.
             self.conn.execute(
                 "UPDATE code_text SET memo = ? WHERE ctid = ?",
-                (memo, coding_id)
+                (stored_memo, coding_id)
             )
 
             self.conn.commit()
@@ -3435,6 +3477,11 @@ class QualcoderDatabase:
         content = content.replace("\r\n", "\n").replace("\r", "\n")
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding). The file CONTENT is untouched: fulltext is data,
+        # not a memo.
+        memo = extract_ai_memo(memo or "")
 
         try:
             cursor = self.conn.execute("""
@@ -3664,8 +3711,9 @@ class QualcoderDatabase:
 
         table, id_col, name_col = self._MEMO_TARGETS[target_type]
 
-        # Verify the row exists and capture a label for the confirmation
-        select_cols = f"{name_col}" if name_col else id_col
+        # Verify the row exists, capture a label for the confirmation, and
+        # read the existing memo for the privacy-preserving merge
+        select_cols = (f"{name_col}, memo" if name_col else f"{id_col}, memo")
         try:
             row = self.conn.execute(
                 f"SELECT {select_cols} FROM {table} WHERE {id_col} = ?",
@@ -3679,6 +3727,14 @@ class QualcoderDatabase:
             )
         label = row[0] if name_col else f"{target_type} {target_id}"
 
+        # Memo privacy (QC 4.0 '#####' convention): replace only the
+        # AI-visible public text; an existing private suffix survives
+        # verbatim, and a marker in the NEW text is dropped (an AI write
+        # can never create, read, replace, or delete the private zone).
+        # Mirrors upstream ai_memo.merge_public_memo semantics exactly.
+        stored_memo = merge_public_memo(row["memo"], memo)
+        public_memo = extract_ai_memo(stored_memo)
+
         # Content-only: QualCoder's memo edits for code_name/code_cat/source/
         # code_text/cases touch ONLY the memo column — never date, never
         # owner (memos-journals.md §2, §5.1; the summary table). '' clears
@@ -3688,7 +3744,7 @@ class QualcoderDatabase:
         try:
             self.conn.execute(
                 f"UPDATE {table} SET memo = ? WHERE {id_col} = ?",
-                (memo, target_id)
+                (stored_memo, target_id)
             )
             if auto_commit:
                 self.conn.commit()
@@ -3700,12 +3756,14 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "set_memo", "Failed to set memo")
 
+        # The result echoes only the public text (silent strip): echoing
+        # the stored memo would hand the private suffix back to the AI.
         return {
             "target_type": target_type,
             "target_id": target_id,
             "label": label,
-            "memo": memo,
-            "cleared": memo == "",
+            "memo": public_memo,
+            "cleared": public_memo == "",
         }
 
     def add_journal_entry(
@@ -3749,6 +3807,11 @@ class QualcoderDatabase:
         # Journals routinely exceed 10k chars; reject over-length rather than
         # silently truncate (memos-journals.md §6.7)
         _reject_if_too_long(entry, "entry")
+        # Memo privacy ('#####'): journal entries follow the same
+        # convention as memos on read, so AI-written entries are reduced
+        # to their public part too - the AI can never author journal text
+        # it cannot later read back
+        entry = extract_ai_memo(entry)
         if not owner or not isinstance(owner, str) or not owner.strip():
             raise ValueError("owner must be a non-empty string")
 
@@ -4016,13 +4079,16 @@ class QualcoderDatabase:
             supercatid = validate_id(supercatid, "supercatid")
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding)
+        memo = extract_ai_memo(memo or "")
         try:
             if supercatid is not None:
                 self._get_category_row(supercatid)  # parent must exist
             cursor = self.conn.execute(
                 "INSERT INTO code_cat (name, owner, date, memo, supercatid) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (name, owner, date_str, memo or "", supercatid)
+                (name, owner, date_str, memo, supercatid)
             )
             if auto_commit:
                 self.conn.commit()
@@ -4267,7 +4333,23 @@ class QualcoderDatabase:
                              f"Merger date: {merge_date}]")
                     if source_memo:
                         block += f"\n{source_memo}"
-                    new_memo = ((target_memo_row["memo"] or "") + block).strip()
+                    # Memo privacy ('#####'): the provenance block lands in
+                    # the TARGET memo's public zone, before any private
+                    # suffix, which survives verbatim at the end. Without a
+                    # suffix this is byte-identical to the 3.8.2/master
+                    # parity recipe. The source memo travels whole (its own
+                    # suffix included, so nothing private is destroyed);
+                    # any marker it carries keeps everything after it
+                    # hidden from AI reads.
+                    target_public, target_private = split_public_private_memo(
+                        target_memo_row["memo"] or "")
+                    if target_private == "":
+                        new_memo = (target_public + block).strip()
+                    else:
+                        trimmed = target_public.rstrip(" \t\r\n")
+                        separator = target_public[len(trimmed):]
+                        new_memo = ((target_public + block).strip()
+                                    + separator + target_private)
                     self.conn.execute(
                         "UPDATE code_name SET memo = ? WHERE cid = ?",
                         (new_memo, into_code_id))
@@ -4490,6 +4572,16 @@ class QualcoderDatabase:
                 "note; there is no empty annotation"
             )
         _reject_if_too_long(memo, "memo")
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding). An annotation must still have text after that.
+        memo = extract_ai_memo(memo)
+        if not memo.strip():
+            raise ValueError(
+                "annotation text is empty after removing the '#####' "
+                "private-note marker — text from the marker onward is "
+                "reserved for the researcher's own notes and is never "
+                "written by AI tools"
+            )
         if not owner or not isinstance(owner, str) or not owner.strip():
             raise ValueError("owner must be a non-empty string")
         if (not isinstance(start_pos, int) or isinstance(start_pos, bool)
@@ -4609,8 +4701,17 @@ class QualcoderDatabase:
         if existing is None:
             raise ValueError(f"Annotation ID {annotation_id} does not exist")
 
-        if not memo.strip():
-            # Clear = delete (matches QualCoder exactly)
+        # Memo privacy ('#####'): replace only the public text; a private
+        # suffix the researcher put on this annotation survives verbatim
+        # and is never echoed back
+        stored_memo = merge_public_memo(existing.get("memo"), memo)
+        public_memo = extract_ai_memo(stored_memo)
+
+        if not stored_memo.strip():
+            # Clear = delete (matches QualCoder exactly). Only reached
+            # when there is no private suffix: clearing the public text of
+            # an annotation that carries one keeps the row (deleting it
+            # would destroy the researcher's private note).
             return {**self.delete_annotation(annotation_id,
                                              auto_commit=auto_commit),
                     "deleted_because_cleared": True}
@@ -4619,7 +4720,7 @@ class QualcoderDatabase:
         try:
             self.conn.execute(
                 "UPDATE annotation SET memo = ?, date = ? WHERE anid = ?",
-                (memo, date_str, annotation_id)
+                (stored_memo, date_str, annotation_id)
             )
             if auto_commit:
                 self.conn.commit()
@@ -4631,7 +4732,13 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "update_annotation",
                                "Failed to update annotation")
-        return {**existing, "memo": memo, "date": date_str, "updated": True}
+        result = {**existing, "memo": public_memo, "date": date_str,
+                  "updated": True}
+        if public_memo == "":
+            # Public text cleared but the row was kept for its private
+            # suffix; from the AI's side the note reads as cleared
+            result["cleared"] = True
+        return result
 
     def delete_annotation(self, annotation_id: int,
                           auto_commit: bool = True) -> Dict[str, Any]:
@@ -4768,6 +4875,9 @@ class QualcoderDatabase:
             raise ValueError("owner must be a non-empty string")
         if memo:
             _reject_if_too_long(memo, "memo")
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding)
+        memo = extract_ai_memo(memo or "")
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
@@ -4780,7 +4890,7 @@ class QualcoderDatabase:
             cursor = self.conn.execute(
                 "INSERT INTO cases (name, memo, owner, date) "
                 "VALUES (?, ?, ?, ?)",
-                (name, memo or "", owner, date_str)
+                (name, memo, owner, date_str)
             )
             case_id = cursor.lastrowid
 
@@ -4887,6 +4997,9 @@ class QualcoderDatabase:
             )
         if memo:
             _reject_if_too_long(memo, "memo")
+        # Memo privacy ('#####'): new memos are public-text only (see
+        # add_coding)
+        memo = extract_ai_memo(memo or "")
 
         entity_table, entity_id_col = self._ATTRIBUTE_DOMAINS[applies_to]
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

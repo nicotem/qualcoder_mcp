@@ -28,6 +28,7 @@ from .database import (
     QUALCODER_LOCK_FILENAME,
     position_safe as db_position_safe,
 )
+from .memo_privacy import extract_ai_memo, strip_private_memos
 from .sessions import (SessionManager, AICodingSession, CodingSuggestion,
                        ProposedCode)
 
@@ -286,6 +287,20 @@ def _snippet(text: Optional[str], max_len: int = 80) -> str:
     if not text:
         return ""
     return text if len(text) <= max_len else text[:max_len] + "…"
+
+
+def _ai_json(payload: Any, **dumps_kwargs) -> str:
+    """json.dumps for AI-facing results, with memo privacy applied.
+
+    Every string under a 'memo' key is reduced to its public part: the
+    QC 4.0 convention keeps everything from the first '#####' marker
+    onward private from the AI (see memo_privacy.py). The strip is
+    silent by owner ruling. Used by every tool and resource that can
+    return memo content into the conversation; the file-export tools
+    (REFI-QDA, codebook, report and CSV files) deliberately do NOT use
+    it, because QualCoder's own exports carry full memos (parity).
+    """
+    return json.dumps(strip_private_memos(payload), **dumps_kwargs)
 
 
 def _current_project_folder() -> Path:
@@ -833,7 +848,7 @@ def get_project_info() -> str:
     Returns project metadata including version, date, coder name, and memo.
     """
     info = get_db().get_project_info()
-    return json.dumps(info, indent=2)
+    return _ai_json(info, indent=2)
 
 
 @mcp.resource("qualcoder://codes/list")
@@ -844,7 +859,7 @@ def list_all_codes() -> str:
     Codes are organized hierarchically by category.
     """
     codes = get_db().list_codes()
-    return json.dumps(codes, indent=2)
+    return _ai_json(codes, indent=2)
 
 
 @mcp.resource("qualcoder://categories/list")
@@ -854,7 +869,7 @@ def list_all_categories() -> str:
     Returns all categories with their hierarchical structure (parent-child relationships).
     """
     categories = get_db().list_categories()
-    return json.dumps(categories, indent=2)
+    return _ai_json(categories, indent=2)
 
 
 @mcp.resource("qualcoder://codes/{code_id}")
@@ -870,7 +885,7 @@ def get_code_info(code_id: int) -> str:
     code = get_db().get_code_details(code_id)
     if code is None:
         return json.dumps({"error": f"Code with id {code_id} not found"})
-    return json.dumps(code, indent=2)
+    return _ai_json(code, indent=2)
 
 
 @mcp.resource("qualcoder://files/list")
@@ -881,7 +896,7 @@ def list_all_files() -> str:
     metadata, type, and memo information.
     """
     files = get_db().list_files()
-    return json.dumps(files, indent=2)
+    return _ai_json(files, indent=2)
 
 
 @mcp.resource("qualcoder://files/{file_id}")
@@ -897,7 +912,7 @@ def get_file_content(file_id: int) -> str:
     file_data = get_db().get_file_content(file_id)
     if file_data is None:
         return json.dumps({"error": f"File with id {file_id} not found"})
-    return json.dumps(file_data, indent=2)
+    return _ai_json(file_data, indent=2)
 
 
 @mcp.resource("qualcoder://cases/list")
@@ -908,7 +923,7 @@ def list_all_cases() -> str:
     count of associated text segments.
     """
     cases = get_db().list_cases()
-    return json.dumps(cases, indent=2)
+    return _ai_json(cases, indent=2)
 
 
 @mcp.resource("qualcoder://cases/{case_id}")
@@ -923,7 +938,7 @@ def get_case_info(case_id: int) -> str:
     case = get_db().get_case_details(case_id)
     if case is None:
         return json.dumps({"error": f"Case with id {case_id} not found"})
-    return json.dumps(case, indent=2)
+    return _ai_json(case, indent=2)
 
 
 @mcp.resource("qualcoder://journal")
@@ -933,7 +948,13 @@ def get_journal_entries() -> str:
     Returns all journal entries ordered by date (most recent first).
     """
     entries = get_db().get_journal_entries()
-    return json.dumps(entries, indent=2)
+    # Memo privacy ('#####'): journal text follows the memo convention;
+    # the entry body is exposed under 'content' (which elsewhere names
+    # file fulltext), so it is stripped here rather than by _ai_json
+    for entry in entries:
+        if isinstance(entry.get("content"), str):
+            entry["content"] = extract_ai_memo(entry["content"])
+    return _ai_json(entries, indent=2)
 
 
 # ============================================================================
@@ -1059,7 +1080,7 @@ def select_project(project_path: str) -> str:
         if warnings:
             result["warning"] = " | ".join(warnings)
 
-        return json.dumps(result, indent=2)
+        return _ai_json(result, indent=2)
 
     except DatabaseLockedError as e:
         logger.error(f"Project locked during select: {e}")
@@ -1150,7 +1171,7 @@ def get_current_project() -> str:
                         "did not close cleanly — writes proceed normally."
             }
 
-        return json.dumps(result, indent=2)
+        return _ai_json(result, indent=2)
 
     except Exception as e:
         return json.dumps({"error": f"Failed to get project info: {str(e)}"})
@@ -1215,7 +1236,7 @@ def search_coded_text(query: str, code_name: Optional[str] = None, limit: int = 
         JSON array of matching segments with their codes, files, and context
     """
     results = get_db().search_coded_text(query, code_name, limit)
-    return json.dumps({
+    return _ai_json({
         "query": query,
         "code_filter": code_name,
         "result_count": len(results),
@@ -1240,7 +1261,7 @@ def get_coded_segments(code_id: int, limit: int = 100) -> str:
         the text content, file names, memos, and position information
     """
     segments = get_db().get_coded_text_segments(code_id, limit)
-    return json.dumps({
+    return _ai_json({
         "code_id": code_id,
         "segment_count": len(segments),
         "segments": segments
@@ -1383,6 +1404,10 @@ def search_memos(query: str, limit: int = 50) -> str:
     memo, use set_memo(target_type, target_id, memo); to add a research
     journal entry, use add_journal_entry(name, entry).
 
+    Memo privacy (QualCoder 4.0 convention): memo text from the first
+    '#####' marker onward is private to the researcher. The search
+    matches and returns only the public part of each memo.
+
     Args:
         query: The text to search for in memos
         limit: Maximum number of results to return (default 50)
@@ -1431,7 +1456,7 @@ def export_code_report(code_name: str) -> str:
     details = get_db().get_code_details(code_id)
     segments = get_db().get_coded_text_segments(code_id, limit=1000)
 
-    return json.dumps({
+    return _ai_json({
         "code": details,
         "segments": segments,
         "report_generated": True
@@ -1451,6 +1476,12 @@ def export_refi_qda(
     ATLAS.ti, MAXQDA and others. The export contains the referenced codes,
     the text sources, and the coded selections (with coding memos as
     descriptions).
+
+    Full memos on export (owner-ruled parity with QualCoder's own
+    exports): the exported FILE keeps memo text in full, including
+    any private '#####' section that read tools never show the AI.
+    Mention this to the user if they plan to share the exported
+    file.
 
     Two modes:
     - Default (no coding_session_id): exports ALL text codings of the currently
@@ -1694,7 +1725,7 @@ def get_project_summary() -> str:
         file_type = file["type"]
         summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
 
-    return json.dumps(summary, indent=2)
+    return _ai_json(summary, indent=2)
 
 
 @mcp.tool()
@@ -1763,7 +1794,7 @@ def analyze_file_with_coding(file_id: int) -> str:
             "and codings written here may render shifted or unhighlighted "
             "in the QualCoder editor. Reports and exports are unaffected."
         )
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -1782,7 +1813,7 @@ def list_attribute_types() -> str:
         - memo: Description of the attribute
     """
     result = get_db().list_attribute_types()
-    return json.dumps({
+    return _ai_json({
         "attribute_count": len(result),
         "attributes": result
     }, indent=2)
@@ -1803,7 +1834,7 @@ def get_file_attributes(file_id: int) -> str:
         JSON array of attributes with their values for this file
     """
     result = get_db().get_file_attributes(file_id)
-    return json.dumps({
+    return _ai_json({
         "file_id": file_id,
         "attribute_count": len(result),
         "attributes": result
@@ -1825,7 +1856,7 @@ def get_case_attributes(case_id: int) -> str:
         JSON array of attributes with their values for this case
     """
     result = get_db().get_case_attributes(case_id)
-    return json.dumps({
+    return _ai_json({
         "case_id": case_id,
         "attribute_count": len(result),
         "attributes": result
@@ -1866,7 +1897,7 @@ def query_by_attribute(
         the matched attribute value
     """
     result = get_db().query_by_attribute(attr_name, attr_value, attr_type, operator)
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -1974,7 +2005,7 @@ def get_cases_by_code(code_id: int) -> str:
         case_name, memo, occurrence_count
     """
     result = get_db().get_cases_by_code(code_id)
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 # ============================================================================
@@ -3531,7 +3562,7 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="nothing was deleted")
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -4952,6 +4983,13 @@ def set_memo(target_type: str, target_id: int, memo: str,
     attached to an object. This sets the memo, replacing any existing one;
     pass an empty string to clear it.
 
+    Memo privacy (QualCoder 4.0 convention): memo text from the first
+    '#####' marker onward is the researcher's private zone. This tool
+    replaces only the text before the marker; an existing private
+    section always survives the write, and a '#####' in the new text is
+    not written. Memos returned by read tools contain the public part
+    only.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 development builds no longer use a lock file and CANNOT be detected, so never write while any QualCoder window has this project open.
@@ -4986,7 +5024,7 @@ def set_memo(target_type: str, target_id: int, memo: str,
         create_backup=create_backup,
         backup_fail_detail="the memo was not changed",
     )
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -5103,7 +5141,7 @@ def create_code(name: str, category: Optional[str] = None,
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the code was not created")
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -5551,7 +5589,7 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the annotation was not added")
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -5565,6 +5603,11 @@ def update_annotation(annotation_id: int, memo: str,
     change); clearing the note to "" deletes the annotation row —
     QualCoder never keeps an empty annotation. The response says whether
     it updated or deleted.
+
+    Memo privacy (QualCoder 4.0 convention): only the note text before
+    the first '#####' marker is replaced; a private section after the
+    marker survives, and clearing the note keeps the row when such a
+    section exists (the response then reports cleared, not deleted).
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -5583,7 +5626,7 @@ def update_annotation(annotation_id: int, memo: str,
         create_backup=create_backup,
         backup_fail_detail="the annotation was not changed",
     )
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -5611,7 +5654,7 @@ def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
         create_backup=create_backup,
         backup_fail_detail="the annotation was not deleted",
     )
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 # ============================================================================
@@ -5651,7 +5694,7 @@ def create_case(name: str, memo: Optional[str] = None,
         create_backup=create_backup,
         backup_fail_detail="the case was not created",
     )
-    return json.dumps(result, indent=2)
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -5993,6 +6036,12 @@ def export_codebook(output_path: str, format: str = "csv",
     counted exactly as QualCoder counts it (text + image + A/V codings,
     all coders, no filters, orphaned codings included).
 
+    Full memos on export (owner-ruled parity with QualCoder's own
+    exports): the exported FILE keeps memo text in full, including
+    any private '#####' section that read tools never show the AI.
+    Mention this to the user if they plan to share the exported
+    file.
+
     Formats:
     - "csv": flat table `Tree, Id, Type, Color, Count[, Memo]` — the
       Tree cell carries the depth prefix (`...` per level, QualCoder's
@@ -6136,6 +6185,12 @@ def export_coded_segments_report(
       QualCoder's coding report uses, stated in the response because the
       GUI ships a second, different rule elsewhere.
     - Text codings only; image/AV codings are not included (disclosed).
+
+    Full memos on export (owner-ruled parity with QualCoder's own
+    exports): the exported FILE keeps memo text in full, including
+    any private '#####' section that read tools never show the AI.
+    Mention this to the user if they plan to share the exported
+    file.
 
     Args:
         output_path: Target file, or an existing directory (default name
