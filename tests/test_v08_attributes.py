@@ -153,7 +153,7 @@ class TestS31CreateAttributeType:
         assert at["caseOrFile"] == "case"
         assert at["valuetype"] == "character"
         assert at["memo"] == "What they do"
-        assert at["owner"] == "TestCoder"
+        assert at["owner"] == "AI Coding Assistant"  # P1-2 attribution
         # one '' placeholder per existing case, value never NULL
         ph = _rows(qualcoder_db_path,
                    "SELECT value, id, attr_type FROM attribute "
@@ -249,7 +249,7 @@ class TestS41SetAttribute:
                     "SELECT value, owner, date FROM attribute "
                     "WHERE name='Age' AND id=1 AND attr_type='case'")[0]
         assert row["value"] == "44"
-        assert row["owner"] == "TestCoder"       # refreshed to codername
+        assert row["owner"] == "AI Coding Assistant"  # P1-2 attribution
         assert row["date"] != "2024-01-15"       # refreshed
 
     def test_file_update_touches_value_only(self, setup_server,

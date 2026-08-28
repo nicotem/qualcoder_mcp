@@ -410,21 +410,64 @@ def _resolve_category_by_name(name: str):
     }
 
 
+# P1-2 attribution config: one configurable coder name for every row this
+# server writes. Distinct-by-default (owner verdict b): the default stays
+# "AI Coding Assistant" for continuity with existing projects; setting the
+# env var to "AI Agent" (QualCoder 4.0's own AI owner string,
+# ai_mcp_server.py:85) groups this server's writes with the built-in
+# assistant's under 4.0's per-coder visibility, undo and report tooling.
+AI_CODER_NAME_ENV = "QUALCODER_MCP_AI_CODER_NAME"
+DEFAULT_AI_CODER_NAME = "AI Coding Assistant"
+MAX_AI_CODER_NAME_LENGTH = 80
+
+
+def _ai_coder_name() -> str:
+    """The configured coder name for rows this server writes.
+
+    Reads QUALCODER_MCP_AI_CODER_NAME; unset means the default. A set
+    value is validated strictly (non-empty after trimming, at most 80
+    characters, no control characters) and an invalid one raises, so
+    main() refuses to start rather than writing rows under a broken
+    name.
+
+    Raises:
+        ValueError: If the configured value is invalid.
+    """
+    raw = os.environ.get(AI_CODER_NAME_ENV)
+    if raw is None:
+        return DEFAULT_AI_CODER_NAME
+    name = raw.strip()
+    if not name:
+        raise ValueError(
+            f"{AI_CODER_NAME_ENV} is set but empty. Set it to the coder "
+            f"name this server should write under (for example "
+            f"\"{DEFAULT_AI_CODER_NAME}\" or QualCoder 4.0's \"AI Agent\"), "
+            f"or unset it to use the default.")
+    if len(name) > MAX_AI_CODER_NAME_LENGTH:
+        raise ValueError(
+            f"{AI_CODER_NAME_ENV} is {len(name)} characters long; the "
+            f"maximum is {MAX_AI_CODER_NAME_LENGTH}. Coder names appear in "
+            f"every coding row and in QualCoder's coder lists; keep them "
+            f"short.")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in name):
+        raise ValueError(
+            f"{AI_CODER_NAME_ENV} contains control characters (newlines, "
+            f"tabs or similar); QualCoder coder names must be plain "
+            f"single-line text.")
+    return name
+
+
 def _default_owner() -> str:
     """Attribution owner for MCP-authored rows.
 
-    Uses the project's own coder name (project.codername) so memos,
-    journal entries and codebook edits are attributed to the researcher,
-    matching what QualCoder would record. Falls back to 'MCP'.
+    Every row this server writes (codings, memos with provenance,
+    annotations, journal entries, imports, cases, attributes) carries
+    the configured AI coder name, so AI work is distinguishable from
+    the researcher's and manageable as one coder in QualCoder (verdict
+    b; 4.0 attributes all its AI writes the same way). Configure via
+    QUALCODER_MCP_AI_CODER_NAME; default "AI Coding Assistant".
     """
-    try:
-        info = get_db().get_project_info()
-        name = (info or {}).get("coder_name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-    except Exception:
-        pass
-    return "MCP"
+    return _ai_coder_name()
 
 
 def _perform_write(op, create_backup: bool = True,
@@ -1646,7 +1689,7 @@ def export_refi_qda(
                 result["skipped_details"] = skipped_invalid[:20]
             return json.dumps(result, indent=2)
 
-    exporter = RefiQdaExporter(ro_db)
+    exporter = RefiQdaExporter(ro_db, ai_user_name=_default_owner())
     result_path = exporter.export_to_qdpx(
         suggestions, str(out_file), project_name=project_name
     )
@@ -3005,7 +3048,7 @@ Use `apply_codings` with session ID `{session_id}` to write approved suggestions
 def apply_codings(
     coding_session_id: str,
     create_backup: bool = True,
-    owner: str = "AI Coding Assistant"
+    owner: Optional[str] = None
 ) -> str:
     """Apply approved coding suggestions to the project database.
 
@@ -3037,7 +3080,9 @@ def apply_codings(
     Args:
         coding_session_id: The session ID with approved suggestions
         create_backup: Create timestamped backup before writing (default: True)
-        owner: Coder name for attribution (default: "AI Coding Assistant")
+        owner: Coder name for attribution. Default: the configured AI
+               coder name (QUALCODER_MCP_AI_CODER_NAME environment
+               variable, falling back to "AI Coding Assistant")
 
     Returns:
         Detailed confirmation of what was written to the database
@@ -3076,6 +3121,8 @@ def apply_codings(
             "statistics": session.get_statistics()
         }, indent=2)
 
+    if owner is None:
+        owner = _default_owner()
     if not owner or not isinstance(owner, str) or not owner.strip():
         return json.dumps({"error": "owner must be a non-empty string"})
 
@@ -3276,7 +3323,7 @@ def import_text_file(
     filename: str,
     content: str,
     memo: str = "",
-    owner: str = "MCP Import",
+    owner: Optional[str] = None,
     create_backup: bool = True,
     case_name: Optional[str] = None
 ) -> str:
@@ -3300,7 +3347,9 @@ def import_text_file(
         filename: Name for the new file (must include extension, e.g., "interview_04.txt")
         content: The full text content of the file
         memo: Optional memo/description for the file
-        owner: Creator name for attribution (default: "MCP Import")
+        owner: Creator name for attribution. Default: the configured AI
+               coder name (QUALCODER_MCP_AI_CODER_NAME environment
+               variable, falling back to "AI Coding Assistant")
         create_backup: Create timestamped backup before writing (default: True)
         case_name: Optional existing case to link the new file to
                    (matched case-insensitively)
@@ -3313,6 +3362,8 @@ def import_text_file(
         return json.dumps({"error": "filename must not be empty"})
     if not content or not content.strip():
         return json.dumps({"error": "content must not be empty"})
+    if owner is None:
+        owner = _default_owner()
 
     # Full validation on the read-only connection BEFORE upgrading and
     # before any backup, so rejected imports never copy the whole project
@@ -3496,7 +3547,7 @@ def link_file_to_case(
         link = write_db.link_file_to_case(
             case_id=case["id"],
             file_id=file_id,
-            owner="MCP Import",
+            owner=_default_owner(),
             auto_commit=False
         )
         return {
@@ -4931,7 +4982,7 @@ def create_proposed_codes(coding_session_id: str,
                         start_pos=seg["start_pos"],
                         end_pos=seg["end_pos"],
                         selected_text=seg["segment_text"],
-                        owner="AI Coding Assistant",
+                        owner=owner,
                         memo=memo,
                         auto_commit=False,
                     )
@@ -6740,6 +6791,14 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     _apply_toolset(toolset_mode)
+
+    # P1-2: validate the configured AI coder name up front. Refusing to
+    # start beats writing rows under a broken or unintended owner string.
+    try:
+        _ai_coder_name()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     db_path = os.environ.get("QUALCODER_PROJECT_PATH")
 

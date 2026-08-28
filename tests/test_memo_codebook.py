@@ -138,7 +138,7 @@ class TestAddJournalEntry:
         r = _row(qualcoder_db_path,
                  "SELECT jentry, owner, date FROM journal WHERE name='Week 1'")
         assert r["jentry"] == "reflexive note"
-        assert r["owner"] == "TestCoder"  # project codername
+        assert r["owner"] == "AI Coding Assistant"  # P1-2 configured AI coder
         assert r["date"]
 
     def test_duplicate_name_rejected(self, setup_server, qualcoder_db_path):

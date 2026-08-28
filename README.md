@@ -307,6 +307,29 @@ Both accept the same optional `env` block
 Everything in this guide — the tools, the review-first workflow, the
 safety gates — behaves identically in any client.
 
+### Choosing the AI coder name (attribution)
+
+Every row this server writes (codings, memos with provenance,
+annotations, journal entries, imports, cases, attributes) is
+attributed to one coder name so AI work stays distinguishable from
+yours in QualCoder. The default is `AI Coding Assistant`. To change
+it, set `QUALCODER_MCP_AI_CODER_NAME` in the server's `env` block:
+
+```json
+"env": {
+  "QUALCODER_MCP_AI_CODER_NAME": "AI Agent"
+}
+```
+
+`AI Agent` is the exact name QualCoder 4.0's built-in assistant writes
+under. Opting into it groups this server's work and the built-in
+assistant's under one coder in 4.0's per-coder visibility toggle,
+undo, and reports, which is the coherent choice for projects worked on
+by both. The default stays distinct so existing projects keep one
+consistent history. Invalid values (empty, longer than 80 characters,
+or containing control characters) stop the server at startup with a
+clear error.
+
 The MCP server should now be connected! You'll see it listed in the MCP section if you look at the settings.
 
 ## Updating to a new version

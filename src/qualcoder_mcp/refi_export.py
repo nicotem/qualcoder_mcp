@@ -79,13 +79,19 @@ def _utc_now() -> str:
 class RefiQdaExporter:
     """Generate REFI-QDA XML files from coding suggestions."""
 
-    def __init__(self, db: QualcoderDatabase):
+    def __init__(self, db: QualcoderDatabase,
+                 ai_user_name: str = "AI Coding Assistant"):
         """Initialize exporter with database connection.
 
         Args:
             db: QualcoderDatabase instance
+            ai_user_name: Display name for the AI coder User element
+                (P1-2: the server passes the configured coder name).
+                The deterministic GUID key stays "ai_coder" so the
+                same project always exports the same User guid.
         """
         self.db = db
+        self.ai_user_name = ai_user_name
 
     def create_project_xml(
         self,
@@ -141,13 +147,13 @@ class RefiQdaExporter:
         """
         users_elem = ET.SubElement(root, f"{{{NAMESPACE}}}Users")
 
-        # Add AI coder user
+        # Add AI coder user (name from the P1-2 attribution config)
         ET.SubElement(
             users_elem,
             f"{{{NAMESPACE}}}User",
             attrib={
                 "guid": self.db.get_or_create_user_guid("ai_coder"),
-                "name": "AI Coding Assistant"
+                "name": _xml_safe(self.ai_user_name)
             }
         )
 

@@ -80,7 +80,7 @@ class TestAnnotations:
         assert out.get("success") is True, out
         row = _row(qualcoder_db_path,
                    "SELECT * FROM annotation WHERE memo = 'a real note'")
-        assert row["owner"] == "TestCoder" and row["date"]
+        assert row["owner"] == "AI Coding Assistant" and row["date"]
 
     def test_same_coder_overlap_refused_naming_anid(self, setup_server,
                                                     qualcoder_db_path):
@@ -242,7 +242,7 @@ class TestCreateCaseAndBackfill:
         row = _row(qualcoder_db_path,
                    "SELECT * FROM cases WHERE name='Participant X'")
         assert row["memo"] == ""                          # '' never NULL
-        assert row["owner"] == "TestCoder"
+        assert row["owner"] == "AI Coding Assistant"  # P1-2 attribution
         caseid = row["caseid"]
         atts = {r["name"] for r in _rows(
             qualcoder_db_path,
@@ -346,7 +346,7 @@ class TestSetAttribute:
                    "AND attr_type='case'")
         assert row["value"] == "31"
         assert row["date"] != "2024-01-15 10:00:00"       # bumped
-        assert row["owner"] == "TestCoder"
+        assert row["owner"] == "AI Coding Assistant"  # P1-2 attribution
 
     def test_insert_if_missing_and_domain_gates(self, setup_server,
                                                 qualcoder_db_path):

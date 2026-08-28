@@ -172,7 +172,7 @@ class TestMemoGotchas:
         r = _row(qualcoder_db_path,
                  "SELECT owner, jentry FROM journal WHERE name = ?",
                  ("Week 1 - reflections_A",))
-        assert r["owner"] == "TestCoder"
+        assert r["owner"] == "AI Coding Assistant"  # P1-2 attribution
         assert r["jentry"] == "body"
 
     def test_m7_coding_memo_targets_by_ctid_not_position(
@@ -608,7 +608,7 @@ class TestQualCoderFidelityDifferential:
         assert row["memo"] == "def"          # "" default convention: caller-set here
         assert row["catid"] is None
         assert row["color"] == "#F4FA58"
-        assert row["owner"] == "TestCoder"   # project codername attribution
+        assert row["owner"] == "AI Coding Assistant"   # P1-2 attribution
         assert _re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", row["date"])
         # memo defaults to "" (never NULL) when omitted
         out2 = json.loads(server.create_code("Diff create 2"))

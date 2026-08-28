@@ -51,7 +51,7 @@ class TestAddAnnotation:
                  "WHERE anid = ?", (ann["annotation_id"],))
         assert (r["fid"], r["pos0"], r["pos1"]) == (1, 0, 10)
         assert r["memo"] == "check this opener"
-        assert r["owner"] == "TestCoder"  # project codername
+        assert r["owner"] == "AI Coding Assistant"  # P1-2 attribution
 
     def test_empty_memo_refused_no_empty_state(self, setup_server,
                                                qualcoder_db_path):
@@ -292,7 +292,7 @@ class TestCreateCase:
                  "SELECT memo, owner FROM cases WHERE caseid = ?",
                  (case["id"],))
         assert r["memo"] == ""      # empty string, never NULL
-        assert r["owner"] == "TestCoder"
+        assert r["owner"] == "AI Coding Assistant"  # P1-2 attribution
         attr = _row(qualcoder_db_path,
                     "SELECT value, attr_type FROM attribute "
                     "WHERE name='Age' AND id = ? AND attr_type='case'",
