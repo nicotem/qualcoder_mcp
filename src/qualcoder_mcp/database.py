@@ -60,13 +60,19 @@ class SchemaCapabilities:
     def __init__(self, has_coder_names=False, has_av_bookmarks=False,
                  has_avbookmarktextpos=False, has_supercid=False,
                  has_graph_labels=False, has_gr_memo_item=False,
-                 tables=frozenset()):
+                 has_coder_visibility=False, tables=frozenset()):
         self.has_coder_names = has_coder_names          # v14 floor
         self.has_av_bookmarks = has_av_bookmarks        # v15 (informational)
         self.has_avbookmarktextpos = has_avbookmarktextpos  # v15 repair
         self.has_supercid = has_supercid                # v16 SUB-CODES switch
         self.has_graph_labels = has_graph_labels        # v17 (informational)
         self.has_gr_memo_item = has_gr_memo_item        # v17 (informational)
+        # QC 4.0 per-coder visibility (P1-3): coder_names.visibility
+        # column AND the code_text_visible view, both created in the
+        # project database on 4.0 project open (app.py:1499-1562 at pin
+        # 9bddf17), so the setting travels with the project. Partial
+        # states (column without view, view without column) probe False.
+        self.has_coder_visibility = has_coder_visibility
         self.tables = frozenset(tables)                 # for guarded cleanups
 
     def table_exists(self, name: str) -> bool:
@@ -80,6 +86,7 @@ class SchemaCapabilities:
             "has_supercid": self.has_supercid,
             "has_graph_labels": self.has_graph_labels,
             "has_gr_memo_item": self.has_gr_memo_item,
+            "has_coder_visibility": self.has_coder_visibility,
         }
 
 # Columns this server reads or writes that older QualCoder schemas lack.
@@ -812,6 +819,7 @@ class QualcoderDatabase:
             project_cols = cols("project")
             code_cols = cols("code_name")
             line_cols = cols("gr_cdct_line_item")
+            coder_cols = cols("coder_names")
             self.capabilities = SchemaCapabilities(
                 has_coder_names="coder_names" in tables,
                 has_av_bookmarks="avbookmarkfile" in project_cols,
@@ -819,6 +827,10 @@ class QualcoderDatabase:
                 has_supercid="supercid" in code_cols,
                 has_graph_labels="label" in line_cols,
                 has_gr_memo_item="gr_memo_item" in tables,
+                # Column AND view, never a version string (P1-3). The
+                # sqlite_master scan above includes views.
+                has_coder_visibility=("visibility" in coder_cols
+                                      and "code_text_visible" in tables),
                 tables=tables,
             )
         except sqlite3.OperationalError as e:
@@ -1055,6 +1067,56 @@ class QualcoderDatabase:
         return " > ".join(list(reversed(cat_names))
                           + list(reversed(code_names)))
 
+    # ------------------------------------------------------------------
+    # P1-3: coder-visibility reads (QC 4.0). When the project carries
+    # 4.0's per-coder visibility state (probe: coder_names.visibility
+    # column plus the code_text_visible view, created in the project DB
+    # at app.py:1499-1562), coded-segment reads and analytics go through
+    # the *_visible views by default so this server reads what the user
+    # sees in QualCoder. An explicit coder filter reads the base tables
+    # instead (upstream does the same, ai_chat.py:3922); file exports
+    # pass honor_visibility=False for QualCoder export/report parity
+    # (upstream's reports and refi.py read base tables). Pre-4.0
+    # projects lack the objects and always read base tables; the view is
+    # never hard-required (their server errors on a missing view,
+    # ai_mcp_server.py:5281-5283; we degrade gracefully by doctrine).
+    # ------------------------------------------------------------------
+
+    def _visible_source(self, base: str, view: str,
+                        honor_visibility: bool = True) -> str:
+        """The table or view a read should select from."""
+        caps = getattr(self, "capabilities", None)
+        if (honor_visibility and caps is not None
+                and caps.has_coder_visibility and caps.table_exists(view)):
+            return view
+        return base
+
+    def code_text_source(self, honor_visibility: bool = True) -> str:
+        return self._visible_source("code_text", "code_text_visible",
+                                    honor_visibility)
+
+    def hidden_coder_count(self) -> int:
+        """How many coders this project currently hides (0 without the
+        visibility capability). Used for result disclosure; hidden
+        coders' NAMES are never disclosed."""
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_coder_visibility:
+            return 0
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM coder_names WHERE visibility = 0"
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error:
+            return 0
+
+    @staticmethod
+    def _validate_coder(coder: Optional[str]) -> Optional[str]:
+        """Validate an explicit coder filter argument (None passes)."""
+        if coder is None:
+            return None
+        return validate_string(coder, "coder")
+
     def list_codes(self) -> List[Dict[str, Any]]:
         """Get all codes with their categories.
 
@@ -1172,22 +1234,28 @@ class QualcoderDatabase:
 
             # Count coded segments — joined to source so orphaned codings
             # (deleted files) are excluded, consistent with
-            # get_coded_text_segments (QA F8)
+            # get_coded_text_segments (QA F8). P1-3: counts go through the
+            # visibility views when the project has them, so they agree
+            # with what the listing tools return.
+            ct_source = self.code_text_source()
+            ci_source = self._visible_source("code_image",
+                                             "code_image_visible")
+            ca_source = self._visible_source("code_av", "code_av_visible")
             text_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_text ct "
-                "JOIN source s ON ct.fid = s.id WHERE ct.cid = ?",
+                f"SELECT COUNT(*) as cnt FROM {ct_source} ct "
+                f"JOIN source s ON ct.fid = s.id WHERE ct.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
             image_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_image ci "
-                "JOIN source s ON ci.id = s.id WHERE ci.cid = ?",
+                f"SELECT COUNT(*) as cnt FROM {ci_source} ci "
+                f"JOIN source s ON ci.id = s.id WHERE ci.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
             av_count = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM code_av ca "
-                "JOIN source s ON ca.id = s.id WHERE ca.cid = ?",
+                f"SELECT COUNT(*) as cnt FROM {ca_source} ca "
+                f"JOIN source s ON ca.id = s.id WHERE ca.cid = ?",
                 (code_id,)
             ).fetchone()["cnt"]
 
@@ -1219,12 +1287,20 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "get_code_details", "Failed to retrieve code details")
 
-    def get_coded_text_segments(self, code_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_coded_text_segments(self, code_id: int, limit: int = 100,
+                                coder: Optional[str] = None,
+                                honor_visibility: bool = True
+                                ) -> List[Dict[str, Any]]:
         """Get text segments coded with a specific code.
 
         Args:
             code_id: The code ID (cid)
             limit: Maximum number of segments to return (max 5000)
+            coder: Explicit coder filter; reads the BASE table filtered
+                   to this owner (P1-3 override, as upstream)
+            honor_visibility: Read through code_text_visible when the
+                   project has QC 4.0 coder visibility (default True;
+                   file exports pass False for export parity)
 
         Returns:
             List of coded text segments with context
@@ -1236,9 +1312,14 @@ class QualcoderDatabase:
         """
         code_id = validate_id(code_id, "code_id")
         limit = validate_limit(limit)
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(honor_visibility and coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        params = ((code_id, coder, limit) if coder is not None
+                  else (code_id, limit))
 
         try:
-            cursor = self.conn.execute("""
+            cursor = self.conn.execute(f"""
                 SELECT
                     ct.ctid,
                     ct.seltext,
@@ -1250,12 +1331,12 @@ class QualcoderDatabase:
                     ct.important,
                     s.name as file_name,
                     s.id as file_id
-                FROM code_text ct
+                FROM {source} ct
                 JOIN source s ON ct.fid = s.id
-                WHERE ct.cid = ?
+                WHERE ct.cid = ?{owner_sql}
                 ORDER BY s.name, ct.pos0
                 LIMIT ?
-            """, (code_id, limit))
+            """, params)
 
             segments = []
             for row in cursor.fetchall():
@@ -1274,6 +1355,23 @@ class QualcoderDatabase:
             return segments
         except sqlite3.Error as e:
             _raise_query_error(e, "get_coded_text_segments", "Failed to retrieve coded text segments")
+
+    def count_codings_for_code(self, code_id: int,
+                               honor_visibility: bool = True) -> int:
+        """Count a code's text codings (visible view or base table),
+        joined to source like the listing so counts agree with it."""
+        code_id = validate_id(code_id, "code_id")
+        source = self.code_text_source(honor_visibility)
+        try:
+            row = self.conn.execute(
+                f"SELECT COUNT(*) FROM {source} ct "
+                f"JOIN source s ON ct.fid = s.id WHERE ct.cid = ?",
+                (code_id,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error as e:
+            _raise_query_error(e, "count_codings_for_code",
+                               "Failed to count codings")
 
     def list_files(self) -> List[Dict[str, Any]]:
         """Get all source files in the project.
@@ -1403,8 +1501,10 @@ class QualcoderDatabase:
             file_type = _detect_file_type(file_row["mediapath"])
             is_text = file_type in ("text", "pdf")
 
-            # Get all coded segments for this file
-            segments_cursor = self.conn.execute("""
+            # Get all coded segments for this file (P1-3: through the
+            # visibility view when the project has one, so this analysis
+            # view matches what the user sees in QualCoder)
+            segments_cursor = self.conn.execute(f"""
                 SELECT
                     ct.ctid,
                     ct.pos0,
@@ -1418,7 +1518,7 @@ class QualcoderDatabase:
                     c.name as code_name,
                     c.color as code_color,
                     cat.name as category_name
-                FROM code_text ct
+                FROM {self.code_text_source()} ct
                 JOIN code_name c ON ct.cid = c.cid
                 LEFT JOIN code_cat cat ON c.catid = cat.catid
                 WHERE ct.fid = ?
@@ -1457,8 +1557,8 @@ class QualcoderDatabase:
                     }
                 codes_used[code_name]["count"] += 1
 
-            # Get annotations
-            annotations_cursor = self.conn.execute("""
+            # Get annotations (P1-3: annotation_visible when present)
+            annotations_cursor = self.conn.execute(f"""
                 SELECT
                     anid,
                     pos0,
@@ -1466,7 +1566,8 @@ class QualcoderDatabase:
                     memo,
                     owner,
                     date
-                FROM annotation
+                FROM {self._visible_source("annotation",
+                                           "annotation_visible")}
                 WHERE fid = ?
                 ORDER BY pos0
             """, (file_id,))
@@ -1607,13 +1708,18 @@ class QualcoderDatabase:
         }
 
     def search_coded_text(self, query: str, code_name: Optional[str] = None,
-                         limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
+                         limit: int = DEFAULT_LIMIT,
+                         coder: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search for coded text segments.
 
         Args:
             query: Text to search for (wildcards % and _ are escaped)
             code_name: Optional code name to filter by
             limit: Maximum results to return (max 5000)
+            coder: Explicit coder filter; reads the BASE table filtered
+                   to this owner (P1-3 override). Default reads through
+                   code_text_visible when the project has QC 4.0 coder
+                   visibility.
 
         Returns:
             List of matching coded segments
@@ -1627,12 +1733,16 @@ class QualcoderDatabase:
         query = validate_string(query, "query")
         escaped_query = escape_like_pattern(query)
         limit = validate_limit(limit)
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        owner_params = (coder,) if coder is not None else ()
 
         try:
             if code_name:
                 code_name = validate_string(code_name, "code_name")
 
-                cursor = self.conn.execute("""
+                cursor = self.conn.execute(f"""
                     SELECT
                         ct.ctid,
                         ct.seltext,
@@ -1644,15 +1754,15 @@ class QualcoderDatabase:
                         s.name as file_name,
                         c.name as code_name,
                         c.color as code_color
-                    FROM code_text ct
+                    FROM {source} ct
                     JOIN source s ON ct.fid = s.id
                     JOIN code_name c ON ct.cid = c.cid
-                    WHERE ct.seltext LIKE ? ESCAPE '\\' AND c.name = ?
+                    WHERE ct.seltext LIKE ? ESCAPE '\\' AND c.name = ?{owner_sql}
                     ORDER BY s.name, ct.pos0
                     LIMIT ?
-                """, (f"%{escaped_query}%", code_name, limit))
+                """, (f"%{escaped_query}%", code_name) + owner_params + (limit,))
             else:
-                cursor = self.conn.execute("""
+                cursor = self.conn.execute(f"""
                     SELECT
                         ct.ctid,
                         ct.seltext,
@@ -1664,13 +1774,13 @@ class QualcoderDatabase:
                         s.name as file_name,
                         c.name as code_name,
                         c.color as code_color
-                    FROM code_text ct
+                    FROM {source} ct
                     JOIN source s ON ct.fid = s.id
                     JOIN code_name c ON ct.cid = c.cid
-                    WHERE ct.seltext LIKE ? ESCAPE '\\'
+                    WHERE ct.seltext LIKE ? ESCAPE '\\'{owner_sql}
                     ORDER BY s.name, ct.pos0
                     LIMIT ?
-                """, (f"%{escaped_query}%", limit))
+                """, (f"%{escaped_query}%",) + owner_params + (limit,))
 
             results = []
             for row in cursor.fetchall():
@@ -1690,16 +1800,29 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "search_coded_text", "Failed to search coded text")
 
-    def get_coding_frequencies(self) -> Dict[str, Any]:
+    def get_coding_frequencies(self, coder: Optional[str] = None,
+                               honor_visibility: bool = True
+                               ) -> Dict[str, Any]:
         """Get frequency counts for all codes.
+
+        Args:
+            coder: Explicit coder filter; counts the BASE table rows of
+                   this owner only (P1-3 override)
+            honor_visibility: Count through code_text_visible when the
+                   project has QC 4.0 coder visibility (default True;
+                   exports pass False for parity)
 
         Returns:
             Dictionary with code frequencies
         """
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(honor_visibility and coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        params = (coder,) if coder is not None else ()
         # COUNT(s.id): orphaned codings (fid pointing at a deleted source)
         # are excluded, consistent with get_coded_text_segments — previously
         # counting and listing tools disagreed on the same code (QA F8)
-        cursor = self.conn.execute("""
+        cursor = self.conn.execute(f"""
             SELECT
                 c.cid,
                 c.name,
@@ -1708,11 +1831,11 @@ class QualcoderDatabase:
                 COUNT(s.id) as text_count
             FROM code_name c
             LEFT JOIN code_cat cat ON c.catid = cat.catid
-            LEFT JOIN code_text ct ON c.cid = ct.cid
+            LEFT JOIN {source} ct ON c.cid = ct.cid{owner_sql}
             LEFT JOIN source s ON ct.fid = s.id
             GROUP BY c.cid, c.name, c.color, cat.name
             ORDER BY text_count DESC, c.name
-        """)
+        """, params)
 
         caps = getattr(self, "capabilities", None)
         has_supercid = caps is not None and caps.has_supercid
@@ -2622,18 +2745,25 @@ class QualcoderDatabase:
     # CO-OCCURRENCE ANALYSIS - Codes appearing together
     # ============================================================================
 
-    def find_code_cooccurrences(self, code_id: int, window_size: int = 0) -> List[Dict[str, Any]]:
+    def find_code_cooccurrences(self, code_id: int, window_size: int = 0,
+                                coder: Optional[str] = None
+                                ) -> List[Dict[str, Any]]:
         """Find codes that appear together with a specific code.
 
         Args:
             code_id: The code ID to find co-occurrences for
             window_size: If 0, finds codes in same segment (overlap).
                         If > 0, finds codes within N characters
+            coder: Explicit coder filter; analyzes the BASE table rows
+                   of this owner only (P1-3 override). Default reads
+                   through code_text_visible when the project has QC
+                   4.0 coder visibility.
 
         Returns:
             List of codes that co-occur with counts
         """
         code_id = validate_id(code_id, "code_id")
+        coder = self._validate_coder(coder)
 
         if not isinstance(window_size, int) or window_size < 0:
             raise ValueError("window_size must be a non-negative integer")
@@ -2647,14 +2777,19 @@ class QualcoderDatabase:
         # closed-interval intersections (the three OR conditions reduce to
         # o.pos0 <= t.pos1 AND o.pos1 >= t.pos0); window_size > 0 counts
         # |o.pos0 - t.pos0| <= window; NULL positions never match.
+        source = self.code_text_source(coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        owner_inner = " AND owner = ?" if coder is not None else ""
+        params = ((code_id, coder, coder) if coder is not None
+                  else (code_id,))
         try:
-            rows = self.conn.execute("""
+            rows = self.conn.execute(f"""
                 SELECT ct.cid, ct.fid, ct.pos0, ct.pos1
-                FROM code_text ct
+                FROM {source} ct
                 WHERE ct.fid IN (
-                    SELECT DISTINCT fid FROM code_text WHERE cid = ?
-                )
-            """, (code_id,)).fetchall()
+                    SELECT DISTINCT fid FROM {source} WHERE cid = ?{owner_inner}
+                ){owner_sql}
+            """, params).fetchall()
 
             # Group by file, separating target-code rows from candidates
             targets_by_fid: Dict[Any, List] = {}
@@ -2710,12 +2845,25 @@ class QualcoderDatabase:
     # CASE-CODE MATRIX - Cross-tabulation
     # ============================================================================
 
-    def get_case_code_matrix(self) -> Dict[str, Any]:
+    def get_case_code_matrix(self, coder: Optional[str] = None,
+                             honor_visibility: bool = True
+                             ) -> Dict[str, Any]:
         """Get a matrix showing which codes appear in which cases.
+
+        Args:
+            coder: Explicit coder filter; counts the BASE table rows of
+                   this owner only (P1-3 override)
+            honor_visibility: Count through code_text_visible when the
+                   project has QC 4.0 coder visibility (default True;
+                   the CSV export passes False for parity)
 
         Returns:
             Dictionary with cases, codes, and matrix data
         """
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(honor_visibility and coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        params = (coder,) if coder is not None else ()
         try:
             # Get all cases
             cases_cursor = self.conn.execute("""
@@ -2736,13 +2884,13 @@ class QualcoderDatabase:
                     for row in codes_cursor.fetchall()]
 
             # Get the matrix data
-            matrix_cursor = self.conn.execute("""
+            matrix_cursor = self.conn.execute(f"""
                 SELECT
                     cs.caseid,
                     ct.cid,
                     COUNT(*) as count
                 FROM case_text cs
-                JOIN code_text ct ON cs.fid = ct.fid
+                JOIN {source} ct ON cs.fid = ct.fid{owner_sql}
                     -- full CONTAINMENT, matching QualCoder's own reports
                     -- (report_codes.py:1640). The end-of-file caveat is
                     -- PER ROW, not per version: on an old-convention
@@ -2751,7 +2899,7 @@ class QualcoderDatabase:
                     -- pos1 = len row it is included
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 GROUP BY cs.caseid, ct.cid
-            """)
+            """, params)
 
             matrix = {}
             for row in matrix_cursor.fetchall():
@@ -2769,19 +2917,29 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "get_case_code_matrix", "Failed to generate case-code matrix")
 
-    def get_codes_by_case(self, case_id: int) -> List[Dict[str, Any]]:
+    def get_codes_by_case(self, case_id: int,
+                          coder: Optional[str] = None
+                          ) -> List[Dict[str, Any]]:
         """Get all codes that appear in a specific case.
 
         Args:
             case_id: The case ID
+            coder: Explicit coder filter; counts the BASE table rows of
+                   this owner only (P1-3 override). Default counts
+                   through code_text_visible when the project has QC
+                   4.0 coder visibility.
 
         Returns:
             List of codes with occurrence counts
         """
         case_id = validate_id(case_id, "case_id")
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        params = ((case_id, coder) if coder is not None else (case_id,))
 
         try:
-            cursor = self.conn.execute("""
+            cursor = self.conn.execute(f"""
                 SELECT
                     c.cid,
                     c.name as code_name,
@@ -2789,7 +2947,7 @@ class QualcoderDatabase:
                     cat.name as category_name,
                     COUNT(*) as occurrence_count
                 FROM case_text cs
-                JOIN code_text ct ON cs.fid = ct.fid
+                JOIN {source} ct ON cs.fid = ct.fid
                     -- full CONTAINMENT, matching QualCoder's own reports
                     -- (report_codes.py:1640). The end-of-file caveat is
                     -- PER ROW, not per version: on an old-convention
@@ -2799,10 +2957,10 @@ class QualcoderDatabase:
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN code_name c ON ct.cid = c.cid
                 LEFT JOIN code_cat cat ON c.catid = cat.catid
-                WHERE cs.caseid = ?
+                WHERE cs.caseid = ?{owner_sql}
                 GROUP BY c.cid, c.name, c.color, cat.name
                 ORDER BY occurrence_count DESC
-            """, (case_id,))
+            """, params)
 
             codes = []
             for row in cursor.fetchall():
@@ -2818,26 +2976,36 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "get_codes_by_case", "Failed to get codes by case")
 
-    def get_cases_by_code(self, code_id: int) -> List[Dict[str, Any]]:
+    def get_cases_by_code(self, code_id: int,
+                          coder: Optional[str] = None
+                          ) -> List[Dict[str, Any]]:
         """Get all cases that contain a specific code.
 
         Args:
             code_id: The code ID
+            coder: Explicit coder filter; counts the BASE table rows of
+                   this owner only (P1-3 override). Default counts
+                   through code_text_visible when the project has QC
+                   4.0 coder visibility.
 
         Returns:
             List of cases with occurrence counts
         """
         code_id = validate_id(code_id, "code_id")
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(coder is None)
+        owner_sql = " AND ct.owner = ?" if coder is not None else ""
+        params = ((code_id, coder) if coder is not None else (code_id,))
 
         try:
-            cursor = self.conn.execute("""
+            cursor = self.conn.execute(f"""
                 SELECT
                     cs.caseid,
                     c.name as case_name,
                     c.memo,
                     COUNT(*) as occurrence_count
                 FROM case_text cs
-                JOIN code_text ct ON cs.fid = ct.fid
+                JOIN {source} ct ON cs.fid = ct.fid
                     -- full CONTAINMENT, matching QualCoder's own reports
                     -- (report_codes.py:1640). The end-of-file caveat is
                     -- PER ROW, not per version: on an old-convention
@@ -2846,10 +3014,10 @@ class QualcoderDatabase:
                     -- pos1 = len row it is included
                     AND ct.pos0 >= cs.pos0 AND ct.pos1 <= cs.pos1
                 JOIN cases c ON cs.caseid = c.caseid
-                WHERE ct.cid = ?
+                WHERE ct.cid = ?{owner_sql}
                 GROUP BY cs.caseid, c.name, c.memo
                 ORDER BY occurrence_count DESC
-            """, (code_id,))
+            """, params)
 
             cases = []
             for row in cursor.fetchall():

@@ -289,6 +289,40 @@ def _snippet(text: Optional[str], max_len: int = 80) -> str:
     return text if len(text) <= max_len else text[:max_len] + "…"
 
 
+def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Disclosure block for reads shaped by QC 4.0 coder visibility (P1-3).
+
+    Returned only when the project actually hides coders. Reports the
+    COUNT of hidden coders, never their names. With an explicit coder
+    filter the read went to the base tables, and the note says so
+    instead (methodological transparency either way).
+    """
+    try:
+        hidden = get_db().hidden_coder_count()
+    except Exception:
+        return None
+    if hidden <= 0:
+        return None
+    if coder is not None:
+        return {
+            "hidden_coder_filter": "bypassed",
+            "hidden_coders": hidden,
+            "note": f"This project hides {hidden} coder(s) in QualCoder, "
+                    f"but the explicit coder filter read the full base "
+                    f"data for that coder instead (the same override "
+                    f"QualCoder 4.0's own AI uses).",
+        }
+    return {
+        "hidden_coder_filter": "applied",
+        "hidden_coders": hidden,
+        "note": f"This project hides {hidden} coder(s) (a QualCoder 4.0 "
+                f"per-coder visibility setting stored in the project). "
+                f"Results reflect what the user sees in QualCoder; pass "
+                f"a coder argument to read a specific coder's rows from "
+                f"the full data.",
+    }
+
+
 def _ai_json(payload: Any, **dumps_kwargs) -> str:
     """json.dumps for AI-facing results, with memo privacy applied.
 
@@ -1264,51 +1298,86 @@ def copy_project_to_workspace(
 
 @mcp.tool()
 @_tool_guard
-def search_coded_text(query: str, code_name: Optional[str] = None, limit: int = 50) -> str:
+def search_coded_text(query: str, code_name: Optional[str] = None,
+                      limit: int = 50, coder: Optional[str] = None) -> str:
     """Search for text segments that contain specific keywords.
 
     This tool searches through all coded text segments for matching content.
     Useful for finding specific themes, quotes, or concepts in your data.
 
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, results reflect only visible coders by default
+    (what the user sees in QualCoder); the result then carries a
+    coder_visibility block. Pass coder to read one specific coder's
+    segments from the full data instead.
+
     Args:
         query: The text to search for (case-insensitive substring match)
         code_name: Optional - filter results to only segments coded with this code
         limit: Maximum number of results to return (default 50)
+        coder: Optional coder name; reads that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Returns:
         JSON array of matching segments with their codes, files, and context
     """
-    results = get_db().search_coded_text(query, code_name, limit)
-    return _ai_json({
+    results = get_db().search_coded_text(query, code_name, limit,
+                                         coder=coder)
+    payload = {
         "query": query,
         "code_filter": code_name,
         "result_count": len(results),
         "results": results
-    }, indent=2)
+    }
+    note = _coder_visibility_note(coder)
+    if note:
+        payload["coder_visibility"] = note
+    return _ai_json(payload, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def get_coded_segments(code_id: int, limit: int = 100) -> str:
+def get_coded_segments(code_id: int, limit: int = 100,
+                       coder: Optional[str] = None) -> str:
     """Get all text segments that have been coded with a specific code.
 
     This tool retrieves all the text excerpts that have been assigned
     to a particular code, useful for reviewing themes or categories.
 
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, results reflect only visible coders by default
+    (what the user sees in QualCoder); the result then carries a
+    coder_visibility block with the suppressed count. Pass coder to
+    read one specific coder's segments from the full data instead.
+
     Args:
         code_id: The numeric ID of the code (cid)
         limit: Maximum number of segments to return (default 100)
+        coder: Optional coder name; reads that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Returns:
         JSON array of all text segments coded with this code, including
         the text content, file names, memos, and position information
     """
-    segments = get_db().get_coded_text_segments(code_id, limit)
-    return _ai_json({
+    db = get_db()
+    segments = db.get_coded_text_segments(code_id, limit, coder=coder)
+    payload = {
         "code_id": code_id,
         "segment_count": len(segments),
         "segments": segments
-    }, indent=2)
+    }
+    note = _coder_visibility_note(coder)
+    if note:
+        if coder is None:
+            # Count suppressed rows for THIS code (disclosure may count,
+            # never name, hidden coders)
+            suppressed = (db.count_codings_for_code(code_id,
+                                                    honor_visibility=False)
+                          - db.count_codings_for_code(code_id))
+            note["codings_suppressed"] = max(0, suppressed)
+        payload["coder_visibility"] = note
+    return _ai_json(payload, indent=2)
 
 
 @mcp.tool()
@@ -1422,18 +1491,31 @@ def search_files(
 
 @mcp.tool()
 @_tool_guard
-def get_coding_frequencies() -> str:
+def get_coding_frequencies(coder: Optional[str] = None) -> str:
     """Get frequency statistics for all codes in the project.
 
     This tool provides an overview of how often each code has been used,
     helping identify prominent themes and patterns in the data.
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, counts reflect only visible coders by default
+    (what the user sees in QualCoder); the result then carries a
+    coder_visibility block. Pass coder to count one specific coder's
+    rows from the full data instead.
+
+    Args:
+        coder: Optional coder name; counts that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Returns:
         JSON object with:
         - total_coded_segments: Total count across all codes
         - codes: Array of codes with their frequencies, sorted by frequency
     """
-    frequencies = get_db().get_coding_frequencies()
+    frequencies = get_db().get_coding_frequencies(coder=coder)
+    note = _coder_visibility_note(coder)
+    if note:
+        frequencies["coder_visibility"] = note
     return json.dumps(frequencies, indent=2)
 
 
@@ -1499,11 +1581,15 @@ def export_code_report(code_name: str) -> str:
     details = get_db().get_code_details(code_id)
     segments = get_db().get_coded_text_segments(code_id, limit=1000)
 
-    return _ai_json({
+    payload = {
         "code": details,
         "segments": segments,
         "report_generated": True
-    }, indent=2)
+    }
+    note = _coder_visibility_note()
+    if note:
+        payload["coder_visibility"] = note
+    return _ai_json(payload, indent=2)
 
 
 @mcp.tool()
@@ -1620,14 +1706,18 @@ def export_refi_qda(
         file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
         code_frequencies: Optional[Dict[int, int]] = None
         for code in ro_db.list_codes():
-            segments = ro_db.get_coded_text_segments(code["id"], limit=5000)
+            # P1-3: interchange exports read BASE tables (QualCoder's own
+            # refi.py does not filter by coder visibility)
+            segments = ro_db.get_coded_text_segments(
+                code["id"], limit=5000, honor_visibility=False)
             if len(segments) == 5000:
                 # The read is capped at 5000 per code — disclose when the
                 # project actually holds more (QA2-3)
                 if code_frequencies is None:
                     code_frequencies = {
                         c["code_id"]: c["frequency"]
-                        for c in ro_db.get_coding_frequencies()["codes"]
+                        for c in ro_db.get_coding_frequencies(
+                            honor_visibility=False)["codes"]
                     }
                 total = code_frequencies.get(code["id"], len(segments))
                 if total > 5000:
@@ -1768,6 +1858,10 @@ def get_project_summary() -> str:
         file_type = file["type"]
         summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
 
+    note = _coder_visibility_note()
+    if note:
+        summary["coder_visibility"] = note
+
     return _ai_json(summary, indent=2)
 
 
@@ -1821,6 +1915,10 @@ def analyze_file_with_coding(file_id: int) -> str:
             f"text — it has no codable text content, and its image/audio-video "
             f"codings (if any) are not shown by this tool."
         )
+
+    note = _coder_visibility_note()
+    if note:
+        result["coder_visibility"] = note
 
     # Read-side position-safety notice (QA2-4): researchers should learn
     # that a file is position-unsafe when EXPLORING it, not only when
@@ -1945,7 +2043,8 @@ def query_by_attribute(
 
 @mcp.tool()
 @_tool_guard
-def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
+def find_cooccurring_codes(code_id: int, window_size: int = 0,
+                           coder: Optional[str] = None) -> str:
     """Find codes that appear together with a specific code.
 
     This tool identifies co-occurrence patterns - which codes tend to appear
@@ -1959,11 +2058,21 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
     match QualCoder's Code co-occurrence report. Say so if the user asks
     for a comparison.
 
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, counts reflect only visible coders by
+    default (what the user sees in QualCoder). The result is then
+    wrapped in an object carrying a coder_visibility block
+    (otherwise it stays a plain array). Pass coder to analyze one
+    specific coder's rows from the full data instead.
+
     Args:
         code_id: The numeric ID of the code to analyze
         window_size: How to define "co-occurrence":
                     - 0 (default): Codes that overlap the same text segment
                     - N > 0: Codes within N characters of each other
+        coder: Optional coder name; analyzes that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Returns:
         JSON array of co-occurring codes, sorted by frequency; each entry
@@ -1974,13 +2083,19 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0) -> str:
     - "Find patterns of co-occurring codes"
     - "Which codes never appear with 'job satisfaction'?"
     """
-    result = get_db().find_code_cooccurrences(code_id, window_size)
+    result = get_db().find_code_cooccurrences(code_id, window_size,
+                                              coder=coder)
+    payload: Dict[str, Any] = {"cooccurrences": result}
+    note = _coder_visibility_note(coder)
+    if note:
+        payload["coder_visibility"] = note
+        return json.dumps(payload, indent=2)
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def get_case_code_matrix() -> str:
+def get_case_code_matrix(coder: Optional[str] = None) -> str:
     """Get a matrix showing which codes appear in which cases.
 
     This tool creates a cross-tabulation of all cases and codes, showing
@@ -1989,6 +2104,13 @@ def get_case_code_matrix() -> str:
 
     Only codings fully CONTAINED in a case's text interval are counted,
     matching QualCoder's own report semantics.
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, counts reflect only visible coders by default
+    (what the user sees in QualCoder); the result then carries a
+    coder_visibility block. Pass coder to count one specific coder's
+    rows from the full data. The CSV export tool is NOT filtered
+    (QualCoder report-export parity).
 
     Returns:
         JSON object with:
@@ -2003,20 +2125,33 @@ def get_case_code_matrix() -> str:
     - "Create a comparison table of themes by participant"
     - "Find cases that never mention certain codes"
     """
-    result = get_db().get_case_code_matrix()
+    result = get_db().get_case_code_matrix(coder=coder)
+    note = _coder_visibility_note(coder)
+    if note:
+        result["coder_visibility"] = note
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def get_codes_by_case(case_id: int) -> str:
+def get_codes_by_case(case_id: int, coder: Optional[str] = None) -> str:
     """Get all codes that appear in a specific case.
 
     Shows which themes/codes have been identified in a particular
     case's text segments, with frequency counts.
 
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, counts reflect only visible coders by
+    default (what the user sees in QualCoder). The result is then
+    wrapped in an object carrying a coder_visibility block
+    (otherwise it stays a plain array). Pass coder to analyze one
+    specific coder's rows from the full data instead.
+
     Args:
         case_id: The numeric ID of the case
+        coder: Optional coder name; counts that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Only codings fully contained in the case's text intervals are counted
     (QualCoder report semantics).
@@ -2025,20 +2160,35 @@ def get_codes_by_case(case_id: int) -> str:
         JSON array of codes used in this case; each entry has code_id,
         code_name, color, category, occurrence_count
     """
-    result = get_db().get_codes_by_case(case_id)
+    result = get_db().get_codes_by_case(case_id, coder=coder)
+    payload: Dict[str, Any] = {"codes": result}
+    note = _coder_visibility_note(coder)
+    if note:
+        payload["coder_visibility"] = note
+        return json.dumps(payload, indent=2)
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def get_cases_by_code(code_id: int) -> str:
+def get_cases_by_code(code_id: int, coder: Optional[str] = None) -> str:
     """Get all cases that contain a specific code.
 
     Shows which cases/participants have text segments coded with
     a particular theme or code.
 
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides
+    some coders' work, counts reflect only visible coders by
+    default (what the user sees in QualCoder). The result is then
+    wrapped in an object carrying a coder_visibility block
+    (otherwise it stays a plain array). Pass coder to analyze one
+    specific coder's rows from the full data instead.
+
     Args:
         code_id: The numeric ID of the code
+        coder: Optional coder name; counts that coder's rows from the
+               base tables, bypassing the visibility filter
 
     Only codings fully contained in a case's text intervals are counted
     (QualCoder report semantics).
@@ -2047,7 +2197,12 @@ def get_cases_by_code(code_id: int) -> str:
         JSON array of cases containing this code; each entry has case_id,
         case_name, memo, occurrence_count
     """
-    result = get_db().get_cases_by_code(code_id)
+    result = get_db().get_cases_by_code(code_id, coder=coder)
+    payload: Dict[str, Any] = {"cases": result}
+    note = _coder_visibility_note(coder)
+    if note:
+        payload["coder_visibility"] = note
+        return _ai_json(payload, indent=2)
     return _ai_json(result, indent=2)
 
 
@@ -6587,7 +6742,9 @@ def export_case_code_matrix_csv(output_path: str,
     if err:
         return json.dumps(err)
 
-    data = get_db().get_case_code_matrix()
+    # P1-3: file exports read BASE tables (QualCoder's own reports do
+    # not filter by coder visibility)
+    data = get_db().get_case_code_matrix(honor_visibility=False)
     codes = data["codes"]
     rows = [["Case"] + [c["name"] for c in codes]]
     for case in data["cases"]:
