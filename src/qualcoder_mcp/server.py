@@ -1267,6 +1267,12 @@ def copy_project_to_workspace(
     original project is never touched. If a project with the same name
     already exists in the workspace, the copy gets a timestamped name.
 
+    The copy carries the whole project tree, ai_data/ included (the AI
+    prompt library and chat history are user data), but omits the
+    regenerable ai_data/search.sqlite, sqlite sidecar files and lock
+    files, the same exclusions backups use. QualCoder rebuilds
+    search.sqlite when it opens the copy.
+
     The copy is NOT opened automatically — use select_project on the
     returned path when you are ready to work on it.
 
@@ -3808,7 +3814,13 @@ def list_backups() -> str:
             "again, and those ARE listed with kind='qualcoder'.",
             "MCP backups (kind='mcp') accumulate until pruned — use "
             "prune_backups(keep_last=..., older_than_days=...) to reclaim "
-            "disk space (retention never touches QualCoder's own backups)."
+            "disk space (retention never touches QualCoder's own backups).",
+            "Backups include the whole project tree, ai_data/ included "
+            "(QualCoder 4.0's AI prompt library and chat history are "
+            "non-regenerable user data), but exclude the regenerable "
+            "vector-search database ai_data/search.sqlite and sqlite "
+            "sidecar files, exactly like QualCoder's own backups. "
+            "QualCoder rebuilds search.sqlite when the project is opened."
         ],
         "hint": "Use restore_backup(backup_path) to roll the project back "
                 "to one of these snapshots."
@@ -4033,6 +4045,12 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     3. creates a safety backup of the CURRENT state first, so even a restore
        can be undone,
     4. refuses to run while the project database is locked (QualCoder open).
+
+    Note: backups deliberately omit ai_data/search.sqlite (the
+    regenerable AI search index, QualCoder-parity exclusion), so a
+    restored project not having one is normal, never corruption:
+    QualCoder 4.0 rebuilds it on project open. The rest of ai_data/
+    (prompt library, chat history) restores with the project.
 
     Args:
         backup_path: Path to the backup folder (from list_backups)

@@ -511,8 +511,33 @@ def validate_id(id_value: int, param_name: str = "id") -> int:
     return id_value
 
 
+# P1-4 backup parity (verdict d): project copies include ai_data/ whole
+# (whole-tree copytree), because it holds NON-REGENERABLE user data (the
+# prompt library ai_prompts/ + ai_prompts.yaml and the AI chat history,
+# chat_history.sqlite), while excluding exactly QualCoder's own backup
+# ignore set (save_backup, app.py:1619-1625 at pin 9bddf17): the
+# regenerable vector-search DB search.sqlite and sqlite sidecar files.
+# search.sqlite also duplicates full source plaintext
+# (ai_vectorstore.py:479-552), so excluding it keeps backups from
+# multiplying plaintext copies. We add *.lock on top: QualCoder's own
+# 3.8.x backups exclude *.lock too (__main__.py:1371,1378) and a copied
+# lock file triggers its "not properly closed" prompt.
+QUALCODER_BACKUP_IGNORE_PATTERNS = (
+    "search.sqlite",
+    "search.sqlite-*",
+    "*.sqlite-shm",
+    "*.sqlite-wal",
+    "*.sqlite-journal",
+)
+BACKUP_IGNORE_PATTERNS = ("*.lock",) + QUALCODER_BACKUP_IGNORE_PATTERNS
+
+
 def backup_project(project_path: Union[str, Path]) -> Path:
     """Create a timestamped backup of a Qualcoder project.
+
+    The whole project tree is copied, ai_data/ included, minus
+    BACKUP_IGNORE_PATTERNS (QualCoder's own backup ignore set plus
+    *.lock; see the constant above).
 
     Args:
         project_path: Path to the .qda project folder
@@ -550,17 +575,9 @@ def backup_project(project_path: Union[str, Path]) -> Path:
     logger.info(f"Creating backup: {backup_path}")
 
     try:
-        # Never copy lock files into backups — QualCoder's own backups
-        # exclude *.lock too (__main__.py:1371,1378); a lock file inside a
-        # restored folder triggers its "not properly closed" prompt
         shutil.copytree(
             project_path, backup_path,
-            # Ignore union (D3): *.lock for 3.8.x parity, plus master's
-            # sqlite sidecar exclusions (app.py:1619-1625) - the AI
-            # vectorstore sidecar can be large and mid-write
-            ignore=shutil.ignore_patterns(
-                "*.lock", "search.sqlite", "search.sqlite-*",
-                "*.sqlite-shm", "*.sqlite-wal", "*.sqlite-journal")
+            ignore=shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
         )
         logger.info(f"Backup created successfully: {backup_path}")
         return backup_path
@@ -575,6 +592,14 @@ def copy_project_to_workspace(
     new_name: Optional[str] = None
 ) -> Path:
     """Copy a Qualcoder project to the MCP workspace for safe modification.
+
+    P1-4: the copy carries the whole tree, ai_data/ included (prompt
+    library and chat history are user data), minus
+    BACKUP_IGNORE_PATTERNS, the same set project backups use: the
+    regenerable search.sqlite (QualCoder rebuilds it on open), sqlite
+    sidecar files that may be mid-write, and lock files (a copied
+    project_in_use.lock would trigger QualCoder's "not properly
+    closed" prompt on the copy).
 
     Args:
         source_path: Path to the source .qda project
@@ -645,7 +670,10 @@ def copy_project_to_workspace(
     logger.info(f"Copying project to workspace: {dest_path}")
 
     try:
-        shutil.copytree(source_path, dest_path)
+        shutil.copytree(
+            source_path, dest_path,
+            ignore=shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
+        )
         logger.info(f"Project copied successfully: {dest_path}")
         return dest_path
     except Exception as e:

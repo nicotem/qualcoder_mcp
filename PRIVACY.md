@@ -66,6 +66,26 @@ keeps the same promise:
 The private zone stays in your project database on disk; this
 convention controls only what enters the AI conversation.
 
+## Backups, project copies, and the `ai_data/` folder
+
+QualCoder 4.0 keeps its AI state in `<project>/ai_data/`: the prompt
+library (`ai_prompts/`, `ai_prompts.yaml`) and the AI chat history
+(`chat_history.sqlite`) are user data that cannot be regenerated,
+while `search.sqlite` is a rebuildable search index. Be aware that
+**`ai_data/search.sqlite` contains a full plaintext copy of every text
+source in the project** (QualCoder chunks source fulltext into it for
+retrieval), which matters to anyone sharing or syncing project
+folders.
+
+This server never writes into `ai_data/` (it is QualCoder's own
+territory). Its backups and workspace copies include `ai_data/` whole,
+minus exactly the files QualCoder's own backups skip: `search.sqlite`
+and sqlite sidecar files. That mirrors upstream behavior, keeps the
+non-regenerable prompt library and chat history safe in every backup,
+and avoids multiplying plaintext copies of your sources across backup
+folders. A restored or copied project without `search.sqlite` is
+normal: QualCoder rebuilds it on project open.
+
 ## Your governance options, from default to fully local (Experimental)
 
 Which terms govern the AI processing is decided by the host you run and
