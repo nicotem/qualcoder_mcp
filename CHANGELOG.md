@@ -5,7 +5,95 @@ All notable changes to the Qualcoder MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - v0.11: QualCoder 4.0 interop conventions (Phase 1)
+
+QualCoder 4.0's AI subsystem defines conventions that live in the
+project itself. This release makes qualcoder-mcp a good citizen of
+them, so a project touched by both tools behaves coherently. All
+feature presence is detected by probing schema objects, never version
+strings; pre-4.0 projects behave exactly as before.
+
+### Added: '#####' memo privacy (QC 4.0 convention honored everywhere)
+
+Memo text from the first `#####` marker onward is the researcher's
+private zone: QualCoder 4.0 never shows it to its AI, and now neither
+does this server.
+
+- Every memo-returning tool and resource returns only the public part
+  (codes, categories, files, cases, codings, annotations, journal
+  entries, the project memo, attribute types, query results, and the
+  echoes of write tools). The strip is silent.
+- `search_memos` and `search_files` match and preview the public part
+  only, so the private zone cannot be probed through search.
+- Memo writes are merge-preserving: `set_memo` and `update_annotation`
+  replace only the public text, an existing private zone survives
+  every AI write verbatim (clearing an annotation that carries one
+  keeps the row), merge provenance notes land before the private zone,
+  and a `#####` in AI-supplied text is never written.
+- The one exception, by owner ruling for QualCoder export parity:
+  exported FILES (REFI-QDA, codebook, coded-segments report) keep full
+  memos, and their tool descriptions say so. `export_code_report`
+  returns content into the conversation and therefore strips.
+- PRIVACY.md documents the convention and the exception.
+
+### Added: configurable AI coder attribution (`QUALCODER_MCP_AI_CODER_NAME`)
+
+One coder name for every row this server writes: codings, annotations,
+journal entries, imports, cases, codes, categories, attributes, and
+the REFI-QDA Users entry. Default stays `AI Coding Assistant`;
+setting the variable to `AI Agent` (QualCoder 4.0's own AI owner
+string) groups this server's work with the built-in assistant's under
+4.0's per-coder visibility, undo, and reports. Invalid values stop the
+server at startup with a clear error. Explicit `owner` arguments still
+win. Note: memos, journal entries, annotations, and attribute writes
+were previously attributed to the project's own coder name; they now
+carry the configured AI coder name, keeping AI work distinguishable.
+
+### Added: coder-visibility reads on QC 4.0 projects
+
+When a project carries 4.0's per-coder visibility state (stored in the
+project database), coded-segment reads and analytics read through the
+`*_visible` views by default, so results reflect what the user sees in
+QualCoder. An explicit `coder` argument on `get_coded_segments`,
+`search_coded_text`, `get_coding_frequencies`,
+`find_cooccurring_codes`, `get_case_code_matrix`, `get_codes_by_case`,
+and `get_cases_by_code` reads that coder's rows from the full base
+data instead. Results disclose when hidden-coder filtering shaped
+them (a count, never hidden coders' names). File exports keep reading
+base tables, matching QualCoder's own reports and REFI export.
+
+### Changed: backups and workspace copies mirror QualCoder's ai_data policy
+
+Backups already carried `ai_data/` (the 4.0 prompt library and chat
+history are non-regenerable user data) minus QualCoder's exact backup
+ignore set; `copy_project_to_workspace` now applies the same set
+instead of copying everything, so workspace copies no longer duplicate
+the regenerable `search.sqlite` (which contains a full plaintext copy
+of every text source), live sqlite sidecars, or lock files. Restoring
+a backup without `search.sqlite` is normal: QualCoder rebuilds it on
+project open. Disclosed in the backup tool descriptions and
+PRIVACY.md.
+
+### Added: best-effort detection of an open QualCoder 4.0 window
+
+QualCoder 4.0 removed the `project_in_use.lock` protocol, so the lock
+gate cannot see an open 4.0 window. `select_project`,
+`get_current_project`, and `analyze_for_coding` now report
+`qualcoder_gui_signals`: heuristics built from database write
+sidecars, the 4.0 AI search index's WAL files, AI chat-history
+activity, and a guarded local process scan. Signals warn and ask
+("appears to be open"), never hard-refuse; the in-transaction text
+verification remains the write-time backstop. Docs and results also
+state the 4.0 refresh limitation: an open 4.0 window will not display
+external writes until the project is reopened.
+
+### Added: recovery hint naming the last-used project
+
+Every "no project selected" error now appends "The last project used
+on this machine was <path>." when that project still exists, so a
+client whose host recycled the server process (observed with LM
+Studio) recovers with one `select_project` call. The selection is
+never restored automatically.
 
 ## [0.10.1-alpha] - 2026-08-31
 

@@ -4933,7 +4933,7 @@ class QualcoderDatabase:
         if not memo.strip():
             raise ValueError(
                 "annotation text is empty after removing the '#####' "
-                "private-note marker — text from the marker onward is "
+                "private-note marker: text from the marker onward is "
                 "reserved for the researcher's own notes and is never "
                 "written by AI tools"
             )
