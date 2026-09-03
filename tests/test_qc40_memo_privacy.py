@@ -139,6 +139,25 @@ class TestMergeSemantics:
     def test_merge_none_existing(self):
         assert merge_public_memo(None, "new") == "new"
 
+    def test_crlf_separator_preserved(self):
+        # Upstream rstrips exactly " \t\r\n" (ai_memo.py:57), so a CRLF
+        # joint survives byte-for-byte (QA round 1, F7)
+        assert (merge_public_memo("pub\r\n#####priv", "new")
+                == "new\r\n#####priv")
+
+    def test_marker_on_its_own_crlf_line(self):
+        assert (merge_public_memo("l1\r\nl2\r\n#####\r\npriv", "x")
+                == "x\r\n#####\r\npriv")
+
+    def test_whitespace_outside_upstream_set_is_not_a_separator(self):
+        # A vertical tab or a no-break space before the marker is NOT
+        # in upstream's separator set: it belongs to the old public
+        # text and goes with it, never re-used as the joint (a bare
+        # rstrip() would wrongly keep it)
+        assert merge_public_memo("pub\x0b#####priv", "new") == "new#####priv"
+        assert (merge_public_memo("pub\u00a0#####priv", "new")
+                == "new#####priv")
+
 
 class TestStripPrivateMemos:
 
@@ -228,6 +247,19 @@ class TestSetMemoMergePreserving:
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM source WHERE id = 1")["memo"]
         assert stored == f"replaced \n#####{SECRET}"
+
+    def test_crlf_separator_preserved_through_tool(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE source SET memo = ? WHERE id = 1",
+              (f"pub\r\n#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+
+        json.loads(server.set_memo("file", 1, "replaced",
+                                   create_backup=False))
+        stored = _row(qualcoder_db_path,
+                      "SELECT memo FROM source WHERE id = 1")["memo"]
+        assert stored == f"replaced\r\n#####{SECRET}"
 
     def test_all_five_targets_preserve_suffix(self, setup_server,
                                               qualcoder_db_path):
@@ -437,6 +469,13 @@ def private_everywhere(setup_server, qualcoder_db_path):
          (f"journal#####{SECRET}",)),
         ("UPDATE attribute_type SET memo = ? WHERE name = 'Age'",
          (f"attr#####{SECRET}",)),
+        # A file-scoped attribute type plus a value on file 1, so that
+        # get_file_attributes(1) is a real read rather than an empty one
+        ("INSERT INTO attribute_type VALUES ('Source', '2024-01-15', "
+         "'TestCoder', ?, 'file', 'character')",
+         (f"fattr#####{SECRET}",)),
+        ("INSERT INTO attribute VALUES (NULL, 'Source', 'file', "
+         "'interview', 1, '2024-01-15', 'TestCoder')", ()),
         ("INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
          "VALUES (1, 0, 4, ?, 'TestCoder', '2024-01-15')",
          (f"ann#####{SECRET}",)),
@@ -450,6 +489,21 @@ def private_everywhere(setup_server, qualcoder_db_path):
 def _assert_clean(output: str):
     assert SECRET not in output
     assert "#####" not in output
+
+
+def _memos_in(obj):
+    """Every string under a 'memo' key anywhere in a parsed payload."""
+    found = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "memo" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_memos_in(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(_memos_in(item))
+    return found
 
 
 class TestReadPathsStrip:
@@ -468,9 +522,32 @@ class TestReadPathsStrip:
         ]:
             out = fn(*args)
             _assert_clean(out)
-            # public part still present (silent strip, not blanking)
-            assert "error" not in json.loads(out) \
-                if isinstance(json.loads(out), dict) else True
+            parsed = json.loads(out)
+            if isinstance(parsed, dict):
+                assert "error" not in parsed, fn.__name__
+
+    @pytest.mark.parametrize("fn,args,expected", [
+        (server.get_project_info, (), "proj"),
+        (server.list_all_codes, (), "code"),
+        (server.get_code_info, (1,), "code"),
+        (server.list_all_categories, (), "cat"),
+        (server.list_all_files, (), "file"),
+        (server.get_file_content, (1,), "file"),
+        (server.list_all_cases, (), "case"),
+        (server.get_case_info, (1,), "case"),
+        (server.list_attribute_types, (), "attr"),
+        (server.get_case_attributes, (1,), "attr"),
+        (server.get_file_attributes, (1,), "fattr"),
+        (server.analyze_file_with_coding, (1,), "ann"),
+    ], ids=lambda v: getattr(v, "__name__", None) or str(v))
+    def test_public_part_survives_per_kind(self, private_everywhere, fn,
+                                           args, expected):
+        # Silent strip, not blanking: the public part of every memo
+        # kind must still be returned (QA round 1, F7)
+        out = fn(*args)
+        _assert_clean(out)
+        memos = _memos_in(json.loads(out))
+        assert expected in memos, (fn.__name__, memos)
 
     def test_journal_public_part_survives(self, private_everywhere):
         out = json.loads(server.get_journal_entries())
@@ -486,6 +563,7 @@ class TestReadPathsStrip:
             (server.export_code_report, ("Stress",), {}),
             (server.list_attribute_types, (), {}),
             (server.get_case_attributes, (1,), {}),
+            (server.get_file_attributes, (1,), {}),
             (server.query_by_attribute, ("Age", "30"), {}),
             (server.get_cases_by_code, (1,), {}),
         ]:
@@ -518,7 +596,104 @@ class TestSearchDoesNotLeakPrivateZone:
     def test_search_memos_public_match_returns_public_only(
             self, private_everywhere):
         out = json.loads(server.search_memos("code"))
-        assert out["result_count"] >= 1
+        # The MARKED row (cid 1, "code#####...") must itself be returned
+        # with its public part; the unmarked "Coping code" row alone
+        # would satisfy a bare count check (QA round 1, F7)
+        marked = [r for r in out["results"]
+                  if r["type"] == "code" and r["id"] == 1]
+        assert len(marked) == 1
+        assert marked[0]["memo"] == "code"
+        _assert_clean(json.dumps(out))
+
+    # -- QA round 1, F1: the cap is enforced AFTER the public-part check,
+    # so a private-only LIKE hit never shadows a public match and the
+    # result count never depends on private content (no count oracle)
+
+    def test_public_match_at_higher_rowid_survives_limit_one(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 1",
+              ("x#####needle",))
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 2",
+              ("needle public",))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.search_memos("needle", limit=1))
+        assert out["result_count"] == 1
+        assert out["results"][0]["id"] == 2
+        assert out["results"][0]["memo"] == "needle public"
+        _assert_clean(json.dumps(out))
+
+    def test_result_count_does_not_vary_with_private_content(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 2",
+              ("needle public",))
+        outcomes = []
+        for private_tail in ("nothing here", "needle"):
+            _exec(qualcoder_db_path,
+                  "UPDATE code_name SET memo = ? WHERE cid = 1",
+                  (f"x#####{private_tail}",))
+            _reopen(qualcoder_db_path)
+            out = json.loads(server.search_memos("needle", limit=1))
+            outcomes.append((out["result_count"],
+                             [r["id"] for r in out["results"]]))
+        assert outcomes[0] == outcomes[1] == (1, [2])
+
+    def test_planted_probe_cannot_read_private_zone(
+            self, setup_server, qualcoder_db_path):
+        # The QA round 1 harness extracted a private secret character by
+        # character: plant a probe memo carrying the query word, search
+        # with limit = public_count + 1, and watch whether the probe
+        # drops out (it did whenever a lower-rowid private zone also
+        # matched). The probe must now appear either way.
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 2",
+              ("needle public",))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.create_code(
+            "Probe", memo="needle probe", create_backup=False))
+        assert out["success"] is True
+        public_count = 1  # cid 2, before the probe
+        outcomes = []
+        for private_tail in ("needle", "no match"):
+            _exec(qualcoder_db_path,
+                  "UPDATE code_name SET memo = ? WHERE cid = 1",
+                  (f"x#####{private_tail}",))
+            _reopen(qualcoder_db_path)
+            out = json.loads(server.search_memos("needle",
+                                                 limit=public_count + 1))
+            outcomes.append((out["result_count"],
+                             sorted(r["id"] for r in out["results"])))
+        assert outcomes[0] == outcomes[1]
+        assert outcomes[0][0] == 2
+        assert 2 in outcomes[0][1]
+        # And result_count < limit still means the search was exhaustive
+        out = json.loads(server.search_memos("needle", limit=10))
+        assert out["result_count"] == 2
+
+    def test_file_memo_section_caps_after_public_check(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE source SET memo = ? WHERE id = 1", ("x#####needle",))
+        _exec(qualcoder_db_path,
+              "UPDATE source SET memo = ? WHERE id = 2", ("needle in file",))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.search_memos("needle", limit=1))
+        assert [(r["type"], r["id"]) for r in out["results"]] == [("file", 2)]
+        _assert_clean(json.dumps(out))
+
+    def test_annotation_section_caps_after_public_check(
+            self, setup_server, qualcoder_db_path):
+        for pos0, memo in ((0, "x#####needle"), (5, "needle note")):
+            _exec(qualcoder_db_path,
+                  "INSERT INTO annotation (fid, pos0, pos1, memo, owner, "
+                  "date) VALUES (1, ?, ?, ?, 'TestCoder', '2024-01-15')",
+                  (pos0, pos0 + 4, memo))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.search_memos("needle", limit=1))
+        assert ([(r["type"], r["memo"]) for r in out["results"]]
+                == [("annotation", "needle note")])
         _assert_clean(json.dumps(out))
 
     def test_search_files_memo_private_only_match_suppressed(

@@ -2074,10 +2074,15 @@ class QualcoderDatabase:
         results = []
 
         # Memo privacy ('#####'): match against the PUBLIC part only and
-        # return the public part only. The SQL LIKE runs over the full
-        # column (a cheap superset filter); the re-check below drops rows
-        # whose match lives only in the private suffix, so the search
-        # cannot be used as an oracle on private content.
+        # return the public part only. The SQL LIKE over the full column
+        # is a cheap SUPERSET filter and carries NO LIMIT: the cap is
+        # enforced in Python only after the public-part check, so a row
+        # whose match lives only in the private suffix never consumes
+        # result budget. result_count therefore depends on public
+        # content alone (and result_count < limit means the search was
+        # exhaustive, as on the pre-privacy code), which is what keeps
+        # the search from being a count oracle on private content
+        # (QA round 1, F1).
         query_folded = query.lower()
 
         def _public_hit(raw_memo):
@@ -2085,8 +2090,11 @@ class QualcoderDatabase:
             public = extract_ai_memo(raw_memo or "")
             return query_folded in public.lower(), public
 
+        pattern = f"%{escaped_query}%"
+
         try:
-            # Search code memos
+            # Search code memos (cursor iterated, cap applied in Python
+            # after the public-part check; see the note above)
             cursor = self.conn.execute("""
                 SELECT
                     'code' as type,
@@ -2097,10 +2105,10 @@ class QualcoderDatabase:
                     date
                 FROM code_name
                 WHERE memo LIKE ? ESCAPE '\\'
-                LIMIT ?
-            """, (f"%{escaped_query}%", limit))
+                ORDER BY cid
+            """, (pattern,))
 
-            for row in cursor.fetchall():
+            for row in cursor:
                 matches, public_memo = _public_hit(row["memo"])
                 if not matches:
                     continue
@@ -2112,8 +2120,10 @@ class QualcoderDatabase:
                     "owner": row["owner"],
                     "date": row["date"]
                 })
+                if len(results) >= limit:
+                    break
 
-            # Search file memos
+            # Search file memos (only while budget remains)
             if len(results) < limit:
                 cursor = self.conn.execute("""
                     SELECT
@@ -2125,10 +2135,10 @@ class QualcoderDatabase:
                         date
                     FROM source
                     WHERE memo LIKE ? ESCAPE '\\'
-                    LIMIT ?
-                """, (f"%{escaped_query}%", limit - len(results)))
+                    ORDER BY id
+                """, (pattern,))
 
-                for row in cursor.fetchall():
+                for row in cursor:
                     matches, public_memo = _public_hit(row["memo"])
                     if not matches:
                         continue
@@ -2140,8 +2150,10 @@ class QualcoderDatabase:
                         "owner": row["owner"],
                         "date": row["date"]
                     })
+                    if len(results) >= limit:
+                        break
 
-            # Search annotations
+            # Search annotations (only while budget remains)
             if len(results) < limit:
                 cursor = self.conn.execute("""
                     SELECT
@@ -2156,10 +2168,10 @@ class QualcoderDatabase:
                     FROM annotation a
                     JOIN source s ON a.fid = s.id
                     WHERE a.memo LIKE ? ESCAPE '\\'
-                    LIMIT ?
-                """, (f"%{escaped_query}%", limit - len(results)))
+                    ORDER BY a.anid
+                """, (pattern,))
 
-                for row in cursor.fetchall():
+                for row in cursor:
                     matches, public_memo = _public_hit(row["memo"])
                     if not matches:
                         continue
@@ -2173,6 +2185,8 @@ class QualcoderDatabase:
                         "position_start": row["pos0"],
                         "position_end": row["pos1"]
                     })
+                    if len(results) >= limit:
+                        break
 
             return results
         except sqlite3.Error as e:
