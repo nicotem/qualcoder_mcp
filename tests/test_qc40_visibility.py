@@ -823,16 +823,20 @@ class TestVisibilityGuardFailsClosed:
         with pytest.raises(RuntimeError):
             server.db.existing_row_status("annotation", 1)
 
+    # The by-id calls below use the DEFAULT create_backup: the guard must
+    # refuse before the backup a default call would take, so
+    # _rows_intact's "no backup" assertion is meaningful (fix round 4)
+
     @pytest.mark.parametrize("variant", sorted(_BROKEN_VIEWS))
     def test_by_id_writes_error_out_without_override(self, visibility_db,
                                                      variant):
         _break_views(visibility_db, variant)
         _reopen(visibility_db)
         for raw in (
-            server.delete_coding(3, create_backup=False),
-            server.set_memo("coding", 3, "probe", create_backup=False),
-            server.update_annotation(1, "probe", create_backup=False),
-            server.delete_annotation(1, create_backup=False),
+            server.delete_coding(3),
+            server.set_memo("coding", 3, "probe"),
+            server.update_annotation(1, "probe"),
+            server.delete_annotation(1),
         ):
             out = self._assert_failed_closed(raw)
             assert "visible in QualCoder" in out["error"]
@@ -845,16 +849,41 @@ class TestVisibilityGuardFailsClosed:
         _break_views(visibility_db, variant)
         _reopen(visibility_db)
         for raw in (
-            server.delete_coding(3, create_backup=False,
-                                 allow_hidden_coder=True),
-            server.set_memo("coding", 3, "probe", create_backup=False,
-                            allow_hidden_coder=True),
-            server.update_annotation(1, "probe", create_backup=False,
-                                     allow_hidden_coder=True),
-            server.delete_annotation(1, create_backup=False,
-                                     allow_hidden_coder=True),
+            server.delete_coding(3, allow_hidden_coder=True),
+            server.set_memo("coding", 3, "probe", allow_hidden_coder=True),
+            server.update_annotation(1, "probe", allow_hidden_coder=True),
+            server.delete_annotation(1, allow_hidden_coder=True),
         ):
             self._assert_failed_closed(raw)
+        self._rows_intact(visibility_db)
+
+    @pytest.mark.parametrize("variant", sorted(_BROKEN_VIEWS))
+    def test_guard_runs_before_any_backup(self, visibility_db, variant,
+                                          monkeypatch):
+        # Timestamp-independent form of the no-backup assertion: with the
+        # default create_backup, without and with the override, the
+        # pre-check refuses before backup_before_write is ever reached
+        _break_views(visibility_db, variant)
+        _reopen(visibility_db)
+        reached = []
+
+        def record(self):
+            reached.append(str(self.db_path))
+            raise AssertionError("backup_before_write reached")
+
+        monkeypatch.setattr(QualcoderDatabase, "backup_before_write", record)
+        for override in (False, True):
+            for raw in (
+                server.delete_coding(3, allow_hidden_coder=override),
+                server.set_memo("coding", 3, "probe",
+                                allow_hidden_coder=override),
+                server.update_annotation(1, "probe",
+                                         allow_hidden_coder=override),
+                server.delete_annotation(1, allow_hidden_coder=override),
+            ):
+                out = self._assert_failed_closed(raw)
+                assert "nothing was changed" in out["error"]
+        assert reached == []
         self._rows_intact(visibility_db)
 
     def test_visible_rows_are_guarded_the_same_way(self, visibility_db):
@@ -913,10 +942,9 @@ class TestVisibilityGuardFailsClosed:
         monkeypatch.setattr(server.db, "conn",
                             _LockedOnVisibilityView(server.db.conn))
         for raw in (
-            server.delete_coding(3, create_backup=False),
-            server.delete_coding(3, create_backup=False,
-                                 allow_hidden_coder=True),
-            server.delete_annotation(1, create_backup=False),
+            server.delete_coding(3),
+            server.delete_coding(3, allow_hidden_coder=True),
+            server.delete_annotation(1),
         ):
             out = self._assert_failed_closed(raw)
             assert out["error"] == DB_LOCKED_MESSAGE
