@@ -4547,9 +4547,16 @@ class QualcoderDatabase:
                 f"{target_type.capitalize()} ID {target_id} does not exist"
             )
         label = row[0] if name_col else f"{target_type} {target_id}"
-        if (target_type == "coding" and not allow_hidden_coder
-                and not self.coding_is_visible(target_id)):
-            raise ValueError(hidden_coder_refusal("Coding", target_id))
+        if target_type == "coding":
+            # The visibility query runs with or without the override, as
+            # in delete_coding / update_annotation / delete_annotation: a
+            # view that cannot answer raises (R1 fail-closed rule), so the
+            # override never writes through an unreadable state. Codes,
+            # categories, files and cases have no per-coder visibility
+            # and never consult the view.
+            visible = self.coding_is_visible(target_id)
+            if not visible and not allow_hidden_coder:
+                raise ValueError(hidden_coder_refusal("Coding", target_id))
 
         # Memo privacy (QC 4.0 '#####' convention): replace only the
         # AI-visible public text; an existing private suffix survives

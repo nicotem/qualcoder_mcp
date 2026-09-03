@@ -473,7 +473,11 @@ def _refuse_existing_row_change(kind: str, row_id: int, *,
     write may proceed, an error dict otherwise; a missing row yields the
     usual "does not exist" error, and a malformed id is refused under the
     calling tool's own parameter name (`id_param`, default "<kind>_id").
-    The db layer repeats the same checks.
+    The db-layer write methods repeat both checks on the write connection,
+    querying the visibility view with or without the override (so a view
+    that stops answering between this pre-check and the write still
+    refuses, since fix round 4); this pre-check exists so that a refusal
+    costs no connection upgrade and no backup.
     """
     label = kind.capitalize()
     validate_id(row_id, id_param or f"{kind}_id")

@@ -871,17 +871,41 @@ class TestVisibilityGuardFailsClosed:
         _break_views(visibility_db, "missing_table")
         wdb = QualcoderDatabase(visibility_db, read_only=False)
         try:
+            # All four writers, each without and with the override: the
+            # db layer queries the view in every cell (set_memo with the
+            # override short-circuited it until fix round 4)
             for call in (
                 lambda: wdb.delete_coding(3),
                 lambda: wdb.delete_coding(3, allow_hidden_coder=True),
                 lambda: wdb.set_memo("coding", 3, "x"),
+                lambda: wdb.set_memo("coding", 3, "x", allow_hidden_coder=True),
                 lambda: wdb.update_annotation(1, "x"),
+                lambda: wdb.update_annotation(1, "x", allow_hidden_coder=True),
+                lambda: wdb.delete_annotation(1),
                 lambda: wdb.delete_annotation(1, allow_hidden_coder=True),
             ):
                 with pytest.raises(RuntimeError, match="nothing was changed"):
                     call()
         finally:
             wdb.close()
+        self._rows_intact(visibility_db)
+
+    def test_override_refuses_when_the_view_breaks_after_the_pre_check(
+            self, visibility_db, monkeypatch):
+        # The pre-check passes on an intact view; the view breaks before
+        # the write runs. The db layer queries the view again, with the
+        # override, and refuses (the set_memo cell that was open)
+        real_perform_write = server._perform_write
+
+        def break_then_write(op, **kwargs):
+            _break_views(visibility_db, "missing_table")
+            return real_perform_write(op, **kwargs)
+
+        monkeypatch.setattr(server, "_perform_write", break_then_write)
+        raw = server.set_memo("coding", 3, "probe", create_backup=False,
+                              allow_hidden_coder=True)
+        out = self._assert_failed_closed(raw)
+        assert "nothing was changed" in out["error"]
         self._rows_intact(visibility_db)
 
     def test_locked_database_surfaces_as_locked_not_hidden(
