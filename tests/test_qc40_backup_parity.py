@@ -10,6 +10,7 @@ normal, never as corruption.
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -160,14 +161,18 @@ class TestBackupToolDescriptionsDisclose:
 # never touched
 # =============================================================================
 
-def _plant_dangling_symlink(project_path):
+def _plant_unreadable_file(project_path):
+    """A mid-tree permission error: copytree collects it into shutil.Error."""
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not modelled on Windows")
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads everything; the failure cannot be provoked")
     docs = Path(project_path) / "documents"
     docs.mkdir(exist_ok=True)
-    try:
-        import os
-        os.symlink(Path(project_path) / "nowhere", docs / "gone.txt")
-    except (OSError, NotImplementedError, AttributeError):
-        pytest.skip("symlinks unavailable on this platform")
+    locked = docs / "locked.txt"
+    locked.write_text("secret", encoding="utf-8")
+    locked.chmod(0)
+    return locked
 
 
 def _backup_siblings(project_path):
@@ -178,19 +183,25 @@ def _backup_siblings(project_path):
 class TestCopyFailureCleanup:
 
     def test_backup_failure_leaves_no_partial_folder(self, qualcoder_db_path):
-        _plant_dangling_symlink(qualcoder_db_path)
-        assert _backup_siblings(qualcoder_db_path) == []
-        with pytest.raises(OSError, match="Backup failed"):
-            backup_project(qualcoder_db_path)
-        assert _backup_siblings(qualcoder_db_path) == []
+        locked = _plant_unreadable_file(qualcoder_db_path)
+        try:
+            assert _backup_siblings(qualcoder_db_path) == []
+            with pytest.raises(OSError, match="Backup failed"):
+                backup_project(qualcoder_db_path)
+            assert _backup_siblings(qualcoder_db_path) == []
+        finally:
+            locked.chmod(0o644)
 
     def test_workspace_copy_failure_leaves_no_partial_folder(
             self, qualcoder_db_path, tmp_path):
-        _plant_dangling_symlink(qualcoder_db_path)
-        ws = tmp_path / "ws"
-        with pytest.raises(OSError, match="Copy failed"):
-            copy_project_to_workspace(qualcoder_db_path, workspace=ws)
-        assert list(ws.iterdir()) == []
+        locked = _plant_unreadable_file(qualcoder_db_path)
+        try:
+            ws = tmp_path / "ws"
+            with pytest.raises(OSError, match="Copy failed"):
+                copy_project_to_workspace(qualcoder_db_path, workspace=ws)
+            assert list(ws.iterdir()) == []
+        finally:
+            locked.chmod(0o644)
 
     def test_partial_backup_is_not_listed_as_restorable(
             self, setup_server, qualcoder_db_path, monkeypatch):
@@ -207,7 +218,7 @@ class TestCopyFailureCleanup:
             backup_project(qualcoder_db_path)
         assert _backup_siblings(qualcoder_db_path) == []
         out = json.loads(server.list_backups())
-        assert out.get("backup_count", len(out.get("backups", []))) == 0
+        assert out["backup_count"] == 0
 
     def test_file_exists_error_leaves_foreign_folder_intact(
             self, qualcoder_db_path, tmp_path, monkeypatch):
@@ -239,9 +250,145 @@ class TestCopyFailureCleanup:
             self, setup_server, qualcoder_db_path):
         # The write path already refused when the backup failed; now it
         # also leaves no half-copied backup folder behind
-        _plant_dangling_symlink(qualcoder_db_path)
+        locked = _plant_unreadable_file(qualcoder_db_path)
+        try:
+            out = json.loads(server.set_memo("code", 1, "note",
+                                             create_backup=True))
+            assert "error" in out
+            assert "Nothing was written" in out["error"]
+            assert _backup_siblings(qualcoder_db_path) == []
+        finally:
+            locked.chmod(0o644)
+
+
+# =============================================================================
+# S-P1 (owner-approved deviation from save_backup parity): symlinks that
+# resolve outside the project, or dangle, are skipped and reported
+# =============================================================================
+
+def _symlink(target, link):
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("symlinks unavailable on this platform")
+
+
+class TestOutwardSymlinksNotFollowed:
+
+    def _outside(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "id_ed25519").write_text("SECRET-KEY-BYTES",
+                                             encoding="utf-8")
+        (outside / "other.txt").write_text("other study", encoding="utf-8")
+        return outside
+
+    def test_outward_file_symlink_skipped_and_reported(self, qualcoder_db_path,
+                                                       tmp_path):
+        outside = self._outside(tmp_path)
+        docs = Path(qualcoder_db_path) / "documents"
+        docs.mkdir()
+        _symlink(outside / "id_ed25519", docs / "readme.txt")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert not (backup / "documents" / "readme.txt").exists()
+        assert report["skipped_symlinks"] == [
+            os.path.join("documents", "readme.txt")]
+        # The link target is untouched and nothing outside was read into
+        # the backup
+        assert (outside / "id_ed25519").read_text(encoding="utf-8") == \
+            "SECRET-KEY-BYTES"
+        assert "SECRET-KEY-BYTES" not in "".join(
+            p.read_text(encoding="utf-8", errors="ignore")
+            for p in backup.rglob("*") if p.is_file())
+
+    def test_outward_directory_symlink_skipped(self, qualcoder_db_path,
+                                               tmp_path):
+        outside = self._outside(tmp_path)
+        ai = Path(qualcoder_db_path) / "ai_data"
+        ai.mkdir()
+        _symlink(outside, ai / "notes")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert not (backup / "ai_data" / "notes").exists()
+        assert report["skipped_symlinks"] == [os.path.join("ai_data", "notes")]
+        assert (outside / "other.txt").is_file()
+
+    def test_inward_symlink_still_copied(self, qualcoder_db_path):
+        project = Path(qualcoder_db_path)
+        docs = project / "documents"
+        docs.mkdir()
+        (docs / "real.txt").write_text("inside", encoding="utf-8")
+        _symlink(docs / "real.txt", docs / "alias.txt")           # absolute
+        _symlink(Path("real.txt"), docs / "relative.txt")         # relative
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == []
+        for name in ("alias.txt", "relative.txt"):
+            copied = backup / "documents" / name
+            assert copied.is_file() and not copied.is_symlink()
+            assert copied.read_text(encoding="utf-8") == "inside"
+
+    def test_dangling_symlink_does_not_abort(self, qualcoder_db_path):
+        docs = Path(qualcoder_db_path) / "documents"
+        docs.mkdir()
+        _symlink(Path(qualcoder_db_path) / "nowhere", docs / "gone.txt")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert (backup / "data.qda").is_file()
+        assert not (backup / "documents" / "gone.txt").exists()
+        assert report["skipped_symlinks"] == [os.path.join("documents", "gone.txt")]
+
+    def test_workspace_copy_applies_the_same_rule(self, setup_server,
+                                                  qualcoder_db_path,
+                                                  tmp_path, monkeypatch):
+        outside = self._outside(tmp_path)
+        project = Path(qualcoder_db_path)
+        (project / "documents").mkdir()
+        _symlink(outside / "id_ed25519", project / "documents" / "key.txt")
+        (project / "documents" / "real.txt").write_text("r", encoding="utf-8")
+        _symlink(Path("real.txt"), project / "documents" / "in.txt")
+        _symlink(project / "nowhere", project / "documents" / "dangling.txt")
+        import qualcoder_mcp.database as database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
+        assert out["success"] is True
+        assert out["skipped_symlinks"] == 2
+        assert sorted(out["skipped_symlink_names"]) == sorted([
+            os.path.join("documents", "key.txt"),
+            os.path.join("documents", "dangling.txt")])
+        copy = Path(out["workspace_copy"])
+        assert not (copy / "documents" / "key.txt").exists()
+        assert (copy / "documents" / "in.txt").read_text(encoding="utf-8") == "r"
+
+    def test_clean_copy_reports_zero(self, setup_server, qualcoder_db_path,
+                                     tmp_path, monkeypatch):
+        import qualcoder_mcp.database as database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
+        assert out["skipped_symlinks"] == 0
+        assert "skipped_symlink_names" not in out
+
+    def test_pre_write_backup_reports_skipped(self, setup_server,
+                                              qualcoder_db_path, tmp_path):
+        outside = self._outside(tmp_path)
+        docs = Path(qualcoder_db_path) / "documents"
+        docs.mkdir()
+        _symlink(outside / "id_ed25519", docs / "leak.txt")
         out = json.loads(server.set_memo("code", 1, "note",
                                          create_backup=True))
-        assert "error" in out
-        assert "Nothing was written" in out["error"]
-        assert _backup_siblings(qualcoder_db_path) == []
+        assert out["success"] is True
+        assert out["backup_skipped_symlinks"] == 1
+        assert out["backup_skipped_symlink_names"] == [
+            os.path.join("documents", "leak.txt")]
+        assert not (Path(out["backup_path"]) / "documents" / "leak.txt").exists()
+        # A clean project carries no such keys
+        docs.joinpath("leak.txt").unlink()
+        out = json.loads(server.set_memo("code", 1, "note2",
+                                         create_backup=True))
+        assert "backup_skipped_symlinks" not in out
+
+    def test_tool_descriptions_disclose_the_rule(self):
+        for tool in (server.copy_project_to_workspace, server.list_backups,
+                     server.restore_backup):
+            assert "symlink" in (tool.__doc__ or "").lower(), tool.__name__

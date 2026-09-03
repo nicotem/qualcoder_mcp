@@ -813,15 +813,60 @@ QUALCODER_BACKUP_IGNORE_PATTERNS = (
 BACKUP_IGNORE_PATTERNS = ("*.lock",) + QUALCODER_BACKUP_IGNORE_PATTERNS
 
 
-def backup_project(project_path: Union[str, Path]) -> Path:
+def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
+    """The ignore callback shared by backup_project and copy_project_to_workspace.
+
+    Applies BACKUP_IGNORE_PATTERNS and additionally skips any entry that
+    is a symlink whose real path does not lie under the project's real
+    path, or that dangles. Owner-approved deviation from QualCoder's
+    save_backup (a plain copytree that dereferences every link, app.py:1628
+    at pin 9bddf17): a hostile or shared project folder must not pull
+    files from outside the project into a backup or workspace copy, and a
+    dangling link must not abort the copy (S-P1). Symlinks resolving inside
+    the project keep the previous behavior (dereferenced into a real copy).
+    Skipped entries are appended to `skipped` as project-relative paths.
+    """
+    root_real = os.path.normcase(os.path.realpath(project_root))
+    patterns = shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
+
+    def _ignore(dirpath, names):
+        ignored = set(patterns(dirpath, names))
+        for name in names:
+            if name in ignored:
+                continue
+            full = os.path.join(dirpath, name)
+            if not os.path.islink(full):
+                continue
+            target = os.path.normcase(os.path.realpath(full))
+            inside = (target == root_real
+                      or target.startswith(root_real + os.sep))
+            if inside and os.path.exists(full):
+                continue  # in-project link: copied as before
+            ignored.add(name)
+            rel = os.path.relpath(full, project_root)
+            skipped.append(rel)
+            logger.warning(
+                f"Skipping symlink {rel!r} in project copy: it points "
+                f"outside the project or dangles")
+        return ignored
+
+    return _ignore
+
+
+def backup_project(project_path: Union[str, Path],
+                   report: Optional[Dict[str, Any]] = None) -> Path:
     """Create a timestamped backup of a Qualcoder project.
 
     The whole project tree is copied, ai_data/ included, minus
     BACKUP_IGNORE_PATTERNS (QualCoder's own backup ignore set plus
-    *.lock; see the constant above).
+    *.lock; see the constant above). Symlinks pointing outside the
+    project folder, and dangling symlinks, are skipped rather than
+    followed (S-P1, see _copy_ignore).
 
     Args:
         project_path: Path to the .qda project folder
+        report: Optional dict; on success receives "skipped_symlinks",
+                the project-relative paths of skipped symlinks
 
     Returns:
         Path to the backup folder
@@ -855,12 +900,15 @@ def backup_project(project_path: Union[str, Path]) -> Path:
 
     logger.info(f"Creating backup: {backup_path}")
 
+    skipped: List[str] = []
     try:
         shutil.copytree(
             project_path, backup_path,
-            ignore=shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
+            ignore=_copy_ignore(project_path, skipped)
         )
         logger.info(f"Backup created successfully: {backup_path}")
+        if report is not None:
+            report["skipped_symlinks"] = skipped
         return backup_path
     except FileExistsError as e:
         # copytree's makedirs failed before anything was written: the
@@ -879,7 +927,8 @@ def backup_project(project_path: Union[str, Path]) -> Path:
 def copy_project_to_workspace(
     source_path: Union[str, Path],
     workspace: Optional[Union[str, Path]] = None,
-    new_name: Optional[str] = None
+    new_name: Optional[str] = None,
+    report: Optional[Dict[str, Any]] = None
 ) -> Path:
     """Copy a Qualcoder project to the MCP workspace for safe modification.
 
@@ -889,12 +938,16 @@ def copy_project_to_workspace(
     regenerable search.sqlite (QualCoder rebuilds it on open), sqlite
     sidecar files that may be mid-write, and lock files (a copied
     project_in_use.lock would trigger QualCoder's "not properly
-    closed" prompt on the copy).
+    closed" prompt on the copy). Symlinks pointing outside the project
+    folder, and dangling symlinks, are skipped rather than followed
+    (S-P1, see _copy_ignore).
 
     Args:
         source_path: Path to the source .qda project
         workspace: Workspace directory (defaults to DEFAULT_WORKSPACE)
         new_name: Optional new name for the project
+        report: Optional dict; on success receives "skipped_symlinks",
+                the project-relative paths of skipped symlinks
 
     Returns:
         Path to the copied project in workspace
@@ -959,12 +1012,15 @@ def copy_project_to_workspace(
 
     logger.info(f"Copying project to workspace: {dest_path}")
 
+    skipped: List[str] = []
     try:
         shutil.copytree(
             source_path, dest_path,
-            ignore=shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
+            ignore=_copy_ignore(source_path, skipped)
         )
         logger.info(f"Project copied successfully: {dest_path}")
+        if report is not None:
+            report["skipped_symlinks"] = skipped
         return dest_path
     except FileExistsError as e:
         # The destination appeared under someone else's hand between the
@@ -5877,10 +5933,14 @@ class QualcoderDatabase:
     def backup_before_write(self) -> Path:
         """Create a backup of the current project before making changes.
 
+        The copy report (skipped outward or dangling symlinks, S-P1) is
+        kept on self.last_backup_report for the caller to surface.
+
         Returns:
             Path to the backup folder
 
         Raises:
             OSError: If backup fails
         """
-        return backup_project(self.db_path)
+        self.last_backup_report = {}
+        return backup_project(self.db_path, report=self.last_backup_report)

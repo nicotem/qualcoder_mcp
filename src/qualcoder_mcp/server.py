@@ -635,6 +635,29 @@ def _default_owner() -> str:
     return _ai_coder_name()
 
 
+def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
+                             prefix: str = "", always: bool = False) -> None:
+    """Surface the symlinks a backup or project copy skipped (S-P1).
+
+    Adds "<prefix>skipped_symlinks" (a count) and, when any were skipped,
+    "<prefix>skipped_symlink_names" (project-relative, at most 20) so a
+    user with a legitimately linked media folder learns it is not in the
+    copy. With always=False the keys appear only when something was
+    skipped.
+    """
+    if not isinstance(result, dict):
+        return
+    skipped = list((report or {}).get("skipped_symlinks") or [])
+    if skipped or always:
+        result[f"{prefix}skipped_symlinks"] = len(skipped)
+    if skipped:
+        result[f"{prefix}skipped_symlink_names"] = skipped[:20]
+        result[f"{prefix}skipped_symlinks_note"] = (
+            "Symlinks that point outside the project folder, or that "
+            "dangle, are not followed into backups or copies; the entries "
+            "named here are absent from this copy.")
+
+
 def _perform_write(op, create_backup: bool = True,
                    backup_fail_detail: str = "nothing was written"):
     """Run a mutation under the full write-safety discipline.
@@ -711,6 +734,9 @@ def _perform_write(op, create_backup: bool = True,
 
     if backup_path:
         result["backup_path"] = str(backup_path)
+        _attach_skipped_symlinks(
+            result, getattr(write_db, "last_backup_report", None),
+            prefix="backup_")
     schema_warning = write_db.schema_write_warning()
     if schema_warning and isinstance(result, dict) and "error" not in result:
         result["schema_warning"] = schema_warning
@@ -1485,7 +1511,11 @@ def copy_project_to_workspace(
     prompt library and chat history are user data), but omits the
     regenerable ai_data/search.sqlite, sqlite sidecar files and lock
     files, the same exclusions backups use. QualCoder rebuilds
-    search.sqlite when it opens the copy.
+    search.sqlite when it opens the copy. Symlinks inside the project
+    that point outside the project folder (or dangle) are not followed:
+    they are skipped and reported (skipped_symlinks, with names), so a
+    shared or untrusted project folder cannot pull outside files into
+    the copy; symlinks resolving inside the project are copied as before.
 
     The copy is NOT opened automatically — use select_project on the
     returned path when you are ready to work on it.
@@ -1495,7 +1525,8 @@ def copy_project_to_workspace(
         new_name: Optional new name for the workspace copy
 
     Returns:
-        JSON with the workspace copy's path
+        JSON with the workspace copy's path and the count of skipped
+        symlinks
 
     Example:
         "Copy my project 'Interview Study' to the workspace for AI coding"
@@ -1505,15 +1536,18 @@ def copy_project_to_workspace(
     # Validate that the source is a real QualCoder project before copying
     validate_qda_path(source_path)
 
-    dest = copy_to_workspace(source_path, new_name=new_name)
+    report: Dict[str, Any] = {}
+    dest = copy_to_workspace(source_path, new_name=new_name, report=report)
 
-    return json.dumps({
+    result = {
         "success": True,
         "message": f"Copied project to workspace: {dest.name}",
         "workspace_copy": str(dest),
         "original_untouched": True,
         "hint": f"Use select_project(\"{dest}\") to open the copy and work on it."
-    }, indent=2)
+    }
+    _attach_skipped_symlinks(result, report, always=True)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -4080,7 +4114,11 @@ def list_backups() -> str:
     data), but exclude the regenerable vector-search database
     ai_data/search.sqlite (which duplicates every text source in
     plaintext) and sqlite sidecar files, exactly like QualCoder's own
-    backups; QualCoder rebuilds search.sqlite on project open.
+    backups; QualCoder rebuilds search.sqlite on project open. Unlike
+    QualCoder's backups, symlinks inside the project that point outside
+    the project folder (or dangle) are not followed: they are skipped and
+    the write result reports them (backup_skipped_symlinks), so a shared
+    or untrusted project folder cannot pull outside files into a backup.
 
     Returns:
         JSON with the project name and an array of backups
@@ -4354,7 +4392,11 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     regenerable AI search index, QualCoder-parity exclusion), so a
     restored project not having one is normal, never corruption:
     QualCoder 4.0 rebuilds it on project open. The rest of ai_data/
-    (prompt library, chat history) restores with the project.
+    (prompt library, chat history) restores with the project. Backups
+    made by this server also skip symlinks that point outside the
+    project folder (or dangle), so such entries are absent from a
+    restored project; the safety backup taken before a restore follows
+    the same rule.
 
     Args:
         backup_path: Path to the backup folder (from list_backups)
