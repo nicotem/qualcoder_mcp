@@ -179,7 +179,8 @@ client whose host recycled the server process (observed with LM
 Studio) recovers with one `select_project` call. The selection is
 never restored automatically. The pointer lives in
 `~/.qualcoder_mcp/mru_project.json` (per user account: one project
-path and a timestamp), is written through an exclusively created,
+path and a timestamp; the read back is capped at 4 KB counted in bytes
+on disk), is written through an exclusively created,
 owner-readable temp file and an atomic replace, and only a path with
 the shape `select_project` itself records (`<folder>.qda/data.qda`,
 no control or bidirectional formatting characters) that still exists

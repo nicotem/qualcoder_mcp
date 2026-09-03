@@ -324,3 +324,39 @@ class TestMruHintValidatesRecordedPath:
         self._write_state(path)
         out = json.loads(server.get_project_summary())
         assert HINT_PHRASE in out["error"]
+
+    def _write_padded_state(self, path, pad_chars):
+        # Four-byte code points: the byte count is four times the
+        # character count, so a file can straddle the cap in bytes while
+        # staying well under it in characters
+        payload = {"project_path": path, "padding": "\U0001F600" * pad_chars}
+        text = json.dumps(payload, ensure_ascii=False)
+        server._MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
+        server._MRU_FILE.write_text(text, encoding="utf-8")
+        return text
+
+    def test_cap_counts_bytes_not_characters(self, no_project,
+                                             qualcoder_db_path):
+        path = str(Path(qualcoder_db_path) / "data.qda")
+        # Over the cap in bytes, under it in characters: NOT echoed
+        text = self._write_padded_state(path, 1500)
+        assert len(text) < server.MRU_READ_MAX_BYTES
+        assert server._MRU_FILE.stat().st_size > server.MRU_READ_MAX_BYTES
+        out = json.loads(server.get_project_summary())
+        assert HINT_PHRASE not in out["error"]
+        assert "No Qualcoder project selected" in out["error"]
+        # The same multibyte shape within the cap in bytes IS echoed
+        text = self._write_padded_state(path, 200)
+        assert server._MRU_FILE.stat().st_size <= server.MRU_READ_MAX_BYTES
+        out = json.loads(server.get_project_summary())
+        assert HINT_PHRASE in out["error"]
+
+    def test_state_that_is_not_utf8_degrades_silently(self, no_project):
+        server._MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # UTF-16 with a BOM: json.loads would sniff and accept these bytes
+        # if they were handed to it undecoded
+        server._MRU_FILE.write_bytes(
+            json.dumps({"project_path": "/x.qda/data.qda"}).encode("utf-16"))
+        out = json.loads(server.get_project_summary())
+        assert HINT_PHRASE not in out["error"]
+        assert "No Qualcoder project selected" in out["error"]

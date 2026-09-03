@@ -145,15 +145,19 @@ def _mru_hint() -> str:
 
     The hint appears only when the recorded path has the canonical shape
     select_project records and still exists as a file; missing, corrupt,
-    oversized or wrong-shaped MRU state degrades silently to the plain
-    error text.
+    oversized (more than MRU_READ_MAX_BYTES on disk) or wrong-shaped MRU
+    state degrades silently to the plain error text. The cap is counted
+    in bytes: the file is read in binary and decoded afterwards, so a
+    multibyte payload cannot slip under a character count (fix round 3).
     """
     try:
-        with open(_MRU_FILE, "r", encoding="utf-8") as f:
+        with open(_MRU_FILE, "rb") as f:
             raw = f.read(MRU_READ_MAX_BYTES + 1)
         if len(raw) > MRU_READ_MAX_BYTES:
             return ""
-        data = json.loads(raw)
+        # Decode explicitly (strict UTF-8, no BOM-based UTF-16/32 sniffing
+        # by json.loads); garbage still lands in the blanket except below
+        data = json.loads(raw.decode("utf-8"))
         path = data.get("project_path")
         if _mru_path_is_canonical(path) and Path(path).is_file():
             return (f" The last project used on this machine was {path}. "
