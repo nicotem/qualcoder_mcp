@@ -126,7 +126,10 @@ Owner-approved deviation from QualCoder's save_backup parity: backups
 and workspace copies no longer follow a symlink that resolves outside
 the project folder, or that dangles (QualCoder's plain copytree
 dereferences every link). Such entries are skipped and reported
-(`backup_skipped_symlinks` on write results, `skipped_symlinks` on
+(`backup_skipped_symlinks` on write results, including the text result
+of `apply_codings` and the JSON of `import_text_file`;
+`safety_backup_skipped_symlinks` on a `restore_backup` result for the
+safety backup it takes first; `skipped_symlinks` on
 `copy_project_to_workspace`), because a hostile or shared project
 folder must not pull outside files into a backup; symlinks resolving
 inside the project are copied as before, and a dangling link no longer

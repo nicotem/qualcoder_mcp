@@ -714,6 +714,18 @@ def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
         result[f"{prefix}skipped_symlinks_note"] = _SKIPPED_SYMLINKS_NOTE
 
 
+def _skipped_symlinks_line(report: Optional[Dict[str, Any]]) -> str:
+    """The same report as _attach_skipped_symlinks, as one line of text for
+    a tool whose result is Markdown rather than JSON (apply_codings);
+    empty when nothing was skipped."""
+    skipped = list((report or {}).get("skipped_symlinks") or [])
+    if not skipped:
+        return ""
+    return (f"backup_skipped_symlinks: {len(skipped)} "
+            f"({', '.join(skipped[:20])}). {_SKIPPED_SYMLINKS_NOTE} "
+            f"Relay this to the user.\n")
+
+
 def _perform_write(op, create_backup: bool = True,
                    backup_fail_detail: str = "nothing was written"):
     """Run a mutation under the full write-safety discipline.
@@ -3811,6 +3823,11 @@ def apply_codings(
 
     if backup_path:
         output.append(f"🔒 Backup created: `{backup_path}`\n")
+        # S-P1 report for a Markdown result (fix round 3, R3)
+        skipped_line = _skipped_symlinks_line(
+            getattr(write_db, "last_backup_report", None))
+        if skipped_line:
+            output.append(skipped_line)
 
     output.append(f"**Successfully Applied: {len(results)} codings**\n")
 
@@ -4008,6 +4025,9 @@ def import_text_file(
         output["linked_to_case"] = case_link
     if backup_path:
         output["backup_path"] = str(backup_path)
+        _attach_skipped_symlinks(
+            output, getattr(write_db, "last_backup_report", None),
+            prefix="backup_")
 
     return json.dumps(output, indent=2)
 
@@ -4569,7 +4589,8 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         return json.dumps({"error": DB_LOCKED_MESSAGE})
 
     # Safety backup of the current state (rename to mark it as pre-restore)
-    safety_backup = backup_project(project_folder)
+    safety_report: Dict[str, Any] = {}
+    safety_backup = backup_project(project_folder, report=safety_report)
     marked = safety_backup.with_name(
         safety_backup.name[:-len(".qda")] + "_prerestore.qda"
     )
@@ -4635,7 +4656,7 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
 
     switch_project(current_project_path)
 
-    return json.dumps({
+    result = {
         "success": True,
         "message": f"Project '{project_folder.stem}' restored from "
                    f"'{backup_folder.name}'",
@@ -4643,7 +4664,9 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         "safety_backup": str(safety_backup),
         "hint": "The pre-restore state is kept in the safety backup in case "
                 "you change your mind."
-    }, indent=2)
+    }
+    _attach_skipped_symlinks(result, safety_report, prefix="safety_backup_")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()

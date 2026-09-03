@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+from qualcoder_mcp.sessions import AICodingSession, CodingSuggestion
 from qualcoder_mcp.database import (
     BACKUP_IGNORE_PATTERNS,
     QUALCODER_BACKUP_IGNORE_PATTERNS,
@@ -544,3 +545,105 @@ class TestSymlinkLoopsNotFollowed:
         for tool in (server.copy_project_to_workspace, server.list_backups,
                      server.restore_backup):
             assert "loop" in (tool.__doc__ or ""), tool.__name__
+
+
+# =============================================================================
+# Fix round 3, R3: every backup-taking tool surfaces the skipped-symlink
+# report, as PRIVACY.md and the list_backups docstring promise
+# =============================================================================
+
+def _approved_session(setup_server, qualcoder_db_path, span=(0, 10),
+                      text="This is in"):
+    session = AICodingSession(
+        project_path=qualcoder_db_path, description="R3", file_ids=[1],
+        code_names=["Stress"], instruction="R3", min_confidence=0.5)
+    session.add_suggestion(CodingSuggestion(
+        file_id=1, file_name="interview.txt", code_id=1, code_name="Stress",
+        start_pos=span[0], end_pos=span[1], segment_text=text,
+        reasoning="R3", confidence=0.9, status="approved"))
+    setup_server.session_manager.save_session(session)
+    return session
+
+
+class TestSkippedSymlinksSurfacedByEveryBackupTaker:
+
+    def _plant(self, qualcoder_db_path, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "id_ed25519").write_text("SECRET-KEY-BYTES",
+                                             encoding="utf-8")
+        docs = Path(qualcoder_db_path) / "documents"
+        docs.mkdir()
+        _symlink(outside / "id_ed25519", docs / "leak.txt")
+        return docs / "leak.txt"
+
+    def test_import_text_file_reports_skipped(self, setup_server,
+                                              qualcoder_db_path, tmp_path):
+        link = self._plant(qualcoder_db_path, tmp_path)
+        out = json.loads(server.import_text_file(
+            "r3.txt", "some text", create_backup=True))
+        assert out["success"] is True
+        assert out["backup_skipped_symlinks"] == 1
+        assert out["backup_skipped_symlink_names"] == [
+            os.path.join("documents", "leak.txt")]
+        assert "note" in out["backup_skipped_symlinks_note"].lower() or \
+            "absent" in out["backup_skipped_symlinks_note"]
+        assert not (Path(out["backup_path"]) / "documents" / "leak.txt").exists()
+        assert "SECRET-KEY-BYTES" not in json.dumps(out)
+        link.unlink()
+        out = json.loads(server.import_text_file(
+            "r3b.txt", "more text", create_backup=True))
+        assert out["success"] is True
+        assert "backup_skipped_symlinks" not in out
+
+    def test_import_text_file_without_backup_carries_no_key(
+            self, setup_server, qualcoder_db_path, tmp_path):
+        self._plant(qualcoder_db_path, tmp_path)
+        out = json.loads(server.import_text_file(
+            "r3c.txt", "text", create_backup=False))
+        assert out["success"] is True
+        assert "backup_path" not in out
+        assert "backup_skipped_symlinks" not in out
+
+    def test_apply_codings_reports_skipped(self, setup_server,
+                                           qualcoder_db_path, tmp_path):
+        link = self._plant(qualcoder_db_path, tmp_path)
+        session = _approved_session(setup_server, qualcoder_db_path)
+        text = server.apply_codings(session.session_id, create_backup=True)
+        assert "CODINGS APPLIED" in text
+        assert "Backup created" in text
+        assert "backup_skipped_symlinks: 1 (" in text
+        assert os.path.join("documents", "leak.txt") in text
+        assert "absent from this copy" in text
+        assert "SECRET-KEY-BYTES" not in text
+        # A clean project's output has no such line (a different span,
+        # since the AI coder already holds 0..10 on this file)
+        link.unlink()
+        session = _approved_session(setup_server, qualcoder_db_path,
+                                    span=(57, 77), text="I cope by exercising")
+        text = server.apply_codings(session.session_id, create_backup=True)
+        assert "CODINGS APPLIED" in text
+        assert "skipped" not in text
+
+    def test_restore_safety_backup_reports_skipped(self, setup_server,
+                                                   qualcoder_db_path,
+                                                   tmp_path):
+        restore_point = backup_project(qualcoder_db_path)
+        self._plant(qualcoder_db_path, tmp_path)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert out["success"] is True
+        assert out["safety_backup_skipped_symlinks"] == 1
+        assert out["safety_backup_skipped_symlink_names"] == [
+            os.path.join("documents", "leak.txt")]
+        assert not (Path(out["safety_backup"]) / "documents" / "leak.txt"
+                    ).exists()
+        assert "SECRET-KEY-BYTES" not in json.dumps(out)
+
+    def test_restore_of_a_clean_project_carries_no_key(self, setup_server,
+                                                       qualcoder_db_path):
+        restore_point = backup_project(qualcoder_db_path)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert out["success"] is True
+        assert "safety_backup_skipped_symlinks" not in out
