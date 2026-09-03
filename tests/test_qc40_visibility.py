@@ -434,3 +434,116 @@ class TestExportsReadBaseTables:
         with zipfile.ZipFile(out_file) as zf:
             qde = zf.read("project.qde").decode("utf-8")
         assert qde.count("<PlainTextSelection") == 5
+
+
+# =============================================================================
+# WRITE ECHOES: a hidden coder's row targeted by id echoes ids only (S-MAJ)
+# =============================================================================
+
+def _row(project_path, sql, args=()):
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        return con.execute(sql, args).fetchone()
+    finally:
+        con.close()
+
+
+class TestWriteEchoesRedactHiddenTargets:
+    """delete_coding, update_annotation and delete_annotation reach hidden
+    coders' rows by id (upstream parity: ai_mcp_server.py:2243-2280 deletes
+    by ctid with no owner check). Upstream echoes ids only; so do we. The
+    fixture's hidden rows: ctid 3 ('Stress' on 'I feel stressed about
+    deadlines', 24-55) and anid 1 ('hidden annotation'), both by HIDDEN."""
+
+    FORBIDDEN = (HIDDEN, "Stress", "I feel stressed", "hidden annotation",
+                 "interview.txt", "hidden memo")
+
+    def _assert_redacted(self, raw: str):
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, needle
+        out = json.loads(raw)
+        assert out.get("success") is True, out
+        assert out["coder_visibility"]["hidden_coder_filter"] == "applied"
+        assert out["coder_visibility"]["hidden_coders"] == 1
+        return out
+
+    def test_delete_coding_hidden_target_echoes_ids_only(self, visibility_db):
+        raw = server.delete_coding(3, create_backup=False)
+        out = self._assert_redacted(raw)
+        assert out["message"] == "Deleted coding 3"
+        assert out["deleted_coding"] == {
+            "coding_id": 3, "code_id": 1, "file_id": 1,
+            "hidden_coder_row": True}
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 0
+
+    def test_update_annotation_hidden_target_echoes_ids_only(
+            self, visibility_db):
+        raw = server.update_annotation(1, "probe", create_backup=False)
+        out = self._assert_redacted(raw)
+        assert out["annotation_id"] == 1
+        assert out["file_id"] == 1
+        assert out["memo"] == "probe"          # the AI's own text
+        assert out["updated"] is True
+        assert out["hidden_coder_row"] is True
+        for absent in ("owner", "file_name", "position_start",
+                       "position_end"):
+            assert absent not in out, absent
+        row = _row(visibility_db,
+                   "SELECT memo, owner FROM annotation WHERE anid = 1")
+        assert row[0] == "probe" and row[1] == HIDDEN
+
+    def test_delete_annotation_hidden_target_echoes_ids_only(
+            self, visibility_db):
+        raw = server.delete_annotation(1, create_backup=False)
+        out = self._assert_redacted(raw)
+        assert out["annotation_id"] == 1
+        assert out["file_id"] == 1
+        assert out["deleted"] is True
+        assert out["hidden_coder_row"] is True
+        for absent in ("owner", "file_name", "memo", "position_start"):
+            assert absent not in out, absent
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM annotation WHERE anid = 1")[0] == 0
+
+    def test_clearing_hidden_annotation_echoes_ids_only(self, visibility_db):
+        # update_annotation("") deletes the row; the redaction must hold
+        # on that path too
+        raw = server.update_annotation(1, "", create_backup=False)
+        out = self._assert_redacted(raw)
+        assert out["deleted"] is True
+        assert out["deleted_because_cleared"] is True
+        assert "owner" not in out and "memo" not in out
+
+    def test_visible_target_keeps_full_echo_on_same_project(
+            self, visibility_db):
+        # The redaction is per row: the visible coding on the very same
+        # 4.0 project keeps the full echo and carries no note
+        out = json.loads(server.delete_coding(1, create_backup=False))
+        assert out["deleted_coding"]["code_name"] == "Stress"
+        assert out["deleted_coding"]["owner"] == "TestCoder"
+        assert out["deleted_coding"]["text"] == "I feel stressed about deadlines"
+        assert "hidden_coder_row" not in out["deleted_coding"]
+        assert "coder_visibility" not in out
+        assert out["message"].startswith("Deleted coding 1 ('Stress' on")
+
+    def test_visible_annotation_keeps_full_echo(self, visibility_db):
+        out = json.loads(server.add_annotation(1, 5, 9, "mine",
+                                               create_backup=False))
+        anid = out["annotation"]["annotation_id"]
+        upd = json.loads(server.update_annotation(anid, "edited",
+                                                  create_backup=False))
+        assert upd["owner"] == server._default_owner()
+        assert upd["file_name"] == "interview.txt"
+        assert "coder_visibility" not in upd
+        dele = json.loads(server.delete_annotation(anid, create_backup=False))
+        assert dele["memo"] == "edited"
+        assert "coder_visibility" not in dele
+
+    def test_pre40_project_never_redacts(self, setup_server):
+        # No visibility capability: every row is visible, full echo, no note
+        out = json.loads(server.delete_coding(1, create_backup=False))
+        assert out["deleted_coding"]["owner"] == "TestCoder"
+        assert "coder_visibility" not in out
+        assert server.db.coding_is_visible(2) is True
+        assert server.db.annotation_is_visible(999) is True

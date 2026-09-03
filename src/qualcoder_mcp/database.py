@@ -1350,6 +1350,36 @@ class QualcoderDatabase:
         except sqlite3.Error:
             return 0
 
+    def _row_is_visible(self, base: str, view: str, id_col: str,
+                        row_id: int) -> bool:
+        """Whether a row the AI targets by id is one the user sees.
+
+        True on projects without the visibility capability (nothing is
+        hidden there) or when the view is absent; otherwise the row must
+        appear in the *_visible view. Table, view and column names come
+        from fixed internal constants, never from input (S-MAJ).
+        """
+        source = self._visible_source(base, view)
+        if source == base:
+            return True
+        try:
+            row = self.conn.execute(
+                f"SELECT 1 FROM {source} WHERE {id_col} = ?", (row_id,)
+            ).fetchone()
+        except sqlite3.Error:
+            return True
+        return row is not None
+
+    def coding_is_visible(self, coding_id: int) -> bool:
+        """True unless a 4.0 visibility setting hides this coding's coder."""
+        return self._row_is_visible("code_text", "code_text_visible",
+                                    "ctid", coding_id)
+
+    def annotation_is_visible(self, annotation_id: int) -> bool:
+        """True unless a 4.0 visibility setting hides this annotation's coder."""
+        return self._row_is_visible("annotation", "annotation_visible",
+                                    "anid", annotation_id)
+
     @staticmethod
     def _validate_coder(coder: Optional[str]) -> Optional[str]:
         """Validate an explicit coder filter argument.
@@ -3752,7 +3782,11 @@ class QualcoderDatabase:
                          the QualCoder lock file) before committing.
 
         Returns:
-            The details of the deleted coding
+            The details of the deleted coding. When the row belongs to a
+            coder the project hides (QC 4.0 visibility, P1-3), only its
+            ids come back, matching upstream's ids-only echo
+            (ai_mcp_server.py:2243-2280): owner, code name, span, text
+            and memo of a hidden coder never enter the conversation.
 
         Raises:
             ValueError: If the coding does not exist
@@ -3762,6 +3796,7 @@ class QualcoderDatabase:
         existing = self.get_coding(coding_id)
         if existing is None:
             raise ValueError(f"Coding ID {coding_id} does not exist")
+        visible = self.coding_is_visible(coding_id)
 
         try:
             self.conn.execute(
@@ -3777,6 +3812,13 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "delete_coding", "Failed to delete coding")
 
+        if not visible:
+            return {
+                "coding_id": existing["coding_id"],
+                "code_id": existing["code_id"],
+                "file_id": existing["file_id"],
+                "hidden_coder_row": True,
+            }
         return existing
 
     def validate_text_file_import(
@@ -5135,6 +5177,7 @@ class QualcoderDatabase:
         existing = self.get_annotation(annotation_id)
         if existing is None:
             raise ValueError(f"Annotation ID {annotation_id} does not exist")
+        visible = self.annotation_is_visible(annotation_id)
 
         # Memo privacy ('#####'): replace only the public text; a private
         # suffix the researcher put on this annotation survives verbatim
@@ -5167,8 +5210,17 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "update_annotation",
                                "Failed to update annotation")
-        result = {**existing, "memo": public_memo, "date": date_str,
-                  "updated": True}
+        if not visible:
+            # Hidden coder's row (QC 4.0 visibility): echo ids plus the
+            # public text the AI itself just supplied, never the row's
+            # owner, span or file name (S-MAJ; upstream echoes ids only)
+            result = {"annotation_id": existing["annotation_id"],
+                      "file_id": existing["file_id"],
+                      "memo": public_memo, "date": date_str,
+                      "updated": True, "hidden_coder_row": True}
+        else:
+            result = {**existing, "memo": public_memo, "date": date_str,
+                      "updated": True}
         if public_memo == "":
             # Public text cleared but the row was kept for its private
             # suffix; from the AI's side the note reads as cleared
@@ -5177,11 +5229,15 @@ class QualcoderDatabase:
 
     def delete_annotation(self, annotation_id: int,
                           auto_commit: bool = True) -> Dict[str, Any]:
-        """Delete an annotation by anid (never by pos0 — see §4.3 gotcha)."""
+        """Delete an annotation by anid (never by pos0 — see §4.3 gotcha).
+
+        A hidden coder's row (QC 4.0 visibility) echoes ids only (S-MAJ).
+        """
         self._require_write_access()
         existing = self.get_annotation(annotation_id)
         if existing is None:
             raise ValueError(f"Annotation ID {annotation_id} does not exist")
+        visible = self.annotation_is_visible(annotation_id)
         try:
             self.conn.execute(
                 "DELETE FROM annotation WHERE anid = ?", (annotation_id,)
@@ -5196,6 +5252,10 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "delete_annotation",
                                "Failed to delete annotation")
+        if not visible:
+            return {"annotation_id": existing["annotation_id"],
+                    "file_id": existing["file_id"],
+                    "deleted": True, "hidden_coder_row": True}
         return {**existing, "deleted": True}
 
     # ========================================================================

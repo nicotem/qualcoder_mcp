@@ -398,6 +398,24 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
     }
 
 
+def _attach_hidden_target_note(result: Any, key: Optional[str] = None) -> None:
+    """Add the coder-visibility disclosure to a write echo for a hidden row.
+
+    Write tools that target a row by id (delete_coding, update_annotation,
+    delete_annotation) reach hidden coders' rows too, by upstream parity;
+    when the db layer flags the row as hidden_coder_row the echo is ids
+    only and this note explains why (count of hidden coders, never a
+    name). No-op for visible rows and error results (S-MAJ).
+    """
+    if not isinstance(result, dict) or "error" in result:
+        return
+    target = result.get(key) if key else result
+    if isinstance(target, dict) and target.get("hidden_coder_row"):
+        note = _coder_visibility_note()
+        if note is not None:
+            result["coder_visibility"] = note
+
+
 def _ai_json(payload: Any, **dumps_kwargs) -> str:
     """json.dumps for AI-facing results, with memo privacy applied.
 
@@ -3942,7 +3960,11 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
 
     Returns:
         JSON with the deleted coding's details (code, file, positions, text)
-        and the backup path
+        and the backup path. On a QualCoder 4.0 project that hides coders,
+        a coding belonging to a hidden coder is deleted the same way, but
+        the echo carries ids only (coding_id, code_id, file_id) plus a
+        coder_visibility note; hidden coders' names and coding decisions
+        never enter the conversation.
 
     Example:
         "Delete coding 42 — that segment was coded wrongly"
@@ -3959,6 +3981,14 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     # (ValueError, RuntimeError) -> {"error": str(e)}, matching the helper.
     def _op(write_db):
         deleted = write_db.delete_coding(coding_id, auto_commit=False)
+        if deleted.get("hidden_coder_row"):
+            # Hidden coder's row (QC 4.0 visibility): ids only, never the
+            # code or file name (S-MAJ; upstream echoes ids only too)
+            return {
+                "success": True,
+                "message": f"Deleted coding {coding_id}",
+                "deleted_coding": deleted,
+            }
         return {
             "success": True,
             "message": f"Deleted coding {coding_id} "
@@ -3968,6 +3998,7 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="nothing was deleted")
+    _attach_hidden_target_note(result, "deleted_coding")
     return _ai_json(result, indent=2)
 
 
@@ -6058,6 +6089,11 @@ def update_annotation(annotation_id: int, memo: str,
     marker survives, and clearing the note keeps the row when such a
     section exists (the response then reports cleared, not deleted).
 
+    Coder visibility (QualCoder 4.0): an annotation belonging to a coder
+    the project hides is edited the same way, but the echo carries ids
+    and the new public text only, plus a coder_visibility note; the
+    hidden coder's name, span and file never enter the conversation.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
@@ -6075,6 +6111,7 @@ def update_annotation(annotation_id: int, memo: str,
         create_backup=create_backup,
         backup_fail_detail="the annotation was not changed",
     )
+    _attach_hidden_target_note(result)
     return _ai_json(result, indent=2)
 
 
@@ -6085,7 +6122,14 @@ def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
 
     THIS WRITES TO THE DATABASE. Removes one annotation (the note on a
     text span) — never the text, codings, or anything else. A backup is
-    created first by default.
+    created first by default. The row's note may hold a '#####' private
+    section the AI cannot see, so keep create_backup on unless the user
+    asks otherwise.
+
+    Coder visibility (QualCoder 4.0): an annotation belonging to a coder
+    the project hides is deleted the same way, but the echo carries ids
+    only plus a coder_visibility note; the hidden coder's name, note,
+    span and file never enter the conversation.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6103,6 +6147,7 @@ def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
         create_backup=create_backup,
         backup_fail_detail="the annotation was not deleted",
     )
+    _attach_hidden_target_note(result)
     return _ai_json(result, indent=2)
 
 
