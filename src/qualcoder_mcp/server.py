@@ -4519,7 +4519,9 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     made by this server also skip symlinks that point outside the
     project folder (or dangle) and in-project symlink loops, so such
     entries are absent from a restored project; the safety backup taken
-    before a restore follows the same rule.
+    before a restore follows the same rule, and every confirmed-restore
+    result (success, recovery from the safety backup, or failure)
+    reports what that backup skipped under safety_backup_skipped_symlinks.
 
     Args:
         backup_path: Path to the backup folder (from list_backups)
@@ -4654,19 +4656,42 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
                 shutil.rmtree(project_folder)
             shutil.copytree(safety_backup, project_folder)
             switch_project(current_project_path)
-            return json.dumps({
+            recovered: Dict[str, Any] = {
                 "error": "Restore failed, but the project was recovered "
-                         "from the safety backup — nothing was lost.",
-                "safety_backup": str(safety_backup)
-            })
+                         "from the safety backup; nothing was lost.",
+                "safety_backup": str(safety_backup),
+            }
+            if safety_report.get("skipped_symlinks"):
+                # The safety backup skipped these links (S-P1), so the
+                # recovered folder has no entry for them; what they
+                # pointed to is untouched, but "nothing was lost" would
+                # be false here (fix round 4)
+                recovered["error"] = (
+                    "Restore failed, but the project was recovered from "
+                    "the safety backup. That backup skipped the symlinks "
+                    "named in safety_backup_skipped_symlink_names, so the "
+                    "recovered project no longer contains those link "
+                    "entries (what they pointed to is untouched); "
+                    "recreate them by hand if they are needed.")
+            _attach_skipped_symlinks(recovered, safety_report,
+                                     prefix="safety_backup_")
+            return json.dumps(recovered)
         except Exception as recovery_error:
             logger.error(f"Recovery also failed: {recovery_error}")
-        return json.dumps({
+        failed: Dict[str, Any] = {
             "error": "Restore failed. The pre-restore state is preserved in "
-                     "the safety backup — copy it back over the project folder "
+                     "the safety backup; copy it back over the project folder "
                      "to recover.",
-            "safety_backup": str(safety_backup)
-        })
+            "safety_backup": str(safety_backup),
+        }
+        if safety_report.get("skipped_symlinks"):
+            failed["error"] += (
+                " That backup skipped the symlinks named in "
+                "safety_backup_skipped_symlink_names; recreate them by hand "
+                "after copying it back.")
+        _attach_skipped_symlinks(failed, safety_report,
+                                 prefix="safety_backup_")
+        return json.dumps(failed)
 
     switch_project(current_project_path)
 

@@ -11,6 +11,7 @@ normal, never as corruption.
 
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -646,4 +647,87 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
         out = json.loads(server.restore_backup(str(restore_point),
                                                confirm=True))
         assert out["success"] is True
+        assert "safety_backup_skipped_symlinks" not in out
+
+    # restore_backup's two FAILURE returns carry the same report (fix
+    # round 4): the project recovered from the safety backup lacks the
+    # links that backup skipped, so "nothing was lost" is softened only
+    # when something was skipped
+
+    def _swap_fails(self, monkeypatch, qualcoder_db_path, restore_point,
+                    recovery_too=False):
+        project = Path(qualcoder_db_path).resolve()
+        restore_point = Path(restore_point).resolve()
+        real_copytree = shutil.copytree
+
+        def fake(src, dst, *args, **kwargs):
+            src_p, dst_p = Path(src).resolve(), Path(dst).resolve()
+            if dst_p == project and (recovery_too or src_p == restore_point):
+                raise OSError(28, "Injected: no space left on device")
+            return real_copytree(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "copytree", fake)
+
+    def _assert_safety_report(self, out):
+        assert out["safety_backup_skipped_symlinks"] == 1
+        assert out["safety_backup_skipped_symlink_names"] == [
+            os.path.join("documents", "leak.txt")]
+        assert "absent from this copy" in out["safety_backup_skipped_symlinks_note"]
+        assert "SECRET-KEY-BYTES" not in json.dumps(out)
+        assert not (Path(out["safety_backup"]) / "documents" / "leak.txt"
+                    ).is_symlink()
+
+    def test_restore_recovered_from_safety_backup_reports_skipped(
+            self, setup_server, qualcoder_db_path, tmp_path, monkeypatch):
+        restore_point = backup_project(qualcoder_db_path)
+        link = self._plant(qualcoder_db_path, tmp_path)
+        self._swap_fails(monkeypatch, qualcoder_db_path, restore_point)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert "success" not in out
+        assert "recovered" in out["error"]
+        assert "safety backup" in out["error"]
+        assert "nothing was lost" not in out["error"]
+        assert "safety_backup_skipped_symlink_names" in out["error"]
+        assert "recreate" in out["error"]
+        self._assert_safety_report(out)
+        # The recovered project is rebuilt from the safety backup, so the
+        # link entry is gone while the rest of the folder is back
+        assert not link.is_symlink() and not link.exists()
+        assert (Path(qualcoder_db_path) / "documents").is_dir()
+        assert (Path(qualcoder_db_path) / "data.qda").is_file()
+        assert "error" not in json.loads(server.get_project_summary())
+
+    def test_restore_unrecoverable_failure_reports_skipped(
+            self, setup_server, qualcoder_db_path, tmp_path, monkeypatch):
+        restore_point = backup_project(qualcoder_db_path)
+        self._plant(qualcoder_db_path, tmp_path)
+        self._swap_fails(monkeypatch, qualcoder_db_path, restore_point,
+                         recovery_too=True)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert "success" not in out
+        assert "safety backup" in out["error"]
+        assert "copy it back" in out["error"]
+        assert "recreate" in out["error"]
+        self._assert_safety_report(out)
+        assert Path(out["safety_backup"]).is_dir()
+        assert not Path(qualcoder_db_path).exists()
+
+    def test_restore_failure_on_a_clean_project_keeps_the_plain_text(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        restore_point = backup_project(qualcoder_db_path)
+        self._swap_fails(monkeypatch, qualcoder_db_path, restore_point)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert "recovered" in out["error"]
+        assert "nothing was lost" in out["error"]
+        assert "safety_backup_skipped_symlinks" not in out
+        assert "safety_backup_skipped_symlink_names" not in out
+        self._swap_fails(monkeypatch, qualcoder_db_path, restore_point,
+                         recovery_too=True)
+        out = json.loads(server.restore_backup(str(restore_point),
+                                               confirm=True))
+        assert "safety backup" in out["error"]
+        assert "recreate" not in out["error"]
         assert "safety_backup_skipped_symlinks" not in out

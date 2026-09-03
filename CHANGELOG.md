@@ -132,8 +132,10 @@ the project folder, or that dangles (QualCoder's plain copytree
 dereferences every link). Such entries are skipped and reported
 (`backup_skipped_symlinks` on write results, including the text result
 of `apply_codings` and the JSON of `import_text_file`;
-`safety_backup_skipped_symlinks` on a `restore_backup` result for the
-safety backup it takes first; `skipped_symlinks` on
+`safety_backup_skipped_symlinks` on every confirmed `restore_backup`
+result, success or failure, for the safety backup it takes first, and a
+restore recovered from a safety backup that skipped links says so
+instead of "nothing was lost"; `skipped_symlinks` on
 `copy_project_to_workspace`), because a hostile or shared project
 folder must not pull outside files into a backup; symlinks resolving
 inside the project are copied as before, and a dangling link no longer
