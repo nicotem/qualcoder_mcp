@@ -139,3 +139,17 @@ class TestRestoreWithoutSearchSqlite:
         current = json.loads(server.get_current_project())
         assert "error" not in current
         assert current["project_info"]["coder_name"] == "TestCoder"
+
+
+class TestBackupToolDescriptionsDisclose:
+
+    def test_backup_tool_descriptions_disclose_ai_data_policy(self):
+        # The pre-call surface an MCP client reads (the tool description)
+        # must carry the ai_data/search.sqlite disclosure, not only the
+        # runtime notes (QA round 1, F15)
+        for tool in (server.list_backups, server.prune_backups,
+                     server.restore_backup,
+                     server.copy_project_to_workspace):
+            doc = tool.__doc__ or ""
+            assert "ai_data" in doc, tool.__name__
+            assert "search.sqlite" in doc, tool.__name__

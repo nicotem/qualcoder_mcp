@@ -258,6 +258,26 @@ class TestLadderWiring:
         assert out["qualcoder_gui_signals"]
         assert "ASK THE USER" in out["qualcoder_gui_hint"]
 
+    def test_restore_preview_reports_signals_and_asks(self, setup_server,
+                                                      qualcoder_db_path,
+                                                      no_process_hits):
+        # The confirm=false preview is restore_backup's own ask rung:
+        # it reports the heuristics and asks, and stays a preview
+        # (QA round 1, F18)
+        import shutil
+        parent = Path(qualcoder_db_path).parent
+        stem = Path(qualcoder_db_path).stem
+        backup = parent / f"{stem}_backup_20260101_000001.qda"
+        shutil.copytree(qualcoder_db_path, backup)
+        ai = Path(qualcoder_db_path) / "ai_data"
+        ai.mkdir()
+        (ai / "chat_history.sqlite").write_bytes(b"c")
+        out = json.loads(server.restore_backup(str(backup)))
+        assert out["requires_confirmation"] is True
+        assert out["qualcoder_gui_signals"]
+        assert "APPEARS to be open" in out["qualcoder_gui_hint"]
+        assert "ASK THE USER" in out["qualcoder_gui_hint"]
+
     def test_signals_do_not_refuse_writes(self, setup_server,
                                           qualcoder_db_path,
                                           no_process_hits):

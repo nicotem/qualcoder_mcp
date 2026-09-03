@@ -60,9 +60,12 @@ QualCoder. An explicit `coder` argument on `get_coded_segments`,
 `search_coded_text`, `get_coding_frequencies`,
 `find_cooccurring_codes`, `get_case_code_matrix`, `get_codes_by_case`,
 and `get_cases_by_code` reads that coder's rows from the full base
-data instead. Results disclose when hidden-coder filtering shaped
-them (a count, never hidden coders' names). File exports keep reading
-base tables, matching QualCoder's own reports and REFI export.
+data instead. Annotations honor visibility the same way (in
+`analyze_file_with_coding` and in the annotation matches of
+`search_memos`, which has no coder override). Results disclose when
+hidden-coder filtering shaped them (a count, never hidden coders'
+names). File exports keep reading base tables, matching QualCoder's
+own reports and REFI export.
 
 ### Changed: backups and workspace copies mirror QualCoder's ai_data policy
 

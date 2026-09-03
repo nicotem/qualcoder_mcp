@@ -740,3 +740,22 @@ class TestExportsKeepFullMemos:
         with zipfile.ZipFile(out_file) as zf:
             qde = zf.read("project.qde").decode("utf-8")
         assert SECRET in qde
+
+
+class TestExportDescriptionsDisclose:
+
+    def test_file_exports_disclose_full_memos(self):
+        for tool in (server.export_refi_qda, server.export_codebook,
+                     server.export_coded_segments_report):
+            doc = tool.__doc__ or ""
+            assert "Full memos on export" in doc, tool.__name__
+            assert "#####" in doc, tool.__name__
+
+    def test_export_code_report_discloses_strip_and_no_override(self):
+        # It returns into the conversation and strips; the description
+        # must say so, symmetrically with its file-export siblings
+        # (QA round 1, F4)
+        doc = server.export_code_report.__doc__ or ""
+        assert "#####" in doc
+        assert "public part only" in doc
+        assert "no coder override" in doc
