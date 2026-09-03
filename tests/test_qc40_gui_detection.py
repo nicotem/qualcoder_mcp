@@ -14,6 +14,7 @@ warn on select, ask at session start, never a hard refusal, with the
 C7 fingerprints unchanged as the write-time backstop.
 """
 
+import ast
 import json
 import os
 import time
@@ -427,3 +428,68 @@ class TestDatabaseOpenErrorIsGeneric:
     def test_guard_text_has_no_em_dash(self):
         assert "\u2014" not in server.DB_UNAVAILABLE_ERROR
         assert server.DB_UNAVAILABLE_ERROR.startswith("Database error")
+
+
+# =============================================================================
+# Fix round 3, R5: the privacy docs name EVERY tool that runs the process
+# scan. Enumerated from the code, so a new caller fails here until the
+# docs say so.
+# =============================================================================
+
+_ROOT = Path(__file__).parent.parent
+
+
+def _tools_running_the_process_scan():
+    """Top-level functions in server.py that call qualcoder_gui_signals
+    without include_process_scan=False (the scan runs by default)."""
+    src = (_ROOT / "src" / "qualcoder_mcp" / "server.py").read_text(
+        encoding="utf-8")
+    callers = set()
+    for fn in ast.parse(src).body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "qualcoder_gui_signals"):
+                continue
+            scan_off = any(
+                kw.arg == "include_process_scan"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is False
+                for kw in node.keywords)
+            if not scan_off:
+                callers.add(fn.name)
+    return callers
+
+
+def _paragraph_after(text, marker):
+    start = text.index(marker)
+    end = text.find("\n\n", start)
+    return text[start:end if end != -1 else None]
+
+
+class TestProcessScanCallersAreDocumented:
+
+    EXPECTED = {"select_project", "get_current_project",
+                "analyze_for_coding", "restore_backup"}
+
+    def test_callers_enumerated_from_the_code(self):
+        # database.py has no other consumer of the scan; server.py's
+        # callers are these four (restore_backup: its confirm=false
+        # preview). Update PRIVACY.md and README.md when this set grows.
+        assert _tools_running_the_process_scan() == self.EXPECTED
+
+    def test_privacy_doc_names_every_caller(self):
+        privacy = (_ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+        bullet = _paragraph_after(privacy, "**Process listing.**")
+        for tool in _tools_running_the_process_scan():
+            assert tool in bullet, tool
+        # and says the preview is the default call, so nobody is surprised
+        assert "confirm=false" in bullet
+
+    def test_readme_names_every_caller(self):
+        readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+        para = _paragraph_after(readme, "`qualcoder_gui_signals` by")
+        for tool in _tools_running_the_process_scan():
+            assert f"`{tool}`" in para, tool

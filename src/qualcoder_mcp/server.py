@@ -4141,9 +4141,10 @@ def delete_coding(coding_id: int, create_backup: bool = True,
     Two guards, each with an explicit override the user must ask for:
     - Hidden coder (QualCoder 4.0 projects that hide coders): a coding
       owned by a hidden coder is REFUSED unless allow_hidden_coder=true.
-      The refusal names neither the coder nor how many are hidden. With
-      the override the echo carries ids only (coding_id, code_id,
-      file_id) plus a coder_visibility note.
+      The refusal names neither the coder nor how many are hidden; it
+      does tell you that the row is a hidden coder's, which the owner
+      accepts. With the override the echo carries ids only (coding_id,
+      code_id, file_id) plus a coder_visibility note.
     - Private note (any project): a coding whose memo carries a '#####'
       private section the assistant cannot see is REFUSED unless
       confirm_private_note_deletion=true, and a backup is ALWAYS taken
@@ -5704,8 +5705,9 @@ def set_memo(target_type: str, target_id: int, memo: str,
     Coder visibility (QualCoder 4.0 projects that hide coders): a memo
     on a CODING owned by a hidden coder is REFUSED unless the user asks
     for allow_hidden_coder=true; the refusal names neither the coder nor
-    how many are hidden. Codes, categories, files and cases have no
-    per-coder visibility and are unaffected.
+    how many are hidden (it does tell you that the row is a hidden
+    coder's, which the owner accepts). Codes, categories, files and
+    cases have no per-coder visibility and are unaffected.
 
     Args:
         target_type: What to attach the memo to — one of 'code', 'category',
@@ -6347,9 +6349,11 @@ def update_annotation(annotation_id: int, memo: str,
     Coder visibility (QualCoder 4.0 projects that hide coders): an
     annotation belonging to a hidden coder is REFUSED unless the user
     asks for allow_hidden_coder=true; the refusal names neither the
-    coder nor how many are hidden. With the override the echo carries
-    ids and the new public text only, plus a coder_visibility note; the
-    hidden coder's name, span and file never enter the conversation.
+    coder nor how many are hidden (it does tell you that the row is a
+    hidden coder's, which the owner accepts). With the override the
+    echo carries ids and the new public text only, plus a
+    coder_visibility note; the hidden coder's name, span and file never
+    enter the conversation.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6394,8 +6398,9 @@ def delete_annotation(annotation_id: int, create_backup: bool = True,
     - Hidden coder (QualCoder 4.0 projects that hide coders): an
       annotation owned by a hidden coder is REFUSED unless
       allow_hidden_coder=true. The refusal names neither the coder nor
-      how many are hidden. With the override the echo carries ids only
-      plus a coder_visibility note.
+      how many are hidden; it does tell you that the row is a hidden
+      coder's, which the owner accepts. With the override the echo
+      carries ids only plus a coder_visibility note.
     - Private note (any project): an annotation whose note carries a
       '#####' private section the assistant cannot see is REFUSED unless
       confirm_private_note_deletion=true, and a backup is ALWAYS taken

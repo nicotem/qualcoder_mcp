@@ -130,6 +130,12 @@ is present in a project:
   as a count. If the visibility state cannot be read (the view exists
   but does not answer), these tools return an error and change nothing,
   with or without the override; they never assume a row is visible.
+  - Deliberate disclosure: because the refusal fires only on a hidden
+    coder's row and changes nothing, it confirms that a given coding or
+    annotation id belongs to a hidden coder (never whose, and never how
+    many coders are hidden), and an id can be tested this way without a
+    write or a backup. The owner accepts this trade so that a hidden
+    coder's work is never changed without an explicit decision.
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.
@@ -174,10 +180,12 @@ Two further rules touch files on your disk:
   points to. A copy that fails part-way is removed rather than left
   behind as a half-complete "backup".
 - **Process listing.** To warn when a QualCoder 4.0 window appears to
-  have a project open (4.0 writes no lock file), select_project,
-  get_current_project and analyze_for_coding also look at the list of
-  processes running on this machine (`ps` or `tasklist`, or psutil
-  when installed). The listing is filtered in memory for QualCoder's
+  have a project open (4.0 writes no lock file), every tool that
+  reports a `qualcoder_gui_signals` field (today: select_project,
+  get_current_project, analyze_for_coding and the restore_backup
+  preview, which is the default confirm=false call) also looks at the
+  list of processes running on this machine (`ps` or `tasklist`, or
+  psutil when installed). The listing is filtered in memory for QualCoder's
   own process name and only the NUMBER of matches is reported into the
   conversation; process names, command lines and other users'
   processes never leave the server, and nothing from the list is

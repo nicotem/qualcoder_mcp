@@ -98,7 +98,9 @@ Writes that target an existing row by id (`delete_coding`,
 can reach a hidden coder's row, as QualCoder's own AI server can. On
 projects with the visibility setting they now refuse such a row unless
 `allow_hidden_coder=true` is passed (owner ruling); the refusal names
-neither the coder nor a count. With the override the echo carries ids
+neither the coder nor a count (it does confirm that the targeted row is
+a hidden coder's, an accepted trade stated in PRIVACY.md). With the
+override the echo carries ids
 only (QualCoder's own result shape), never the hidden coder's name,
 code, span or text. The previews of `delete_code`, `delete_category`,
 `merge_codes` and `merge_category` report
@@ -164,8 +166,9 @@ result carries the damaged-database or backup-restore advice, a
 `qualcoder_gui_signals` field built from project-scoped evidence only,
 and, when such evidence exists, the appears-open wording first.
 `restore_backup`'s confirm=false preview reports `qualcoder_gui_signals`
-and an ask-the-user hint when any are present; it remains a preview
-and never refuses on the heuristic. Every other tool answers a database
+(and therefore runs the same process scan) and an ask-the-user hint
+when any are present; it remains a preview and never refuses on the
+heuristic. Every other tool answers a database
 that will not open with one fixed, path-free message (the sqlite detail
 goes to the server log, never into the conversation). Docs and results
 also state the 4.0 refresh limitation: an open 4.0 window will not

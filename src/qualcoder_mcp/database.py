@@ -1075,7 +1075,9 @@ def hidden_coder_refusal(kind: str, row_id: int,
 
     Says only that the target belongs to a coder currently hidden in
     QualCoder and that the override is required; never the coder's name,
-    never how many coders are hidden.
+    never how many coders are hidden. Its very presence discloses that
+    the row belongs to a hidden coder, a trade the owner accepted and
+    PRIVACY.md documents.
     """
     return (f"{kind} {row_id} belongs to a coder currently hidden in "
             f"QualCoder; nothing was changed. Pass {override}=true to change "

@@ -112,7 +112,8 @@ host and not capability-evaluated on local models.
 > QualCoder versions signal "project open" through a lock file, which qualcoder-mcp
 > honors; the 4.0 development builds no longer use a lock file, so qualcoder-mcp
 > falls back to best-effort heuristics there (reported as
-> `qualcoder_gui_signals` by `select_project` and `get_current_project`:
+> `qualcoder_gui_signals` by `select_project`, `get_current_project`,
+> `analyze_for_coding` and the `restore_backup` preview:
 > database write sidecars, recent AI search-index and chat-history activity,
 > and a best-effort process scan that reports only how many running processes
 > look like QualCoder, never their names or command lines). The file-based signals are traces of recent
