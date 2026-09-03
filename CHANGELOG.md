@@ -108,7 +108,9 @@ present but cannot answer (schema drift, damage to the coder table, a
 locked database), the by-id tools return an error and change nothing,
 with or without the override, instead of treating the row as visible;
 the cascade previews likewise return an error rather than an undercount
-(fix round 3).
+(fix round 3). `set_memo`'s unknown-id error now reads "<Kind> ID N does
+not exist" on every target type, and a malformed id is refused under
+the tool's own `target_id` name (fix round 3, wording only).
 
 ### Changed: backups and workspace copies mirror QualCoder's ai_data policy
 

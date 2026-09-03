@@ -4542,7 +4542,7 @@ class QualcoderDatabase:
             _raise_query_error(e, "set_memo", "Failed to set memo")
         if not row:
             raise ValueError(
-                f"{target_type} with id {target_id} does not exist"
+                f"{target_type.capitalize()} ID {target_id} does not exist"
             )
         label = row[0] if name_col else f"{target_type} {target_id}"
         if (target_type == "coding" and not allow_hidden_coder

@@ -25,6 +25,7 @@ from .database import (
     DB_LOCKED_MESSAGE,
     validate_qda_path,
     validate_coder_name,
+    validate_id,
     hidden_coder_refusal,
     private_note_refusal,
     MAX_CODER_NAME_LENGTH,
@@ -456,7 +457,8 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
 def _refuse_existing_row_change(kind: str, row_id: int, *,
                                 allow_hidden_coder: bool,
                                 deleting: bool,
-                                confirm_private_note_deletion: bool = False
+                                confirm_private_note_deletion: bool = False,
+                                id_param: Optional[str] = None
                                 ) -> Optional[Dict[str, Any]]:
     """Pre-check, on the read-only connection and BEFORE any backup, the
     two owner-ruled guards on writes that target an existing coding or
@@ -469,9 +471,12 @@ def _refuse_existing_row_change(kind: str, row_id: int, *,
     texts are count-free, name-free and content-free (see
     hidden_coder_refusal / private_note_refusal). Returns None when the
     write may proceed, an error dict otherwise; a missing row yields the
-    usual "does not exist" error. The db layer repeats the same checks.
+    usual "does not exist" error, and a malformed id is refused under the
+    calling tool's own parameter name (`id_param`, default "<kind>_id").
+    The db layer repeats the same checks.
     """
     label = kind.capitalize()
+    validate_id(row_id, id_param or f"{kind}_id")
     status = get_db().existing_row_status(kind, row_id)
     if status is None:
         return {"error": f"{label} ID {row_id} does not exist"}
@@ -5729,7 +5734,7 @@ def set_memo(target_type: str, target_id: int, memo: str,
     if target_type == "coding":
         refusal = _refuse_existing_row_change(
             "coding", target_id, allow_hidden_coder=allow_hidden_coder,
-            deleting=False)
+            deleting=False, id_param="target_id")
         if refusal is not None:
             return json.dumps(refusal, indent=2)
 

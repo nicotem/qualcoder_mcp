@@ -118,6 +118,23 @@ class TestSetMemo:
         assert "does not exist" in json.loads(
             server.set_memo("code", 999, "x", create_backup=False))["error"]
 
+    def test_unknown_id_wording_is_uniform_across_targets(
+            self, setup_server, qualcoder_db_path):
+        # Fix round 3, R7: the 'coding' target goes through the server
+        # pre-check and the other four through the db layer; both spell
+        # the house style "<Kind> ID N does not exist"
+        for target in ("code", "category", "file", "coding", "case"):
+            err = json.loads(server.set_memo(target, 999, "x",
+                                             create_backup=False))["error"]
+            assert err == f"{target.capitalize()} ID 999 does not exist", err
+
+    def test_negative_id_names_the_tools_own_parameter(
+            self, setup_server, qualcoder_db_path):
+        for target in ("code", "coding"):
+            err = json.loads(server.set_memo(target, -1, "x",
+                                             create_backup=False))["error"]
+            assert "target_id" in err and "coding_id" not in err, err
+
     def test_refused_while_qualcoder_open(self, setup_server, qualcoder_db_path):
         lk = _lock(qualcoder_db_path)
         lk.write_text(f"gemma\n{time.time()}", encoding="utf-8")
