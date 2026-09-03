@@ -164,10 +164,15 @@ Two further rules touch files on your disk:
   result reports how many (and which) were skipped, so a shared or
   untrusted project folder cannot pull files from elsewhere on your
   disk into a backup. Symlinks that resolve inside the project are
-  copied as before. This is a deliberate, owner-approved deviation
-  from QualCoder's save_backup, which copies whatever a link points to.
-  A copy that fails part-way is removed rather than left behind as a
-  half-complete "backup".
+  copied as before, with one exception: a symlink loop (a link that
+  points back into a folder the copy is already inside, such as
+  `documents/up -> ..` or two folders linking to each other) is
+  skipped and reported the same way, because following it would nest
+  the whole project into itself many times over; QualCoder's own backup
+  fails on such a project. This is a deliberate, owner-approved
+  deviation from QualCoder's save_backup, which copies whatever a link
+  points to. A copy that fails part-way is removed rather than left
+  behind as a half-complete "backup".
 - **Process listing.** To warn when a QualCoder 4.0 window appears to
   have a project open (4.0 writes no lock file), select_project,
   get_current_project and analyze_for_coding also look at the list of

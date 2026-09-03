@@ -130,7 +130,12 @@ dereferences every link). Such entries are skipped and reported
 `copy_project_to_workspace`), because a hostile or shared project
 folder must not pull outside files into a backup; symlinks resolving
 inside the project are copied as before, and a dangling link no longer
-aborts the copy. A copy that fails part-way now removes its partial
+aborts the copy. An in-project symlink loop (`documents/up -> ..`, a
+link to any ancestor, or two folders linking to each other), which
+QualCoder's backup fails on and which a plain skip rule would have
+followed into a project nested into itself up to the OS symlink limit,
+is detected against the whole copy path, skipped and reported like an
+outward link (fix round 3). A copy that fails part-way now removes its partial
 destination instead of leaving a half-complete folder that
 `list_backups` would present as restorable (a destination that already
 belonged to someone else is never touched).

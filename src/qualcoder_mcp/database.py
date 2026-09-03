@@ -823,14 +823,37 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
     at pin 9bddf17): a hostile or shared project folder must not pull
     files from outside the project into a backup or workspace copy, and a
     dangling link must not abort the copy (S-P1). Symlinks resolving inside
-    the project keep the previous behavior (dereferenced into a real copy).
+    the project keep the previous behavior (dereferenced into a real copy),
+    with one exception: an in-project DIRECTORY link whose target is a
+    folder the copy is already inside (documents/up -> .., a link to any
+    ancestor, or two folders linking to each other) is a symlink loop.
+    copytree would re-enter that folder and nest the whole project into
+    itself until the OS symlink-follow limit stopped it, so such a link is
+    skipped and reported too; the check covers the whole traversal path
+    from the project root down to the current folder, not only the
+    current folder's ancestors as seen through one link (fix round 3).
     Skipped entries are appended to `skipped` as project-relative paths.
     """
     root_real = os.path.normcase(os.path.realpath(project_root))
     patterns = shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
 
+    def _traversal_realpaths(dirpath):
+        """Real paths of every folder copytree is inside at `dirpath`:
+        the project root and each step of the (possibly link-routed)
+        path down to dirpath. A directory link whose target is one of
+        these would make the copy re-enter a folder it is already in."""
+        seen = {root_real}
+        rel = os.path.relpath(dirpath, project_root)
+        cur = os.fspath(project_root)
+        if rel != os.curdir:
+            for part in rel.split(os.sep):
+                cur = os.path.join(cur, part)
+                seen.add(os.path.normcase(os.path.realpath(cur)))
+        return seen
+
     def _ignore(dirpath, names):
         ignored = set(patterns(dirpath, names))
+        on_path = None
         for name in names:
             if name in ignored:
                 continue
@@ -841,13 +864,20 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
             inside = (target == root_real
                       or target.startswith(root_real + os.sep))
             if inside and os.path.exists(full):
-                continue  # in-project link: copied as before
+                if not os.path.isdir(full):
+                    continue  # in-project file link: copied as before
+                if on_path is None:
+                    on_path = _traversal_realpaths(dirpath)
+                if target not in on_path:
+                    continue  # in-project directory link: copied as before
+                reason = "it points back into a folder already being copied"
+            else:
+                reason = "it points outside the project or dangles"
             ignored.add(name)
             rel = os.path.relpath(full, project_root)
             skipped.append(rel)
             logger.warning(
-                f"Skipping symlink {rel!r} in project copy: it points "
-                f"outside the project or dangles")
+                f"Skipping symlink {rel!r} in project copy: {reason}")
         return ignored
 
     return _ignore
@@ -860,8 +890,8 @@ def backup_project(project_path: Union[str, Path],
     The whole project tree is copied, ai_data/ included, minus
     BACKUP_IGNORE_PATTERNS (QualCoder's own backup ignore set plus
     *.lock; see the constant above). Symlinks pointing outside the
-    project folder, and dangling symlinks, are skipped rather than
-    followed (S-P1, see _copy_ignore).
+    project folder, dangling symlinks, and in-project symlink loops are
+    skipped rather than followed (S-P1, see _copy_ignore).
 
     Args:
         project_path: Path to the .qda project folder
@@ -939,8 +969,8 @@ def copy_project_to_workspace(
     sidecar files that may be mid-write, and lock files (a copied
     project_in_use.lock would trigger QualCoder's "not properly
     closed" prompt on the copy). Symlinks pointing outside the project
-    folder, and dangling symlinks, are skipped rather than followed
-    (S-P1, see _copy_ignore).
+    folder, dangling symlinks, and in-project symlink loops are skipped
+    rather than followed (S-P1, see _copy_ignore).
 
     Args:
         source_path: Path to the source .qda project

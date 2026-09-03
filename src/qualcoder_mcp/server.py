@@ -688,6 +688,12 @@ def _default_owner() -> str:
     return _ai_coder_name()
 
 
+_SKIPPED_SYMLINKS_NOTE = (
+    "Symlinks that point outside the project folder, that dangle, or that "
+    "loop back into a folder already being copied are not followed into "
+    "backups or copies; the entries named here are absent from this copy.")
+
+
 def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
                              prefix: str = "", always: bool = False) -> None:
     """Surface the symlinks a backup or project copy skipped (S-P1).
@@ -705,10 +711,7 @@ def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
         result[f"{prefix}skipped_symlinks"] = len(skipped)
     if skipped:
         result[f"{prefix}skipped_symlink_names"] = skipped[:20]
-        result[f"{prefix}skipped_symlinks_note"] = (
-            "Symlinks that point outside the project folder, or that "
-            "dangle, are not followed into backups or copies; the entries "
-            "named here are absent from this copy.")
+        result[f"{prefix}skipped_symlinks_note"] = _SKIPPED_SYMLINKS_NOTE
 
 
 def _perform_write(op, create_backup: bool = True,
@@ -1568,7 +1571,9 @@ def copy_project_to_workspace(
     that point outside the project folder (or dangle) are not followed:
     they are skipped and reported (skipped_symlinks, with names), so a
     shared or untrusted project folder cannot pull outside files into
-    the copy; symlinks resolving inside the project are copied as before.
+    the copy; symlinks resolving inside the project are copied as before,
+    except a symlink loop (a link back into a folder already being
+    copied), which is skipped and reported the same way.
 
     The copy is NOT opened automatically — use select_project on the
     returned path when you are ready to work on it.
@@ -4201,6 +4206,8 @@ def list_backups() -> str:
     the project folder (or dangle) are not followed: they are skipped and
     the write result reports them (backup_skipped_symlinks), so a shared
     or untrusted project folder cannot pull outside files into a backup.
+    A symlink loop inside the project (a link back into a folder already
+    being copied) is skipped and reported the same way.
 
     Returns:
         JSON with the project name and an array of backups
@@ -4476,9 +4483,9 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     QualCoder 4.0 rebuilds it on project open. The rest of ai_data/
     (prompt library, chat history) restores with the project. Backups
     made by this server also skip symlinks that point outside the
-    project folder (or dangle), so such entries are absent from a
-    restored project; the safety backup taken before a restore follows
-    the same rule.
+    project folder (or dangle) and in-project symlink loops, so such
+    entries are absent from a restored project; the safety backup taken
+    before a restore follows the same rule.
 
     Args:
         backup_path: Path to the backup folder (from list_backups)

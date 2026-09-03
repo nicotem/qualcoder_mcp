@@ -267,8 +267,13 @@ class TestCopyFailureCleanup:
 # =============================================================================
 
 def _symlink(target, link):
+    # target_is_directory matters only on Windows (a file-type link to a
+    # directory does not resolve there); it is ignored elsewhere
+    target = os.fspath(target)
+    resolved = (target if os.path.isabs(target)
+                else os.path.join(os.path.dirname(os.fspath(link)), target))
     try:
-        os.symlink(target, link)
+        os.symlink(target, link, target_is_directory=os.path.isdir(resolved))
     except (OSError, NotImplementedError, AttributeError):
         pytest.skip("symlinks unavailable on this platform")
 
@@ -392,3 +397,150 @@ class TestOutwardSymlinksNotFollowed:
         for tool in (server.copy_project_to_workspace, server.list_backups,
                      server.restore_backup):
             assert "symlink" in (tool.__doc__ or "").lower(), tool.__name__
+
+
+# =============================================================================
+# Fix round 3, R2: in-project symlink LOOPS are skipped and reported, never
+# followed into a project nested into itself
+# =============================================================================
+
+def _one_of_each(backup, name):
+    return [p for p in backup.rglob(name) if p.is_file()]
+
+
+class TestSymlinkLoopsNotFollowed:
+    """A directory link that points back into a folder the copy is already
+    inside made the S-P1 callback re-enter the project until the OS
+    symlink-follow limit (33x on macOS, about 40x on Linux) and then
+    report the deepest link as dangling. Such loops are now detected
+    against the whole traversal path, skipped and reported; sibling and
+    descendant links are still copied as real folders."""
+
+    def _project(self, qualcoder_db_path):
+        project = Path(qualcoder_db_path)
+        docs = project / "documents"
+        docs.mkdir()
+        (docs / "note.txt").write_text("a note", encoding="utf-8")
+        return project, docs
+
+    def test_relative_link_to_the_root_is_skipped(self, qualcoder_db_path):
+        project, docs = self._project(qualcoder_db_path)
+        _symlink(Path(".."), docs / "up")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == [os.path.join("documents", "up")]
+        assert not (backup / "documents" / "up").exists()
+        assert len(_one_of_each(backup, "data.qda")) == 1
+        assert (backup / "documents" / "note.txt").read_text(
+            encoding="utf-8") == "a note"
+
+    def test_absolute_link_to_the_root_is_skipped(self, qualcoder_db_path):
+        project, docs = self._project(qualcoder_db_path)
+        _symlink(project, docs / "loop")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == [os.path.join("documents", "loop")]
+        assert not (backup / "documents" / "loop").exists()
+        assert len(_one_of_each(backup, "data.qda")) == 1
+
+    def test_link_to_an_ancestor_below_the_root_is_skipped(
+            self, qualcoder_db_path):
+        project = Path(qualcoder_db_path)
+        (project / "a" / "b").mkdir(parents=True)
+        (project / "a" / "fa.txt").write_text("fa", encoding="utf-8")
+        _symlink(Path(".."), project / "a" / "b" / "back")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == [os.path.join("a", "b", "back")]
+        assert not (backup / "a" / "b" / "back").exists()
+        assert len(_one_of_each(backup, "fa.txt")) == 1
+
+    def test_mutual_cycle_between_two_folders_is_cut_once(
+            self, qualcoder_db_path):
+        # Neither link points at an ancestor of its own folder, so an
+        # ancestors-only check would miss this shape
+        project = Path(qualcoder_db_path)
+        (project / "a").mkdir()
+        (project / "b").mkdir()
+        (project / "a" / "fa.txt").write_text("fa", encoding="utf-8")
+        (project / "b" / "fb.txt").write_text("fb", encoding="utf-8")
+        _symlink(Path("..") / "b", project / "a" / "to_b")
+        _symlink(Path("..") / "a", project / "b" / "to_a")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert sorted(report["skipped_symlinks"]) == sorted([
+            os.path.join("a", "to_b", "to_a"),
+            os.path.join("b", "to_a", "to_b")])
+        # Each sibling link is materialized exactly once, then the loop
+        # is cut
+        assert (backup / "a" / "to_b" / "fb.txt").is_file()
+        assert (backup / "b" / "to_a" / "fa.txt").is_file()
+        assert not (backup / "a" / "to_b" / "to_a").exists()
+        assert not (backup / "b" / "to_a" / "to_b").exists()
+        assert len(_one_of_each(backup, "fa.txt")) == 2
+        assert len(_one_of_each(backup, "fb.txt")) == 2
+        assert len(_one_of_each(backup, "data.qda")) == 1
+
+    def test_self_referential_link_is_skipped_without_error(
+            self, qualcoder_db_path):
+        project, docs = self._project(qualcoder_db_path)
+        _symlink(Path("self"), docs / "self")
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == [os.path.join("documents", "self")]
+        assert not (backup / "documents" / "self").exists()
+
+    def test_sibling_and_descendant_directory_links_still_copied(
+            self, qualcoder_db_path):
+        project, docs = self._project(qualcoder_db_path)
+        media = project / "media"
+        media.mkdir()
+        (media / "clip.txt").write_text("clip", encoding="utf-8")
+        sub = docs / "sub"
+        sub.mkdir()
+        (sub / "deep.txt").write_text("deep", encoding="utf-8")
+        _symlink(Path("..") / "media", docs / "media_alias")   # sibling
+        _symlink(Path("sub"), docs / "down")                   # descendant
+        report = {}
+        backup = backup_project(qualcoder_db_path, report=report)
+        assert report["skipped_symlinks"] == []
+        alias = backup / "documents" / "media_alias"
+        assert alias.is_dir() and not alias.is_symlink()
+        assert (alias / "clip.txt").read_text(encoding="utf-8") == "clip"
+        assert (backup / "documents" / "down" / "deep.txt").read_text(
+            encoding="utf-8") == "deep"
+
+    def test_workspace_copy_and_pre_write_backup_report_the_loop(
+            self, setup_server, qualcoder_db_path, tmp_path, monkeypatch):
+        project, docs = self._project(qualcoder_db_path)
+        _symlink(Path(".."), docs / "up")
+        import qualcoder_mcp.database as database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
+        assert out["skipped_symlinks"] == 1
+        assert out["skipped_symlink_names"] == [os.path.join("documents", "up")]
+        assert "loop" in out["skipped_symlinks_note"]
+        copy = Path(out["workspace_copy"])
+        assert len(_one_of_each(copy, "data.qda")) == 1
+        out = json.loads(server.set_memo("code", 1, "note",
+                                         create_backup=True))
+        assert out["success"] is True
+        assert out["backup_skipped_symlinks"] == 1
+        assert out["backup_skipped_symlink_names"] == [
+            os.path.join("documents", "up")]
+        assert len(_one_of_each(Path(out["backup_path"]), "data.qda")) == 1
+
+    def test_loop_is_logged_with_its_own_reason(self, qualcoder_db_path,
+                                                caplog):
+        import logging
+        project, docs = self._project(qualcoder_db_path)
+        _symlink(Path(".."), docs / "up")
+        with caplog.at_level(logging.WARNING, logger="qualcoder_mcp.database"):
+            backup_project(qualcoder_db_path)
+        assert any("already being copied" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_docs_disclose_the_loop_rule(self):
+        for tool in (server.copy_project_to_workspace, server.list_backups,
+                     server.restore_backup):
+            assert "loop" in (tool.__doc__ or ""), tool.__name__
