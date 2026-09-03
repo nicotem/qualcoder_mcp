@@ -7,7 +7,9 @@ import json
 import shutil
 import logging
 import sqlite3
+import tempfile
 import functools
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -68,25 +70,32 @@ session_manager = SessionManager()
 # auto-restored (owner-rejected: it would break explicit-selection
 # semantics, and concurrent hosts would clobber each other).
 _MRU_FILE = Path.home() / ".qualcoder_mcp" / "mru_project.json"
+# The payload is about 120 bytes; anything larger is not ours (S-H1)
+MRU_READ_MAX_BYTES = 4096
 
 
-def _mru_tmp_file() -> Path:
-    """A per-process temp name beside the MRU file.
+def _open_mru_tmp():
+    """Create the MRU temp file beside the MRU file; returns (fd, Path).
 
-    Concurrent servers (several MCP hosts on one machine) each write
-    their own temp file, so no writer can truncate another's in-flight
-    file before the atomic replace (QA round 1, F20).
+    tempfile.mkstemp opens with O_CREAT|O_EXCL at mode 0600 under an
+    unpredictable name: concurrent servers (several MCP hosts on one
+    machine) can never share a temp name (QA round 1, F20), a symlink
+    pre-planted at a would-be name is refused rather than written
+    through, crash litter is never reopened, and the file is
+    owner-readable only (S-H1). Mode bits are ignored on Windows.
     """
-    return _MRU_FILE.with_name(f"{_MRU_FILE.name}.{os.getpid()}.tmp")
+    fd, name = tempfile.mkstemp(dir=_MRU_FILE.parent,
+                                prefix=f"{_MRU_FILE.name}.", suffix=".tmp")
+    return fd, Path(name)
 
 
 def _remember_mru_project(project_path: str) -> None:
     """Record the machine's most-recently-used project (best effort).
 
     Failures never break project selection; a corrupt or unwritable
-    state file just means no hint later. The write goes through a
-    per-process temp file and an atomic replace, and a failed write
-    removes its own temp file.
+    state file just means no hint later. The write goes through an
+    exclusively created per-process temp file and an atomic replace,
+    and a failed write removes its own temp file.
     """
     tmp = None
     try:
@@ -95,8 +104,8 @@ def _remember_mru_project(project_path: str) -> None:
             "project_path": str(project_path),
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
-        tmp = _mru_tmp_file()
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd, tmp = _open_mru_tmp()
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f)
         tmp.replace(_MRU_FILE)
     except Exception as e:
@@ -108,17 +117,43 @@ def _remember_mru_project(project_path: str) -> None:
                 pass
 
 
+def _mru_path_is_canonical(path: Any) -> bool:
+    """Only the shape select_project itself records may be echoed.
+
+    select_project records validate_qda_path's canonical result, always
+    <folder>.qda/data.qda. Anything else in the state file (a tampered
+    or foreign entry) is not echoed into the conversation, and a path
+    carrying control, line-separator or bidirectional formatting
+    characters is refused outright, so the hint can never smuggle
+    instruction-like text (S-H6). Pure function; no filesystem access.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return False
+    for ch in path:
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Zl", "Zp") or 0x202A <= ord(ch) <= 0x202E \
+                or 0x2066 <= ord(ch) <= 0x2069:
+            return False
+    p = Path(path)
+    return p.name == "data.qda" and p.parent.suffix == ".qda"
+
+
 def _mru_hint() -> str:
     """A recovery hint naming the machine's last-used project, or ''.
 
-    The hint appears only when the recorded path still exists; missing
-    or corrupt MRU state degrades silently to the plain error text.
+    The hint appears only when the recorded path has the canonical shape
+    select_project records and still exists as a file; missing, corrupt,
+    oversized or wrong-shaped MRU state degrades silently to the plain
+    error text.
     """
     try:
         with open(_MRU_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw = f.read(MRU_READ_MAX_BYTES + 1)
+        if len(raw) > MRU_READ_MAX_BYTES:
+            return ""
+        data = json.loads(raw)
         path = data.get("project_path")
-        if isinstance(path, str) and path.strip() and Path(path).exists():
+        if _mru_path_is_canonical(path) and Path(path).is_file():
             return (f" The last project used on this machine was {path}. "
                     f"Use select_project with that path to continue "
                     f"with it.")
