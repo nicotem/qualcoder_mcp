@@ -417,9 +417,17 @@ class TestAnnotationUpdateMergePreserving:
                                                 qualcoder_db_path):
         anid = self._make_annotation(qualcoder_db_path,
                                      f"note#####{SECRET}")
-        out = json.loads(server.delete_annotation(anid, create_backup=False))
+        # S-P2 (b): a row carrying a private note is refused without the
+        # explicit override, content-free
+        refused = server.delete_annotation(anid, create_backup=False)
+        assert SECRET not in refused
+        assert json.loads(refused)["refused"] == ["private_note"]
+        out = json.loads(server.delete_annotation(
+            anid, create_backup=False, confirm_private_note_deletion=True))
         assert out["success"] is True
         assert SECRET not in json.dumps(out)
+        # S-P2 (a): backed up despite create_backup=False
+        assert "backup_path" in out
 
 
 class TestMergeProvenancePreservesSuffix:
@@ -842,9 +850,16 @@ class TestReadPathsStrip:
         assert out["segments"][0]["memo"] == "coding"
 
     def test_delete_coding_echo_stripped(self, private_everywhere):
-        out = server.delete_coding(1, create_backup=False)
+        # ctid 1 carries a private note: refused without the override
+        # (S-P2 (b)), and the refusal itself is clean
+        refused = server.delete_coding(1, create_backup=False)
+        _assert_clean(refused)
+        assert json.loads(refused)["refused"] == ["private_note"]
+        out = server.delete_coding(1, create_backup=False,
+                                   confirm_private_note_deletion=True)
         _assert_clean(out)
         assert json.loads(out)["success"] is True
+        assert "backup_path" in json.loads(out)     # S-P2 (a)
 
 
 class TestSearchDoesNotLeakPrivateZone:
@@ -1021,3 +1036,245 @@ class TestExportDescriptionsDisclose:
         assert "#####" in doc
         assert "public part only" in doc
         assert "no coder override" in doc
+
+
+# =============================================================================
+# S-P2 (owner-ruled): whole-row deletes and private notes
+# =============================================================================
+
+def _backups(project_path):
+    project = Path(project_path)
+    return sorted(project.parent.glob(f"{project.stem}_backup_*"))
+
+
+class TestPrivateNoteDeleteGuards:
+    """(a) a row carrying a private note is always backed up before a
+    delete, whatever create_backup says; (b) the delete is refused without
+    confirm_private_note_deletion, with a content-free refusal; rows
+    without a private note delete exactly as before. A memo rule, not a
+    visibility rule: pre-4.0 and 4.0 projects behave identically."""
+
+    def _annotation(self, qualcoder_db_path, memo):
+        _exec(qualcoder_db_path,
+              "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
+              "VALUES (1, 0, 4, ?, 'TestCoder', '2024-01-15')", (memo,))
+        _reopen(qualcoder_db_path)
+        return _row(qualcoder_db_path,
+                    "SELECT MAX(anid) AS anid FROM annotation")["anid"]
+
+    def test_delete_coding_private_row_refused_then_forced_backup(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"pub#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        raw = server.delete_coding(1, create_backup=False)
+        out = json.loads(raw)
+        assert "error" in out
+        assert SECRET not in raw and "pub" not in out["error"]
+        assert "private note" in out["error"]
+        assert "cannot see" in out["error"]
+        assert "confirm_private_note_deletion" in out["error"]
+        assert out["refused"] == ["private_note"]
+        assert out["nothing_changed"] is True
+        # Row intact, no backup made by a refusal
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_text WHERE ctid = 1"
+                    )["n"] == 1
+        assert _backups(qualcoder_db_path) == []
+
+        raw = server.delete_coding(1, create_backup=False,
+                                   confirm_private_note_deletion=True)
+        out = json.loads(raw)
+        assert out["success"] is True, out
+        assert SECRET not in raw
+        assert out["deleted_coding"]["memo"] == "pub"       # stripped echo
+        assert out["deleted_coding"]["private_note_removed"] is True
+        assert "backup_path" in out
+        assert "create_backup=false does not apply" in out["backup_note"]
+        assert len(_backups(qualcoder_db_path)) == 1
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_text WHERE ctid = 1"
+                    )["n"] == 0
+
+    def test_delete_annotation_private_row_refused_then_forced_backup(
+            self, setup_server, qualcoder_db_path):
+        anid = self._annotation(qualcoder_db_path,
+                                f"public-wombat-part#####{SECRET}")
+        raw = server.delete_annotation(anid, create_backup=False)
+        out = json.loads(raw)
+        assert out["refused"] == ["private_note"]
+        # Content-free: neither the private zone nor the public part is
+        # quoted or characterized in the refusal
+        assert SECRET not in raw and "wombat" not in out["error"]
+        assert _backups(qualcoder_db_path) == []
+        raw = server.delete_annotation(anid, create_backup=False,
+                                       confirm_private_note_deletion=True)
+        out = json.loads(raw)
+        assert out["success"] is True and out["deleted"] is True
+        assert SECRET not in raw
+        assert out["private_note_removed"] is True
+        assert "backup_path" in out and "backup_note" in out
+        assert len(_backups(qualcoder_db_path)) == 1
+
+    def test_row_without_private_note_deletes_as_before(
+            self, setup_server, qualcoder_db_path):
+        # ctid 2 has an empty memo: no override, no forced backup
+        out = json.loads(server.delete_coding(2, create_backup=False))
+        assert out["success"] is True
+        assert "backup_path" not in out and "backup_note" not in out
+        assert "private_note_removed" not in out["deleted_coding"]
+        assert _backups(qualcoder_db_path) == []
+        anid = self._annotation(qualcoder_db_path, "plain")
+        out = json.loads(server.delete_annotation(anid, create_backup=False))
+        assert out["success"] is True and out["deleted"] is True
+        assert "backup_path" not in out
+        assert _backups(qualcoder_db_path) == []
+
+    def test_create_backup_true_on_private_row_states_the_backup(
+            self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"pub#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.delete_coding(
+            1, confirm_private_note_deletion=True))
+        assert out["success"] is True
+        assert "backup_path" in out
+        assert "backup_note" in out
+        assert "does not apply" not in out["backup_note"]
+
+    def test_db_layer_refuses_private_row_on_its_own(self, setup_server,
+                                                     qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"pub#####{SECRET}",))
+        anid = self._annotation(qualcoder_db_path, f"n#####{SECRET}")
+        wdb = QualcoderDatabase(qualcoder_db_path, read_only=False)
+        try:
+            with pytest.raises(ValueError, match="private note") as e:
+                wdb.delete_coding(1)
+            assert SECRET not in str(e.value)
+            with pytest.raises(ValueError, match="private note"):
+                wdb.delete_annotation(anid)
+            assert wdb.delete_coding(
+                1, confirm_private_note_deletion=True)["private_note_removed"]
+        finally:
+            wdb.close()
+
+    def test_clearing_annotation_with_private_note_is_not_a_delete(
+            self, setup_server, qualcoder_db_path):
+        # update_annotation("") keeps a row that carries a private note
+        # (P1-1), so no delete override applies and no refusal fires
+        anid = self._annotation(qualcoder_db_path, f"n#####{SECRET}")
+        out = json.loads(server.update_annotation(anid, "",
+                                                  create_backup=False))
+        assert out["success"] is True
+        assert out.get("cleared") is True
+        assert "refused" not in out
+        assert _row(qualcoder_db_path,
+                    "SELECT memo FROM annotation WHERE anid = ?",
+                    (anid,))["memo"] == f"#####{SECRET}"
+
+    def test_same_behavior_on_a_40_project(self, setup_server,
+                                           qualcoder_db_path):
+        # The memo rule is identical with the visibility capability present
+        from tests.test_qc40_visibility import _apply_visibility_schema
+        _apply_visibility_schema(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"pub#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        assert server.db.capabilities.has_coder_visibility is True
+        out = json.loads(server.delete_coding(1, create_backup=False))
+        assert out["refused"] == ["private_note"]
+        out = json.loads(server.delete_coding(
+            1, create_backup=False, confirm_private_note_deletion=True))
+        assert out["success"] is True and "backup_path" in out
+        assert out["deleted_coding"]["owner"] == "TestCoder"   # visible row
+
+
+class TestCascadePreviewsCountPrivateNotes:
+    """S-P2 (c): confirm-gated cascades report how many rows they would
+    remove that carry a private note, as a count only."""
+
+    def test_delete_code_counts_code_and_coding_notes(self, setup_server,
+                                                      qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 1",
+              (f"code#####{SECRET}",))
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"coding#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        raw = server.delete_code(1)
+        assert SECRET not in raw
+        assert json.loads(raw)["preview"]["private_notes_affected"] == 2
+        assert json.loads(server.delete_code(2)
+                          )["preview"]["private_notes_affected"] == 0
+
+    def test_delete_category_counts_its_own_memo(self, setup_server,
+                                                 qualcoder_db_path):
+        assert json.loads(server.delete_category(1)
+                          )["preview"]["private_notes_affected"] == 0
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = ? WHERE catid = 1",
+              (f"cat#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        raw = server.delete_category(1)
+        assert SECRET not in raw
+        assert json.loads(raw)["preview"]["private_notes_affected"] == 1
+
+    def test_merge_codes_counts_removed_notes_only(self, setup_server,
+                                                   qualcoder_db_path):
+        # v14 (no supercid): the source code memo is destroyed -> counted;
+        # a colliding source coding is discarded -> counted; reassigned
+        # codings keep their memo -> not counted
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 1",
+              (f"code#####{SECRET}",))
+        _exec(qualcoder_db_path,
+              "UPDATE code_text SET memo = ? WHERE ctid = 1",
+              (f"coding#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        p = json.loads(server.merge_codes(1, 2))["preview"]
+        assert p["private_notes_affected"] == 1          # the code memo
+        # Plant a collider: code 2 already marks ctid 1's exact span
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_text (ctid, cid, fid, seltext, pos0, pos1, "
+              "owner, date, memo, important) VALUES (9, 2, 1, "
+              "'I feel stressed about deadlines', 24, 55, 'TestCoder', "
+              "'2024-01-15', '', 0)")
+        _reopen(qualcoder_db_path)
+        p = json.loads(server.merge_codes(1, 2))["preview"]
+        assert p["text_codings_discarded_as_duplicates"] == 1
+        assert p["private_notes_affected"] == 2          # code memo + collider
+        # v16+: the code memo is carried into the target, so only the
+        # discarded collider counts
+        _exec(qualcoder_db_path,
+              "ALTER TABLE code_name ADD COLUMN supercid INTEGER")
+        _reopen(qualcoder_db_path)
+        p = json.loads(server.merge_codes(1, 2))["preview"]
+        assert p["private_notes_affected"] == 1
+
+    def test_merge_category_counts_only_when_not_carried(self, setup_server,
+                                                         qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_cat (catid, name, memo, owner, date, "
+              "supercatid) VALUES (2, 'B', ?, 'TestCoder', '2024-01-15', "
+              "NULL)", (f"cat#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        # v14: never carried -> counted, into a category or to top level
+        assert json.loads(server.merge_category(2, "Category A")
+                          )["preview"]["private_notes_affected"] == 1
+        assert json.loads(server.merge_category(2)
+                          )["preview"]["private_notes_affected"] == 1
+        _exec(qualcoder_db_path,
+              "ALTER TABLE code_name ADD COLUMN supercid INTEGER")
+        _reopen(qualcoder_db_path)
+        # v16+: carried into a real target -> 0; top level -> still removed
+        assert json.loads(server.merge_category(2, "Category A")
+                          )["preview"]["private_notes_affected"] == 0
+        raw = server.merge_category(2)
+        assert SECRET not in raw
+        assert json.loads(raw)["preview"]["private_notes_affected"] == 1

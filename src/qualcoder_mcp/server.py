@@ -25,6 +25,8 @@ from .database import (
     DB_LOCKED_MESSAGE,
     validate_qda_path,
     validate_coder_name,
+    hidden_coder_refusal,
+    private_note_refusal,
     MAX_CODER_NAME_LENGTH,
     backup_project,
     qualcoder_lock_state,
@@ -445,6 +447,57 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
                 f"example) read a specific coder's rows from the full "
                 f"data instead.",
     }
+
+
+def _refuse_existing_row_change(kind: str, row_id: int, *,
+                                allow_hidden_coder: bool,
+                                deleting: bool,
+                                confirm_private_note_deletion: bool = False
+                                ) -> Optional[Dict[str, Any]]:
+    """Pre-check, on the read-only connection and BEFORE any backup, the
+    two owner-ruled guards on writes that target an existing coding or
+    annotation row by id.
+
+    Tier 2: a row owned by a coder the project hides is refused unless
+    allow_hidden_coder. S-P2: a DELETE of a row whose memo carries a
+    '#####' private note is refused unless confirm_private_note_deletion.
+    When both apply, both refusals are reported in one response. The
+    texts are count-free, name-free and content-free (see
+    hidden_coder_refusal / private_note_refusal). Returns None when the
+    write may proceed, an error dict otherwise; a missing row yields the
+    usual "does not exist" error. The db layer repeats the same checks.
+    """
+    label = kind.capitalize()
+    status = get_db().existing_row_status(kind, row_id)
+    if status is None:
+        return {"error": f"{label} ID {row_id} does not exist"}
+    refusals = []
+    refused = []
+    if status["hidden"] and not allow_hidden_coder:
+        refusals.append(hidden_coder_refusal(label, row_id))
+        refused.append("hidden_coder")
+    if deleting and status["private_note"] and not confirm_private_note_deletion:
+        refusals.append(private_note_refusal(label, row_id))
+        refused.append("private_note")
+    if refusals:
+        return {"error": " ".join(refusals), "refused": refused,
+                "nothing_changed": True}
+    return None
+
+
+def _private_note_backup_note(result: Any, status: Dict[str, bool],
+                              create_backup: bool) -> None:
+    """State in a delete result that a backup was taken for a row carrying
+    a private note (S-P2 (a)); create_backup=false does not apply there."""
+    if not isinstance(result, dict) or "error" in result:
+        return
+    if status.get("private_note"):
+        result["backup_note"] = (
+            "A backup was taken before this delete because the row carried "
+            "a private note; create_backup=false does not apply to such "
+            "rows." if not create_backup else
+            "A backup was taken before this delete; the row carried a "
+            "private note, for which a backup is always taken.")
 
 
 def _attach_hidden_target_note(result: Any, key: Optional[str] = None) -> None:
@@ -4038,7 +4091,9 @@ def link_file_to_case(
 
 @mcp.tool()
 @_tool_guard
-def delete_coding(coding_id: int, create_backup: bool = True) -> str:
+def delete_coding(coding_id: int, create_backup: bool = True,
+                  allow_hidden_coder: bool = False,
+                  confirm_private_note_deletion: bool = False) -> str:
     """Delete a single coded segment from the project database.
 
     THIS WRITES TO THE DATABASE. Use it to remove a coding that was applied
@@ -4049,27 +4104,48 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     A backup is created first by default, so the deletion can be undone with
     restore_backup if needed. Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
+    Two guards, each with an explicit override the user must ask for:
+    - Hidden coder (QualCoder 4.0 projects that hide coders): a coding
+      owned by a hidden coder is REFUSED unless allow_hidden_coder=true.
+      The refusal names neither the coder nor how many are hidden. With
+      the override the echo carries ids only (coding_id, code_id,
+      file_id) plus a coder_visibility note.
+    - Private note (any project): a coding whose memo carries a '#####'
+      private section the assistant cannot see is REFUSED unless
+      confirm_private_note_deletion=true, and a backup is ALWAYS taken
+      for such a row even with create_backup=false. Note that this
+      refusal, or the forced backup, tells you that a private note
+      exists on the row (never its content); the owner accepts that.
+    When both apply, both overrides are required and both refusals come
+    back in one response.
+
     Args:
         coding_id: The ctid of the coding to delete. You can find ctids in
                    the output of apply_codings, get_coded_segments, or
                    analyze_file_with_coding (segment_id).
-        create_backup: Create timestamped backup before deleting (default: True)
+        create_backup: Create timestamped backup before deleting (default:
+                   True; ignored, always on, for a row carrying a private note)
+        allow_hidden_coder: Override to delete a hidden coder's coding
+        confirm_private_note_deletion: Override to delete a coding whose
+                   memo carries a private note
 
     Returns:
         JSON with the deleted coding's details (code, file, positions, text)
-        and the backup path. On a QualCoder 4.0 project that hides coders,
-        a coding belonging to a hidden coder is deleted the same way, but
-        the echo carries ids only (coding_id, code_id, file_id) plus a
-        coder_visibility note; hidden coders' names and coding decisions
-        never enter the conversation.
+        and the backup path, or ids only for a hidden coder's row; hidden
+        coders' names and coding decisions never enter the conversation.
 
     Example:
         "Delete coding 42 — that segment was coded wrongly"
     """
-    # Validate on the read-only connection BEFORE upgrading/backup
-    existing = get_db().get_coding(coding_id)
-    if existing is None:
-        return json.dumps({"error": f"Coding ID {coding_id} does not exist"})
+    # Validate on the read-only connection BEFORE upgrading/backup: the
+    # row must exist and both guards must pass (or be overridden)
+    refusal = _refuse_existing_row_change(
+        "coding", coding_id, allow_hidden_coder=allow_hidden_coder,
+        deleting=True,
+        confirm_private_note_deletion=confirm_private_note_deletion)
+    if refusal is not None:
+        return json.dumps(refusal, indent=2)
+    status = get_db().existing_row_status("coding", coding_id) or {}
 
     # SEC C-1: route through _perform_write so the unconditional
     # rollback-if-uncommitted + downgrade discipline (its finally block)
@@ -4077,7 +4153,10 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
     # previously missed. Its inner handler was already exactly
     # (ValueError, RuntimeError) -> {"error": str(e)}, matching the helper.
     def _op(write_db):
-        deleted = write_db.delete_coding(coding_id, auto_commit=False)
+        deleted = write_db.delete_coding(
+            coding_id, auto_commit=False,
+            allow_hidden_coder=allow_hidden_coder,
+            confirm_private_note_deletion=confirm_private_note_deletion)
         if deleted.get("hidden_coder_row"):
             # Hidden coder's row (QC 4.0 visibility): ids only, never the
             # code or file name (S-MAJ; upstream echoes ids only too)
@@ -4093,8 +4172,11 @@ def delete_coding(coding_id: int, create_backup: bool = True) -> str:
             "deleted_coding": deleted,
         }
 
-    result = _perform_write(_op, create_backup=create_backup,
-                            backup_fail_detail="nothing was deleted")
+    # S-P2 (a): a row carrying a private note is always backed up first
+    result = _perform_write(
+        _op, create_backup=create_backup or bool(status.get("private_note")),
+        backup_fail_detail="nothing was deleted")
+    _private_note_backup_note(result, status, create_backup)
     _attach_hidden_target_note(result, "deleted_coding")
     return _ai_json(result, indent=2)
 
@@ -5561,7 +5643,8 @@ def create_proposed_codes(coding_session_id: str,
 @mcp.tool()
 @_tool_guard
 def set_memo(target_type: str, target_id: int, memo: str,
-             create_backup: bool = True) -> str:
+             create_backup: bool = True,
+             allow_hidden_coder: bool = False) -> str:
     """Write (or clear) the memo on a code, category, file, coding, or case.
 
     THIS WRITES TO THE DATABASE. Memos are the researcher's analytic notes
@@ -5579,6 +5662,12 @@ def set_memo(target_type: str, target_id: int, memo: str,
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
+    Coder visibility (QualCoder 4.0 projects that hide coders): a memo
+    on a CODING owned by a hidden coder is REFUSED unless the user asks
+    for allow_hidden_coder=true; the refusal names neither the coder nor
+    how many are hidden. Codes, categories, files and cases have no
+    per-coder visibility and are unaffected.
+
     Args:
         target_type: What to attach the memo to — one of 'code', 'category',
                      'file', 'coding', 'case'
@@ -5586,6 +5675,8 @@ def set_memo(target_type: str, target_id: int, memo: str,
                    id / coding ctid / case caseid)
         memo: The memo text ('' clears it)
         create_backup: Create a timestamped backup before writing (default True)
+        allow_hidden_coder: Override to write on a hidden coder's coding
+                            (target_type 'coding' only)
 
     Returns:
         JSON confirming the updated object and memo
@@ -5601,10 +5692,18 @@ def set_memo(target_type: str, target_id: int, memo: str,
             "error": f"target_type must be one of: {', '.join(sorted(valid))}"
         })
 
+    if target_type == "coding":
+        refusal = _refuse_existing_row_change(
+            "coding", target_id, allow_hidden_coder=allow_hidden_coder,
+            deleting=False)
+        if refusal is not None:
+            return json.dumps(refusal, indent=2)
+
     result = _perform_write(
         lambda wdb: {
             "success": True,
-            **wdb.set_memo(target_type, target_id, memo, auto_commit=False),
+            **wdb.set_memo(target_type, target_id, memo, auto_commit=False,
+                           allow_hidden_coder=allow_hidden_coder),
         },
         create_backup=create_backup,
         backup_fail_detail="the memo was not changed",
@@ -6191,7 +6290,8 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
 @mcp.tool()
 @_tool_guard
 def update_annotation(annotation_id: int, memo: str,
-                      create_backup: bool = True) -> str:
+                      create_backup: bool = True,
+                      allow_hidden_coder: bool = False) -> str:
     """Edit an annotation's note. AN EMPTY NOTE DELETES THE ANNOTATION.
 
     THIS WRITES TO THE DATABASE. Matches QualCoder exactly: editing
@@ -6205,9 +6305,11 @@ def update_annotation(annotation_id: int, memo: str,
     marker survives, and clearing the note keeps the row when such a
     section exists (the response then reports cleared, not deleted).
 
-    Coder visibility (QualCoder 4.0): an annotation belonging to a coder
-    the project hides is edited the same way, but the echo carries ids
-    and the new public text only, plus a coder_visibility note; the
+    Coder visibility (QualCoder 4.0 projects that hide coders): an
+    annotation belonging to a hidden coder is REFUSED unless the user
+    asks for allow_hidden_coder=true; the refusal names neither the
+    coder nor how many are hidden. With the override the echo carries
+    ids and the new public text only, plus a coder_visibility note; the
     hidden coder's name, span and file never enter the conversation.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
@@ -6219,11 +6321,18 @@ def update_annotation(annotation_id: int, memo: str,
                        or search_memos)
         memo: The new note text ('' deletes the annotation)
         create_backup: Create a timestamped backup before writing (default True)
+        allow_hidden_coder: Override to edit a hidden coder's annotation
     """
+    refusal = _refuse_existing_row_change(
+        "annotation", annotation_id, allow_hidden_coder=allow_hidden_coder,
+        deleting=False)
+    if refusal is not None:
+        return json.dumps(refusal, indent=2)
     result = _perform_write(
         lambda wdb: {"success": True,
-                     **wdb.update_annotation(annotation_id, memo,
-                                             auto_commit=False)},
+                     **wdb.update_annotation(
+                         annotation_id, memo, auto_commit=False,
+                         allow_hidden_coder=allow_hidden_coder)},
         create_backup=create_backup,
         backup_fail_detail="the annotation was not changed",
     )
@@ -6233,19 +6342,29 @@ def update_annotation(annotation_id: int, memo: str,
 
 @mcp.tool()
 @_tool_guard
-def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
+def delete_annotation(annotation_id: int, create_backup: bool = True,
+                      allow_hidden_coder: bool = False,
+                      confirm_private_note_deletion: bool = False) -> str:
     """Delete an annotation by its anid.
 
     THIS WRITES TO THE DATABASE. Removes one annotation (the note on a
     text span) — never the text, codings, or anything else. A backup is
-    created first by default. The row's note may hold a '#####' private
-    section the AI cannot see, so keep create_backup on unless the user
-    asks otherwise.
+    created first by default.
 
-    Coder visibility (QualCoder 4.0): an annotation belonging to a coder
-    the project hides is deleted the same way, but the echo carries ids
-    only plus a coder_visibility note; the hidden coder's name, note,
-    span and file never enter the conversation.
+    Two guards, each with an explicit override the user must ask for:
+    - Hidden coder (QualCoder 4.0 projects that hide coders): an
+      annotation owned by a hidden coder is REFUSED unless
+      allow_hidden_coder=true. The refusal names neither the coder nor
+      how many are hidden. With the override the echo carries ids only
+      plus a coder_visibility note.
+    - Private note (any project): an annotation whose note carries a
+      '#####' private section the assistant cannot see is REFUSED unless
+      confirm_private_note_deletion=true, and a backup is ALWAYS taken
+      for such a row even with create_backup=false. Note that this
+      refusal, or the forced backup, tells you that a private note
+      exists on the row (never its content); the owner accepts that.
+    When both apply, both overrides are required and both refusals come
+    back in one response.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6253,16 +6372,33 @@ def delete_annotation(annotation_id: int, create_backup: bool = True) -> str:
 
     Args:
         annotation_id: The annotation's anid
-        create_backup: Create a timestamped backup before writing (default True)
+        create_backup: Create a timestamped backup before writing (default
+                       True; ignored, always on, for a row carrying a
+                       private note)
+        allow_hidden_coder: Override to delete a hidden coder's annotation
+        confirm_private_note_deletion: Override to delete an annotation
+                       whose note carries a private section
     """
+    refusal = _refuse_existing_row_change(
+        "annotation", annotation_id, allow_hidden_coder=allow_hidden_coder,
+        deleting=True,
+        confirm_private_note_deletion=confirm_private_note_deletion)
+    if refusal is not None:
+        return json.dumps(refusal, indent=2)
+    status = get_db().existing_row_status("annotation", annotation_id) or {}
+    # S-P2 (a): a row carrying a private note is always backed up first
     result = _perform_write(
         lambda wdb: {"success": True,
                      "message": "Deleted annotation",
-                     **wdb.delete_annotation(annotation_id,
-                                             auto_commit=False)},
-        create_backup=create_backup,
+                     **wdb.delete_annotation(
+                         annotation_id, auto_commit=False,
+                         allow_hidden_coder=allow_hidden_coder,
+                         confirm_private_note_deletion=(
+                             confirm_private_note_deletion))},
+        create_backup=create_backup or bool(status.get("private_note")),
         backup_fail_detail="the annotation was not deleted",
     )
+    _private_note_backup_note(result, status, create_backup)
     _attach_hidden_target_note(result)
     return _ai_json(result, indent=2)
 

@@ -1034,6 +1034,43 @@ def copy_project_to_workspace(
         raise OSError(f"Copy failed: {e}") from None
 
 
+def memo_has_private_zone(memo: Any) -> bool:
+    """Whether a stored memo carries a '#####' private section."""
+    return split_public_private_memo(memo)[1] != ""
+
+
+def hidden_coder_refusal(kind: str, row_id: int,
+                         override: str = "allow_hidden_coder") -> str:
+    """Count-free, name-free refusal for a hidden coder's row (Tier 2).
+
+    Says only that the target belongs to a coder currently hidden in
+    QualCoder and that the override is required; never the coder's name,
+    never how many coders are hidden.
+    """
+    return (f"{kind} {row_id} belongs to a coder currently hidden in "
+            f"QualCoder; nothing was changed. Pass {override}=true to change "
+            f"it anyway, or ask the user to unhide the coder in QualCoder.")
+
+
+def private_note_refusal(kind: str, row_id: int,
+                         override: str = "confirm_private_note_deletion"
+                         ) -> str:
+    """Content-free refusal for deleting a row that carries a private note.
+
+    Says only that the row carries a '#####' private note the assistant
+    cannot see and that the override is required; never quotes, counts or
+    characterizes the note (S-P2). Its very presence discloses that a
+    private note exists on the row, a trade the owner accepted and
+    PRIVACY.md documents.
+    """
+    # The marker itself is deliberately not spelled out here: tool output
+    # stays marker-free, so a marker in any result always means a leak
+    return (f"{kind} {row_id} carries a private note (a memo section the "
+            f"assistant cannot see); nothing was deleted. Pass "
+            f"{override}=true to delete it anyway; a backup is taken first "
+            f"regardless of create_backup.")
+
+
 def _append_provenance_block(target_memo: Any, block: str) -> str:
     """Place a merge provenance block into a target memo (P1-1 recipe).
 
@@ -1546,6 +1583,67 @@ class QualcoderDatabase:
         """True unless a 4.0 visibility setting hides this annotation's coder."""
         return self._row_is_visible("annotation", "annotation_visible",
                                     "anid", annotation_id)
+
+    def existing_row_status(self, kind: str,
+                            row_id: int) -> Optional[Dict[str, bool]]:
+        """What guards apply to an existing coding or annotation row.
+
+        Returns None when the row does not exist, otherwise
+        {"hidden": <owned by a coder the project hides>,
+         "private_note": <memo carries a '#####' section>}. The server's
+        pre-checks and the write methods' own checks read the same
+        booleans, so they can never disagree (Tier 2, S-P2).
+        """
+        if kind == "coding":
+            row = self.get_coding(row_id)
+            visible = self.coding_is_visible
+        elif kind == "annotation":
+            row = self.get_annotation(row_id)
+            visible = self.annotation_is_visible
+        else:
+            raise ValueError(f"unknown row kind: {kind}")
+        if row is None:
+            return None
+        return {"hidden": not visible(row_id),
+                "private_note": memo_has_private_zone(row.get("memo"))}
+
+    def _count_private_notes(self, table: str, where: str, params) -> int:
+        """Rows of a fixed internal table matching `where` whose memo
+        carries a private note. Count only; contents never leave (S-P2)."""
+        try:
+            row = self.conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE ({where}) "
+                f"AND memo IS NOT NULL AND instr(memo, ?) > 0",
+                tuple(params) + (PERSONAL_NOTE_MARK,)).fetchone()
+        except sqlite3.Error:
+            return 0
+        return int(row[0]) if row else 0
+
+    def _hidden_codings_affected(self, where: str,
+                                 params) -> Optional[int]:
+        """How many coding rows (text, av, image) matching `where` belong
+        to coders the project hides; None without the visibility
+        capability (Tier 2 cascade previews). Count only, never names."""
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_coder_visibility:
+            return None
+        total = 0
+        for base, view in (("code_text", "code_text_visible"),
+                           ("code_av", "code_av_visible"),
+                           ("code_image", "code_image_visible")):
+            if self._visible_source(base, view) == base:
+                continue
+            try:
+                all_n = self.conn.execute(
+                    f"SELECT COUNT(*) FROM {base} WHERE ({where})",
+                    tuple(params)).fetchone()[0]
+                seen_n = self.conn.execute(
+                    f"SELECT COUNT(*) FROM {view} WHERE ({where})",
+                    tuple(params)).fetchone()[0]
+            except sqlite3.Error:
+                continue
+            total += max(0, int(all_n) - int(seen_n))
+        return total
 
     @staticmethod
     def _validate_coder(coder: Optional[str]) -> Optional[str]:
@@ -3936,17 +4034,29 @@ class QualcoderDatabase:
             "important": bool(row["important"]),
         }
 
-    def delete_coding(self, coding_id: int, auto_commit: bool = True) -> Dict[str, Any]:
+    def delete_coding(self, coding_id: int, auto_commit: bool = True,
+                      allow_hidden_coder: bool = False,
+                      confirm_private_note_deletion: bool = False
+                      ) -> Dict[str, Any]:
         """Delete a single coded segment (code_text row).
 
         This removes ONE coding (the assignment of a code to a text span),
         never the code itself or the source file.
+
+        Refuses (ValueError) a row owned by a coder the project hides
+        unless allow_hidden_coder (Tier 2), and a row whose memo carries a
+        '#####' private note unless confirm_private_note_deletion (S-P2);
+        both refusals are reported in one message when both apply. The
+        server pre-checks the same conditions before any backup.
 
         Args:
             coding_id: The ctid of the coding to delete
             auto_commit: Commit immediately (default True). Pass False when
                          the caller wants to re-check preconditions (e.g.
                          the QualCoder lock file) before committing.
+            allow_hidden_coder: Explicit override for a hidden coder's row
+            confirm_private_note_deletion: Explicit override for a row that
+                         carries a private note
 
         Returns:
             The details of the deleted coding. When the row belongs to a
@@ -3964,6 +4074,14 @@ class QualcoderDatabase:
         if existing is None:
             raise ValueError(f"Coding ID {coding_id} does not exist")
         visible = self.coding_is_visible(coding_id)
+        private = memo_has_private_zone(existing.get("memo"))
+        refusals = []
+        if not visible and not allow_hidden_coder:
+            refusals.append(hidden_coder_refusal("Coding", coding_id))
+        if private and not confirm_private_note_deletion:
+            refusals.append(private_note_refusal("Coding", coding_id))
+        if refusals:
+            raise ValueError(" ".join(refusals))
 
         try:
             self.conn.execute(
@@ -3980,13 +4098,19 @@ class QualcoderDatabase:
             _raise_query_error(e, "delete_coding", "Failed to delete coding")
 
         if not visible:
-            return {
+            result = {
                 "coding_id": existing["coding_id"],
                 "code_id": existing["code_id"],
                 "file_id": existing["file_id"],
                 "hidden_coder_row": True,
             }
-        return existing
+        else:
+            result = dict(existing)
+        if private:
+            # Existence only, never content (the memo echo is stripped by
+            # the server's _ai_json anyway)
+            result["private_note_removed"] = True
+        return result
 
     def validate_text_file_import(
         self,
@@ -4321,7 +4445,8 @@ class QualcoderDatabase:
         target_type: str,
         target_id: int,
         memo: str,
-        auto_commit: bool = True
+        auto_commit: bool = True,
+        allow_hidden_coder: bool = False
     ) -> Dict[str, Any]:
         """Set (or clear) the memo on a memo-bearing object.
 
@@ -4331,6 +4456,9 @@ class QualcoderDatabase:
             memo: The memo text. '' clears it (QualCoder's empty-string
                   convention — memos are never NULL).
             auto_commit: Commit immediately (default True)
+            allow_hidden_coder: For target_type 'coding' only: explicit
+                  override to write on a coding owned by a coder the
+                  project hides (Tier 2); refused otherwise
 
         Returns:
             Dict describing the updated object
@@ -4370,6 +4498,9 @@ class QualcoderDatabase:
                 f"{target_type} with id {target_id} does not exist"
             )
         label = row[0] if name_col else f"{target_type} {target_id}"
+        if (target_type == "coding" and not allow_hidden_coder
+                and not self.coding_is_visible(target_id)):
+            raise ValueError(hidden_coder_refusal("Coding", target_id))
 
         # Memo privacy (QC 4.0 '#####' convention): replace only the
         # AI-visible public text; an existing private suffix survives
@@ -4901,7 +5032,7 @@ class QualcoderDatabase:
             "  AND d.pos0 = s.pos0 AND d.pos1 = s.pos1 AND d.owner = s.owner)",
             (from_code_id, into_code_id)
         ).fetchone()[0]
-        return {
+        preview = {
             "from_code": {"id": from_code_id, "name": src["name"]},
             "into_code": {"id": into_code_id, "name": dest["name"]},
             "text_codings_reassigned": text_n - collisions,
@@ -4909,6 +5040,28 @@ class QualcoderDatabase:
             "av_codings_reassigned": av_n,
             "image_codings_reassigned": img_n,
         }
+        # S-P2 (c): private notes this merge REMOVES, count only: the
+        # discarded duplicate codings, plus the source code's own memo on
+        # schemas where it is not carried into the target (v14/v15; on
+        # v16+ the provenance block carries it whole)
+        private_n = self.conn.execute(
+            "SELECT COUNT(*) FROM code_text s WHERE s.cid = ? "
+            "AND s.memo IS NOT NULL AND instr(s.memo, ?) > 0 AND EXISTS ("
+            "  SELECT 1 FROM code_text d WHERE d.cid = ? AND d.fid = s.fid "
+            "  AND d.pos0 = s.pos0 AND d.pos1 = s.pos1 AND d.owner = s.owner)",
+            (from_code_id, PERSONAL_NOTE_MARK, into_code_id)
+        ).fetchone()[0]
+        caps = getattr(self, "capabilities", None)
+        if not (caps is not None and caps.has_supercid):
+            private_n += self._count_private_notes(
+                "code_name", "cid = ?", (from_code_id,))
+        preview["private_notes_affected"] = int(private_n)
+        # Tier 2: source codings owned by hidden coders that this merge
+        # reassigns or discards (4.0 projects only), count only
+        hidden = self._hidden_codings_affected("cid = ?", (from_code_id,))
+        if hidden is not None:
+            preview["hidden_coder_codings_affected"] = hidden
+        return preview
 
     def merge_codes(self, from_code_id: int, into_code_id: int,
                     auto_commit: bool = True) -> Dict[str, Any]:
@@ -5047,6 +5200,17 @@ class QualcoderDatabase:
             "image_codings_to_delete": img_n,
             "total_codings_to_delete": text_n + av_n + img_n,
         }
+        # S-P2 (c): how many rows about to die carry a '#####' private
+        # note (the code rows themselves plus every coding), count only
+        where = f"cid IN ({marks})"
+        preview["private_notes_affected"] = sum(
+            self._count_private_notes(t, where, branch)
+            for t in ("code_name", "code_text", "code_av", "code_image"))
+        # Tier 2: how many of the codings belong to hidden coders (4.0
+        # projects only), count only, never names
+        hidden = self._hidden_codings_affected(where, branch)
+        if hidden is not None:
+            preview["hidden_coder_codings_affected"] = hidden
         if len(branch) > 1:
             names = self.conn.execute(
                 f"SELECT name FROM code_name WHERE cid IN ({marks}) "
@@ -5114,15 +5278,23 @@ class QualcoderDatabase:
         subcats_n = self.conn.execute(
             "SELECT COUNT(*) FROM code_cat WHERE supercatid = ?", (category_id,)
         ).fetchone()[0]
-        return {
+        preview = {
             "category": {"id": category_id, "name": cat["name"]},
             "codes_moved_to_top_level": codes_n,
             "subcategories_moved_to_top_level": subcats_n,
+            # S-P2 (c): the only row removed is the category itself
+            "private_notes_affected": self._count_private_notes(
+                "code_cat", "catid = ?", (category_id,)),
             "note": "Deleting a category is SHALLOW: its codes and direct "
                     "sub-categories move to the top level (never deleted, "
                     "never reparented to a grandparent). Coded data is "
                     "untouched.",
         }
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.has_coder_visibility:
+            # No coding rows are touched, so none of a hidden coder's
+            preview["hidden_coder_codings_affected"] = 0
+        return preview
 
     def delete_category(self, category_id: int,
                         auto_commit: bool = True) -> Dict[str, Any]:
@@ -5328,7 +5500,9 @@ class QualcoderDatabase:
         }
 
     def update_annotation(self, annotation_id: int, memo: str,
-                          auto_commit: bool = True) -> Dict[str, Any]:
+                          auto_commit: bool = True,
+                          allow_hidden_coder: bool = False
+                          ) -> Dict[str, Any]:
         """Edit an annotation's note by anid; an EMPTY memo DELETES the row.
 
         QualCoder contract (memos-journals.md §4.2/§4.3): annotation is one
@@ -5336,6 +5510,11 @@ class QualcoderDatabase:
         the span untouched); clearing the memo deletes the annotation —
         never leave an empty one. Keyed by anid, never pos0 (the upstream
         delete-by-pos0 bug is documented; do not replicate it).
+
+        Refuses (ValueError) a row owned by a coder the project hides
+        unless allow_hidden_coder (Tier 2). Clearing never destroys a
+        private note (the row is kept), so no private-note override
+        applies here.
         """
         self._require_write_access()
         if not isinstance(memo, str):
@@ -5345,6 +5524,8 @@ class QualcoderDatabase:
         if existing is None:
             raise ValueError(f"Annotation ID {annotation_id} does not exist")
         visible = self.annotation_is_visible(annotation_id)
+        if not visible and not allow_hidden_coder:
+            raise ValueError(hidden_coder_refusal("Annotation", annotation_id))
 
         # Memo privacy ('#####'): replace only the public text; a private
         # suffix the researcher put on this annotation survives verbatim
@@ -5357,8 +5538,12 @@ class QualcoderDatabase:
             # when there is no private suffix: clearing the public text of
             # an annotation that carries one keeps the row (deleting it
             # would destroy the researcher's private note).
-            return {**self.delete_annotation(annotation_id,
-                                             auto_commit=auto_commit),
+            # Guards already passed above: the hidden-coder override was
+            # honored, and a row reaching this point has no private note
+            return {**self.delete_annotation(
+                        annotation_id, auto_commit=auto_commit,
+                        allow_hidden_coder=True,
+                        confirm_private_note_deletion=True),
                     "deleted_because_cleared": True}
 
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -5395,16 +5580,31 @@ class QualcoderDatabase:
         return result
 
     def delete_annotation(self, annotation_id: int,
-                          auto_commit: bool = True) -> Dict[str, Any]:
-        """Delete an annotation by anid (never by pos0 — see §4.3 gotcha).
+                          auto_commit: bool = True,
+                          allow_hidden_coder: bool = False,
+                          confirm_private_note_deletion: bool = False
+                          ) -> Dict[str, Any]:
+        """Delete an annotation by anid (never by pos0; see §4.3 gotcha).
 
-        A hidden coder's row (QC 4.0 visibility) echoes ids only (S-MAJ).
+        A hidden coder's row (QC 4.0 visibility) echoes ids only (S-MAJ)
+        and is refused without allow_hidden_coder (Tier 2); a row whose
+        note carries a '#####' private section is refused without
+        confirm_private_note_deletion (S-P2). Both refusals are reported
+        in one message when both apply.
         """
         self._require_write_access()
         existing = self.get_annotation(annotation_id)
         if existing is None:
             raise ValueError(f"Annotation ID {annotation_id} does not exist")
         visible = self.annotation_is_visible(annotation_id)
+        private = memo_has_private_zone(existing.get("memo"))
+        refusals = []
+        if not visible and not allow_hidden_coder:
+            refusals.append(hidden_coder_refusal("Annotation", annotation_id))
+        if private and not confirm_private_note_deletion:
+            refusals.append(private_note_refusal("Annotation", annotation_id))
+        if refusals:
+            raise ValueError(" ".join(refusals))
         try:
             self.conn.execute(
                 "DELETE FROM annotation WHERE anid = ?", (annotation_id,)
@@ -5420,10 +5620,14 @@ class QualcoderDatabase:
             _raise_query_error(e, "delete_annotation",
                                "Failed to delete annotation")
         if not visible:
-            return {"annotation_id": existing["annotation_id"],
-                    "file_id": existing["file_id"],
-                    "deleted": True, "hidden_coder_row": True}
-        return {**existing, "deleted": True}
+            result = {"annotation_id": existing["annotation_id"],
+                      "file_id": existing["file_id"],
+                      "deleted": True, "hidden_coder_row": True}
+        else:
+            result = {**existing, "deleted": True}
+        if private:
+            result["private_note_removed"] = True
+        return result
 
     # ========================================================================
     # MERGE CATEGORY (v0.8 D1 — category-tree.md §9)
@@ -5476,17 +5680,26 @@ class QualcoderDatabase:
                          "QualCoder 3.8.2 exactly) the source category's "
                          "memo is removed with its row; the mandatory backup "
                          "keeps a copy.")
-        return {
+        preview = {
             "from_category": {"id": from_category_id, "name": src_cat["name"]},
             "into_category": target_desc,
             "codes_reparented": codes_n,
             "subcategories_reparented": subcats_n,
             "source_memo_carried_to_target": carries_memo,
+            # S-P2 (c): the source memo is the only memo this merge can
+            # remove, and only when it is not carried
+            "private_notes_affected": (
+                0 if carries_memo else self._count_private_notes(
+                    "code_cat", "catid = ?", (from_category_id,))),
             "note": "Merging a category reparents its codes and direct "
                     "sub-categories to the target (codings are untouched — "
                     "they key on the code, not the category), then deletes "
                     "the source category." + memo_note,
         }
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.has_coder_visibility:
+            preview["hidden_coder_codings_affected"] = 0
+        return preview
 
     def _category_merge_carries_memo(self,
                                      into_category_id: Optional[int]) -> bool:

@@ -437,7 +437,7 @@ class TestExportsReadBaseTables:
 
 
 # =============================================================================
-# WRITE ECHOES: a hidden coder's row targeted by id echoes ids only (S-MAJ)
+# WRITE GUARDS ON HIDDEN CODERS' ROWS (S-MAJ Tier 1 + Tier 2, owner-approved)
 # =============================================================================
 
 def _row(project_path, sql, args=()):
@@ -448,28 +448,104 @@ def _row(project_path, sql, args=()):
         con.close()
 
 
+def _backups(project_path):
+    project = Path(project_path)
+    return sorted(project.parent.glob(f"{project.stem}_backup_*"))
+
+
 class TestWriteEchoesRedactHiddenTargets:
-    """delete_coding, update_annotation and delete_annotation reach hidden
-    coders' rows by id (upstream parity: ai_mcp_server.py:2243-2280 deletes
-    by ctid with no owner check). Upstream echoes ids only; so do we. The
-    fixture's hidden rows: ctid 3 ('Stress' on 'I feel stressed about
-    deadlines', 24-55) and anid 1 ('hidden annotation'), both by HIDDEN."""
+    """delete_coding, update_annotation, delete_annotation and set_memo
+    ('coding') reach hidden coders' rows by id (upstream parity:
+    ai_mcp_server.py:2243-2280 deletes by ctid with no owner check).
+    Tier 2: they REFUSE unless allow_hidden_coder=true, with a refusal that
+    names neither the coder nor a count. Tier 1: with the override the echo
+    is ids only, as upstream's. The fixture's hidden rows: ctid 3 ('Stress'
+    on 'I feel stressed about deadlines', 24-55) and anid 1 ('hidden
+    annotation'), both by HIDDEN."""
 
     FORBIDDEN = (HIDDEN, "Stress", "I feel stressed", "hidden annotation",
                  "interview.txt", "hidden memo")
 
-    def _assert_redacted(self, raw: str):
+    def _assert_no_leak(self, raw: str):
         for needle in self.FORBIDDEN:
             assert needle not in raw, needle
+
+    def _assert_refused(self, raw: str):
+        self._assert_no_leak(raw)
+        out = json.loads(raw)
+        assert "error" in out, out
+        assert "hidden in QualCoder" in out["error"]
+        assert "allow_hidden_coder" in out["error"]
+        assert out["refused"] == ["hidden_coder"]
+        assert out["nothing_changed"] is True
+        # count-free: no digit other than the row id appears
+        digits = {c for c in out["error"] if c.isdigit()}
+        assert digits <= {"1", "3"}, out["error"]
+        assert "hides" not in out["error"]
+        return out
+
+    def _assert_redacted_success(self, raw: str):
+        self._assert_no_leak(raw)
         out = json.loads(raw)
         assert out.get("success") is True, out
         assert out["coder_visibility"]["hidden_coder_filter"] == "applied"
         assert out["coder_visibility"]["hidden_coders"] == 1
         return out
 
-    def test_delete_coding_hidden_target_echoes_ids_only(self, visibility_db):
-        raw = server.delete_coding(3, create_backup=False)
-        out = self._assert_redacted(raw)
+    # -- refusals -------------------------------------------------------
+
+    def test_delete_coding_hidden_target_refused_without_override(
+            self, visibility_db):
+        self._assert_refused(server.delete_coding(3, create_backup=False))
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 1
+        assert _backups(visibility_db) == []
+
+    def test_update_annotation_hidden_target_refused_without_override(
+            self, visibility_db):
+        self._assert_refused(server.update_annotation(1, "probe",
+                                                      create_backup=False))
+        assert _row(visibility_db,
+                    "SELECT memo FROM annotation WHERE anid = 1")[0] == \
+            "hidden annotation"
+
+    def test_delete_annotation_hidden_target_refused_without_override(
+            self, visibility_db):
+        self._assert_refused(server.delete_annotation(1, create_backup=False))
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM annotation WHERE anid = 1")[0] == 1
+
+    def test_set_memo_on_hidden_coding_refused_without_override(
+            self, visibility_db):
+        self._assert_refused(server.set_memo("coding", 3, "probe",
+                                             create_backup=False))
+        assert _row(visibility_db,
+                    "SELECT memo FROM code_text WHERE ctid = 3")[0] == \
+            "hidden memo"
+
+    def test_db_layer_refuses_on_its_own(self, visibility_db):
+        # Defense in depth: the write methods repeat the server pre-check
+        wdb = QualcoderDatabase(visibility_db, read_only=False)
+        try:
+            for call in (
+                lambda: wdb.delete_coding(3),
+                lambda: wdb.update_annotation(1, "x"),
+                lambda: wdb.delete_annotation(1),
+                lambda: wdb.set_memo("coding", 3, "x"),
+            ):
+                with pytest.raises(ValueError, match="hidden in QualCoder"):
+                    call()
+        finally:
+            wdb.close()
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 1
+
+    # -- overrides: ids-only echo (Tier 1) ------------------------------
+
+    def test_delete_coding_with_override_echoes_ids_only(self, visibility_db):
+        raw = server.delete_coding(3, create_backup=False,
+                                   allow_hidden_coder=True)
+        out = self._assert_redacted_success(raw)
         assert out["message"] == "Deleted coding 3"
         assert out["deleted_coding"] == {
             "coding_id": 3, "code_id": 1, "file_id": 1,
@@ -477,10 +553,11 @@ class TestWriteEchoesRedactHiddenTargets:
         assert _row(visibility_db,
                     "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 0
 
-    def test_update_annotation_hidden_target_echoes_ids_only(
+    def test_update_annotation_with_override_echoes_ids_only(
             self, visibility_db):
-        raw = server.update_annotation(1, "probe", create_backup=False)
-        out = self._assert_redacted(raw)
+        raw = server.update_annotation(1, "probe", create_backup=False,
+                                       allow_hidden_coder=True)
+        out = self._assert_redacted_success(raw)
         assert out["annotation_id"] == 1
         assert out["file_id"] == 1
         assert out["memo"] == "probe"          # the AI's own text
@@ -493,10 +570,11 @@ class TestWriteEchoesRedactHiddenTargets:
                    "SELECT memo, owner FROM annotation WHERE anid = 1")
         assert row[0] == "probe" and row[1] == HIDDEN
 
-    def test_delete_annotation_hidden_target_echoes_ids_only(
+    def test_delete_annotation_with_override_echoes_ids_only(
             self, visibility_db):
-        raw = server.delete_annotation(1, create_backup=False)
-        out = self._assert_redacted(raw)
+        raw = server.delete_annotation(1, create_backup=False,
+                                       allow_hidden_coder=True)
+        out = self._assert_redacted_success(raw)
         assert out["annotation_id"] == 1
         assert out["file_id"] == 1
         assert out["deleted"] is True
@@ -506,19 +584,81 @@ class TestWriteEchoesRedactHiddenTargets:
         assert _row(visibility_db,
                     "SELECT COUNT(*) FROM annotation WHERE anid = 1")[0] == 0
 
-    def test_clearing_hidden_annotation_echoes_ids_only(self, visibility_db):
+    def test_clearing_hidden_annotation_with_override_echoes_ids_only(
+            self, visibility_db):
         # update_annotation("") deletes the row; the redaction must hold
         # on that path too
-        raw = server.update_annotation(1, "", create_backup=False)
-        out = self._assert_redacted(raw)
+        raw = server.update_annotation(1, "", create_backup=False,
+                                       allow_hidden_coder=True)
+        out = self._assert_redacted_success(raw)
         assert out["deleted"] is True
         assert out["deleted_because_cleared"] is True
         assert "owner" not in out and "memo" not in out
 
+    def test_set_memo_on_hidden_coding_with_override(self, visibility_db):
+        raw = server.set_memo("coding", 3, "probe", create_backup=False,
+                              allow_hidden_coder=True)
+        self._assert_no_leak(raw)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["memo"] == "probe"
+        assert out["label"] == "coding 3"
+        assert _row(visibility_db,
+                    "SELECT memo FROM code_text WHERE ctid = 3")[0] == "probe"
+
+    # -- hidden AND private: both overrides required (Tier 2 + S-P2) -----
+
+    def test_hidden_and_private_row_needs_both_overrides(self, visibility_db):
+        secret = "quokka-private-zone"
+        con = sqlite3.connect(str(Path(visibility_db) / "data.qda"))
+        con.execute("UPDATE code_text SET memo = ? WHERE ctid = 3",
+                    (f"pub#####{secret}",))
+        con.commit()
+        con.close()
+        _reopen(visibility_db)
+
+        raw = server.delete_coding(3, create_backup=False)
+        self._assert_no_leak(raw)
+        out = json.loads(raw)
+        assert "error" in out
+        assert secret not in raw and "pub" not in out["error"]
+        assert out["refused"] == ["hidden_coder", "private_note"]
+        assert "hidden in QualCoder" in out["error"]
+        assert "private note" in out["error"]
+        assert "confirm_private_note_deletion" in out["error"]
+
+        # One override alone is not enough, either way round
+        one = json.loads(server.delete_coding(3, create_backup=False,
+                                              allow_hidden_coder=True))
+        assert one["refused"] == ["private_note"]
+        other = json.loads(server.delete_coding(
+            3, create_backup=False, confirm_private_note_deletion=True))
+        assert other["refused"] == ["hidden_coder"]
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 1
+        assert _backups(visibility_db) == []
+
+        raw = server.delete_coding(3, create_backup=False,
+                                   allow_hidden_coder=True,
+                                   confirm_private_note_deletion=True)
+        assert secret not in raw
+        out = self._assert_redacted_success(raw)
+        assert out["deleted_coding"]["hidden_coder_row"] is True
+        assert out["deleted_coding"]["private_note_removed"] is True
+        assert "memo" not in out["deleted_coding"]
+        # S-P2 (a): a backup exists even though create_backup=False
+        assert "backup_path" in out
+        assert "backup_note" in out
+        assert len(_backups(visibility_db)) == 1
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 0
+
+    # -- visible rows and pre-4.0 projects untouched ----------------------
+
     def test_visible_target_keeps_full_echo_on_same_project(
             self, visibility_db):
-        # The redaction is per row: the visible coding on the very same
-        # 4.0 project keeps the full echo and carries no note
+        # The guards are per row: the visible coding on the very same 4.0
+        # project needs no override, keeps the full echo, carries no note
         out = json.loads(server.delete_coding(1, create_backup=False))
         assert out["deleted_coding"]["code_name"] == "Stress"
         assert out["deleted_coding"]["owner"] == "TestCoder"
@@ -540,10 +680,46 @@ class TestWriteEchoesRedactHiddenTargets:
         assert dele["memo"] == "edited"
         assert "coder_visibility" not in dele
 
-    def test_pre40_project_never_redacts(self, setup_server):
-        # No visibility capability: every row is visible, full echo, no note
+    def test_pre40_project_never_redacts_or_refuses(self, setup_server):
+        # No visibility capability: every row is visible, full echo, no
+        # note, no override needed
         out = json.loads(server.delete_coding(1, create_backup=False))
         assert out["deleted_coding"]["owner"] == "TestCoder"
         assert "coder_visibility" not in out
         assert server.db.coding_is_visible(2) is True
         assert server.db.annotation_is_visible(999) is True
+        assert server.db.existing_row_status("coding", 2) == {
+            "hidden": False, "private_note": False}
+        assert server.db.existing_row_status("coding", 999) is None
+
+
+class TestCascadePreviewsReportHiddenRows:
+    """Tier 2: the confirm-gated cascades report, as a count only, how many
+    affected coding rows belong to hidden coders (4.0 projects); the key is
+    absent on pre-4.0 projects. Fixture hidden rows: ctid 3 (cid 1), ctid 4
+    and 5 (cid 2), imid 1 (cid 1)."""
+
+    def test_delete_code_preview(self, visibility_db):
+        p1 = json.loads(server.delete_code(1))["preview"]
+        assert p1["hidden_coder_codings_affected"] == 2   # ctid 3 + imid 1
+        assert HIDDEN not in json.dumps(p1)
+        p2 = json.loads(server.delete_code(2))["preview"]
+        assert p2["hidden_coder_codings_affected"] == 2   # ctid 4, 5
+
+    def test_merge_codes_preview(self, visibility_db):
+        p = json.loads(server.merge_codes(1, 2))["preview"]
+        assert p["hidden_coder_codings_affected"] == 2
+        p = json.loads(server.merge_codes(2, 1))["preview"]
+        assert p["hidden_coder_codings_affected"] == 2
+
+    def test_category_cascades_touch_no_codings(self, visibility_db):
+        p = json.loads(server.delete_category(1))["preview"]
+        assert p["hidden_coder_codings_affected"] == 0
+        p = json.loads(server.merge_category(1))["preview"]
+        assert p["hidden_coder_codings_affected"] == 0
+
+    def test_pre40_previews_carry_no_hidden_key(self, setup_server):
+        for raw in (server.delete_code(1), server.merge_codes(1, 2),
+                    server.delete_category(1), server.merge_category(1)):
+            p = json.loads(raw)["preview"]
+            assert "hidden_coder_codings_affected" not in p
