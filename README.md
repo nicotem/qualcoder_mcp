@@ -114,7 +114,8 @@ host and not capability-evaluated on local models.
 > falls back to best-effort heuristics there (reported as
 > `qualcoder_gui_signals` by `select_project` and `get_current_project`:
 > database write sidecars, recent AI search-index and chat-history activity,
-> and a best-effort process scan). The file-based signals are traces of recent
+> and a best-effort process scan that reports only how many running processes
+> look like QualCoder, never their names or command lines). The file-based signals are traces of recent
 > activity, never proof of an open window (an idle 4.0 window with no recent AI
 > activity leaves no file trace at all), so heuristics can miss an open window:
 > do not run qualcoder-mcp writes while any QualCoder window has the same
@@ -810,6 +811,9 @@ For AI-assisted coding with direct database writes:
 - 🔒 Regular Qualcoder backups recommended
 - 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
 - 🔒 Session logs: `~/.qualcoder_mcp/sessions/`
+- 🔒 Last-used project pointer: `~/.qualcoder_mcp/mru_project.json` (one
+  project path and a timestamp, echoed only into the "no project selected"
+  error as a recovery hint; see [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md))
 
 ## Architecture
 

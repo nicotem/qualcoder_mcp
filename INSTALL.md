@@ -615,9 +615,11 @@ QualCoder projects and backups stay exactly where they are.
 
 **First, the reassurance: upgrading only replaces the SERVER code.**
 It never touches your QualCoder projects (the `.qda` folders) or your
-AI-coding session files (`~/.qualcoder_mcp/sessions/`) — both live
-outside the install, and both were verified untouched across every
-install/upgrade path below. Jumping from 0.6, 0.7 or 0.8 straight to
+files under `~/.qualcoder_mcp/` (the AI-coding session files in
+`sessions/`, and the last-used project pointer `mru_project.json`); all
+live outside the install, and the projects and session files were
+verified untouched across every install/upgrade path below. Jumping
+from 0.6, 0.7 or 0.8 straight to
 0.9 in one step is fine: there is no data or session migration step,
 and pre-0.9 session files load unchanged (verified end-to-end, a
 0.6-era session file drives the full current workflow).

@@ -29,9 +29,30 @@ does this server.
   only, so the private zone cannot be probed through search.
 - Memo writes are merge-preserving: `set_memo` and `update_annotation`
   replace only the public text, an existing private zone survives
-  every AI write verbatim (clearing an annotation that carries one
+  every memo write verbatim (clearing an annotation that carries one
   keeps the row), merge provenance notes land before the private zone,
-  and a `#####` in AI-supplied text is never written.
+  and a `#####` in AI-supplied text is never written. Code and
+  category names and coder names copied into a provenance note are
+  neutralized (any run of five or more hashes collapses to four), so a
+  name can never plant a private zone in the target memo.
+- `merge_category` now carries the source category's memo into the
+  target under a `[Merged from category: ...]` provenance note, as
+  QualCoder master does, placed with the same recipe as `merge_codes`
+  (the target's private zone survives; one the source carries stays
+  private). Like `merge_codes`' note it applies on schemas with
+  sub-code support (v16+) and never to a top-level merge; the preview
+  states which applies and the result reports `provenance_memo_added`.
+- Whole-row deletes and private notes (owner ruling): `delete_coding`
+  and `delete_annotation` refuse a row whose memo carries a private
+  note unless `confirm_private_note_deletion=true` is passed, and for
+  such a row a backup is always taken, even with
+  `create_backup=false`; the refusal is content-free (it says only
+  that a private note exists on that row). The cascade previews of
+  `delete_code`, `delete_category`, `merge_codes` and `merge_category`
+  report `private_notes_affected`, the count of rows carrying a
+  private note the operation would remove. No general confirm gate was
+  added to single-row deletes. PRIVACY.md states the deliberate
+  disclosure (existence, never content) this implies.
 - The one exception, by owner ruling for QualCoder export parity:
   exported FILES (REFI-QDA, codebook, coded-segments report) keep full
   memos, and their tool descriptions say so. `export_code_report`
@@ -46,8 +67,13 @@ the REFI-QDA Users entry. Default stays `AI Coding Assistant`;
 setting the variable to `AI Agent` (QualCoder 4.0's own AI owner
 string) groups this server's work with the built-in assistant's under
 4.0's per-coder visibility, undo, and reports. Invalid values stop the
-server at startup with a clear error. Explicit `owner` arguments still
-win. Note: memos, journal entries, annotations, and attribute writes
+server at startup with a clear error. Explicit `owner` arguments on
+`apply_codings` and `import_text_file` still win and are validated by
+the same rules (one shared validator: non-empty, at most 80 characters,
+no Unicode control characters including C1, no line or paragraph
+separators, no bidirectional formatting characters, no `#####`
+marker; ordinary names in any script, ZWJ and ZWNJ included, are
+accepted). Note: memos, journal entries, annotations, and attribute writes
 were previously attributed to the project's own coder name; they now
 carry the configured AI coder name, keeping AI work distinguishable.
 
@@ -67,6 +93,18 @@ hidden-coder filtering shaped them (a count, never hidden coders'
 names). File exports keep reading base tables, matching QualCoder's
 own reports and REFI export.
 
+Writes that target an existing row by id (`delete_coding`,
+`update_annotation`, `delete_annotation`, and `set_memo` on a coding)
+can reach a hidden coder's row, as QualCoder's own AI server can. On
+projects with the visibility setting they now refuse such a row unless
+`allow_hidden_coder=true` is passed (owner ruling); the refusal names
+neither the coder nor a count. With the override the echo carries ids
+only (QualCoder's own result shape), never the hidden coder's name,
+code, span or text. The previews of `delete_code`, `delete_category`,
+`merge_codes` and `merge_category` report
+`hidden_coder_codings_affected` as a count. Pre-4.0 projects are
+unaffected.
+
 ### Changed: backups and workspace copies mirror QualCoder's ai_data policy
 
 Backups already carried `ai_data/` (the 4.0 prompt library and chat
@@ -79,6 +117,19 @@ a backup without `search.sqlite` is normal: QualCoder rebuilds it on
 project open. Disclosed in the backup tool descriptions and
 PRIVACY.md.
 
+Owner-approved deviation from QualCoder's save_backup parity: backups
+and workspace copies no longer follow a symlink that resolves outside
+the project folder, or that dangles (QualCoder's plain copytree
+dereferences every link). Such entries are skipped and reported
+(`backup_skipped_symlinks` on write results, `skipped_symlinks` on
+`copy_project_to_workspace`), because a hostile or shared project
+folder must not pull outside files into a backup; symlinks resolving
+inside the project are copied as before, and a dangling link no longer
+aborts the copy. A copy that fails part-way now removes its partial
+destination instead of leaving a half-complete folder that
+`list_backups` would present as restorable (a destination that already
+belonged to someone else is never touched).
+
 ### Added: best-effort detection of an open QualCoder 4.0 window
 
 QualCoder 4.0 removed the `project_in_use.lock` protocol, so the lock
@@ -90,9 +141,22 @@ sidecars exist only during in-flight indexing or after an unclean
 exit, never while an idle window sits open) and on the AI chat
 history, and a guarded local process scan. Signals warn and ask
 ("appears to be open"), never hard-refuse; the in-transaction text
-verification remains the write-time backstop. Docs and results also
-state the 4.0 refresh limitation: an open 4.0 window will not display
-external writes until the project is reopened.
+verification remains the write-time backstop. The same heuristics
+shape `select_project`'s failure path: when data.qda will not open (a
+corrupt file, or the hot journal a mid-write 4.0 window leaves, which
+used to surface as an invalid-path or damaged-database error) the
+result carries the damaged-database or backup-restore advice, a
+`qualcoder_gui_signals` field built from project-scoped evidence only,
+and, when such evidence exists, the appears-open wording first.
+`restore_backup`'s confirm=false preview reports `qualcoder_gui_signals`
+and an ask-the-user hint when any are present; it remains a preview
+and never refuses on the heuristic. Every other tool answers a database
+that will not open with one fixed, path-free message (the sqlite detail
+goes to the server log, never into the conversation). Docs and results
+also state the 4.0 refresh limitation: an open 4.0 window will not
+display external writes until the project is reopened. The process
+scan reports only how many running processes look like QualCoder;
+names and command lines never leave the server.
 
 ### Added: recovery hint naming the last-used project
 
@@ -100,7 +164,14 @@ Every "no project selected" error now appends "The last project used
 on this machine was <path>." when that project still exists, so a
 client whose host recycled the server process (observed with LM
 Studio) recovers with one `select_project` call. The selection is
-never restored automatically.
+never restored automatically. The pointer lives in
+`~/.qualcoder_mcp/mru_project.json` (per user account: one project
+path and a timestamp), is written through an exclusively created,
+owner-readable temp file and an atomic replace, and only a path with
+the shape `select_project` itself records (`<folder>.qda/data.qda`,
+no control or bidirectional formatting characters) that still exists
+as a file is ever echoed. PRIVACY.md, README and INSTALL list the
+file.
 
 ## [0.10.1-alpha] - 2026-08-31
 

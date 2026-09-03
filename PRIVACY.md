@@ -34,6 +34,16 @@ What stays local, always:
 - automatic backups created before writes
 - exported files (CSV/txt/md reports, REFI-QDA `.qdpx`)
 - AI-coding session files (`~/.qualcoder_mcp/sessions/`)
+- the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
+  the path of the project most recently selected under your user
+  account, plus a timestamp, written on every successful
+  select_project). It has one outward flow: when a tool is called
+  before a project is selected, the error message names that path as a
+  recovery hint, so a project path chosen in one MCP host or session
+  can appear in another host's conversation on the same account.
+  Nothing is ever selected automatically from it; only a path with the
+  shape select_project itself records is ever echoed, and deleting the
+  file clears it.
 
 What leaves your machine: **only what tools return into the
 conversation**, but for qualitative research, that can be the most
@@ -53,10 +63,34 @@ keeps the same promise:
   held back, and memo searches neither match nor preview the private
   zone.
 - **Writes**: memo-writing tools (set_memo, update_annotation, and the
-  provenance notes merges append) replace only the public text. An
-  existing private zone survives every AI write verbatim, and a
-  `#####` in AI-supplied text is not written, so the AI can never
-  create, read, replace, or delete a private zone.
+  provenance notes merge_codes and merge_category append) replace only
+  the public text. An existing private zone survives every memo write
+  verbatim, and a `#####` in AI-supplied text is not written (code and
+  category names and coder names copied into provenance notes are
+  neutralized too), so the AI can never create, read, replace, or
+  delete a private zone through a memo write.
+- **Whole-row deletes** are the one qualification to that sentence.
+  Tools that remove an entire row remove any private note on it
+  together with the row: delete_coding and delete_annotation (single
+  rows), and the cascades of delete_code, delete_category, merge_codes
+  (duplicate codings it discards; on pre-v16 schemas the merged code's
+  own memo) and merge_category (when merging to the top level, or on
+  pre-v16 schemas). By owner ruling, three rules limit that:
+  - delete_coding and delete_annotation refuse a row whose memo carries
+    a private note unless the caller passes
+    `confirm_private_note_deletion=true`, and for such a row a backup
+    is always taken first, even when `create_backup=false` was asked.
+    The refusal says only that a private note exists on that row; it
+    never quotes, counts or characterizes it.
+  - The cascades (delete_code, delete_category, merge_codes,
+    merge_category) require a preview and a confirm, always back up
+    first, and their preview reports how many rows carrying a private
+    note the operation would remove, as a count only.
+  - Deliberate disclosure: because the refusal and the forced backup
+    trigger only on rows that carry a private note, they reveal that a
+    private note EXISTS on that row (never its content). The owner
+    accepts this trade so that a private note is never destroyed
+    without an explicit decision, and never without a backup.
 - **The exception, deliberately**: exported FILES (the REFI-QDA
   `.qdpx` and codebook files, and the coded-segments report file
   written by export_coded_segments_report) keep memos in full, private
@@ -69,6 +103,36 @@ keeps the same promise:
 
 The private zone stays in your project database on disk; this
 convention controls only what enters the AI conversation.
+
+## Coder visibility: reading and writing what the user sees
+
+QualCoder 4.0 lets a project hide individual coders' work (a per-coder
+visibility setting stored in the project database). When that setting
+is present in a project:
+
+- **Reads** go through QualCoder's own visibility views by default, so
+  coded segments, searches, frequencies, co-occurrence, matrices and
+  case and code listings reflect what the user sees in QualCoder.
+  Results disclose when hidden-coder filtering shaped them as a COUNT
+  of hidden coders, never their names. An explicit `coder` argument
+  reads that coder's rows from the full data instead, the same
+  override QualCoder's own AI uses.
+- **Writes that target an existing row by id** (delete_coding,
+  update_annotation, delete_annotation, and set_memo on a coding) can
+  reach a hidden coder's row, as QualCoder's own AI server can. They
+  REFUSE unless the caller passes `allow_hidden_coder=true`; the
+  refusal says only that the row belongs to a coder currently hidden
+  in QualCoder, never who or how many. With the override, the result
+  echoes ids only (as QualCoder's AI server does), never the hidden
+  coder's name, code, span or text. The confirm-gated cascades
+  (delete_code, delete_category, merge_codes, merge_category) report
+  in their preview how many affected codings belong to hidden coders,
+  as a count.
+- Codes, categories, files, cases and journal entries have no
+  per-coder visibility in QualCoder; their owner columns are read as
+  before.
+
+Projects without the setting (every pre-4.0 project) are unaffected.
 
 ## Backups, project copies, and the `ai_data/` folder
 
@@ -89,6 +153,30 @@ non-regenerable prompt library and chat history safe in every backup,
 and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
 normal: QualCoder rebuilds it on project open.
+
+Two further rules touch files on your disk:
+
+- **Symlinks.** Unlike QualCoder's own backups, this server's backups
+  and workspace copies do not follow a symlink that points outside the
+  project folder, or that dangles: such entries are skipped, and the
+  result reports how many (and which) were skipped, so a shared or
+  untrusted project folder cannot pull files from elsewhere on your
+  disk into a backup. Symlinks that resolve inside the project are
+  copied as before. This is a deliberate, owner-approved deviation
+  from QualCoder's save_backup, which copies whatever a link points to.
+  A copy that fails part-way is removed rather than left behind as a
+  half-complete "backup".
+- **Process listing.** To warn when a QualCoder 4.0 window appears to
+  have a project open (4.0 writes no lock file), select_project,
+  get_current_project and analyze_for_coding also look at the list of
+  processes running on this machine (`ps` or `tasklist`, or psutil
+  when installed). The listing is filtered in memory for QualCoder's
+  own process name and only the NUMBER of matches is reported into the
+  conversation; process names, command lines and other users'
+  processes never leave the server, and nothing from the list is
+  stored on disk. This is a heuristic: it can miss an open window and
+  it can count an unrelated process whose command line mentions
+  QualCoder.
 
 ## Your governance options, from default to fully local (Experimental)
 
@@ -278,7 +366,9 @@ will ask, and the summary above depends on them:
 - **Consult your institution's DPO or ethics board** if you are unsure,
   before the analysis, not after.
 - Remember that the server's safety features (read-only default,
-  automatic local backups, refuse-while-QualCoder-is-open) protect your
+  automatic local backups, refuse-while-QualCoder-is-open, and for
+  QualCoder 4.0 a best-effort check of this machine's process list that
+  reports only a count, never names or command lines) protect your
   project's **integrity on disk**; they do not change what leaves the
   machine through the conversation.
 
