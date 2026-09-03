@@ -351,12 +351,24 @@ class TestMruHintValidatesRecordedPath:
         out = json.loads(server.get_project_summary())
         assert HINT_PHRASE in out["error"]
 
-    def test_state_that_is_not_utf8_degrades_silently(self, no_project):
+    @pytest.mark.parametrize("enc", ["utf-16", "utf-16-le", "utf-16-be",
+                                     "utf-32", "utf-8-sig"])
+    def test_state_that_is_not_utf8_degrades_silently(self, no_project,
+                                                      qualcoder_db_path, enc):
+        # A path that EXISTS, so the hint WOULD be echoed if the raw bytes
+        # reached json.loads (its BOM and NUL sniffing accepts every
+        # encoding here); the explicit strict UTF-8 decode refuses them
+        # all. (The round-3 form of this pin recorded a non-existent path
+        # and so passed with the decode removed; fix round 4.)
+        path = str(Path(qualcoder_db_path) / "data.qda")
         server._MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # UTF-16 with a BOM: json.loads would sniff and accept these bytes
-        # if they were handed to it undecoded
         server._MRU_FILE.write_bytes(
-            json.dumps({"project_path": "/x.qda/data.qda"}).encode("utf-16"))
+            json.dumps({"project_path": path}).encode(enc))
         out = json.loads(server.get_project_summary())
         assert HINT_PHRASE not in out["error"]
         assert "No Qualcoder project selected" in out["error"]
+        # Positive control: the same path as strict UTF-8 IS echoed
+        self._write_state(path)
+        out = json.loads(server.get_project_summary())
+        assert HINT_PHRASE in out["error"]
+        assert path in out["error"]
