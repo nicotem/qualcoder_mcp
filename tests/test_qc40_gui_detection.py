@@ -425,5 +425,5 @@ class TestDatabaseOpenErrorIsGeneric:
         assert "readonly" not in out["error"].lower()
 
     def test_guard_text_has_no_em_dash(self):
-        assert "—" not in server.DB_UNAVAILABLE_ERROR
+        assert "\u2014" not in server.DB_UNAVAILABLE_ERROR
         assert server.DB_UNAVAILABLE_ERROR.startswith("Database error")
