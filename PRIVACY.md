@@ -3,7 +3,7 @@
 This document explains exactly what happens to your research data when
 you use the QualCoder MCP server. It is factual and deliberately
 sober: this tool makes the data flow explicit precisely so you can make
-an informed decision — many AI integrations don't. It is not legal
+an informed decision, which many AI integrations do not. It is not legal
 advice.
 
 ## How your data flows
@@ -15,12 +15,12 @@ path** of its own. It opens your QualCoder project database read-only
 by default, and nothing in this server ever "phones home".
 
 **But the results of tool calls enter your Claude conversation.** That
-is the entire point of an MCP server — and it has a consequence you
+is the entire point of an MCP server, and it has a consequence you
 must understand:
 
-> Whatever a tool returns — coded segments, interview excerpts, file
+> Whatever a tool returns (coded segments, interview excerpts, file
 > contents, memos, journal entries, code names, frequencies, case and
-> attribute data — is delivered into the conversation, and
+> attribute data) is delivered into the conversation, and
 > conversation content is **transmitted to whichever AI provider your
 > host uses and processed like any other chat or API content**. For
 > Claude hosts that provider is Anthropic; with a fully local host
@@ -36,7 +36,7 @@ What stays local, always:
 - AI-coding session files (`~/.qualcoder_mcp/sessions/`)
 
 What leaves your machine: **only what tools return into the
-conversation** — but for qualitative research, that can be the most
+conversation**, but for qualitative research, that can be the most
 sensitive content you hold.
 
 ## Keeping notes private from the AI: the '#####' memo convention
@@ -47,8 +47,8 @@ server honors the same convention, so a project touched by both tools
 keeps the same promise:
 
 - **Reads**: every tool and resource that returns memo content (code,
-  category, file, case, and coding memos, annotations, journal
-  entries, the project memo) returns only the text before the first
+  category, file, case, attribute-type and coding memos, annotations,
+  journal entries, the project memo) returns only the text before the first
   `#####`. The strip is silent: results do not flag that anything was
   held back, and memo searches neither match nor preview the private
   zone.
@@ -57,11 +57,15 @@ keeps the same promise:
   existing private zone survives every AI write verbatim, and a
   `#####` in AI-supplied text is not written, so the AI can never
   create, read, replace, or delete a private zone.
-- **The exception, deliberately**: exported FILES (REFI-QDA `.qdpx`,
-  codebook, and report exports) keep memos in full, private zone
-  included, because QualCoder's own exports do and export parity
-  governs. The export tools say so in their descriptions. Treat
-  exported files with the same care as the project itself.
+- **The exception, deliberately**: exported FILES (the REFI-QDA
+  `.qdpx` and codebook files, and the coded-segments report file
+  written by export_coded_segments_report) keep memos in full, private
+  zone included, because QualCoder's own exports do and export parity
+  governs. The export tools say so in their descriptions.
+  export_code_report, despite its name, returns JSON into the
+  conversation rather than writing a file, so it strips like every
+  other read. Treat exported files with the same care as the project
+  itself.
 
 The private zone stays in your project database on disk; this
 convention controls only what enters the AI conversation.
@@ -202,7 +206,7 @@ local)".
 
 ## What this means for research data
 
-Your participants may have consented to *you* analyzing their data —
+Your participants may have consented to *you* analyzing their data;
 that is not the same as consenting to their data being processed by a
 third-party AI provider. Whether this flow is acceptable for a given
 project is **the researcher's responsibility to determine**, and the
@@ -214,45 +218,45 @@ answer belongs in:
 - your **ethics / IRB approvals**
 - for EU/UK researchers, your **GDPR position**: your institution is
   normally the data *controller* and a provider like Anthropic a
-  *processor* — which usually requires an institution-level
+  *processor*, which usually requires an institution-level
   data-processing agreement and a valid transfer safeguard (see the next
   section), not something an individual researcher can arrange alone.
 
-For what Anthropic does with conversation content — retention,
+For what Anthropic does with conversation content (retention,
 processing, and how terms differ between consumer plans, the API, and
-enterprise offerings — consult **Anthropic's own privacy
+enterprise offerings), consult **Anthropic's own privacy
 documentation** for the current terms:
 <https://www.anthropic.com/privacy>. Those terms vary by product and
 change over time; this document deliberately does not characterize
 them.
 
-## Before you use real participant data — check these
+## Before you use real participant data, check these
 
 These are the questions your ethics committee or Data Protection Officer
 will ask, and the summary above depends on them:
 
-- **Your Claude plan's terms differ — and matter.** For *your* account,
+- **Your Claude plan's terms differ, and they matter.** For *your* account,
   verify whether inputs (a) may be used to train or improve models,
   (b) how long they are retained, and (c) whether they can be reviewed by
   people. These differ materially between consumer plans (Free/Pro) and
   Team/Enterprise/API terms. Inputs being used for model training would
-  almost never be covered by existing participant consent — an ethics
+  almost never be covered by existing participant consent; an ethics
   board asks this first.
 - **Controller / processor, and a written agreement.** Your institution
   is normally the data controller and Anthropic a processor. UK/EU GDPR
   (Art. 28) then requires a written data-processing agreement, and a
   UK/EU→US transfer needs a valid safeguard (UK IDTA, SCCs, or an
   adequacy/data-bridge mechanism). A personal or consumer account almost
-  certainly has **no such agreement** — so this is an institution-level
+  certainly has **no such agreement**, so this is an institution-level
   decision you cannot clear alone.
 - **Special-category data.** Interviews routinely carry health, sexuality,
-  religion, ethnicity, political opinion and similar — often disclosed
-  incidentally — which has a higher legal bar (GDPR Art. 9).
+  religion, ethnicity, political opinion and similar (often disclosed
+  incidentally), which has a higher legal bar (GDPR Art. 9).
 - **Consent is not compliance.** Participant consent to AI processing
   addresses the ethics limb; it does not by itself provide your lawful
   basis, your transfer safeguard, or the processing agreement.
 - **You cannot claw it back.** Content already sent generally cannot be
-  retracted — which can make it impossible to honour a participant's
+  retracted, which can make it impossible to honour a participant's
   withdrawal or erasure request, or a retention limit you promised in a
   consent form or ethics application.
 - **Secondary use.** Re-analysing data gathered for one study with AI may
@@ -265,22 +269,22 @@ will ask, and the summary above depends on them:
   make a transcript safe to send: pseudonymised (name-stripped)
   qualitative data is **still personal data** and is often re-identifiable
   from context (role, locality, events, relationships, distinctive
-  phrasing). Treat pseudonymisation as risk-reduction only — synthetic or
+  phrasing). Treat pseudonymisation as risk-reduction only; synthetic or
   genuinely anonymised data is the safe path for experimentation.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is
-  asked for — a session that never touches file 7 never transmits
+  asked for: a session that never touches file 7 never transmits
   file 7's text.
-- **Consult your institution's DPO or ethics board** if you are unsure
-  — before the analysis, not after.
+- **Consult your institution's DPO or ethics board** if you are unsure,
+  before the analysis, not after.
 - Remember that the server's safety features (read-only default,
   automatic local backups, refuse-while-QualCoder-is-open) protect your
-  project's **integrity on disk** — they do not change what leaves the
+  project's **integrity on disk**; they do not change what leaves the
   machine through the conversation.
 
 ## Questions
 
 Questions about this document belong in
 [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues) like
-everything else (see [SUPPORT.md](SUPPORT.md)) — and please don't paste
+everything else (see [SUPPORT.md](SUPPORT.md)), and please do not paste
 participant data into an issue either.

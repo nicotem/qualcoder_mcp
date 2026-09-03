@@ -100,14 +100,15 @@ host and not capability-evaluated on local models.
 > qualcoder-mcp is ground-truthed against QualCoder 3.8.2, the latest released
 > version (project schema v14), and additionally verified against the unreleased
 > QualCoder development tree (version string "QualCoder 4.0 Beta") at commit
-> `7b074d2`, whose projects use schema v17. Project schemas v14 through v17 are
+> `9bddf17`, whose projects use schema v17. Project schemas v14 through v17 are
 > supported for reading and writing. Support is determined by inspecting the
 > project database itself (capability probes), not by version numbers, so
 > projects migrated by either QualCoder version work interchangeably.
 >
 > Because QualCoder 4.0 is not yet released, its behavior may change before
-> release. Claims about 4.0 compatibility are valid as of commit `7b074d2` and
-> will be re-verified against the final release. One known limitation: released
+> release. Claims about 4.0 compatibility are valid as of commit `9bddf17`
+> (2026-08-25) and will be re-verified against the final release. One known
+> limitation: released
 > QualCoder versions signal "project open" through a lock file, which qualcoder-mcp
 > honors; the 4.0 development builds no longer use a lock file, so qualcoder-mcp
 > falls back to best-effort heuristics there (reported as
@@ -344,6 +345,15 @@ by both. The default stays distinct so existing projects keep one
 consistent history. Invalid values (empty, longer than 80 characters,
 or containing control characters) stop the server at startup with a
 clear error.
+
+Do not set it to your own QualCoder coder name (the project's
+codername). AI codings would then be indistinguishable from yours in
+QualCoder's coder lists, per-coder visibility toggle, undo and
+reports, which defeats the purpose of attribution, and mixed rows
+cannot be told apart again later. If you are tempted to do that to
+restore the earlier attribution of memos, journal entries, annotations
+and attributes to the project codername, keep a distinct name (the
+default is fine) instead.
 
 The MCP server should now be connected! You'll see it listed in the MCP section if you look at the settings.
 

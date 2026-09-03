@@ -11,7 +11,9 @@ QualCoder 4.0's AI subsystem defines conventions that live in the
 project itself. This release makes qualcoder-mcp a good citizen of
 them, so a project touched by both tools behaves coherently. All
 feature presence is detected by probing schema objects, never version
-strings; pre-4.0 projects behave exactly as before.
+strings; pre-4.0 projects behave exactly as before. Parity claims in
+this section were verified against QualCoder master at pinned commit
+9bddf17 (2026-08-25).
 
 ### Added: '#####' memo privacy (QC 4.0 convention honored everywhere)
 
