@@ -80,8 +80,10 @@ QualCoder 4.0 removed the `project_in_use.lock` protocol, so the lock
 gate cannot see an open 4.0 window. `select_project`,
 `get_current_project`, and `analyze_for_coding` now report
 `qualcoder_gui_signals`: heuristics built from database write
-sidecars, the 4.0 AI search index's WAL files, AI chat-history
-activity, and a guarded local process scan. Signals warn and ask
+sidecars, recent activity on the 4.0 AI search index (its WAL
+sidecars exist only during in-flight indexing or after an unclean
+exit, never while an idle window sits open) and on the AI chat
+history, and a guarded local process scan. Signals warn and ask
 ("appears to be open"), never hard-refuse; the in-transaction text
 verification remains the write-time backstop. Docs and results also
 state the 4.0 refresh limitation: an open 4.0 window will not display

@@ -18,6 +18,7 @@ from mcp.server.fastmcp import Context
 from .database import (
     QualcoderDatabase,
     DatabaseLockedError,
+    DatabaseOpenError,
     UnsupportedSchemaError,
     DB_LOCKED_MESSAGE,
     validate_qda_path,
@@ -1136,6 +1137,46 @@ def list_available_projects(search_directories: Optional[List[str]] = None) -> s
         return json.dumps({"error": f"Failed to discover projects: {str(e)}"})
 
 
+def _project_open_failure_result(project_path: str) -> Dict[str, Any]:
+    """Error payload for a well-formed project whose database would not open.
+
+    Used by select_project when validate_qda_path raised
+    DatabaseOpenError (SQLite refused data.qda at validation time) or a
+    sqlite3.Error surfaced mid-read. The damaged-database advice is
+    ALWAYS present. When PROJECT-scoped heuristics suggest a QualCoder
+    4.0 window has this project open (a mid-write 4.0 window leaves a
+    hot journal that makes even the read-only open fail exactly like
+    corruption would), that likelier cause is named first and the
+    advice is appended, never replaced. The machine-wide process scan
+    is deliberately left out of this decision: a QualCoder window open
+    on some OTHER project says nothing about this one (QA round 1,
+    F3/F22).
+    """
+    result = {
+        "success": False,
+        "error": "The project database appears to be damaged or unreadable. "
+                 "Try opening it in QualCoder, or restore a backup."
+    }
+    try:
+        folder = Path(project_path)
+        if folder.name == "data.qda":
+            folder = folder.parent
+        signals = qualcoder_gui_signals(folder, include_process_scan=False)
+        result["qualcoder_gui_signals"] = signals
+        if signals:
+            result["error"] = (
+                "The project database could not be opened, and it "
+                "APPEARS to be open in QualCoder right now ("
+                + "; ".join(signals) + "). Ask the user to close the "
+                "project in QualCoder, then retry; only if that does "
+                "not help, consider a damaged database or a backup "
+                "restore."
+            )
+    except Exception:
+        pass
+    return result
+
+
 @mcp.tool()
 @_tool_guard
 def select_project(project_path: str) -> str:
@@ -1208,8 +1249,10 @@ def select_project(project_path: str) -> str:
                 warnings.append(
                     "Lock-gate limitation: QualCoder 4.0 builds write no "
                     "lock file, so 4.0 detection is best-effort (no "
-                    "open-GUI signals right now). Confirm with the user "
-                    "that no QualCoder window has this project open "
+                    "open-GUI signals right now; an idle 4.0 window with "
+                    "no recent AI activity leaves no file trace, so only "
+                    "the process scan could see it). Confirm with the "
+                    "user that no QualCoder window has this project open "
                     "before writing."
                 )
 
@@ -1245,61 +1288,24 @@ def select_project(project_path: str) -> str:
     except (ValueError, FileNotFoundError) as e:
         # Log full error for debugging, but don't expose internal paths to user
         logger.error(f"Failed to select project: {e}")
-        result = {
+        if isinstance(e, DatabaseOpenError):
+            # The path IS a well-formed project, but SQLite refused its
+            # data.qda at validation time: a hot journal left by a 4.0
+            # window mid-write, or genuine corruption. Project-scoped
+            # heuristics choose the wording; the damaged-database
+            # advice is always kept (P1-5; QA round 1, F3/F22).
+            return json.dumps(_project_open_failure_result(project_path))
+        # A wrong or malformed path: no heuristic can explain it, so the
+        # deterministic recovery hint stays exactly as it was
+        return json.dumps({
             "success": False,
             "error": "Invalid project path or project not found. "
                      "Use 'list_available_projects' to find valid projects."
-        }
-        # P1-5: a QualCoder 4.0 window mid-write leaves a hot journal
-        # that makes even the read-only validation open fail; when the
-        # heuristics see an open-GUI signal, say that instead of
-        # blaming the path
-        try:
-            folder = Path(project_path)
-            if folder.name == "data.qda":
-                folder = folder.parent
-            if folder.is_dir():
-                signals = qualcoder_gui_signals(folder)
-                if signals:
-                    result["qualcoder_gui_signals"] = signals
-                    result["error"] = (
-                        "The project could not be opened, and it APPEARS "
-                        "to be open in QualCoder right now ("
-                        + "; ".join(signals) + "). Ask the user to close "
-                        "the project in QualCoder, then retry."
-                    )
-        except Exception:
-            pass
-        return json.dumps(result)
+        })
     except sqlite3.Error as e:
         # e.g. "database disk image is malformed" surfacing mid-read (F3)
         logger.error(f"SQLite error while opening project: {e}")
-        result = {
-            "success": False,
-            "error": "The project database appears to be damaged or unreadable. "
-                     "Try opening it in QualCoder, or restore a backup."
-        }
-        # P1-5: a QualCoder 4.0 window mid-write leaves sidecar files
-        # that can make a read-only open fail exactly like corruption
-        # would; say so when the heuristics see one
-        try:
-            folder = Path(project_path)
-            if folder.name == "data.qda":
-                folder = folder.parent
-            signals = qualcoder_gui_signals(folder)
-            if signals:
-                result["qualcoder_gui_signals"] = signals
-                result["error"] = (
-                    "The project database could not be opened, and it "
-                    "APPEARS to be open in QualCoder right now ("
-                    + "; ".join(signals) + "). Ask the user to close the "
-                    "project in QualCoder, then retry; only if that does "
-                    "not help, consider a damaged database or a backup "
-                    "restore."
-                )
-        except Exception:
-            pass
-        return json.dumps(result)
+        return json.dumps(_project_open_failure_result(project_path))
     except RuntimeError as e:
         logger.error(f"Failed to open project database: {e}")
         return json.dumps({

@@ -3,9 +3,13 @@
 QualCoder 4.0 deleted project_in_use.lock (no matches in the pinned
 tree at 9bddf17), so the lock gate is blind against a 4.0 GUI. These
 tests pin the heuristic signals evaluated against the pinned source
-(data.qda write sidecars; the WAL-mode AI search index,
-ai_vectorstore.py:472-477; chat-history activity, ai_chat.py:1682-1718;
-a guarded process scan) and their WARN-only wiring into the ladder:
+(data.qda write sidecars; RECENT ACTIVITY on the WAL-mode AI search
+index, whose sidecars exist only during in-flight vectorstore work or
+after an unclean exit because every upstream connection is
+per-operation and closed in a finally block, ai_vectorstore.py:472-477
+and :899/978/1017/1086/1112/1136/1149; chat-history activity,
+ai_chat.py:1682-1718; a guarded process scan) and their WARN-only
+wiring into the ladder:
 warn on select, ask at session start, never a hard refusal, with the
 C7 fingerprints unchanged as the write-time backstop.
 """
@@ -64,8 +68,10 @@ class TestSignals:
         assert "data.qda-journal" in signals[0]
         assert "active or interrupted write" in signals[0]
 
-    def test_fresh_search_index_wal_signals_open_gui(self, tmp_path,
-                                                     no_process_hits):
+    def test_fresh_search_index_wal_signals_recent_activity(
+            self, tmp_path, no_process_hits):
+        # A fresh sidecar means vectorstore work in flight or a recent
+        # unclean exit; it is never phrased as an open window (F2/F17)
         proj = tmp_path / "p.qda"
         (proj / "ai_data").mkdir(parents=True)
         (proj / "ai_data" / "search.sqlite-wal").write_bytes(b"w")
@@ -73,6 +79,8 @@ class TestSignals:
         assert len(signals) == 1
         assert "search.sqlite-wal" in signals[0]
         assert "recently written" in signals[0]
+        assert "is open" not in signals[0]
+        assert "unclean" in signals[0]
 
     def test_stale_search_index_wal_softens_wording(self, tmp_path,
                                                     no_process_hits):
@@ -85,6 +93,7 @@ class TestSignals:
         assert len(signals) == 1
         assert "leftover" in signals[0]
         assert "unclean exit" in signals[0]
+        assert "open window" not in signals[0]
 
     def test_recent_chat_history_signals_activity(self, tmp_path,
                                                   no_process_hits):
@@ -129,12 +138,19 @@ class TestSignals:
                                      else "bad<>path") == []
 
     def test_wording_is_never_certain(self, tmp_path, monkeypatch):
+        # Every signal at once (hot journal, fresh WAL, fresh chat
+        # store, process hit): none may claim an open window as fact
         monkeypatch.setattr(database, "_qualcoder_process_hits",
                             lambda: ["qualcoder gui"])
         proj = tmp_path / "p.qda"
         (proj / "ai_data").mkdir(parents=True)
         (proj / "data.qda-journal").write_bytes(b"j")
-        for signal in qualcoder_gui_signals(proj):
+        (proj / "ai_data" / "search.sqlite-wal").write_bytes(b"w")
+        (proj / "ai_data" / "chat_history.sqlite").write_bytes(b"c")
+        signals = qualcoder_gui_signals(proj)
+        assert len(signals) == 4
+        for signal in signals:
+            assert "is open" not in signal
             assert "is open in QualCoder" not in signal
 
 
@@ -253,3 +269,76 @@ class TestLadderWiring:
         out = json.loads(server.set_memo("code", 1, "still writable",
                                          create_backup=False))
         assert out["success"] is True
+
+
+# =============================================================================
+# SELECT_PROJECT FAILURE WORDING (QA round 1, F3/F22)
+# =============================================================================
+
+class TestSelectProjectFailureWording:
+    """The appears-open rewrite fires only for a genuine sqlite-open
+    failure, is decided on PROJECT-scoped evidence (the machine-wide
+    process scan says nothing about this project), and never drops
+    the recovery advice: a wrong path keeps its list_available_projects
+    hint, and a database that will not open always keeps the
+    damaged-database fallback."""
+
+    @pytest.fixture
+    def one_process_hit(self, monkeypatch):
+        monkeypatch.setattr(database, "_qualcoder_process_hits",
+                            lambda: ["python -m qualcoder"])
+
+    def test_plain_directory_keeps_path_hint_despite_process_hit(
+            self, setup_server, tmp_path, one_process_hit):
+        out = json.loads(server.select_project(str(tmp_path)))
+        assert out["success"] is False
+        assert "list_available_projects" in out["error"]
+        assert "APPEARS" not in out["error"]
+
+    def test_qda_folder_without_data_keeps_path_hint(
+            self, setup_server, tmp_path, one_process_hit):
+        hollow = tmp_path / "hollow.qda"
+        hollow.mkdir()
+        out = json.loads(server.select_project(str(hollow)))
+        assert out["success"] is False
+        assert "list_available_projects" in out["error"]
+        assert "APPEARS" not in out["error"]
+
+    def test_corrupt_database_is_reported_as_damaged_not_open(
+            self, setup_server, tmp_path, one_process_hit):
+        proj = tmp_path / "corrupt.qda"
+        proj.mkdir()
+        (proj / "data.qda").write_bytes(b"this is not a sqlite database")
+        out = json.loads(server.select_project(str(proj)))
+        assert out["success"] is False
+        assert "damaged" in out["error"]
+        assert "backup" in out["error"]
+        # a process hit alone is machine-wide evidence, not project-scoped
+        assert "APPEARS" not in out["error"]
+
+    def test_corrupt_database_with_stale_wal_keeps_damage_fallback(
+            self, setup_server, tmp_path, no_process_hits):
+        proj = tmp_path / "corrupt.qda"
+        (proj / "ai_data").mkdir(parents=True)
+        (proj / "data.qda").write_bytes(b"this is not a sqlite database")
+        wal = proj / "ai_data" / "search.sqlite-wal"
+        wal.write_bytes(b"w")
+        _old(wal)
+        out = json.loads(server.select_project(str(proj)))
+        assert out["success"] is False
+        assert "APPEARS to be open" in out["error"]
+        assert "damaged database" in out["error"]
+        assert "backup" in out["error"]
+
+    def test_hot_journal_names_open_gui_and_keeps_fallback(
+            self, setup_server, qualcoder_db_path, tmp_path,
+            no_process_hits):
+        import shutil
+        dest = tmp_path / "hot.qda"
+        shutil.copytree(qualcoder_db_path, dest)
+        (dest / "data.qda-journal").write_bytes(b"j")
+        out = json.loads(server.select_project(str(dest)))
+        assert out["success"] is False
+        assert "APPEARS to be open" in out["error"]
+        assert "damaged database" in out["error"]
+        assert out["qualcoder_gui_signals"]

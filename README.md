@@ -112,9 +112,12 @@ host and not capability-evaluated on local models.
 > honors; the 4.0 development builds no longer use a lock file, so qualcoder-mcp
 > falls back to best-effort heuristics there (reported as
 > `qualcoder_gui_signals` by `select_project` and `get_current_project`:
-> database write sidecars, AI search index and chat-history activity, and a
-> best-effort process scan). Heuristics can miss an open window, so do not run
-> qualcoder-mcp writes while any QualCoder window has the same project open.
+> database write sidecars, recent AI search-index and chat-history activity,
+> and a best-effort process scan). The file-based signals are traces of recent
+> activity, never proof of an open window (an idle 4.0 window with no recent AI
+> activity leaves no file trace at all), so heuristics can miss an open window:
+> do not run qualcoder-mcp writes while any QualCoder window has the same
+> project open.
 >
 > Two facts about how the tools relate. QualCoder 4.0 ships its own embedded
 > AI assistant, built on an internal MCP server that serves only the GUI (it

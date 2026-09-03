@@ -131,6 +131,19 @@ class UnsupportedSchemaError(RuntimeError):
     """Raised when the project database schema is too old for this server."""
 
 
+class DatabaseOpenError(ValueError):
+    """A well-formed project location whose data.qda SQLite would not open.
+
+    Raised by validate_qda_path for the non-locked OperationalError and
+    the DatabaseError cases (a locked database is DatabaseLockedError).
+    It lets callers tell "the database refused to open" (genuine
+    corruption, or the hot journal a QualCoder 4.0 window leaves
+    mid-write, which fails a read-only open exactly like corruption)
+    apart from a plain wrong path. A ValueError subclass, so every
+    existing handler keeps working unchanged (QA round 1, F3).
+    """
+
+
 def _sqlite_ro_uri(path: Union[str, Path]) -> str:
     """Build a valid read-only SQLite file: URI for the given path.
 
@@ -229,9 +242,16 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
 #   data.qda-journal exists only during an active write or after a
 #   crash; -wal/-shm would mean some tool switched the DB to WAL mode.
 # - ai_data/search.sqlite-wal/-shm: the AI vector store opens
-#   search.sqlite in WAL mode (ai_vectorstore.py:472-477), so these
-#   sidecars persist while a 4.0 GUI with AI enabled has the project
-#   open (and after an unclean exit; freshness is reported).
+#   search.sqlite in WAL mode (ai_vectorstore.py:472-477), but every
+#   connection is per-operation and closed in a finally block (the
+#   open-time index check or build in _open_db, imports, deletes, chat
+#   retrieval; ai_mcp_server.py opens per request as well), and SQLite
+#   removes -wal/-shm on the last clean close. The sidecars therefore
+#   mean RECENT ACTIVITY (vectorstore work in flight, which can run
+#   for minutes on a large project) or an unclean exit, never that an
+#   idle window has the project open. An idle 4.0 window with no
+#   recent AI activity leaves no file trace at all and is visible only
+#   to the process scan below (QA round 1, F2).
 # - ai_data/chat_history.sqlite mtime: the chat panel keeps this store
 #   open and writes on every message (ai_chat.py:1682-1718); a recent
 #   mtime means recent AI chat activity on this project.
@@ -240,7 +260,15 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
 #   never allowed to crash or block, including on Windows CI runners).
 # ----------------------------------------------------------------------------
 
-GUI_SIGNAL_FRESH_SECONDS = 15 * 60  # recency window for mtime signals
+# Recency window for the mtime signals. In-flight vectorstore work keeps
+# rewriting the WAL (age near zero) and every chat message commits to the
+# chat store, so the window's only job is to separate "activity in the
+# last little while" from the leftover of an earlier crash. Fifteen
+# minutes keeps a user who used the AI a short while ago (and most
+# plausibly still has the window open) on the warn side without treating
+# last week's crash leftover as activity; nothing in the pinned source
+# argues for a tighter or looser value (re-examined in QA round 1, F2).
+GUI_SIGNAL_FRESH_SECONDS = 15 * 60
 _PROCESS_SCAN_CACHE_SECONDS = 5.0
 _process_scan_cache: Dict[str, Any] = {"at": 0.0, "lines": []}
 
@@ -321,8 +349,10 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
 
     Returns human-readable signal descriptions (empty when nothing
     suggests an open GUI). Heuristic by design: a signal means the
-    project APPEARS to be open, never that it certainly is. This
-    function never raises.
+    project APPEARS to be open, never that it certainly is. The
+    file-based signals are traces of recent activity (a hot write,
+    recent AI indexing or chat); an idle window leaves none, so only
+    the process scan can see one. This function never raises.
     """
     signals: List[str] = []
     try:
@@ -336,7 +366,9 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
                     f"write ({sidecar} present)")
                 break
 
-        # 2. The 4.0 AI search index is open in WAL mode
+        # 2. Recent activity on the 4.0 AI search index (its WAL
+        #    sidecars exist only while vectorstore work is in flight or
+        #    after an unclean exit; never proof of an open window)
         ai_data = project / "ai_data"
         for sidecar in ("search.sqlite-wal", "search.sqlite-shm"):
             sc_path = ai_data / sidecar
@@ -344,12 +376,15 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
                 age = _mtime_age_seconds(sc_path)
                 if age is not None and age <= GUI_SIGNAL_FRESH_SECONDS:
                     signals.append(
-                        "the QualCoder 4.0 AI search index is open "
-                        f"({sidecar} present and recently written)")
+                        "the QualCoder 4.0 AI search index shows recent "
+                        f"activity ({sidecar} present and recently "
+                        "written: AI indexing appears to be in flight, "
+                        "or the last exit was unclean)")
                 else:
                     signals.append(
                         "the QualCoder 4.0 AI search index has a leftover "
-                        f"{sidecar} (an open window, or an unclean exit)")
+                        f"{sidecar} (an interrupted index build or an "
+                        "unclean exit)")
                 break
 
         # 3. Recent AI chat activity
@@ -551,12 +586,12 @@ def validate_qda_path(db_path: str) -> Path:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
         cursor.fetchone()
     except sqlite3.OperationalError as e:
-        # A locked database is NOT corrupted — report it distinctly
+        # A locked database is NOT corrupted: report it distinctly
         if _is_locked_error(e):
             raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-        raise ValueError(f"Cannot open SQLite database: {e}")
+        raise DatabaseOpenError(f"Cannot open SQLite database: {e}")
     except sqlite3.DatabaseError as e:
-        raise ValueError(f"Invalid or corrupted SQLite database: {e}")
+        raise DatabaseOpenError(f"Invalid or corrupted SQLite database: {e}")
     finally:
         if conn is not None:
             try:
