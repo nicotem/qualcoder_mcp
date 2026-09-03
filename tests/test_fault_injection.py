@@ -1097,8 +1097,10 @@ class TestRestoreBackupFaults:
 
         real_backup_project = server.backup_project
 
-        def backup_then_lock(project_path):
-            out = real_backup_project(project_path)
+        def backup_then_lock(project_path, **kwargs):
+            # mirrors backup_project's real signature (the report= keyword
+            # the safety backup passes since fix round 3, R3)
+            out = real_backup_project(project_path, **kwargs)
             env.plant_lock(fresh=True)  # QualCoder grabs the project now
             return out
 
