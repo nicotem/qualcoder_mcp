@@ -555,6 +555,159 @@ class TestMergeProvenancePreservesSuffix:
             extract_ai_memo(stored)
 
 
+class TestMergeCategoryProvenance:
+    """S-M2: merge_category carries the source category's memo into the
+    target under a provenance block (master parity, code_tree.py:1413 at
+    9bddf17), placed with merge_codes' exact recipe. Gated on the supercid
+    probe like merge_codes (v14/v15 stay byte-exact with 3.8.2)."""
+
+    T_SECRET = "target-private-quokka"
+    S_SECRET = "source-private-wombat"
+
+    def _tree(self, qualcoder_db_path, with_supercid=True):
+        # Category A (1, fixture) is the target; B (new) is the source
+        if with_supercid:
+            _exec(qualcoder_db_path,
+                  "ALTER TABLE code_name ADD COLUMN supercid INTEGER")
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_cat (catid, name, memo, owner, date, "
+              "supercatid) VALUES (2, 'B', 'src memo', 'TestCoder', "
+              "'2024-01-15', NULL)")
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET catid = 2 WHERE cid = 2")
+        _reopen(qualcoder_db_path)
+
+    def _target_memo(self, qualcoder_db_path):
+        return _row(qualcoder_db_path,
+                    "SELECT memo FROM code_cat WHERE catid = 1")["memo"]
+
+    def test_source_memo_carried_with_parity_recipe(self, setup_server,
+                                                    qualcoder_db_path):
+        self._tree(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = 'target note' WHERE catid = 1")
+        _reopen(qualcoder_db_path)
+        preview = json.loads(server.merge_category(2, "Category A"))
+        assert preview["preview"]["source_memo_carried_to_target"] is True
+        assert "carried into the target" in preview["preview"]["note"]
+        out = json.loads(server.merge_category(2, "Category A",
+                                               confirm=True))
+        assert out.get("merged") is True, out
+        assert out["provenance_memo_added"] is True
+        stored = self._target_memo(qualcoder_db_path)
+        # Upstream: (target_memo + block).strip(), block =
+        # "\n\n[Merged from category: B, Coder: TestCoder, Merger date: D]"
+        # + "\n" + source memo
+        assert stored.startswith(
+            "target note\n\n[Merged from category: B, Coder: TestCoder, "
+            "Merger date: ")
+        assert stored.endswith("]\nsrc memo")
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_cat WHERE catid = 2"
+                    )["n"] == 0
+        assert _row(qualcoder_db_path,
+                    "SELECT catid FROM code_name WHERE cid = 2")["catid"] == 1
+
+    def test_target_private_zone_preserved_and_source_zone_placed(
+            self, setup_server, qualcoder_db_path):
+        # Reviewer's spec: source 'pub#####priv' into target
+        # 'tpub\n#####tpriv' yields tpub + block + source memo whole +
+        # original separator + '#####tpriv'; the AI sees only tpub, the
+        # block header and the source's public part
+        self._tree(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = ? WHERE catid = 2",
+              (f"src pub#####{self.S_SECRET}",))
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = ? WHERE catid = 1",
+              (f"tpub\n#####{self.T_SECRET}",))
+        _reopen(qualcoder_db_path)
+        preview_raw = server.merge_category(2, "Category A")
+        raw = server.merge_category(2, "Category A", confirm=True)
+        for secret in (self.S_SECRET, self.T_SECRET):
+            assert secret not in preview_raw
+            assert secret not in raw
+        assert json.loads(raw).get("merged") is True, raw
+        stored = self._target_memo(qualcoder_db_path)
+        # Target's private zone verbatim at the very end, after its
+        # original separator
+        assert stored.endswith(f"\n#####{self.T_SECRET}")
+        # Source memo travels whole, inside the block, before the
+        # target's zone (where upstream puts it)
+        assert f"]\nsrc pub#####{self.S_SECRET}\n#####{self.T_SECRET}" in stored
+        assert stored.startswith("tpub\n\n\n[Merged from category: B, ")
+        visible = extract_ai_memo(stored)
+        assert visible.startswith("tpub")
+        assert "[Merged from category: B, Coder: TestCoder," in visible
+        assert visible.endswith("]\nsrc pub")
+        assert self.S_SECRET not in visible and self.T_SECRET not in visible
+        # Exactly the split the reviewer described
+        pub, priv = split_public_private_memo(stored)
+        assert priv == f"#####{self.S_SECRET}\n#####{self.T_SECRET}"
+
+    def test_marker_in_category_name_neutralized(self, setup_server,
+                                                 qualcoder_db_path):
+        self._tree(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET name = 'B #####x', owner = 'O #####o', "
+              "memo = 'plain' WHERE catid = 2")
+        _reopen(qualcoder_db_path)
+        json.loads(server.merge_category(2, "Category A", confirm=True))
+        stored = self._target_memo(qualcoder_db_path)
+        assert PERSONAL_NOTE_MARK not in stored
+        assert "[Merged from category: B ####x, Coder: O ####o," in stored
+
+    def test_top_level_merge_does_not_carry(self, setup_server,
+                                            qualcoder_db_path):
+        # Upstream carries only into a real category (category['catid']
+        # is not None); merging to blank removes the memo with the row
+        self._tree(qualcoder_db_path)
+        preview = json.loads(server.merge_category(2))
+        assert preview["preview"]["source_memo_carried_to_target"] is False
+        assert "top level removes" in preview["preview"]["note"]
+        out = json.loads(server.merge_category(2, confirm=True))
+        assert out.get("merged") is True, out
+        assert "provenance_memo_added" not in out
+        assert self._target_memo(qualcoder_db_path) == ""
+        assert _row(qualcoder_db_path,
+                    "SELECT catid FROM code_name WHERE cid = 2")["catid"] is None
+
+    def test_pre_subcode_schema_stays_382_exact(self, setup_server,
+                                                qualcoder_db_path):
+        # v14/v15 (no supercid): byte-exact with QualCoder 3.8.2, which
+        # never wrote a category provenance memo; disclosed in the preview
+        self._tree(qualcoder_db_path, with_supercid=False)
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = 'target note' WHERE catid = 1")
+        _reopen(qualcoder_db_path)
+        assert server.db.capabilities.has_supercid is False
+        preview = json.loads(server.merge_category(2, "Category A"))
+        assert preview["preview"]["source_memo_carried_to_target"] is False
+        assert "3.8.2" in preview["preview"]["note"]
+        out = json.loads(server.merge_category(2, "Category A",
+                                               confirm=True))
+        assert out.get("merged") is True, out
+        assert "provenance_memo_added" not in out
+        assert self._target_memo(qualcoder_db_path) == "target note"
+
+    def test_empty_source_memo_still_records_provenance(self, setup_server,
+                                                        qualcoder_db_path):
+        # Upstream always records the block; the memo line is appended
+        # only when the source memo is non-empty
+        self._tree(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = '' WHERE catid = 2")
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo = 'target' WHERE catid = 1")
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.merge_category(2, "Category A",
+                                               confirm=True))
+        assert out["provenance_memo_added"] is True
+        stored = self._target_memo(qualcoder_db_path)
+        assert stored.startswith("target\n\n[Merged from category: B, ")
+        assert stored.endswith("]")
+
+
 # =============================================================================
 # READ PATHS: silent strip on every memo-returning tool and resource
 # =============================================================================

@@ -962,6 +962,30 @@ def copy_project_to_workspace(
         raise OSError(f"Copy failed: {e}") from None
 
 
+def _append_provenance_block(target_memo: Any, block: str) -> str:
+    """Place a merge provenance block into a target memo (P1-1 recipe).
+
+    Upstream's GUI merges compute (target_memo + block).strip()
+    (code_tree.py:1413 for categories, :1521-1538 for codes at pin
+    9bddf17). This server applies the same recipe to the target's PUBLIC
+    zone only: with no '#####' suffix on the target the result is
+    byte-identical to upstream; with one, the block lands before the
+    marker and the private suffix survives verbatim at the end, re-joined
+    by the whitespace run that separated it. The block itself may carry
+    the source memo whole, marker included: anything after a marker the
+    SOURCE brought along stays AI-hidden in the target, exactly where
+    upstream puts it. Shared by merge_codes and merge_category so the
+    two can never drift (S-M2).
+    """
+    target_public, target_private = split_public_private_memo(
+        target_memo or "")
+    if target_private == "":
+        return (target_public + block).strip()
+    trimmed = target_public.rstrip(" \t\r\n")
+    separator = target_public[len(trimmed):]
+    return (target_public + block).strip() + separator + target_private
+
+
 def escape_like_pattern(pattern: str) -> str:
     """Escape SQLite LIKE wildcards in user input.
 
@@ -4894,16 +4918,10 @@ class QualcoderDatabase:
                     # parity recipe. The source memo travels whole (its own
                     # suffix included, so nothing private is destroyed);
                     # any marker it carries keeps everything after it
-                    # hidden from AI reads.
-                    target_public, target_private = split_public_private_memo(
-                        target_memo_row["memo"] or "")
-                    if target_private == "":
-                        new_memo = (target_public + block).strip()
-                    else:
-                        trimmed = target_public.rstrip(" \t\r\n")
-                        separator = target_public[len(trimmed):]
-                        new_memo = ((target_public + block).strip()
-                                    + separator + target_private)
+                    # hidden from AI reads. Recipe shared with
+                    # merge_category (_append_provenance_block).
+                    new_memo = _append_provenance_block(
+                        target_memo_row["memo"], block)
                     self.conn.execute(
                         "UPDATE code_name SET memo = ? WHERE cid = ?",
                         (new_memo, into_code_id))
@@ -5371,16 +5389,48 @@ class QualcoderDatabase:
             "SELECT COUNT(*) FROM code_cat WHERE supercatid = ?",
             (from_category_id,)
         ).fetchone()[0]
+        carries_memo = self._category_merge_carries_memo(into_category_id)
+        if carries_memo:
+            memo_note = (" The source category's memo is carried into the "
+                         "target category's memo under a provenance note "
+                         "(master parity, code_tree.py:1413); a '#####' "
+                         "private section on the target stays private.")
+        elif into_category_id is None:
+            memo_note = (" Merging to the top level removes the source "
+                         "category's memo with its row (as QualCoder does); "
+                         "the mandatory backup keeps a copy.")
+        else:
+            memo_note = (" On this project's schema (pre-sub-code, matching "
+                         "QualCoder 3.8.2 exactly) the source category's "
+                         "memo is removed with its row; the mandatory backup "
+                         "keeps a copy.")
         return {
             "from_category": {"id": from_category_id, "name": src_cat["name"]},
             "into_category": target_desc,
             "codes_reparented": codes_n,
             "subcategories_reparented": subcats_n,
+            "source_memo_carried_to_target": carries_memo,
             "note": "Merging a category reparents its codes and direct "
                     "sub-categories to the target (codings are untouched — "
                     "they key on the code, not the category), then deletes "
-                    "the source category.",
+                    "the source category." + memo_note,
         }
+
+    def _category_merge_carries_memo(self,
+                                     into_category_id: Optional[int]) -> bool:
+        """Whether merge_category carries the source memo into the target.
+
+        Master parity (code_tree.py:1395-1413 at pin 9bddf17, landed
+        post-3.8.2): the source category's memo is appended to a REAL
+        target's memo under a provenance block, never when merging to the
+        top level. Gated on the supercid probe exactly like merge_codes'
+        provenance block, so v14/v15 projects stay byte-exact with
+        QualCoder 3.8.2 (the v17 WS rule) and the two merge tools follow
+        one consistent recipe (S-M2).
+        """
+        caps = getattr(self, "capabilities", None)
+        return (into_category_id is not None
+                and caps is not None and bool(caps.has_supercid))
 
     def merge_category(self, from_category_id: int,
                        into_category_id: Optional[int],
@@ -5392,11 +5442,44 @@ class QualcoderDatabase:
         source code_cat row; dangling-supercatid sweep. into_category_id of
         None moves everything to the top level (QualCoder's blank option).
         Codings are never touched.
+
+        Master parity extra (S-M2), gated like merge_codes' provenance
+        block: on v16+ schemas a merge into a real target appends
+        "[Merged from category: ..., Coder: ..., Merger date: ...]" plus
+        the whole source memo to the target's memo (code_tree.py:1413),
+        placed with the shared _append_provenance_block recipe so a
+        '#####' private section on the target survives verbatim and one
+        the source carries stays AI-hidden where upstream puts it.
         """
         self._require_write_access()
         preview = self.preview_merge_category(from_category_id,
                                               into_category_id)
+        provenance_memo_added = False
         try:
+            if self._category_merge_carries_memo(into_category_id):
+                source_row = self.conn.execute(
+                    "SELECT name, memo, owner FROM code_cat WHERE catid = ?",
+                    (from_category_id,)).fetchone()
+                target_memo_row = self.conn.execute(
+                    "SELECT memo FROM code_cat WHERE catid = ?",
+                    (into_category_id,)).fetchone()
+                if source_row is not None and target_memo_row is not None:
+                    merge_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    source_memo = (source_row["memo"] or "").strip()
+                    # Name and owner neutralized as in merge_codes (S-M1);
+                    # only the source MEMO may carry the marker
+                    block = (f"\n\n[Merged from category: "
+                             f"{neutralize_marker(source_row['name'])}, "
+                             f"Coder: {neutralize_marker(source_row['owner'])}, "
+                             f"Merger date: {merge_date}]")
+                    if source_memo:
+                        block += f"\n{source_memo}"
+                    new_memo = _append_provenance_block(
+                        target_memo_row["memo"], block)
+                    self.conn.execute(
+                        "UPDATE code_cat SET memo = ? WHERE catid = ?",
+                        (new_memo, into_category_id))
+                    provenance_memo_added = True
             self.conn.execute(
                 "UPDATE code_name SET catid = ? WHERE catid = ?",
                 (into_category_id, from_category_id)
@@ -5423,7 +5506,10 @@ class QualcoderDatabase:
                 pass
             _raise_query_error(e, "merge_category",
                                "Failed to merge category")
-        return {"merged": True, **preview}
+        result = {"merged": True, **preview}
+        if provenance_memo_added:
+            result["provenance_memo_added"] = True
+        return result
 
     # ========================================================================
     # CASES (v0.8 D1 — schema-writes.md §5.1)

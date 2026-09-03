@@ -5996,6 +5996,17 @@ def merge_category(from_category_id: int,
     codings key on the code, not the category. Merging into a descendant
     of the source is refused (it would orphan the subtree).
 
+    Source category memo: on projects with sub-code support (v16+
+    schemas) a merge into a real target carries the source category's
+    memo into the target's memo under a "[Merged from category: ...]"
+    provenance note, as QualCoder master does; the note lands before any
+    '#####' private section on the target, which survives verbatim, and a
+    private section the source carries stays private. Merging to the top
+    level, or on a pre-sub-code schema (QualCoder 3.8.2 parity), removes
+    the source memo with its row; the mandatory backup keeps a copy. The
+    preview states which applies (source_memo_carried_to_target) and the
+    result reports provenance_memo_added.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
