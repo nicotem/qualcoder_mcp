@@ -343,8 +343,10 @@ assistant's under one coder in 4.0's per-coder visibility toggle,
 undo, and reports, which is the coherent choice for projects worked on
 by both. The default stays distinct so existing projects keep one
 consistent history. Invalid values (empty, longer than 80 characters,
-or containing control characters) stop the server at startup with a
-clear error.
+containing control, line-separator or bidirectional formatting
+characters, or containing the `#####` memo-privacy marker) stop the
+server at startup with a clear error. The same rules apply to the
+`owner` argument of `apply_codings` and `import_text_file`.
 
 Do not set it to your own QualCoder coder name (the project's
 codername). AI codings would then be indistinguishable from yours in

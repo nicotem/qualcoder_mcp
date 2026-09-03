@@ -34,11 +34,17 @@ Export tools disclose this in their descriptions; tools that return
 memo content into the AI conversation always strip.
 """
 
+import re
 from typing import Any, Tuple
 
 # The marker QualCoder 4.0 documents for private memo tails
 # (upstream ai_memo.py:28).
 PERSONAL_NOTE_MARK = "#####"
+
+# Any run of five or more hashes contains the marker. neutralize_marker
+# collapses the whole run: a plain .replace("#####", "####") would turn
+# "######" into "#####" and re-form the marker it meant to remove.
+_MARKER_RUN_RE = re.compile(r"#{5,}")
 
 # Payload keys treated as memo text by strip_private_memos. Journal
 # entries are exposed under 'content' by this server and are stripped
@@ -68,6 +74,20 @@ def extract_ai_memo(memo: Any) -> str:
     """The part of a memo that may be shown to the AI (public text)."""
     public, _private = split_public_private_memo(memo)
     return public
+
+
+def neutralize_marker(text: Any) -> str:
+    """Make a non-memo string safe to embed in a memo's public zone.
+
+    Code and category names and owner strings are written verbatim into
+    merge provenance blocks. They carry no privacy semantics of their
+    own, so a '#####' inside one would otherwise plant a private zone in
+    the target memo and hide everything after it (including the merged
+    source memo) from every AI read. Every run of five or more hashes is
+    collapsed to four; text without such a run is returned unchanged.
+    None is treated as ''.
+    """
+    return _MARKER_RUN_RE.sub("####", "" if text is None else str(text))
 
 
 def merge_public_memo(existing_memo: Any, new_public_memo: Any) -> str:

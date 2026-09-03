@@ -22,6 +22,8 @@ from .database import (
     UnsupportedSchemaError,
     DB_LOCKED_MESSAGE,
     validate_qda_path,
+    validate_coder_name,
+    MAX_CODER_NAME_LENGTH,
     backup_project,
     qualcoder_lock_state,
     qualcoder_open_message,
@@ -545,17 +547,18 @@ def _resolve_category_by_name(name: str):
 # assistant's under 4.0's per-coder visibility, undo and report tooling.
 AI_CODER_NAME_ENV = "QUALCODER_MCP_AI_CODER_NAME"
 DEFAULT_AI_CODER_NAME = "AI Coding Assistant"
-MAX_AI_CODER_NAME_LENGTH = 80
+MAX_AI_CODER_NAME_LENGTH = MAX_CODER_NAME_LENGTH
 
 
 def _ai_coder_name() -> str:
     """The configured coder name for rows this server writes.
 
     Reads QUALCODER_MCP_AI_CODER_NAME; unset means the default. A set
-    value is validated strictly (non-empty after trimming, at most 80
-    characters, no control characters) and an invalid one raises, so
-    main() refuses to start rather than writing rows under a broken
-    name.
+    value goes through validate_coder_name, the rule set shared with the
+    tool-supplied owner arguments (non-empty after trimming, at most 80
+    characters, no control, line-separator or bidirectional formatting
+    characters, no '#####' marker), and an invalid one raises, so main()
+    refuses to start rather than writing rows under a broken name.
 
     Raises:
         ValueError: If the configured value is invalid.
@@ -563,25 +566,13 @@ def _ai_coder_name() -> str:
     raw = os.environ.get(AI_CODER_NAME_ENV)
     if raw is None:
         return DEFAULT_AI_CODER_NAME
-    name = raw.strip()
-    if not name:
+    if not raw.strip():
         raise ValueError(
             f"{AI_CODER_NAME_ENV} is set but empty. Set it to the coder "
             f"name this server should write under (for example "
             f"\"{DEFAULT_AI_CODER_NAME}\" or QualCoder 4.0's \"AI Agent\"), "
             f"or unset it to use the default.")
-    if len(name) > MAX_AI_CODER_NAME_LENGTH:
-        raise ValueError(
-            f"{AI_CODER_NAME_ENV} is {len(name)} characters long; the "
-            f"maximum is {MAX_AI_CODER_NAME_LENGTH}. Coder names appear in "
-            f"every coding row and in QualCoder's coder lists; keep them "
-            f"short.")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in name):
-        raise ValueError(
-            f"{AI_CODER_NAME_ENV} contains control characters (newlines, "
-            f"tabs or similar); QualCoder coder names must be plain "
-            f"single-line text.")
-    return name
+    return validate_coder_name(raw, AI_CODER_NAME_ENV)
 
 
 def _default_owner() -> str:
@@ -3455,7 +3446,12 @@ def apply_codings(
         create_backup: Create timestamped backup before writing (default: True)
         owner: Coder name for attribution. Default: the configured AI
                coder name (QUALCODER_MCP_AI_CODER_NAME environment
-               variable, falling back to "AI Coding Assistant")
+               variable, falling back to "AI Coding Assistant"). Only
+               pass it when the user explicitly asks for a different
+               attribution; it is validated like the configured name
+               (plain single-line text, at most 80 characters, no
+               '#####') and must never be the project's own coder name
+               or another human coder's name.
 
     Returns:
         Detailed confirmation of what was written to the database
@@ -3496,8 +3492,12 @@ def apply_codings(
 
     if owner is None:
         owner = _default_owner()
-    if not owner or not isinstance(owner, str) or not owner.strip():
-        return json.dumps({"error": "owner must be a non-empty string"})
+    # A tool-supplied owner obeys the same rules as the configured name,
+    # so a hostile owner string is never stored (S-H3)
+    try:
+        owner = validate_coder_name(owner, "owner")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
     # Pre-validate EVERY approved suggestion on the read-only connection,
     # BEFORE upgrading and BEFORE creating a backup (SEC D-2). This catches
@@ -3722,7 +3722,12 @@ def import_text_file(
         memo: Optional memo/description for the file
         owner: Creator name for attribution. Default: the configured AI
                coder name (QUALCODER_MCP_AI_CODER_NAME environment
-               variable, falling back to "AI Coding Assistant")
+               variable, falling back to "AI Coding Assistant"). Only
+               pass it when the user explicitly asks for a different
+               attribution; it is validated like the configured name
+               (plain single-line text, at most 80 characters, no
+               '#####') and must never be the project's own coder name
+               or another human coder's name.
         create_backup: Create timestamped backup before writing (default: True)
         case_name: Optional existing case to link the new file to
                    (matched case-insensitively)
@@ -3737,6 +3742,13 @@ def import_text_file(
         return json.dumps({"error": "content must not be empty"})
     if owner is None:
         owner = _default_owner()
+    # A tool-supplied owner obeys the same rules as the configured name
+    # (S-H3); validate_text_file_import repeats the check as defense in
+    # depth
+    try:
+        owner = validate_coder_name(owner, "owner")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
     # Full validation on the read-only connection BEFORE upgrading and
     # before any backup, so rejected imports never copy the whole project

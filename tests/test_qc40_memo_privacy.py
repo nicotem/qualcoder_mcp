@@ -22,6 +22,7 @@ from qualcoder_mcp.memo_privacy import (
     PERSONAL_NOTE_MARK,
     extract_ai_memo,
     merge_public_memo,
+    neutralize_marker,
     split_public_private_memo,
     strip_private_memos,
 )
@@ -95,6 +96,37 @@ class TestSplitSemantics:
         pub, priv = split_public_private_memo("ab ######x")
         assert pub == "ab "
         assert priv == "######x"
+
+
+class TestNeutralizeMarker:
+    """neutralize_marker makes names/owners safe to embed in a memo (S-M1)."""
+
+    def test_plain_text_unchanged(self):
+        assert neutralize_marker("Stress") == "Stress"
+        assert neutralize_marker("a #### b") == "a #### b"
+
+    def test_exact_marker_collapsed(self):
+        assert neutralize_marker("Stress ##### x") == "Stress #### x"
+
+    def test_longer_run_cannot_reform_a_marker(self):
+        # A plain replace("#####", "####") would turn six hashes into
+        # five and re-create the marker; the whole run must collapse
+        for n in range(5, 13):
+            out = neutralize_marker("#" * n)
+            assert out == "####", n
+            assert PERSONAL_NOTE_MARK not in out
+
+    def test_every_run_collapsed(self):
+        assert neutralize_marker("a#####b######c") == "a####b####c"
+        assert PERSONAL_NOTE_MARK not in neutralize_marker("x ##### y ##### z")
+
+    def test_none_is_empty(self):
+        assert neutralize_marker(None) == ""
+
+    def test_result_never_contains_marker(self):
+        for text in ("#####", " ##### ", "##########", "a#####", "#####b",
+                     "#" * 50, "x" + "#" * 7 + "y" + "#" * 5):
+            assert PERSONAL_NOTE_MARK not in neutralize_marker(text), text
 
 
 class TestExtractSemantics:
@@ -444,6 +476,83 @@ class TestMergeProvenancePreservesSuffix:
         assert stored.startswith("target note")
         assert "[Merged from code: Stress, Coder: TestCoder," in stored
         assert stored.endswith("src note")
+
+    def test_marker_in_source_name_cannot_move_the_private_boundary(
+            self, setup_server, qualcoder_db_path):
+        # S-M1: a code name carrying '#####' is written verbatim into the
+        # provenance block; unneutralized it would plant a marker BEFORE
+        # the researcher's own private zone and lock the AI's block into it
+        self._enable_supercid(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = ? WHERE cid = 2",
+              (f"target public#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.rename_code(1, "Stress ##### x",
+                                            create_backup=False))
+        assert out.get("success") is True, out
+        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        assert out.get("merged") is True, out
+        stored = _row(qualcoder_db_path,
+                      "SELECT memo FROM code_name WHERE cid = 2")["memo"]
+        # The researcher's private zone is exactly what it was
+        assert split_public_private_memo(stored)[1] == f"#####{SECRET}"
+        # The provenance record keeps the name, neutralized, in the public zone
+        assert "[Merged from code: Stress #### x, Coder: TestCoder," in \
+            extract_ai_memo(stored)
+
+    def test_marker_in_source_name_cannot_create_a_private_zone(
+            self, setup_server, qualcoder_db_path):
+        # S-M1: two AI calls (create_code with a marker in the NAME, then
+        # merge into a target with no private zone) must not produce a
+        # memo the AI can no longer read back
+        self._enable_supercid(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = 'target note' WHERE cid = 2")
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.create_code("Probe #####y", memo="src public",
+                                            create_backup=False))
+        cid = out["code"]["id"] if "code" in out else out["code_id"]
+        out = json.loads(server.merge_codes(cid, 2, confirm=True))
+        assert out.get("merged") is True, out
+        stored = _row(qualcoder_db_path,
+                      "SELECT memo FROM code_name WHERE cid = 2")["memo"]
+        assert PERSONAL_NOTE_MARK not in stored
+        assert "src public" in extract_ai_memo(stored)
+        assert "[Merged from code: Probe ####y, Coder:" in stored
+
+    def test_marker_in_source_owner_is_neutralized(self, setup_server,
+                                                   qualcoder_db_path):
+        # A GUI-authored or legacy owner string can carry the marker too;
+        # the owner component is neutralized like the name
+        self._enable_supercid(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET owner = 'Coder #####hidden', "
+              "memo = 'src' WHERE cid = 1")
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo = 'target' WHERE cid = 2")
+        _reopen(qualcoder_db_path)
+        json.loads(server.merge_codes(1, 2, confirm=True))
+        stored = _row(qualcoder_db_path,
+                      "SELECT memo FROM code_name WHERE cid = 2")["memo"]
+        assert PERSONAL_NOTE_MARK not in stored
+        assert "Coder: Coder ####hidden," in stored
+
+    def test_source_memo_marker_is_the_only_one_that_survives(
+            self, setup_server, qualcoder_db_path):
+        # Only the source MEMO may legitimately carry the marker into the
+        # target (its private zone travels whole, still AI-hidden)
+        self._enable_supercid(qualcoder_db_path)
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET name = 'N #####n', owner = 'O #####o', "
+              "memo = ? WHERE cid = 1", (f"src pub#####{SECRET}",))
+        _reopen(qualcoder_db_path)
+        json.loads(server.merge_codes(1, 2, confirm=True))
+        stored = _row(qualcoder_db_path,
+                      "SELECT memo FROM code_name WHERE cid = 2")["memo"]
+        assert stored.count(PERSONAL_NOTE_MARK) == 1
+        assert split_public_private_memo(stored)[1] == f"#####{SECRET}"
+        assert "[Merged from code: N ####n, Coder: O ####o," in \
+            extract_ai_memo(stored)
 
 
 # =============================================================================

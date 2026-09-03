@@ -19,8 +19,10 @@ from datetime import datetime
 from contextlib import contextmanager
 
 from .memo_privacy import (
+    PERSONAL_NOTE_MARK,
     extract_ai_memo,
     merge_public_memo,
+    neutralize_marker,
     split_public_private_memo,
 )
 
@@ -696,6 +698,75 @@ def validate_string(value: str, param_name: str = "value",
         return value[:max_length]
 
     return value
+
+
+# Coder names appear in every coding row and in QualCoder's coder lists;
+# 80 characters is generous for a display name and short enough to keep
+# those lists readable (P1-2).
+MAX_CODER_NAME_LENGTH = 80
+
+# Bidirectional formatting characters (embeddings, overrides, isolates).
+# Category Cf as a whole is NOT rejected: U+200C ZWNJ and U+200D ZWJ are
+# legitimate in Persian/Indic orthography and emoji sequences (S-H2).
+_BIDI_CONTROL_CHARS = frozenset(
+    [chr(c) for c in range(0x202A, 0x202F)]      # LRE, RLE, PDF, LRO, RLO
+    + [chr(c) for c in range(0x2066, 0x206A)])   # LRI, RLI, FSI, PDI
+
+
+def _forbidden_coder_name_char(name: str) -> Optional[str]:
+    """Name the first class of forbidden character in a coder name, or None."""
+    for ch in name:
+        cat = unicodedata.category(ch)
+        if cat == "Cc":
+            return "control characters (newlines, tabs or similar)"
+        if cat in ("Zl", "Zp"):
+            return "line or paragraph separator characters"
+        if ch in _BIDI_CONTROL_CHARS:
+            return "bidirectional formatting characters"
+    return None
+
+
+def validate_coder_name(value: Any, param_name: str = "owner") -> str:
+    """The one rule set for every coder name this server writes (P1-2).
+
+    Shared by the QUALCODER_MCP_AI_CODER_NAME configuration and the
+    tool-supplied owner arguments (apply_codings, import_text_file), so
+    no owner column can receive what the configured name may not be
+    (S-H3): the name is stripped, must be non-empty, at most
+    MAX_CODER_NAME_LENGTH characters, plain single-line text (no
+    Unicode control characters, C1 included; no line or paragraph
+    separators; no bidirectional formatting characters), and must not
+    contain the '#####' memo-privacy marker, because coder names are
+    written verbatim into merge provenance memos (S-M1). Ordinary names
+    in any script, including ZWJ/ZWNJ sequences, are accepted.
+
+    Returns:
+        The stripped name.
+
+    Raises:
+        ValueError: With param_name in the message, on any violation.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{param_name} must be a string")
+    name = value.strip()
+    if not name:
+        raise ValueError(f"{param_name} must be a non-empty coder name")
+    if len(name) > MAX_CODER_NAME_LENGTH:
+        raise ValueError(
+            f"{param_name} is {len(name)} characters long; the maximum is "
+            f"{MAX_CODER_NAME_LENGTH}. Coder names appear in every coding "
+            f"row and in QualCoder's coder lists; keep them short.")
+    forbidden = _forbidden_coder_name_char(name)
+    if forbidden is not None:
+        raise ValueError(
+            f"{param_name} contains {forbidden}; a QualCoder coder name "
+            f"must be plain single-line text.")
+    if PERSONAL_NOTE_MARK in name:
+        raise ValueError(
+            f"{param_name} contains '{PERSONAL_NOTE_MARK}', which QualCoder "
+            f"4.0 reserves as the private-memo marker. Coder names are "
+            f"written into merge provenance notes, so the marker is refused.")
+    return name
 
 
 def validate_id(id_value: int, param_name: str = "id") -> int:
@@ -3884,9 +3955,9 @@ class QualcoderDatabase:
                 f"{MAX_TEXT_CONTENT_LENGTH}"
             )
 
-        # Validate owner
-        if not isinstance(owner, str) or not owner.strip():
-            raise ValueError("owner must be a non-empty string")
+        # Validate owner: the same rules as the configured AI coder name
+        # (defense in depth behind the server's check, S-H3)
+        validate_coder_name(owner, "owner")
 
         # Validate memo
         if memo:
@@ -4805,8 +4876,14 @@ class QualcoderDatabase:
                 if source_row is not None and target_memo_row is not None:
                     merge_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     source_memo = (source_row["memo"] or "").strip()
-                    block = (f"\n\n[Merged from code: {source_row['name']}, "
-                             f"Coder: {source_row['owner']}, "
+                    # The name and owner components carry no privacy
+                    # semantics, so a '#####' inside them is neutralized
+                    # before it can plant a private zone in the target
+                    # (S-M1). Only the source MEMO may legitimately carry
+                    # the marker.
+                    block = (f"\n\n[Merged from code: "
+                             f"{neutralize_marker(source_row['name'])}, "
+                             f"Coder: {neutralize_marker(source_row['owner'])}, "
                              f"Merger date: {merge_date}]")
                     if source_memo:
                         block += f"\n{source_memo}"
