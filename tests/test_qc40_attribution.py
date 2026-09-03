@@ -10,7 +10,9 @@ categories, codes, attributes and attribute types.
 """
 
 import json
+import os
 import sqlite3
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -207,3 +209,36 @@ class TestConfiguredAttribution:
         with zipfile.ZipFile(out_file) as zf:
             qde = zf.read("project.qde").decode("utf-8")
         assert 'name="AI Agent"' in qde
+
+    def test_refi_user_guid_stable_across_coder_name_change(
+            self, setup_server, tmp_path, monkeypatch):
+        # The REFI User guid keys on the fixed "ai_coder" token while the
+        # display name follows the config, so re-exports of one project
+        # keep a stable User guid across a rename (dev report deviation
+        # 10; QA round 1, F9)
+        from qualcoder_mcp.refi_export import NAMESPACE
+        seen = []
+        for name, fname in ((DEFAULT_AI_CODER_NAME, "a.qdpx"),
+                            ("AI Agent", "b.qdpx")):
+            monkeypatch.setenv(AI_CODER_NAME_ENV, name)
+            out = json.loads(server.export_refi_qda(
+                output_path=str(tmp_path / fname)))
+            assert out.get("success") is True, out
+            with zipfile.ZipFile(tmp_path / fname) as zf:
+                root = ET.fromstring(zf.read("project.qde"))
+            users = root.findall(f"{{{NAMESPACE}}}Users/{{{NAMESPACE}}}User")
+            assert len(users) == 1
+            seen.append((users[0].get("guid"), users[0].get("name"),
+                         root.get("creatingUserGUID")))
+        assert seen[0][1] == DEFAULT_AI_CODER_NAME
+        assert seen[1][1] == "AI Agent"
+        assert seen[0][0] == seen[1][0]          # same User guid
+        assert seen[0][2] == seen[1][2] == seen[0][0]  # and it is the creator
+
+
+class TestSuiteIsolation:
+
+    def test_ambient_coder_name_is_isolated(self):
+        # conftest's autouse fixture removes an ambient export so the
+        # default-owner pins across the suite stay valid (QA F21)
+        assert AI_CODER_NAME_ENV not in os.environ

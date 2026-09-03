@@ -20,7 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
-from qualcoder_mcp.database import QualcoderDatabase, UnsupportedSchemaError
+from qualcoder_mcp.database import (QualcoderDatabase, UnsupportedSchemaError,
+                                    VERIFIED_MASTER_COMMIT)
 from qualcoder_mcp.sessions import SessionManager
 
 FULLTEXT = ("This is interview text. I feel stressed about deadlines. "
@@ -205,7 +206,7 @@ class TestT1ProbeGateMatrix:
         v17_env("v18")
         out = json.loads(server.set_memo("code", 1, "x", create_backup=False))
         assert "v18" in out["error"]
-        assert "7b074d2" in out["error"]
+        assert VERIFIED_MASTER_COMMIT in out["error"]
         assert "QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA" in out["error"]
 
     def test_v18_allowed_with_override_and_warned(self, v17_env,

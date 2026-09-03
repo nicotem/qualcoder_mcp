@@ -136,3 +136,46 @@ class TestNoAutoRestore:
         assert "error" in out
         assert server.current_project_path is None
         assert server.db is None
+
+
+class TestSessionProjectCheckHint:
+
+    def test_hint_on_session_bound_write_path(self, session_with_suggestions,
+                                              qualcoder_db_path,
+                                              monkeypatch):
+        # _check_session_project fronts the apply_codings family; its
+        # no-project error must carry the hint too (QA round 1, F19)
+        server._remember_mru_project(
+            str(Path(qualcoder_db_path) / "data.qda"))
+        monkeypatch.setattr(server, "db", None)
+        monkeypatch.setattr(server, "current_project_path", None)
+        monkeypatch.delenv("QUALCODER_PROJECT_PATH", raising=False)
+        out = json.loads(server.apply_codings(
+            session_with_suggestions.session_id, create_backup=False))
+        assert "No Qualcoder project selected" in out["error"]
+        assert HINT_PHRASE in out["error"]
+        assert str(Path(qualcoder_db_path).resolve()) in out["error"]
+
+
+class TestMruWriteAtomicity:
+
+    def test_temp_name_is_per_process(self, monkeypatch):
+        # Concurrent servers must never share one temp name (QA F20)
+        monkeypatch.setattr(server.os, "getpid", lambda: 4242)
+        tmp = server._mru_tmp_file()
+        assert tmp.name == "mru_project.json.4242.tmp"
+        assert tmp.parent == server._MRU_FILE.parent
+
+    def test_no_temp_file_left_after_record(self, qualcoder_db_path):
+        server._remember_mru_project(
+            str(Path(qualcoder_db_path) / "data.qda"))
+        assert server._MRU_FILE.exists()
+        assert list(server._MRU_FILE.parent.glob("*.tmp")) == []
+
+    def test_failed_write_removes_its_temp_file(self, monkeypatch):
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+        monkeypatch.setattr(server.json, "dump", boom)
+        server._remember_mru_project("/some/where/data.qda")
+        assert not server._MRU_FILE.exists()
+        assert list(server._MRU_FILE.parent.glob("*.tmp")) == []

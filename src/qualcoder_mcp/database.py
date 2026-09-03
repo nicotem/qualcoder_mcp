@@ -31,7 +31,7 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 5000
 # Schemas verified for reading AND writing: v14 (QualCoder 3.8.x) through
 # v17 (unreleased QualCoder master, version string "QualCoder 4.0 Beta",
-# pinned commit 7b074d2). The version string is INFORMATIONAL: the write
+# pinned commit 9bddf17). The version string is INFORMATIONAL: the write
 # gate and every version-dependent recipe key on capability probes (column
 # and table existence, SchemaCapabilities below), exactly as upstream's own
 # migration ladder does (master __main__.py:2296-2346). The one place the
@@ -41,7 +41,7 @@ MAX_LIMIT = 5000
 # semantic change.
 SUPPORTED_DB_VERSIONS = ['v14', 'v15', 'v16', 'v17']
 MAX_VERIFIED_SCHEMA = 17
-VERIFIED_MASTER_COMMIT = "7b074d2"
+VERIFIED_MASTER_COMMIT = "9bddf17"
 _VERSION_STRING_RE = re.compile(r"^v(\d+)$")
 # Environment override for the forward guard (v18+/unparseable versions)
 ALLOW_UNKNOWN_SCHEMA_ENV = "QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA"
@@ -600,6 +600,24 @@ def validate_qda_path(db_path: str) -> Path:
                 pass
 
     return path
+
+
+def normalize_coder(coder: Optional[str]) -> Optional[str]:
+    """Normalize an explicit coder filter: None or blank means no filter.
+
+    QualCoder 4.0's own AI strips coder names and drops empty ones
+    before choosing the base table over the visible view (ai_chat.py at
+    pin 9bddf17), so a blank coder must read the visible view exactly
+    like an absent one rather than filter the base tables by owner ''.
+    A non-string value passes through for validate_string to reject
+    (QA round 1, F10).
+    """
+    if coder is None:
+        return None
+    if isinstance(coder, str):
+        stripped = coder.strip()
+        return stripped if stripped else None
+    return coder
 
 
 def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
@@ -1334,7 +1352,12 @@ class QualcoderDatabase:
 
     @staticmethod
     def _validate_coder(coder: Optional[str]) -> Optional[str]:
-        """Validate an explicit coder filter argument (None passes)."""
+        """Validate an explicit coder filter argument.
+
+        None and blank values mean "no filter" and read the visible
+        view (upstream parity, see normalize_coder; QA round 1, F10).
+        """
+        coder = normalize_coder(coder)
         if coder is None:
             return None
         return validate_string(coder, "coder")
@@ -1654,9 +1677,12 @@ class QualcoderDatabase:
             if not row:
                 return None
 
-            # Count codes in this file
+            # Count codes in this file (P1-3: through code_text_visible
+            # when present, so the files resource agrees with the
+            # visibility-honoring reads; QA round 1, F11)
             code_count = self.conn.execute(
-                "SELECT COUNT(DISTINCT cid) as cnt FROM code_text WHERE fid = ?",
+                f"SELECT COUNT(DISTINCT cid) as cnt "
+                f"FROM {self.code_text_source()} WHERE fid = ?",
                 (file_id,)
             ).fetchone()["cnt"]
 
@@ -2190,7 +2216,12 @@ class QualcoderDatabase:
 
             # Search annotations (only while budget remains)
             if len(results) < limit:
-                cursor = self.conn.execute("""
+                # P1-3: annotations honor QC 4.0 coder visibility here
+                # too (annotation_visible when present, base table
+                # otherwise; QA round 1, F13)
+                annotation_source = self._visible_source(
+                    "annotation", "annotation_visible")
+                cursor = self.conn.execute(f"""
                     SELECT
                         'annotation' as type,
                         a.anid as id,
@@ -2200,7 +2231,7 @@ class QualcoderDatabase:
                         a.date,
                         a.pos0,
                         a.pos1
-                    FROM annotation a
+                    FROM {annotation_source} a
                     JOIN source s ON a.fid = s.id
                     WHERE a.memo LIKE ? ESCAPE '\\'
                     ORDER BY a.anid

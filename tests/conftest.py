@@ -26,6 +26,19 @@ def _isolate_mru_state(tmp_path, monkeypatch):
                         tmp_path / "mru_state" / "mru_project.json")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ai_coder_name(monkeypatch):
+    """Keep an ambient QUALCODER_MCP_AI_CODER_NAME out of the suite.
+
+    The P1-2 attribution config is read from the environment on every
+    write and many assertions pin the default owner string; a developer
+    or CI shell that exports the variable must not turn those into
+    spurious failures (QA round 1, F21). Tests that exercise the
+    variable set it themselves through monkeypatch.
+    """
+    monkeypatch.delenv("QUALCODER_MCP_AI_CODER_NAME", raising=False)
+
+
 # =============================================================================
 # SESSION FIXTURES (used by test_sessions.py, test_integration_ai_coding.py)
 # =============================================================================

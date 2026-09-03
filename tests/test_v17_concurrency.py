@@ -1,7 +1,8 @@
 """v17 WS5: concurrency posture vs lockless QualCoder master (T17/T18, C7).
 
-Master removed the project_in_use.lock protocol entirely, so an open
-4.0 build cannot be detected. C7 compensates for the one corrupting
+Master removed the project_in_use.lock protocol entirely, so the lock
+gate is blind against a 4.0 build and detection there is best-effort
+heuristics (P1-5, WARN rung only). C7 compensates for the one corrupting
 write class: text-anchored writes re-verify, INSIDE the write
 transaction, that source.fulltext still matches what positions were
 validated against. These tests inject the undetectable-editor race
@@ -178,7 +179,8 @@ class TestT17DocsPosture:
         # heuristics, and every write docstring says so
         for tool in (server.apply_codings, server.set_memo,
                      server.import_text_file, server.delete_coding,
-                     server.merge_codes, server.create_code):
+                     server.merge_codes, server.create_code,
+                     server.restore_backup):
             doc = tool.__doc__ or ""
             assert "best-effort" in doc, tool.__name__
             assert "4.0" in doc, tool.__name__

@@ -26,6 +26,7 @@ from .database import (
     qualcoder_lock_state,
     qualcoder_open_message,
     qualcoder_gui_signals,
+    normalize_coder,
     hold_project_lock,
     QUALCODER_LOCK_FILENAME,
     position_safe as db_position_safe,
@@ -67,24 +68,42 @@ session_manager = SessionManager()
 _MRU_FILE = Path.home() / ".qualcoder_mcp" / "mru_project.json"
 
 
+def _mru_tmp_file() -> Path:
+    """A per-process temp name beside the MRU file.
+
+    Concurrent servers (several MCP hosts on one machine) each write
+    their own temp file, so no writer can truncate another's in-flight
+    file before the atomic replace (QA round 1, F20).
+    """
+    return _MRU_FILE.with_name(f"{_MRU_FILE.name}.{os.getpid()}.tmp")
+
+
 def _remember_mru_project(project_path: str) -> None:
     """Record the machine's most-recently-used project (best effort).
 
     Failures never break project selection; a corrupt or unwritable
-    state file just means no hint later.
+    state file just means no hint later. The write goes through a
+    per-process temp file and an atomic replace, and a failed write
+    removes its own temp file.
     """
+    tmp = None
     try:
         _MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "project_path": str(project_path),
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
-        tmp = _MRU_FILE.with_name(_MRU_FILE.name + ".tmp")
+        tmp = _mru_tmp_file()
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f)
         tmp.replace(_MRU_FILE)
     except Exception as e:
         logger.debug(f"Could not record MRU project: {e}")
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _mru_hint() -> str:
@@ -351,6 +370,7 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
     filter the read went to the base tables, and the note says so
     instead (methodological transparency either way).
     """
+    coder = normalize_coder(coder)  # blank means no filter (F10)
     try:
         hidden = get_db().hidden_coder_count()
     except Exception:
@@ -371,9 +391,10 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
         "hidden_coders": hidden,
         "note": f"This project hides {hidden} coder(s) (a QualCoder 4.0 "
                 f"per-coder visibility setting stored in the project). "
-                f"Results reflect what the user sees in QualCoder; pass "
-                f"a coder argument to read a specific coder's rows from "
-                f"the full data.",
+                f"Results reflect what the user sees in QualCoder; tools "
+                f"that take a coder argument (get_coded_segments, for "
+                f"example) read a specific coder's rows from the full "
+                f"data instead.",
     }
 
 
@@ -1672,6 +1693,14 @@ def search_memos(query: str, limit: int = 50) -> str:
     '#####' marker onward is private to the researcher. The search
     matches and returns only the public part of each memo.
 
+    Coder visibility (QualCoder 4.0 projects): annotation matches
+    honor the project's per-coder visibility by default (hidden
+    coders' annotations are not returned, matching what the user sees
+    in QualCoder), and the result then carries a coder_visibility
+    block. Code and file memos have no per-coder visibility in
+    QualCoder and are always searched. This tool has no coder
+    override.
+
     Args:
         query: The text to search for in memos
         limit: Maximum number of results to return (default 50)
@@ -1680,11 +1709,15 @@ def search_memos(query: str, limit: int = 50) -> str:
         JSON array of matching memos with their type, content, and context
     """
     results = get_db().search_memos(query, limit)
-    return json.dumps({
+    payload = {
         "query": query,
         "result_count": len(results),
         "results": results
-    }, indent=2)
+    }
+    note = _coder_visibility_note()
+    if note:
+        payload["coder_visibility"] = note
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
@@ -1694,6 +1727,17 @@ def export_code_report(code_name: str) -> str:
 
     This tool creates a detailed report including code metadata,
     all coded segments, and frequency information.
+
+    Memo privacy (QualCoder 4.0 convention): this report is returned
+    into the conversation, not written to a file, so every memo it
+    contains is the public part only (text before the first '#####'
+    marker). Unlike the file exports (export_refi_qda, export_codebook,
+    export_coded_segments_report) it never carries the private zone.
+
+    Coder visibility (QualCoder 4.0 projects): segments reflect visible
+    coders by default and the result then carries a coder_visibility
+    block. There is no coder override on this tool; use
+    get_coded_segments(coder=...) for that.
 
     Args:
         code_name: The name of the code to generate a report for
@@ -3937,6 +3981,13 @@ def list_backups() -> str:
     named '<project>_backup_<timestamp>.qda'. This tool lists them, newest
     first, so you can pick one for restore_backup.
 
+    Backups carry the whole project tree, ai_data/ included (QualCoder
+    4.0's AI prompt library and chat history are non-regenerable user
+    data), but exclude the regenerable vector-search database
+    ai_data/search.sqlite (which duplicates every text source in
+    plaintext) and sqlite sidecar files, exactly like QualCoder's own
+    backups; QualCoder rebuilds search.sqlite on project open.
+
     Returns:
         JSON with the project name and an array of backups
         (name, path, created, size_mb)
@@ -4041,7 +4092,10 @@ def prune_backups(keep_last: Optional[int] = None,
       confirm=true.
 
     This does not touch the live project database, so it works even while
-    QualCoder has the project open.
+    QualCoder has the project open. Each backup is a whole project tree,
+    ai_data/ included (minus the regenerable search.sqlite and sqlite
+    sidecars, as in QualCoder's own backups), so pruning also removes
+    those recovery points for the AI prompt library and chat history.
 
     Args:
         keep_last: Keep only this many newest MCP backups (0 allowed, but
@@ -4194,7 +4248,13 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
        server, sitting next to the project folder),
     3. creates a safety backup of the CURRENT state first, so even a restore
        can be undone,
-    4. refuses to run while the project database is locked (QualCoder open).
+    4. refuses to run while QualCoder has the project open (its heartbeat
+       lock) or another process holds an SQLite write lock. The lock gate
+       detects released QualCoder (3.x) only: QualCoder 4.0 builds no
+       longer use a lock file, so 4.0 detection is best-effort heuristics
+       (qualcoder_gui_signals, reported in this tool's own preview and in
+       get_current_project); never restore while any QualCoder window has
+       this project open.
 
     Note: backups deliberately omit ai_data/search.sqlite (the
     regenerable AI search index, QualCoder-parity exclusion), so a
@@ -4256,6 +4316,21 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
             preview["note"] = (
                 "This is a QualCoder-made backup: depending on QualCoder's "
                 "settings it may not contain audio/video media files."
+            )
+        # P1-5: the preview is this tool's own ask rung. WARN-level only:
+        # report the 4.0 GUI-open heuristics and ask, never refuse on
+        # them (QA round 1, F18)
+        signals = qualcoder_gui_signals(project_folder)
+        preview["qualcoder_gui_signals"] = signals
+        if signals:
+            preview["qualcoder_gui_hint"] = (
+                "This project APPEARS to be open in QualCoder ("
+                + "; ".join(signals) + "). That is a heuristic (QualCoder "
+                "4.0 writes no lock file), so ASK THE USER whether a "
+                "QualCoder window has this project open before confirming: "
+                "a restore replaces the project folder that window has "
+                "open, and the window will not display the restored state "
+                "until the project is reopened."
             )
         return json.dumps(preview, indent=2)
 

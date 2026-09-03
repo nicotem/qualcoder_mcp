@@ -64,6 +64,13 @@ def _apply_visibility_schema(project_path, hidden_coder=HIDDEN):
         "date, memo, important) VALUES (4, 2, 1, "
         "'I cope by exercising', 57, 77, ?, '2024-01-15', '', 0)",
         (hidden_coder,))
+    # A hidden cid-2 coding OVERLAPPING the hidden cid-1 span (24-55),
+    # so the co-occurrence coder override has something to find that
+    # the default visible read must not (QA round 1, F14)
+    cur.execute(
+        "INSERT INTO code_text (ctid, cid, fid, seltext, pos0, pos1, owner, "
+        "date, memo, important) VALUES (5, 2, 1, "
+        "'stressed', 30, 40, ?, '2024-01-15', '', 0)", (hidden_coder,))
     # A hidden annotation and a hidden image coding
     cur.execute(
         "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
@@ -146,6 +153,24 @@ class TestVisibilityProbe:
         finally:
             db.close()
 
+    def test_probe_false_with_views_but_no_coder_names_table(
+            self, visibility_db, qualcoder_db_path):
+        # Tampering-robustness pin: QualCoder 4.0 cannot produce this
+        # state itself (app.py:1470 creates coder_names before
+        # app.py:1518-1561 creates the views, in one try block), but a
+        # hand-dropped table must still probe False and every read must
+        # fall back to the base tables cleanly
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("DROP TABLE coder_names")
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        assert server.db.capabilities.has_coder_visibility is False
+        assert server.db.hidden_coder_count() == 0
+        out = json.loads(server.get_coded_segments(1))
+        assert out["segment_count"] == 2
+        assert "coder_visibility" not in out
+
     def test_schema_block_reports_capability(self, visibility_db):
         out = json.loads(server.get_current_project())
         assert out["schema"]["capabilities"]["has_coder_visibility"] is True
@@ -198,7 +223,7 @@ class TestVisibleReads:
         out = json.loads(server.get_coding_frequencies(coder=HIDDEN))
         by_name = {c["code_name"]: c["frequency"] for c in out["codes"]}
         assert by_name["Stress"] == 1
-        assert by_name["Coping"] == 1
+        assert by_name["Coping"] == 2  # ctid 4 and the F14 row, ctid 5
         assert out["coder_visibility"]["hidden_coder_filter"] == "bypassed"
 
     def test_matrix_excludes_hidden(self, visibility_db):
@@ -225,20 +250,78 @@ class TestVisibleReads:
         assert out["cases"][0]["occurrence_count"] == 1
 
     def test_cooccurrence_excludes_hidden(self, visibility_db):
-        # Hidden ctid 4 (cid 2, 57-77) does not overlap visible cid 1
-        # span; visible cooccurrence for cid 1 is empty on this fixture
+        # Visible rows for cid 1 (24-55) and cid 2 (57-77) never overlap;
+        # the hidden cid-2 row at 30-40 (ctid 5) overlaps the cid-1 span
+        # but is hidden, so the default read must not see it
         out = json.loads(server.find_cooccurring_codes(1))
         assert isinstance(out, dict)
         assert out["cooccurrences"] == []
         assert out["coder_visibility"]["hidden_coder_filter"] == "applied"
 
-    def test_cooccurrence_sees_hidden_via_base_on_pre40(self,
-                                                        visibility_db):
-        # Sanity: on the BASE tables the hidden cid2@57-77 does overlap
-        # the visible cid2 coding but not cid1; use coder filter to
-        # verify the override reaches base data
-        out = json.loads(server.find_cooccurring_codes(2, coder=HIDDEN))
+    def test_cooccurrence_coder_override_reaches_base_rows(self,
+                                                           visibility_db):
+        # The override must change the DATA, not only the flag: the
+        # hidden coder's cid-1 (24-55) and cid-2 (30-40) rows overlap
+        out = json.loads(server.find_cooccurring_codes(1, coder=HIDDEN))
         assert out["coder_visibility"]["hidden_coder_filter"] == "bypassed"
+        assert [c["code_id"] for c in out["cooccurrences"]] == [2]
+
+    def test_matrix_coder_override(self, visibility_db):
+        out = json.loads(server.get_case_code_matrix(coder=HIDDEN))
+        assert out["matrix"]["1"]["1"] == 1
+        assert out["matrix"]["1"]["2"] == 2
+        assert out["coder_visibility"]["hidden_coder_filter"] == "bypassed"
+
+    def test_codes_by_case_coder_override(self, visibility_db):
+        out = json.loads(server.get_codes_by_case(1, coder=HIDDEN))
+        counts = {c["code_name"]: c["occurrence_count"] for c in out["codes"]}
+        assert counts == {"Stress": 1, "Coping": 2}
+        assert out["coder_visibility"]["hidden_coder_filter"] == "bypassed"
+
+    def test_cases_by_code_coder_override(self, visibility_db):
+        out = json.loads(server.get_cases_by_code(1, coder=HIDDEN))
+        assert out["cases"][0]["occurrence_count"] == 1
+        assert out["coder_visibility"]["hidden_coder_filter"] == "bypassed"
+
+    def test_blank_coder_means_no_filter(self, visibility_db):
+        # Upstream parity (ai_chat.py strips and drops blank coder
+        # names): a blank coder reads the visible view like an absent
+        # one instead of filtering base tables by owner '' (F10)
+        for blank in ("", "   "):
+            out = json.loads(server.get_coded_segments(1, coder=blank))
+            assert out["segment_count"] == 1, repr(blank)
+            assert {s["owner"] for s in out["segments"]} == {"TestCoder"}
+            assert out["coder_visibility"]["hidden_coder_filter"] == "applied"
+
+    def test_file_content_code_count_follows_visibility(
+            self, visibility_db, qualcoder_db_path):
+        # A code applied to file 1 ONLY by the hidden coder must not
+        # inflate the files resource's code_count (F11)
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute(
+            "INSERT INTO code_name VALUES (3, 'Ghostly', '', 1, ?, "
+            "'2024-01-15', '#0000FF')", (HIDDEN,))
+        con.execute(
+            "INSERT INTO code_text (ctid, cid, fid, seltext, pos0, pos1, "
+            "owner, date, memo, important) VALUES (6, 3, 1, 'This', 0, 4, "
+            "?, '2024-01-15', '', 0)", (HIDDEN,))
+        con.commit()
+        base_count = con.execute(
+            "SELECT COUNT(DISTINCT cid) FROM code_text WHERE fid = 1"
+        ).fetchone()[0]
+        con.close()
+        assert base_count == 3
+        _reopen(qualcoder_db_path)
+        assert server.db.get_file_content(1)["code_count"] == 2
+        assert json.loads(server.get_file_content(1))["code_count"] == 2
+
+    def test_search_memos_annotations_honor_visibility(self, visibility_db):
+        # The hidden coder's annotation is not returned and its owner
+        # name never appears; the disclosure block is present (F13)
+        out = json.loads(server.search_memos("hidden annotation"))
+        assert out["result_count"] == 0
+        assert out["coder_visibility"]["hidden_coder_filter"] == "applied"
+        assert HIDDEN not in json.dumps(out)
 
     def test_analyze_file_excludes_hidden_segments_and_annotations(
             self, visibility_db):
@@ -273,6 +356,50 @@ class TestVisibleReads:
 
 
 # =============================================================================
+# PRE-4.0 PROJECTS: coder filters work on base tables, shape stays plain
+# =============================================================================
+
+class TestPre40CoderFilter:
+
+    def test_coder_filter_on_base_tables_keeps_plain_shape(self,
+                                                           setup_server):
+        out = json.loads(server.get_coded_segments(1, coder="TestCoder"))
+        assert out["segment_count"] == 1
+        assert "coder_visibility" not in out
+        out = json.loads(server.get_coded_segments(1, coder="Nobody"))
+        assert out["segment_count"] == 0
+        assert "coder_visibility" not in out
+        assert isinstance(json.loads(server.get_codes_by_case(
+            1, coder="Nobody")), list)
+
+    def test_blank_coder_is_no_filter_without_capability(self,
+                                                         setup_server):
+        out = json.loads(server.get_coded_segments(1, coder=""))
+        assert out["segment_count"] == 1
+        assert "coder_visibility" not in out
+
+    def test_search_memos_reads_base_annotations_without_capability(
+            self, setup_server, qualcoder_db_path):
+        # Without the 4.0 view the annotation branch reads the base
+        # table and no disclosure block appears (F13)
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute(
+            "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
+            "VALUES (1, 0, 4, 'hidden annotation', ?, '2024-01-15')",
+            (HIDDEN,))
+        con.execute(
+            "INSERT OR REPLACE INTO coder_names (name, visibility) "
+            "VALUES (?, 0)", (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.search_memos("hidden annotation"))
+        assert out["result_count"] == 1
+        assert out["results"][0]["owner"] == HIDDEN
+        assert "coder_visibility" not in out
+
+
+# =============================================================================
 # FILE EXPORTS KEEP READING BASE TABLES (QualCoder export/report parity)
 # =============================================================================
 
@@ -303,7 +430,7 @@ class TestExportsReadBaseTables:
         out_file = tmp_path / "full.qdpx"
         out = json.loads(server.export_refi_qda(output_path=str(out_file)))
         assert out.get("success") is True, out
-        assert out["codings_exported"] == 4  # 2 visible + 2 hidden
+        assert out["codings_exported"] == 5  # 2 visible + 3 hidden
         with zipfile.ZipFile(out_file) as zf:
             qde = zf.read("project.qde").decode("utf-8")
-        assert qde.count("<PlainTextSelection") == 4
+        assert qde.count("<PlainTextSelection") == 5
