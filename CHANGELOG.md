@@ -103,7 +103,12 @@ only (QualCoder's own result shape), never the hidden coder's name,
 code, span or text. The previews of `delete_code`, `delete_category`,
 `merge_codes` and `merge_category` report
 `hidden_coder_codings_affected` as a count. Pre-4.0 projects are
-unaffected.
+unaffected. The guards fail closed: when a project's visibility view is
+present but cannot answer (schema drift, damage to the coder table, a
+locked database), the by-id tools return an error and change nothing,
+with or without the override, instead of treating the row as visible;
+the cascade previews likewise return an error rather than an undercount
+(fix round 3).
 
 ### Changed: backups and workspace copies mirror QualCoder's ai_data policy
 

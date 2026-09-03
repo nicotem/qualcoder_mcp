@@ -1560,8 +1560,14 @@ class QualcoderDatabase:
 
         True on projects without the visibility capability (nothing is
         hidden there) or when the view is absent; otherwise the row must
-        appear in the *_visible view. Table, view and column names come
-        from fixed internal constants, never from input (S-MAJ).
+        appear in the *_visible view. A view that is present but cannot
+        be queried (schema drift, damage to the coder_names pages, a
+        locked database) is an ERROR, never a visible row: the guard
+        fails closed, so a write can neither proceed with the Tier 2
+        refusal and the Tier 1 redaction switched off, nor mislabel an
+        unreadable state as a hidden coder (which would let the override
+        write through it). Table, view and column names come from fixed
+        internal constants, never from input (S-MAJ).
         """
         source = self._visible_source(base, view)
         if source == base:
@@ -1570,8 +1576,12 @@ class QualcoderDatabase:
             row = self.conn.execute(
                 f"SELECT 1 FROM {source} WHERE {id_col} = ?", (row_id,)
             ).fetchone()
-        except sqlite3.Error:
-            return True
+        except sqlite3.Error as e:
+            _raise_query_error(
+                e, "_row_is_visible",
+                "Could not determine whether this row is visible in "
+                "QualCoder (its coder-visibility view did not answer); "
+                "nothing was changed")
         return row is not None
 
     def coding_is_visible(self, coding_id: int) -> bool:
@@ -1623,7 +1633,10 @@ class QualcoderDatabase:
                                  params) -> Optional[int]:
         """How many coding rows (text, av, image) matching `where` belong
         to coders the project hides; None without the visibility
-        capability (Tier 2 cascade previews). Count only, never names."""
+        capability (Tier 2 cascade previews). Count only, never names.
+        A view that is present but cannot be queried is an error (the
+        same fail-closed rule as _row_is_visible): a preview must never
+        report fewer hidden rows than the cascade would remove."""
         caps = getattr(self, "capabilities", None)
         if caps is None or not caps.has_coder_visibility:
             return None
@@ -1640,8 +1653,12 @@ class QualcoderDatabase:
                 seen_n = self.conn.execute(
                     f"SELECT COUNT(*) FROM {view} WHERE ({where})",
                     tuple(params)).fetchone()[0]
-            except sqlite3.Error:
-                continue
+            except sqlite3.Error as e:
+                _raise_query_error(
+                    e, "_hidden_codings_affected",
+                    "Could not count the hidden coders' codings this "
+                    "operation would affect (a coder-visibility view did "
+                    "not answer); nothing was changed")
             total += max(0, int(all_n) - int(seen_n))
         return total
 

@@ -127,7 +127,9 @@ is present in a project:
   coder's name, code, span or text. The confirm-gated cascades
   (delete_code, delete_category, merge_codes, merge_category) report
   in their preview how many affected codings belong to hidden coders,
-  as a count.
+  as a count. If the visibility state cannot be read (the view exists
+  but does not answer), these tools return an error and change nothing,
+  with or without the override; they never assume a row is visible.
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.

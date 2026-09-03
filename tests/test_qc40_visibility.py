@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
-from qualcoder_mcp.database import QualcoderDatabase
+from qualcoder_mcp.database import DB_LOCKED_MESSAGE, QualcoderDatabase
 
 HIDDEN = "Hidden Coder"
 
@@ -723,3 +723,199 @@ class TestCascadePreviewsReportHiddenRows:
                     server.delete_category(1), server.merge_category(1)):
             p = json.loads(raw)["preview"]
             assert "hidden_coder_codings_affected" not in p
+
+
+# =============================================================================
+# FAIL CLOSED WHEN THE VISIBILITY STATE CANNOT BE READ (fix round 3, R1)
+# =============================================================================
+
+# Two ways a *_visible view can be PRESENT (so the capability probe, which
+# checks object names, still reports 4.0 visibility) yet unable to answer
+# the guard's query: a view that lost its id column, and QualCoder's own
+# DDL pointed at a table that is gone.
+_BROKEN_VIEWS = {
+    "no_id_column": {
+        "code_text_visible": "SELECT cid, fid, owner FROM code_text",
+        "annotation_visible": "SELECT fid, owner FROM annotation",
+    },
+    "missing_table": {
+        "code_text_visible": (
+            "SELECT t.* FROM code_text_gone t WHERE NOT EXISTS "
+            "(SELECT 1 FROM coder_names c WHERE c.name = t.owner "
+            "AND c.visibility = 0)"),
+        "annotation_visible": (
+            "SELECT t.* FROM annotation_gone t WHERE NOT EXISTS "
+            "(SELECT 1 FROM coder_names c WHERE c.name = t.owner "
+            "AND c.visibility = 0)"),
+    },
+}
+
+
+def _break_views(project_path, variant):
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        for view, body in _BROKEN_VIEWS[variant].items():
+            con.execute(f"DROP VIEW {view}")
+            con.execute(f"CREATE VIEW {view} AS {body}")
+        con.commit()
+    finally:
+        con.close()
+
+
+class _LockedOnVisibilityView:
+    """A connection proxy on which only the guard's view query reports a
+    locked database; everything else reaches the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def execute(self, sql, *args):
+        if sql.startswith("SELECT 1 FROM ") and "_visible WHERE" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestVisibilityGuardFailsClosed:
+    """R1 (fix round 3): when the visibility capability probes as present
+    but a *_visible view cannot answer, the by-id write guards raise a
+    sanitized error instead of treating the row as visible. Nothing is
+    written, no backup is taken and the hidden coder's data never enters
+    the response, with or without allow_hidden_coder; an unreadable
+    state is never reported as a hidden coder either (that would let the
+    override write through it). A locked database surfaces as the locked
+    error. Fixture hidden rows: ctid 3 and anid 1, both by HIDDEN."""
+
+    FORBIDDEN = TestWriteEchoesRedactHiddenTargets.FORBIDDEN
+
+    def _assert_failed_closed(self, raw):
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, needle
+        out = json.loads(raw)
+        assert "error" in out and "success" not in out, out
+        assert "hidden in QualCoder" not in out["error"]
+        assert "refused" not in out
+        return out
+
+    def _rows_intact(self, project):
+        assert _row(project,
+                    "SELECT memo FROM code_text WHERE ctid = 3")[0] == \
+            "hidden memo"
+        assert _row(project,
+                    "SELECT memo FROM annotation WHERE anid = 1")[0] == \
+            "hidden annotation"
+        assert _backups(project) == []
+
+    @pytest.mark.parametrize("variant", sorted(_BROKEN_VIEWS))
+    def test_helpers_raise_instead_of_answering_visible(self, visibility_db,
+                                                        variant):
+        _break_views(visibility_db, variant)
+        _reopen(visibility_db)
+        assert server.db.capabilities.has_coder_visibility is True
+        with pytest.raises(RuntimeError, match="nothing was changed"):
+            server.db.coding_is_visible(3)
+        with pytest.raises(RuntimeError, match="nothing was changed"):
+            server.db.annotation_is_visible(1)
+        with pytest.raises(RuntimeError):
+            server.db.existing_row_status("coding", 3)
+        with pytest.raises(RuntimeError):
+            server.db.existing_row_status("annotation", 1)
+
+    @pytest.mark.parametrize("variant", sorted(_BROKEN_VIEWS))
+    def test_by_id_writes_error_out_without_override(self, visibility_db,
+                                                     variant):
+        _break_views(visibility_db, variant)
+        _reopen(visibility_db)
+        for raw in (
+            server.delete_coding(3, create_backup=False),
+            server.set_memo("coding", 3, "probe", create_backup=False),
+            server.update_annotation(1, "probe", create_backup=False),
+            server.delete_annotation(1, create_backup=False),
+        ):
+            out = self._assert_failed_closed(raw)
+            assert "visible in QualCoder" in out["error"]
+            assert "nothing was changed" in out["error"]
+        self._rows_intact(visibility_db)
+
+    @pytest.mark.parametrize("variant", sorted(_BROKEN_VIEWS))
+    def test_override_does_not_write_through_an_unreadable_state(
+            self, visibility_db, variant):
+        _break_views(visibility_db, variant)
+        _reopen(visibility_db)
+        for raw in (
+            server.delete_coding(3, create_backup=False,
+                                 allow_hidden_coder=True),
+            server.set_memo("coding", 3, "probe", create_backup=False,
+                            allow_hidden_coder=True),
+            server.update_annotation(1, "probe", create_backup=False,
+                                     allow_hidden_coder=True),
+            server.delete_annotation(1, create_backup=False,
+                                     allow_hidden_coder=True),
+        ):
+            self._assert_failed_closed(raw)
+        self._rows_intact(visibility_db)
+
+    def test_visible_rows_are_guarded_the_same_way(self, visibility_db):
+        # On a broken view the guard cannot tell a visible row from a
+        # hidden one, so it refuses both: ctid 1 is TestCoder's own coding
+        _break_views(visibility_db, "no_id_column")
+        _reopen(visibility_db)
+        self._assert_failed_closed(server.delete_coding(1,
+                                                        create_backup=False))
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 1")[0] == 1
+
+    def test_db_layer_fails_closed_on_its_own(self, visibility_db):
+        _break_views(visibility_db, "missing_table")
+        wdb = QualcoderDatabase(visibility_db, read_only=False)
+        try:
+            for call in (
+                lambda: wdb.delete_coding(3),
+                lambda: wdb.delete_coding(3, allow_hidden_coder=True),
+                lambda: wdb.set_memo("coding", 3, "x"),
+                lambda: wdb.update_annotation(1, "x"),
+                lambda: wdb.delete_annotation(1, allow_hidden_coder=True),
+            ):
+                with pytest.raises(RuntimeError, match="nothing was changed"):
+                    call()
+        finally:
+            wdb.close()
+        self._rows_intact(visibility_db)
+
+    def test_locked_database_surfaces_as_locked_not_hidden(
+            self, visibility_db, monkeypatch):
+        monkeypatch.setattr(server.db, "conn",
+                            _LockedOnVisibilityView(server.db.conn))
+        for raw in (
+            server.delete_coding(3, create_backup=False),
+            server.delete_coding(3, create_backup=False,
+                                 allow_hidden_coder=True),
+            server.delete_annotation(1, create_backup=False),
+        ):
+            out = self._assert_failed_closed(raw)
+            assert out["error"] == DB_LOCKED_MESSAGE
+        self._rows_intact(visibility_db)
+
+    def test_cascade_preview_errors_rather_than_undercounting(
+            self, visibility_db):
+        # delete_code(1) would remove ctid 3 and imid 1 (both hidden); with
+        # the text view unable to answer, the preview must not say 1
+        _break_views(visibility_db, "missing_table")
+        _reopen(visibility_db)
+        for raw in (server.delete_code(1), server.merge_codes(1, 2)):
+            out = self._assert_failed_closed(raw)
+            assert "hidden coders" in out["error"]
+            assert "preview" not in out
+        assert _row(visibility_db,
+                    "SELECT COUNT(*) FROM code_text WHERE cid = 1")[0] == 2
+
+    def test_reads_and_writes_agree_on_a_broken_view(self, visibility_db):
+        # The read side already failed loud on such a project; the write
+        # guard no longer contradicts it
+        _break_views(visibility_db, "missing_table")
+        _reopen(visibility_db)
+        assert "error" in json.loads(server.get_coded_segments(1))
+        self._assert_failed_closed(server.delete_coding(3,
+                                                        create_backup=False))
