@@ -862,8 +862,17 @@ def backup_project(project_path: Union[str, Path]) -> Path:
         )
         logger.info(f"Backup created successfully: {backup_path}")
         return backup_path
+    except FileExistsError as e:
+        # copytree's makedirs failed before anything was written: the
+        # folder appeared under someone else's hand and is never ours to
+        # remove (S-H5)
+        logger.error(f"Failed to create backup: {e}")
+        raise OSError(f"Backup failed: {e}") from None
     except Exception as e:
         logger.error(f"Failed to create backup: {e}")
+        # Never leave a partial tree behind: list_backups would present
+        # it as a restorable backup (S-H5)
+        shutil.rmtree(backup_path, ignore_errors=True)
         raise OSError(f"Backup failed: {e}") from None
 
 
@@ -957,8 +966,15 @@ def copy_project_to_workspace(
         )
         logger.info(f"Project copied successfully: {dest_path}")
         return dest_path
+    except FileExistsError as e:
+        # The destination appeared under someone else's hand between the
+        # existence check and the copy; never touch it (S-H5)
+        logger.error(f"Failed to copy project: {e}")
+        raise OSError(f"Copy failed: {e}") from None
     except Exception as e:
         logger.error(f"Failed to copy project: {e}")
+        # Never leave a partial project copy behind (S-H5)
+        shutil.rmtree(dest_path, ignore_errors=True)
         raise OSError(f"Copy failed: {e}") from None
 
 

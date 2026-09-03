@@ -153,3 +153,95 @@ class TestBackupToolDescriptionsDisclose:
             doc = tool.__doc__ or ""
             assert "ai_data" in doc, tool.__name__
             assert "search.sqlite" in doc, tool.__name__
+
+
+# =============================================================================
+# S-H5: a failed copy leaves no partial destination; a foreign folder is
+# never touched
+# =============================================================================
+
+def _plant_dangling_symlink(project_path):
+    docs = Path(project_path) / "documents"
+    docs.mkdir(exist_ok=True)
+    try:
+        import os
+        os.symlink(Path(project_path) / "nowhere", docs / "gone.txt")
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("symlinks unavailable on this platform")
+
+
+def _backup_siblings(project_path):
+    project = Path(project_path)
+    return sorted(project.parent.glob(f"{project.stem}_backup_*"))
+
+
+class TestCopyFailureCleanup:
+
+    def test_backup_failure_leaves_no_partial_folder(self, qualcoder_db_path):
+        _plant_dangling_symlink(qualcoder_db_path)
+        assert _backup_siblings(qualcoder_db_path) == []
+        with pytest.raises(OSError, match="Backup failed"):
+            backup_project(qualcoder_db_path)
+        assert _backup_siblings(qualcoder_db_path) == []
+
+    def test_workspace_copy_failure_leaves_no_partial_folder(
+            self, qualcoder_db_path, tmp_path):
+        _plant_dangling_symlink(qualcoder_db_path)
+        ws = tmp_path / "ws"
+        with pytest.raises(OSError, match="Copy failed"):
+            copy_project_to_workspace(qualcoder_db_path, workspace=ws)
+        assert list(ws.iterdir()) == []
+
+    def test_partial_backup_is_not_listed_as_restorable(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        import shutil
+        import qualcoder_mcp.database as database
+
+        def half_copy(src, dst, **_kwargs):
+            Path(dst).mkdir()
+            shutil.copy2(Path(src) / "data.qda", Path(dst) / "data.qda")
+            raise shutil.Error([(str(src), str(dst), "disk full")])
+
+        monkeypatch.setattr(database.shutil, "copytree", half_copy)
+        with pytest.raises(OSError, match="Backup failed"):
+            backup_project(qualcoder_db_path)
+        assert _backup_siblings(qualcoder_db_path) == []
+        out = json.loads(server.list_backups())
+        assert out.get("backup_count", len(out.get("backups", []))) == 0
+
+    def test_file_exists_error_leaves_foreign_folder_intact(
+            self, qualcoder_db_path, tmp_path, monkeypatch):
+        # copytree's makedirs raising FileExistsError means the folder
+        # appeared under someone else's hand; it must never be removed
+        import qualcoder_mcp.database as database
+        foreign = {}
+
+        def someone_elses_folder(src, dst, **_kwargs):
+            Path(dst).mkdir()
+            (Path(dst) / "theirs.txt").write_text("keep me", encoding="utf-8")
+            foreign["path"] = Path(dst)
+            raise FileExistsError(17, "File exists", str(dst))
+
+        monkeypatch.setattr(database.shutil, "copytree", someone_elses_folder)
+        with pytest.raises(OSError, match="Backup failed"):
+            backup_project(qualcoder_db_path)
+        assert (foreign["path"] / "theirs.txt").read_text(
+            encoding="utf-8") == "keep me"
+
+        foreign.clear()
+        ws = tmp_path / "ws"
+        with pytest.raises(OSError, match="Copy failed"):
+            copy_project_to_workspace(qualcoder_db_path, workspace=ws)
+        assert (foreign["path"] / "theirs.txt").read_text(
+            encoding="utf-8") == "keep me"
+
+    def test_write_tool_refuses_cleanly_and_leaves_no_litter(
+            self, setup_server, qualcoder_db_path):
+        # The write path already refused when the backup failed; now it
+        # also leaves no half-copied backup folder behind
+        _plant_dangling_symlink(qualcoder_db_path)
+        out = json.loads(server.set_memo("code", 1, "note",
+                                         create_backup=True))
+        assert "error" in out
+        assert "Nothing was written" in out["error"]
+        assert _backup_siblings(qualcoder_db_path) == []

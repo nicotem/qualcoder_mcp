@@ -362,3 +362,68 @@ class TestSelectProjectFailureWording:
         assert "APPEARS to be open" in out["error"]
         assert "damaged database" in out["error"]
         assert out["qualcoder_gui_signals"]
+
+
+# =============================================================================
+# S-H4: DatabaseOpenError text outside select_project is generic
+# =============================================================================
+
+class TestDatabaseOpenErrorIsGeneric:
+    """A data.qda that will not open (garbage bytes, or the hot journal a
+    mid-write 4.0 window leaves) used to surface its raw sqlite message
+    ("file is not a database", "attempt to write a readonly database")
+    through every tool but select_project, via _tool_guard's ValueError
+    branch and get_current_project's catch-all. Both now route to one
+    fixed, path-free text; the sqlite text goes to the log only."""
+
+    LEAKS = ("sqlite", "readonly", "not a database", "malformed",
+             "Traceback")
+
+    def _damage(self, project, how):
+        if how == "journal":
+            (Path(project) / "data.qda-journal").write_bytes(b"j")
+        else:
+            (Path(project) / "data.qda").write_bytes(
+                b"this is not a sqlite database")
+
+    def _assert_generic(self, raw, project):
+        out = json.loads(raw)
+        assert "error" in out, out
+        low = out["error"].lower()
+        for leak in self.LEAKS:
+            assert leak.lower() not in low, (leak, out["error"])
+        assert str(project) not in out["error"]
+        assert Path(project).name not in out["error"]
+        assert out["error"] == server.DB_UNAVAILABLE_ERROR
+        return out
+
+    @pytest.mark.parametrize("how", ["journal", "garbage"])
+    def test_tools_return_fixed_text(self, setup_server, qualcoder_db_path,
+                                     no_process_hits, how, caplog):
+        self._damage(qualcoder_db_path, how)
+        with caplog.at_level("ERROR", logger="qualcoder_mcp.server"):
+            for call in (
+                lambda: server.get_current_project(),
+                lambda: server.list_backups(),
+                lambda: server.create_code("Doomed", create_backup=False),
+                lambda: server.copy_project_to_workspace(qualcoder_db_path),
+            ):
+                self._assert_generic(call(), qualcoder_db_path)
+        # The diagnostic detail is logged, not returned
+        logged = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "readonly" in logged or "not a database" in logged, logged
+
+    def test_select_project_keeps_its_scoped_wording(self, setup_server,
+                                                     qualcoder_db_path,
+                                                     no_process_hits):
+        # Unchanged by S-H4: select_project's own project-scoped payload
+        self._damage(qualcoder_db_path, "journal")
+        out = json.loads(server.select_project(qualcoder_db_path))
+        assert out["success"] is False
+        assert "APPEARS to be open" in out["error"]
+        assert "sqlite" not in out["error"].lower()
+        assert "readonly" not in out["error"].lower()
+
+    def test_guard_text_has_no_em_dash(self):
+        assert "—" not in server.DB_UNAVAILABLE_ERROR
+        assert server.DB_UNAVAILABLE_ERROR.startswith("Database error")

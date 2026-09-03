@@ -170,6 +170,16 @@ def _no_project_message() -> str:
             + _mru_hint())
 
 
+# Fixed, path-free text for any database that will not open or errors
+# mid-read outside select_project (which has project-scoped wording of its
+# own). The sqlite message itself is logged, never returned (S-H4).
+DB_UNAVAILABLE_ERROR = (
+    "Database error: the project file may be locked or corrupted. If "
+    "QualCoder is open, close it and retry; otherwise consider restoring a "
+    "backup (see list_backups)."
+)
+
+
 def _tool_guard(fn):
     """Convert anticipated exceptions into sanitized error JSON.
 
@@ -185,6 +195,12 @@ def _tool_guard(fn):
             return json.dumps({"error": str(e)})
         except UnsupportedSchemaError as e:
             return json.dumps({"error": str(e)})
+        except DatabaseOpenError as e:
+            # Before the generic ValueError branch (it is a subclass): the
+            # sqlite text goes to the log, never into the conversation
+            # (S-H4). select_project keeps its own project-scoped wording.
+            logger.error(f"Database would not open in {fn.__name__}: {e}")
+            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
         except (ValueError, TypeError) as e:
             return json.dumps({"error": str(e)})
         except FileNotFoundError as e:
@@ -196,11 +212,7 @@ def _tool_guard(fn):
                                          "disk space and permissions."})
         except sqlite3.Error as e:
             logger.error(f"SQLite error in {fn.__name__}: {e}")
-            return json.dumps({
-                "error": "Database error — the project file may be locked or "
-                         "corrupted. If QualCoder is open, close it and retry; "
-                         "otherwise consider restoring a backup (see list_backups)."
-            })
+            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
         except RuntimeError as e:
             logger.error(f"Runtime error in {fn.__name__}: {e}")
             return json.dumps({"error": str(e)})
@@ -1448,6 +1460,10 @@ def get_current_project() -> str:
 
         return _ai_json(result, indent=2)
 
+    except (DatabaseOpenError, sqlite3.Error):
+        # Let the tool guard return its fixed, path-free text instead of
+        # forwarding the sqlite message (S-H4)
+        raise
     except Exception as e:
         return json.dumps({"error": f"Failed to get project info: {str(e)}"})
 
