@@ -10,7 +10,7 @@ authors:
 repository-code: "https://github.com/nicotem/qualcoder_mcp"
 license: MIT
 version: "0.11.0-alpha"
-date-released: "YYYY-MM-DD"
+date-released: '2026-09-04'
 keywords:
   - "qualitative research"
   - "QualCoder"

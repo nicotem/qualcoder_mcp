@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.0-alpha] - YYYY-MM-DD
+## [0.11.0-alpha] - 2026-09-04
 
 QualCoder 4.0's AI subsystem defines conventions that live in the
 project itself. This release makes qualcoder-mcp follow them, so a
