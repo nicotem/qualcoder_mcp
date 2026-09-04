@@ -5,15 +5,27 @@ All notable changes to the Qualcoder MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - v0.11: QualCoder 4.0 interop conventions (Phase 1)
+## [Unreleased]
+
+## [0.11.0-alpha] - YYYY-MM-DD
 
 QualCoder 4.0's AI subsystem defines conventions that live in the
-project itself. This release makes qualcoder-mcp a good citizen of
-them, so a project touched by both tools behaves coherently. All
-feature presence is detected by probing schema objects, never version
-strings; pre-4.0 projects behave exactly as before. Parity claims in
-this section were verified against QualCoder master at pinned commit
-9bddf17 (2026-08-25).
+project itself. This release makes qualcoder-mcp follow them, so a
+project touched by both tools behaves consistently. Where a convention
+depends on the schema (per-coder visibility, the merge provenance
+memo), its presence is detected by probing schema objects, never
+version strings, and pre-4.0 projects keep their previous behavior.
+Conventions that need no schema support (the `#####` memo marker, the
+configurable coder name, the private-note delete guards, the backup
+rules, the recovery hint) apply on every supported schema, v14 through
+v17. No tool was added or removed (67 in the full toolset, 20 in
+`core`); the changes are new optional arguments, new result fields and
+changed defaults, summarized under "Upgrading from 0.10.x" below.
+Parity claims in this section were verified against QualCoder master
+at pinned commit 9bddf17 (2026-08-25). `pseudonymise_source`, which
+the 0.10.0 notes deferred to v0.11, is not in this release. Gated
+through a QA round, a Security gate and two re-verification rounds;
+the suite at the release commit: 1534 passed, 45 skipped, 0 failed.
 
 ### Added: '#####' memo privacy (QC 4.0 convention honored everywhere)
 
@@ -26,7 +38,12 @@ does this server.
   entries, the project memo, attribute types, query results, and the
   echoes of write tools). The strip is silent.
 - `search_memos` and `search_files` match and preview the public part
-  only, so the private zone cannot be probed through search.
+  only, so the private zone cannot be probed through search. In
+  `search_memos` the `limit` cap is applied after the public-part
+  check, so `result_count` depends on public content alone, a match
+  that lives only in a private zone never consumes result budget, and
+  a `result_count` below `limit` still means the search was exhaustive
+  (fix round 1).
 - Memo writes are merge-preserving: `set_memo` and `update_annotation`
   replace only the public text, an existing private zone survives
   every memo write verbatim (clearing an annotation that carries one
@@ -73,9 +90,17 @@ the same rules (one shared validator: non-empty, at most 80 characters,
 no Unicode control characters including C1, no line or paragraph
 separators, no bidirectional formatting characters, no `#####`
 marker; ordinary names in any script, ZWJ and ZWNJ included, are
-accepted). Note: memos, journal entries, annotations, and attribute writes
-were previously attributed to the project's own coder name; they now
-carry the configured AI coder name, keeping AI work distinguishable.
+accepted). Note, a behavior change on every project: journal entries,
+codes (from `create_code` and `create_proposed_codes`), categories,
+annotations, cases, attribute types and attribute values were
+previously attributed to the project's own coder name, and the source
+rows and case links written by `import_text_file` and
+`link_file_to_case` defaulted to "MCP Import"; all of these now carry
+the configured AI coder name, keeping AI work distinguishable from the
+researcher's. Codings written by `apply_codings` and the evidence
+codings of `create_proposed_codes` were already attributed to
+`AI Coding Assistant` and are unchanged by default. `set_memo` never
+rewrites a row's owner, so existing memos keep theirs.
 
 ### Added: coder-visibility reads on QC 4.0 projects
 
@@ -90,8 +115,12 @@ data instead. Annotations honor visibility the same way (in
 `analyze_file_with_coding` and in the annotation matches of
 `search_memos`, which has no coder override). Results disclose when
 hidden-coder filtering shaped them (a count, never hidden coders'
-names). File exports keep reading base tables, matching QualCoder's
-own reports and REFI export.
+names): the disclosure is a `coder_visibility` key on object-shaped
+results, and the array results of `find_cooccurring_codes`,
+`get_codes_by_case` and `get_cases_by_code` are then wrapped in an
+object carrying it; on projects that hide no coders, and on pre-4.0
+projects, every result keeps its previous shape. File exports keep
+reading base tables, matching QualCoder's own reports and REFI export.
 
 Writes that target an existing row by id (`delete_coding`,
 `update_annotation`, `delete_annotation`, and `set_memo` on a coding)
@@ -193,6 +222,58 @@ the shape `select_project` itself records (`<folder>.qda/data.qda`,
 no control or bidirectional formatting characters) that still exists
 as a file is ever echoed. PRIVACY.md, README and INSTALL list the
 file.
+
+### Upgrading from 0.10.x
+
+- Upgrade the package (`pip install --upgrade qualcoder-mcp`, or `git
+  pull` plus `pip install -e .` in a clone; see INSTALL.md) and restart
+  the MCP host fully so it reloads the tool schemas: the new optional
+  arguments are part of them. There is no migration step. Project files
+  gain no new tables or columns, and AI-coding session files under
+  `~/.qualcoder_mcp/sessions` are unchanged; the only new on-disk state
+  is `~/.qualcoder_mcp/mru_project.json`.
+- No tool was added or removed. Every new argument is optional and the
+  0.10 call shapes keep working: `coder` on `get_coded_segments`,
+  `search_coded_text`, `get_coding_frequencies`,
+  `find_cooccurring_codes`, `get_case_code_matrix`, `get_codes_by_case`
+  and `get_cases_by_code`; `allow_hidden_coder` on `delete_coding`,
+  `update_annotation`, `delete_annotation` and `set_memo`;
+  `confirm_private_note_deletion` on `delete_coding` and
+  `delete_annotation`.
+- Behavior changes on every project (schema v14 through v17): memo
+  text from the first `#####` marker onward is no longer returned to
+  the AI and survives AI memo writes; rows this server creates other
+  than codings are attributed to the configured AI coder name instead
+  of the project's coder name or "MCP Import" (see the attribution
+  section above); deleting a coding or annotation whose memo carries a
+  private note needs `confirm_private_note_deletion=true` and always
+  takes a backup; backups and workspace copies skip symlinks that point
+  outside the project, dangle or loop, and report them;
+  `copy_project_to_workspace` no longer copies `search.sqlite`, sqlite
+  sidecar files or lock files; "no project selected" errors may name
+  the last-used project.
+- Behavior changes only on QualCoder 4.0 projects (detected by schema
+  probes, never version strings): reads honor per-coder visibility by
+  default and results may carry a `coder_visibility` block (three
+  array-shaped results are then wrapped in an object, see above); writes
+  that target a hidden coder's row by id are refused without
+  `allow_hidden_coder=true`; `merge_category` carries the source memo
+  into the target on schemas with sub-code support.
+- New result field on every project: `select_project`,
+  `get_current_project`, `analyze_for_coding` and the `restore_backup`
+  preview report `qualcoder_gui_signals` (an empty list when nothing
+  suggests an open QualCoder window). The signals are heuristics; the
+  4.0-specific ones read the project's `ai_data` folder and a local
+  process scan, and a QualCoder 3.x window is still detected through
+  its lock file as before.
+- New optional environment variable `QUALCODER_MCP_AI_CODER_NAME`.
+  Unset keeps the default `AI Coding Assistant`; `AI Agent` groups this
+  server's rows with QualCoder 4.0's built-in assistant; an invalid
+  value stops the server at startup with an error naming the variable.
+- The deprecated `session_id` duplicate that 0.10.1 kept in
+  session-tool responses is still emitted in this release and will be
+  removed in a later one; scripted consumers should read
+  `coding_session_id`.
 
 ## [0.10.1-alpha] - 2026-08-31
 

@@ -1,6 +1,6 @@
 [project]
 name = "qualcoder-mcp"
-version = "0.10.1-alpha"
+version = "0.11.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
 authors = [{name = "Niccolo Tempini", email = "n.tempini@exeter.ac.uk"}]
 # PEP 639 SPDX license expression (setuptools >= 77). The old
@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # <2 cap: mcp 2.0.0 (July 2026) removed mcp.server.fastmcp — an
+    # <2 cap: mcp 2.0.0 (July 2026) removed mcp.server.fastmcp, so an
     # uncapped install resolves to 2.x and the server cannot import
     # (verified empirically in a fresh venv). Lifting the cap is an
     # explicit migration project, not a routine bump.
