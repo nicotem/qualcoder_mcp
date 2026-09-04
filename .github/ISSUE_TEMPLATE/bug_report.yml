@@ -33,7 +33,7 @@ body:
     id: mcp-version
     attributes:
       label: qualcoder-mcp version
-      description: Run `pip show qualcoder-mcp` (pipx users `pipx list`, uv users `uv tool list`), or ask your assistant "what version of the qualcoder server is running?". pip spells 0.11.0-alpha as 0.11.0a0; either is fine.
+      description: Run `pip show qualcoder-mcp` in the environment you installed into (pipx users `pipx list`, uv users `uv tool list`). No tool reports the version; if you ask your assistant instead, treat its answer as a convenience, not proof. pip spells 0.11.0-alpha as 0.11.0a0; either spelling is fine.
       placeholder: e.g. 0.11.0a0
     validations:
       required: true

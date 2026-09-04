@@ -252,6 +252,11 @@ file.
   `copy_project_to_workspace` no longer copies `search.sqlite`, sqlite
   sidecar files or lock files; "no project selected" errors may name
   the last-used project.
+- Text-only changes: tool result and error messages now use a colon,
+  semicolon or comma where they used an em dash; no field names or values
+  changed. The Markdown codebook export (`export_codebook` with
+  `format="md"`) separates a code's name from its coding count with a
+  colon instead of an em dash.
 - Behavior changes only on QualCoder 4.0 projects (detected by schema
   probes, never version strings): reads honor per-coder visibility by
   default and results may carry a `coder_visibility` block (three

@@ -6374,6 +6374,9 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
     behaves, unless the note carries a '#####' private section, in which
     case the row is kept with the private section intact and only the
     public text is cleared. One annotation per coder per exact span.
+    The note is stored as its public part: a '#####' in the text you supply,
+    and everything after it, is not written, and a note that is empty once
+    that is removed is refused.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
