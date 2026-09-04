@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+type: software
+title: "qualcoder-mcp"
+abstract: "A Model Context Protocol server that lets an AI assistant read, analyze and, with researcher approval, write to QualCoder qualitative data analysis projects."
+authors:
+  - family-names: "Tempini"
+    given-names: "Niccolò"
+    affiliation: "University of Exeter"
+repository-code: "https://github.com/nicotem/qualcoder_mcp"
+license: MIT
+version: "0.11.0-alpha"
+date-released: "YYYY-MM-DD"
+keywords:
+  - "qualitative research"
+  - "QualCoder"
+  - "MCP"
+  - "CAQDAS"

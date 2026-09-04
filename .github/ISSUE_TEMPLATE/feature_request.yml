@@ -5,12 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Early adopters shape the roadmap here — feature ideas are as welcome as bug reports.
+        Early adopters shape the roadmap here: feature ideas are as welcome as bug reports.
   - type: textarea
     id: need
     attributes:
       label: What are you trying to do?
-      description: The research task or workflow, not just the feature — it helps to understand the underlying need.
+      description: The research task or workflow, not just the feature. It helps to understand the underlying need.
     validations:
       required: true
   - type: textarea

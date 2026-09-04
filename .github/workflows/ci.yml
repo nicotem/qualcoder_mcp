@@ -40,7 +40,7 @@ jobs:
           python -m pytest -ra --tb=short -q 2>&1 | tee pytest_output.txt
           code=${PIPESTATUS[0]}
           {
-            echo "### pytest — ${{ matrix.os }} / py${{ matrix.python-version }}"
+            echo "### pytest: ${{ matrix.os }} / py${{ matrix.python-version }}"
             echo ""
             echo '```'
             grep -E "^[0-9]+ (passed|failed)| failed,| error" pytest_output.txt | tail -3

@@ -1,11 +1,11 @@
 name: Publish to PyPI
 
-# Two publish paths, both via PyPI Trusted Publishing (OIDC — no tokens,
+# Two publish paths, both via PyPI Trusted Publishing (OIDC: no tokens,
 # no secrets stored in the repo):
 #
-#   1. TestPyPI — manual dry-run: trigger the workflow by hand
+#   1. TestPyPI, manual dry-run: trigger the workflow by hand
 #      (workflow_dispatch) and it publishes to test.pypi.org.
-#   2. PyPI — the real thing: publishing happens automatically when a
+#   2. PyPI, the real thing: publishing happens automatically when a
 #      GitHub Release is PUBLISHED.
 #
 # The owner must configure two trusted publishers on (Test)PyPI, both
