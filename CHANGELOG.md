@@ -391,36 +391,36 @@ Ground-truthed against the unreleased QualCoder development tree
 ## [0.9.0-alpha] - 2026-07-30
 
 PyPI packaging (`pip install qualcoder-mcp`), a whole-codebase security
-audit with three fixes, and a migration guide for existing testers —
+audit with three fixes, and a migration guide for existing testers,
 plus a critical dependency cap (`mcp<2`, since mcp 2.0.0 removed the
 FastMCP module the server is built on).
 
 ### Existing testers: how to upgrade (flag for the v0.9.0 release notes)
 
 If you installed a pre-0.9 version via `git clone` + `pip install -e .`:
-either stay on git (`git pull` + `pip install -e .` in the clone —
+either stay on git (`git pull` + `pip install -e .` in the clone;
 config unchanged, keeps working) or switch to the PyPI install in a
 **fresh** venv/pipx/uv and point your client config's `command` at the
 installed `qualcoder-mcp` (dropping the `args: ["-m", ...]` line). Do
-NOT plain-`pip install qualcoder-mcp` into the old venv — pip reports
+NOT plain-`pip install qualcoder-mcp` into the old venv; pip reports
 "Requirement already satisfied" and silently does nothing. Full
 before/after steps: INSTALL.md § "Upgrading from an earlier (git)
 install". Upgrading only replaces server code: QualCoder projects and
 AI-coding session files are untouched, and 0.6/0.7/0.8 sessions load
-on 0.9 unchanged (verified end-to-end) — there is no migration step.
+on 0.9 unchanged (verified end-to-end); there is no migration step.
 
-### Security — whole-codebase audit follow-ups (C-1 / P-1 / hardening)
+### Security: whole-codebase audit follow-ups (C-1 / P-1 / hardening)
 
 The whole-codebase security audit returned a ship-the-alpha verdict with
 three confirmed findings; all three are fixed here so the first PyPI
 publish includes them.
 
-- **C-1 (medium) — write-safety `finally` discipline extended to the
+- **C-1 (medium): write-safety `finally` discipline extended to the
   three older bespoke write tools.** `import_text_file`,
   `link_file_to_case` and `delete_coding` predated the `_perform_write`
   helper and lacked its unconditional cleanup, so a commit-time
-  `sqlite3.Error` (disk-full / IO / BUSY) — caught by none of their
-  handlers — could leave the global connection read-write with an open
+  `sqlite3.Error` (disk-full / IO / BUSY), caught by none of their
+  handlers, could leave the global connection read-write with an open
   transaction, which a later write would reuse and silently co-commit.
   `delete_coding` and `link_file_to_case` now route through
   `_perform_write` (one write path); `import_text_file` keeps its
@@ -430,19 +430,19 @@ publish includes them.
   under the same fault. Regression tests inject the fault through each
   tool and pin the clean-state guarantee **and** the no-co-commit
   property (the actual harm).
-- **P-1 (low) — export path containment hardened against a directory
+- **P-1 (low): export path containment hardened against a directory
   symlink.** `_resolve_export_path`'s directory branch now `.resolve()`s
   the joined candidate before the project-folder containment guard,
   mirroring the file branch. A dangling symlink named like the export
   file (whose target lies inside the project folder) is now collapsed
   and refused instead of being followed by `open()`.
-- **Hardening — GitHub Actions SHA-pinned + Dependabot.** Every action
+- **Hardening: GitHub Actions SHA-pinned + Dependabot.** Every action
   in `ci.yml` and `publish.yml` is pinned to a full commit SHA (with the
   human-readable version in a trailing comment), and a
   `.github/dependabot.yml` (github-actions, weekly) keeps the pins
   maintained.
 
-### Added — PyPI packaging (v0.9 headline)
+### Added: PyPI packaging (v0.9 headline)
 
 - Distribution metadata completed for PyPI: PEP 639 SPDX license
   expression (`license = "MIT"` + `license-files`; the deprecated
@@ -455,7 +455,7 @@ publish includes them.
   shows broken SUPPORT/PRIVACY/CHANGELOG links.
 - `.github/workflows/publish.yml`: build + `twine check --strict`,
   then publish via **PyPI Trusted Publishing** (OIDC, no stored
-  tokens) — TestPyPI on manual dispatch (environment `testpypi`),
+  tokens): TestPyPI on manual dispatch (environment `testpypi`),
   real PyPI on GitHub Release published (environment `pypi`).
 - Verified end to end without publishing: `python -m build` +
   `twine check` pass, and the wheel installed into a fresh
@@ -471,39 +471,39 @@ publish includes them.
   (July 2026) removed `mcp.server.fastmcp`; with the previous uncapped
   bound a fresh install resolved to 2.x and the server could not even
   import (caught empirically in a throwaway venv during migration-guide
-  verification — existing venvs were unaffected because they hold 1.x).
+  verification; existing venvs were unaffected because they hold 1.x).
   Migrating to the 2.x API is future work; the cap keeps every new
   install on the working 1.x line.
 
 ## [0.8.0-alpha] - 2026-07-25
 
-Inductive coding, report exports, and the write-surface completions —
+Inductive coding, report exports, and the write-surface completions,
 implemented against QualCoder 3.8.2 source ground truth, shaped by the
 first tester's feedback, and gated through independent QA and security
 review plus six-platform CI. Tool surface: 48 → 67.
 
-### Security — opt-in CSV formula sanitization (V8-1)
+### Security: opt-in CSV formula sanitization (V8-1)
 
 All four report exporters gain `sanitize_formulas` (default **False**).
 CSV cells whose text starts with `=` `+` `-` `@` tab or CR are treated
 as live formulas by Excel/LibreOffice/Google Sheets (CSV injection,
-CWE-1236) — and quoting does not defuse them. Pass
+CWE-1236), and quoting does not defuse them. Pass
 `sanitize_formulas=true` to neutralize every such cell with the
 standard `'` prefix (applied to all DB-derived text: code/category/
-case/coder names, memos, and coded seltext — raw source text, the
+case/coder names, memos, and coded seltext: raw source text, the
 sharpest vector). The default stays **verbatim** because these
 exporters exist for byte-parity with QualCoder's own exports (which do
 not escape either): default preserves parity, one word turns on
 safety. Every export response discloses which mode produced the file.
 
-### Added — report exports (v0.8 phase B, per the reporting ground-truth dossier)
+### Added: report exports (v0.8 phase B, per the reporting ground-truth dossier)
 
 Four read-only file exporters whose numbers and columns match
 QualCoder's own GUI exports (the parity discipline: same rows, same
 counting, stated rules, disclosed divergences). All follow the
 export_refi_qda path posture, accept an existing directory (QualCoder's
 default filename with `_0`, `_1` collision suffixes), refuse writing
-inside the project folder, and write UTF-8 with BOM — QualCoder's own
+inside the project folder, and write UTF-8 with BOM, QualCoder's own
 export encoding. CSV/txt/md only in the alpha: no xlsx, no new runtime
 dependency (researchers open CSV in Excel).
 
@@ -512,38 +512,38 @@ dependency (researchers open CSV in Excel).
   coders, orphans included).
 - **`export_coded_segments_report`** (csv/txt): QualCoder's Coding
   Report. Exact CSV dialect (`File, Coder, Coded, Id, Codename,
-  Coded_Memo, Category×N` — category chain immediate-parent-first,
+  Coded_Memo, Category×N`; category chain immediate-parent-first,
   padded; `ctid:N` ids; every cell quoted; CRLF). Filters mirror the
   GUI: code/case selection, EXACT coder match, file list, search text,
   important-only, and the variables checkbox (`FileVar_`/`CaseVar_`
   columns). Case mode uses the CONTAINMENT rule and says so in the
-  response — QualCoder itself ships a second, conflicting rule.
+  response; QualCoder itself ships a second, conflicting rule.
   Text codings only (disclosed).
 - **`export_frequencies_csv`**: QualCoder's Code Frequencies numbers
-  exactly — per-coder columns, recursive category roll-ups, counts over
-  all three media tables with orphaned codings included — with an
+  exactly (per-coder columns, recursive category roll-ups, counts over
+  all three media tables with orphaned codings included), with an
   explicit divergence note versus the conversational
   get_coding_frequencies (which counts text-on-existing-files only).
 - **`export_case_code_matrix_csv`**: the case × code cross-tab
-  (containment rule, stated; no totals row — parity).
+  (containment rule, stated; no totals row, for parity).
 - `find_cooccurring_codes` now documents that its counting is NOT
   QualCoder's co-occurrence matrix (different pairing semantics).
 
-### Docs — any MCP client (from first real tester feedback, F3)
+### Docs: any MCP client (from first real tester feedback, F3)
 
 - README, INSTALL and QUICKSTART now document running the server under
   **Claude Code** (`claude mcp add ...` / `.mcp.json`) and state that
-  any MCP client works — the first real-world tester ran the whole loop
+  any MCP client works; the first real-world tester ran the whole loop
   from Claude Code in Obsidian's side panel, not Claude Desktop.
 
-### Added — review-time span editing (v0.8, from first real tester feedback)
+### Added: review-time span editing (v0.8, from first real tester feedback)
 
 Our first tester's #1 friction: AI-suggested spans were too short to
 stand alone as quotable extracts, and there was no way to widen one at
 review time.
 
 - **`edit_suggestion`**: adjust a PENDING suggestion's span
-  (extend/shrink/move) and/or its code during review — no more
+  (extend/shrink/move) and/or its code during review; no more
   reject-and-re-record round-trips. New spans are re-verified against
   the file text with the same machinery as record_suggestions
   (authoritative slices, unique-locate, position-safety relay);
@@ -553,7 +553,7 @@ review time.
   per-status hints.
 - **Server-computed span alternatives**: every verified span (coding
   suggestions AND proposal evidence) carries up to two ready-made,
-  deterministic adjustments — "shorter" (the LONGEST sentence wholly
+  deterministic adjustments: "shorter" (the LONGEST sentence wholly
   inside the span, so abbreviation fragments like "Dr." can never win)
   and "longer" (the enclosing paragraph with any speaker label stripped
   so quotes start with speech; in blank-line-free speaker-turn
@@ -562,17 +562,17 @@ review time.
   floors mean no filler alternatives, previews are truncated and
   newline-flattened for token cost, and `length` is a code-point count.
   One call applies one: `edit_suggestion(use_alternative="shorter"|
-  "longer")` — recomputed from the CURRENT fulltext at use time, so
+  "longer")`, recomputed from the CURRENT fulltext at use time, so
   pre-v0.8 session files work unchanged. Boundaries handle \r\n\r\n,
   \n\n and U+2029 uniformly; no new dependencies.
 - **Server-emitted affordance hints**: the first manual span edit in a
   session emits a hint teaching the shorter/longer shortcut; the third
   same-direction alternative pick emits a calibration-escalation hint
-  (offer the session-level fix — e.g. "code paragraph-level spans" —
+  (offer the session-level fix, e.g. "code paragraph-level spans",
   instead of continuing per-item picks). Suggestions the researcher
   already adjusted render "(adjusted)" and get no further offers.
 - **`update_proposal(example_segments=...)`**: proposal evidence spans
-  are editable the same way — the replacement list is validated with
+  are editable the same way; the replacement list is validated with
   the same position machinery.
 - **Guidance recalibration** (tester findings F1b/F2):
   analyze_for_coding and record_suggestions now direct the model to
@@ -586,30 +586,30 @@ review time.
   span style ("code generous spans") is documented in the docstrings
   and explain_ai_coding_tools.
 
-### Added — attributes (v0.8 phase D2, per the cases-attributes ground-truth dossier)
+### Added: attributes (v0.8 phase D2, per the cases-attributes ground-truth dossier)
 
 - **`create_attribute_type`**: define a case, file or **journal** attribute
-  (QualCoder's real domain set — `'both'` does not exist) with the
+  (QualCoder's real domain set; `'both'` does not exist) with the
   placeholder back-fill QualCoder's GUI performs: one empty (`''`) value
   row per existing entity of the domain. Attribute names are global
   across all three domains; the `Ref_*` reference-importer names are
-  reserved in **both** spellings (`Ref_Author` AND `Ref_Authors` — the
+  reserved in **both** spellings (`Ref_Author` AND `Ref_Authors`; the
   upstream dialog reserves only the singular but its RIS importer
   creates the plural).
 - **`set_attribute`** (unified for case/file/journal, per Q-D2): set or
-  clear (`""`) an attribute value with byte-fidelity per domain — the
+  clear (`""`) an attribute value with byte-fidelity per domain: the
   case path refreshes owner+date on update, the file/journal paths write
-  the value only, exactly like the three GUI paths — and the
+  the value only, exactly like the three GUI paths, and the
   insert-if-missing dance (never assume the placeholder row exists;
   QualCoder's case-side placeholder heal is a no-op in 3.8.2).
   **Documented deviation:** a non-castable value for a numeric attribute
   is refused with an error; QualCoder's GUI silently blanks it.
 
-### Fixed — dossier-exposed bugs in existing tools (v0.8 phase D2)
+### Fixed: dossier-exposed bugs in existing tools (v0.8 phase D2)
 
 - **`query_by_attribute` numeric semantics**: `CAST('' AS REAL)` is
   `0.0` in SQLite, so every UNSET attribute (empty placeholder) matched
-  numeric `gt/gte/lt/lte` comparisons as zero — unset rows are now
+  numeric `gt/gte/lt/lte` comparisons as zero; unset rows are now
   excluded from numeric comparisons. `equals` on a numeric attribute now
   compares numerically (`"5"` finds a stored `"5.0"`); `equals ""`
   keeps string semantics as the way to find unset attributes.
@@ -618,30 +618,30 @@ review time.
 - **`link_file_to_case` overlap-aware duplicate check**: QualCoder ships
   TWO conflicting whole-file link conventions (`pos1 = len-1` from the
   case file manager, `pos1 = len` from Manage Files "Assign case" and
-  survey import) and each GUI path's probe only matches its own — so
+  survey import) and each GUI path's probe only matches its own, so
   cross-path double-links happen silently upstream. The MCP link now
   refuses when ANY existing row already covers the whole file in either
   convention.
 - **`import_text_file` / `create_case` placeholder back-fill exactness**:
   both were back-filling for a hypothetical `'both'` attribute domain;
   the real domain set is `case|file|journal` and upstream drives each
-  back-fill with a single-domain filter — matched exactly.
+  back-fill with a single-domain filter; matched exactly.
 - **Annotation addenda** (dossier §7): `add_annotation` now refuses a
-  same-coder OVERLAPPING annotation (the GUI never creates one — and
+  same-coder OVERLAPPING annotation (the GUI never creates one, and
   overlapping rows are hazardous to QualCoder's pos0-keyed clear path),
   pointing at the existing row; read paths tolerate and normalize
   REFI-born empty/NULL-memo annotation rows.
 
-### Added — inductive / open coding (v0.8 phase A)
+### Added: inductive / open coding (v0.8 phase A)
 
 Six new tools close the loop the AI coding surface was missing: until
-now Claude could only APPLY codes that already existed in the codebook —
+now Claude could only APPLY codes that already existed in the codebook;
 it can now propose brand-new codes it finds in the data, with the same
 review-first discipline as coding suggestions.
 
 - **`propose_codes`**: records brand-new code proposals (name,
   definition, rationale, optional colour/category, evidence spans) on
-  the existing AI-coding session — **nothing touches the project
+  the existing AI-coding session; **nothing touches the project
   database**. Evidence spans get the full record_suggestions treatment:
   exact-match verification, unique-locate correction, authoritative
   slices, and the position-safety relay. Proposal names that collide
@@ -651,17 +651,17 @@ review-first discipline as coding suggestions.
 - **`review_proposals`**: detailed read-only review (definitions,
   rationales, collisions, evidence) for the approval conversation.
 - **`update_proposal`** / **`merge_proposals`**: the session-only refine
-  loop — rename (collision flag refreshed), recolour, recategorise
+  loop: rename (collision flag refreshed), recolour, recategorise
   (existing categories only), rewrite the definition, or fold two
   proposals into one (evidence deduplicated by span, source marked
-  rejected). Proposals already created are immutable — the real
+  rejected). Proposals already created are immutable; the real
   codebook tools take over.
 - **`update_proposal_status`**: records the USER'S approve/reject
   decisions, mirroring update_suggestion_status (created proposals are
   skipped, never reopened).
 - **`create_proposed_codes`**: the single write step. Every approved
   proposal is validated against the live project BEFORE the backup and
-  the write (name collisions now **block** — flag-then-block; missing
+  the write (name collisions now **block**, flag-then-block; missing
   categories refuse; evidence must still match the file text) so the
   batch lands atomically or not at all. Colours default to QualCoder's
   own palette. `apply_coded_segments=False` by default: codes only,
@@ -670,15 +670,15 @@ review-first discipline as coding suggestions.
   evidence spans as codings (owner "AI Coding Assistant") in the same
   transaction.
 
-### Added — write-surface completions (v0.8 phase D1)
+### Added: write-surface completions (v0.8 phase D1)
 
 - **Annotations** (per the QualCoder 3.8.2 ground-truth contract):
-  `add_annotation` (the note IS the annotation — empty notes refused; one
+  `add_annotation` (the note IS the annotation, so empty notes are refused; one
   per coder per exact span, pre-checked; position-validated with the
   position-safety relay on unsafe files), `update_annotation` (note +
   date updated, owner/span immutable; **clearing the note deletes the
   annotation**, exactly as QualCoder behaves), `delete_annotation`
-  (keyed by anid — never by pos0, avoiding the upstream delete-by-pos0
+  (keyed by anid, never by pos0, avoiding the upstream delete-by-pos0
   bug on colliding spans).
 - **`merge_category`** (preview → confirm → backup): reparents the
   source category's codes and sub-categories to the TARGET (unlike
@@ -687,10 +687,10 @@ review-first discipline as coding suggestions.
   touched. Completes the category surface.
 - **`create_case`**: unique name, `''` memo convention, owner from the
   project codername, and attribute placeholder rows for existing case
-  attributes — exactly the rows QualCoder's own create-case writes.
+  attributes, exactly the rows QualCoder's own create-case writes.
   Composes with `link_file_to_case` / `import_text_file(case_name=...)`.
 
-### Added — backup retention (v0.8 phase C)
+### Added: backup retention (v0.8 phase C)
 
 - `prune_backups(keep_last, older_than_days, confirm)`: prune this
   server's own backup snapshots by retention policy, with the
@@ -711,11 +711,11 @@ QualCoder 3.8.2 source ground truth and hardened through QA, security,
 and four parallel test tracks (transport, property-based, scale/media,
 and fault injection). Tool surface: 36 → 48.
 
-### Added — memo writing & codebook editing
+### Added: memo writing & codebook editing
 
 - **Memo writing**: `set_memo(target_type, target_id, memo)` for codes,
   categories, files, codings and cases (content-only, matching
-  QualCoder — never rewrites date/owner; `""` clears, never NULL) and
+  QualCoder: never rewrites date/owner; `""` clears, never NULL) and
   `add_journal_entry(name, entry)` (name charset/uniqueness enforced).
   Fixed a pre-existing bug where coding-memo edits stamped the coding's
   `date`.
@@ -732,7 +732,7 @@ and fault injection). Tool surface: 36 → 48.
   rather than silently truncate it. Implemented against QualCoder 3.8.2
   source ground truth.
 
-### Changed — consolidated polish round (QA + four parallel test tracks)
+### Changed: consolidated polish round (QA + four parallel test tracks)
 
 - Name-based category parameters refuse ambiguous case-variant matches
   ('Theme' vs 'theme') with the candidates listed instead of silently
@@ -770,9 +770,9 @@ Everything since 0.4.0: the QualCoder v14 schema alignment, the
 blockers, QualCoder-3.8.2 ground-truth reconciliation, recovery tooling,
 REFI-QDA revival), hardened through three QA/security review rounds.
 
-### Added — the AI coding loop now works end-to-end
+### Added: the AI coding loop now works end-to-end
 
-- **`record_suggestions(session_id, suggestions, replace)`** — the
+- **`record_suggestions(session_id, suggestions, replace)`**: the
   previously missing middle step of the workflow. `analyze_for_coding`
   created an empty session and instructed Claude to call a Python API no
   MCP client can reach, so no coding could ever be written through the
@@ -784,30 +784,30 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   authoritative fulltext slice is stored so `seltext ==
   fulltext[pos0:pos1]` always holds for MCP-written rows.
 
-### Added — error recovery (full restore tooling)
+### Added: error recovery (full restore tooling)
 
-- **`delete_coding(coding_id, create_backup)`** — remove one coded
+- **`delete_coding(coding_id, create_backup)`**: remove one coded
   segment (never the code or the file), backup-first.
-- **`list_backups()`** — lists both backup families next to the project:
+- **`list_backups()`**: lists both backup families next to the project:
   this server's `*_backup_*` snapshots and QualCoder's own `*_BKUP_*`
   open-time backups (flagged: those may exclude A/V media).
-- **`restore_backup(backup_path, confirm)`** — guarded restore: previews
+- **`restore_backup(backup_path, confirm)`**: guarded restore: previews
   until `confirm=true`, only accepts sibling backups of the open
   project, refuses while QualCoder has the project open, creates a
   `_prerestore` safety backup first, and strips stray lock files.
 
-### Added — other new tools
+### Added: other new tools
 
-- **`copy_project_to_workspace(source_path, new_name)`** — the
+- **`copy_project_to_workspace(source_path, new_name)`**: the
   documented "work on a copy" safety step is now a real tool (it was
   listed in the README but never registered).
 - **`link_file_to_case(file_id, case_id|case_name)`** and an optional
-  `case_name` parameter on `import_text_file` — imported files were
+  `case_name` parameter on `import_text_file`; imported files were
   invisible to every case-based analysis because no case_text row was
   ever written. The link replicates QualCoder's own Case file manager
-  row exactly (pos0=0, pos1=len(fulltext)-1, app-side duplicate check —
+  row exactly (pos0=0, pos1=len(fulltext)-1, app-side duplicate check;
   the table has no unique constraint).
-- **`export_refi_qda(output_path, session_id, overwrite)`** — REFI-QDA
+- **`export_refi_qda(output_path, session_id, overwrite)`**: REFI-QDA
   export revived (dead code since the v0.4.0 tool removals) and made
   actually importable: `internal://{guid}.txt` source references and
   GUID-named members per spec §8.3/8.4 (QualCoder's importer
@@ -819,14 +819,14 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   hierarchy as nested `isCodable="false"` codes, real-UTC timestamps,
   documented position convention, UTF-8 without BOM. Exports are
   schema-validated against the official REFI-QDA Project.xsd in the test
-  suite (vendored with provenance; xmlschema as a dev dependency) —
+  suite (vendored with provenance; xmlschema as a dev dependency);
   QualCoder itself never validates, so this is where conformance is
   proven.
 
-### Changed — write-path safety (QualCoder 3.8.2 ground truth)
+### Changed: write-path safety (QualCoder 3.8.2 ground truth)
 
 - **Writes respect QualCoder's `project_in_use.lock` heartbeat.**
-  QualCoder holds no SQLite lock while idle — its lock file is its only
+  QualCoder holds no SQLite lock while idle; its lock file is its only
   concurrency control. Every write tool now refuses with "This project
   is open in QualCoder (user X)…" while the heartbeat is fresh (≤30 s),
   holds the lock itself during its own write window, re-checks
@@ -842,7 +842,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   `qualcoder_open` so the state can be cheaply re-checked after the
   user confirms. The concurrency story: warn at select, ask at session
   start, refuse at write.
-- **`apply_codings` is bound to its session's project** — applying a
+- **`apply_codings` is bound to its session's project**: applying a
   session while a different project is open (cross-project corruption)
   is refused; `record_suggestions` enforces the same binding.
 - **Every approved suggestion is re-validated before the backup and the
@@ -850,7 +850,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   image/A/V sources were accepted silently), code exists, positions in
   range, segment text matches the stored positions. Failures return a
   per-GUID list; nothing is written and no backup is created.
-- **Applied suggestions are marked `applied`** — re-running
+- **Applied suggestions are marked `applied`**: re-running
   `apply_codings` explains the batch was already applied instead of
   failing wholesale on the duplicate constraint.
 - **Writes match QualCoder's value contract**: `important` stored as
@@ -858,14 +858,14 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   with strict `#RRGGBB` validation, and writes hard-require schema v14
   (older projects: "open and save in QualCoder 3.8 to upgrade").
 - **Position semantics documented and enforced** (code-point offsets,
-  0-based, end-exclusive — what SQLite substr, all QualCoder reports and
+  0-based, end-exclusive: what SQLite substr, all QualCoder reports and
   its own AI pipeline use). One-way U+2029→`\n` tolerance for text
   copied from GUI-created codings; per-file `position_safe` warnings on
   texts where QualCoder's GUI diverges (its documented emoji/CRLF bug);
   `import_text_file` strips a leading BOM and normalizes CRLF so new
   files are position-safe from birth.
 
-### Changed — robustness and correctness
+### Changed: robustness and correctness
 
 - Locked databases are reported as locked (previously mislabeled
   "Invalid or corrupted SQLite database"), and a failed read-write
@@ -875,7 +875,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   refused at connect/select with clear guidance instead of raw
   tracebacks; all 30+ tools return sanitized `{"error": ...}` JSON for
   anticipated failures.
-- Backup names get a uniquifying suffix — two writes in the same second
+- Backup names get a uniquifying suffix; two writes in the same second
   no longer abort with "File exists".
 - Imports are fully validated (including NUL/control-character filenames
   that bypassed both duplicate guards, now rejected with NFC
@@ -895,7 +895,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   search covers imported documents/PDFs (previously silently skipped)
   and reports how many textless sources were not searched.
 - `query_by_attribute` gained real operators (`equals`, `contains`,
-  `gt/gte/lt/lte`) — the docstring had promised substring and numeric
+  `gt/gte/lt/lte`); the docstring had promised substring and numeric
   queries the implementation couldn't do.
 - `cleanup_old_sessions` refuses `days_old < 1` (0 silently deleted ALL
   sessions); `analyze_for_coding` clamps `min_confidence` to [0,1];
@@ -904,7 +904,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
 ### Documentation
 
 - Support policy: new SUPPORT.md and a "Support & Feedback" README
-  section — all bug reports, questions and feature requests go through
+  section: all bug reports, questions and feature requests go through
   GitHub Issues; the author's email in the package metadata/LICENSE is
   an authorship signature, not a support channel.
 - Truth pass over README, AI_CODING_WORKFLOW and AI_CODING_GUIDE: only
