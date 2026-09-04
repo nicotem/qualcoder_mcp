@@ -5,11 +5,11 @@ This guide will get you up and running with the Qualcoder MCP server in 10 minut
 ## Prerequisites Checklist
 
 - [ ] Python 3.10 or higher installed
-- [ ] Claude Desktop installed — or any other MCP client: Claude Code
+- [ ] Claude Desktop installed, or any other MCP client: Claude Code
       users can skip the Desktop config below and just run
       `claude mcp add qualcoder -- <venv-python> -m qualcoder_mcp.server`
       (see "Using with Claude Code" in the README)
-- [ ] At least one Qualcoder project created (`.qda` file)
+- [ ] At least one Qualcoder project created (a `.qda` project folder)
 
 > Choosing between Claude plans, an API key, or a fully local model?
 > See "Choosing your AI host: data-governance options" in the README
@@ -18,6 +18,11 @@ This guide will get you up and running with the Qualcoder MCP server in 10 minut
 ## Installation Steps
 
 ### 1. Install the MCP Server
+
+The quickest install is from PyPI (`pip install qualcoder-mcp` in a
+virtual environment, or `pipx install qualcoder-mcp`; see "Installation"
+in the README, whose config examples use the resulting `qualcoder-mcp`
+command). The steps below use the source install:
 
 ```bash
 # Navigate to where you want to install (e.g., Documents)
@@ -116,10 +121,10 @@ Show me the most frequently used codes
 
 When a new version is released: `cd` into the cloned folder, run
 `git pull`, then `venv/bin/pip install -e .`, and **fully quit and
-relaunch your Claude client** — new tools only appear after the
-restart. Ask Claude *"what version of the qualcoder server is
-running?"* to confirm. Updates never touch your projects or backups
-(the server is code-only).
+relaunch your Claude client**; new tools only appear after the
+restart. Confirm the installed version with `venv/bin/pip show
+qualcoder-mcp` (version `0.11.0-alpha` shows as `0.11.0a0`). Updates
+never touch your projects or backups (the server is code-only).
 
 ## Troubleshooting
 
@@ -146,9 +151,12 @@ You should see it start without errors. Press Ctrl+C to stop.
 
 ### Common Errors
 
-**"QUALCODER_PROJECT_PATH not set"**
-- Make sure the `env` section in config has the path
-- Check for typos in the environment variable name
+**"No Qualcoder project selected"**
+- The server has no project open. With the fixed-project config above,
+  make sure the `env` section has `QUALCODER_PROJECT_PATH` and check
+  for typos in the variable name; otherwise ask Claude to list and
+  select a project (the error also names the last project used on this
+  machine when it still exists, so one `select_project` call recovers)
 
 **"Database file not found"**
 - Verify the `.qda` project folder path is correct
@@ -174,6 +182,6 @@ Once it's working:
 - Review [MCP documentation](https://modelcontextprotocol.io/)
 - Check [Qualcoder documentation](https://github.com/ccbogel/QualCoder/wiki)
 - Bug reports, questions and feature ideas: [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues)
-  (the only support channel — support requests by email will not receive a reply; see [SUPPORT.md](SUPPORT.md))
+  (the only support channel; support requests by email will not receive a reply; see [SUPPORT.md](SUPPORT.md))
 
 Happy analyzing! 🎉

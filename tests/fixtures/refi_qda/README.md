@@ -12,7 +12,7 @@ installed package.
 - Retrieved: 2026-07-15
 - Source: https://raw.githubusercontent.com/openqda/refi-tools/main/docs/schemas/project/v1.0/Project.xsd
   (the openqda/refi-tools repository, a public mirror of the REFI-QDA
-  materials published at https://www.qdasoftware.org/ — the official
+  materials published at https://www.qdasoftware.org/, the official
   download on qdasoftware.org's "Project Implementation Files" page is
   served through a Tresorit share that does not allow direct retrieval;
   the canonical schema URL referenced by the specification,

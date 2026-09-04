@@ -42,11 +42,20 @@ The AI coding system uses a dedicated workspace folder:
 
 ### Close QualCoder First
 
-QualCoder marks an open project with a `project_in_use.lock` heartbeat
-file, and this server respects it: **every write operation is refused
-while QualCoder has the project open** ("This project is open in
-QualCoder — close the project in QualCoder, then retry"). Reads still
-work, with a warning that data may change underneath.
+QualCoder 3.x marks an open project with a `project_in_use.lock`
+heartbeat file, and this server respects it: **every write operation is
+refused while a released QualCoder has the project open** ("This project
+is open in QualCoder (user ...). Close the project in QualCoder, then
+retry."). Reads still work, with a warning that data may change
+underneath.
+
+QualCoder 4.0 writes no lock file. For it the server can only report
+that the project appears to be open (`qualcoder_gui_signals` in
+`select_project`, `get_current_project` and `analyze_for_coding`: a
+heuristic that can miss an idle window), so make sure yourself that no
+QualCoder window has the project open before writing. An open 4.0
+window will not show changes written by this server until the project
+is closed and reopened there.
 
 ### Automatic Backups
 
@@ -57,7 +66,7 @@ your_project_backup_20251029_143045.qda
 ```
 
 Use `list_backups` to see them (QualCoder's own `_BKUP_` snapshots are
-listed too) and `restore_backup` to roll the project back — it previews
+listed too) and `restore_backup` to roll the project back; it previews
 first, requires explicit confirmation, and saves a safety backup of the
 current state so even a restore can be undone. A single wrong coding can
 be removed with `delete_coding(ctid)` instead.
@@ -112,7 +121,7 @@ Use a minimum confidence threshold of 0.7
 4. Identifies text that matches the codes
 5. Assigns confidence scores (0.0-1.0)
 6. Generates reasoning for each suggestion
-7. Records the suggestions into the session with `record_suggestions` —
+7. Records the suggestions into the session with `record_suggestions`;
    every suggestion is verified against the file text before it is
    stored (positions are corrected automatically when the excerpt is
    unique in the file; mismatches are rejected with an explanation)
@@ -156,6 +165,15 @@ Or see specific suggestions:
 ```
 Show me details for suggestions 1, 3, and 5 with surrounding context
 ```
+
+Want a wider or tighter quote, or a different code on a suggestion? Say
+so instead of rejecting it:
+```
+Make suggestion 3 longer
+```
+`edit_suggestion` applies a server-computed shorter or longer span
+alternative (or an exact new span, or a new code) to the pending
+suggestion; nothing touches the database until you apply.
 
 **What you'll see:**
 ```
@@ -232,7 +250,8 @@ Apply the approved codings to the project
 2. Loops through all approved suggestions
 3. Writes each as a coding to the database
 4. Includes reasoning and confidence in memo
-5. Records owner as "AI Coding Assistant"
+5. Records the configured AI coder name as owner (`AI Coding Assistant`
+   by default; see `QUALCODER_MCP_AI_CODER_NAME` in INSTALL.md)
 6. Reports success with coding IDs (ctids)
 
 **What you'll see:**
@@ -262,12 +281,13 @@ Applying 6 approved codings...
 
 ### Step 6: Verify in Qualcoder
 
-1. Open Qualcoder
+1. Open Qualcoder (a QualCoder 4.0 window that already had the project
+   open must close and reopen it to show the new codings)
 2. Open the workspace project: `~/Documents/Qualcoder MCP Projects/Interview Study.qda`
 3. Go to **Coding > Code Text**
 4. Select the files you analyzed
 5. You should see the AI-generated codings with:
-   - Owner: "AI Coding Assistant"
+   - Owner: the AI coder name (`AI Coding Assistant` by default)
    - Memo containing reasoning and confidence score
 
 ## Example Conversations
@@ -555,7 +575,7 @@ Backups are in the same folder as your workspace projects:
 **Restore from backup:**
 ```
 Show me the backups for this project        (list_backups)
-Restore the project from <backup name>      (restore_backup — previews
+Restore the project from <backup name>      (restore_backup; previews
                                              first, then confirm=true)
 ```
 The restore keeps a safety backup of the pre-restore state, so it can
@@ -563,7 +583,7 @@ itself be undone.
 
 ## Troubleshooting
 
-### "No approved suggestions to apply — N already applied"
+### "No approved suggestions to apply: N already applied"
 
 **Problem:** Re-running apply_codings on a session that was already
 written. Applied suggestions are marked and never double-applied.
@@ -634,24 +654,27 @@ In Qualcoder:
 **Problem:** Made changes in Qualcoder GUI, Claude doesn't see them.
 
 **Solution:**
-Claude caches project data. If you modify in Qualcoder:
-```
-Reload the current project to see my latest changes
-```
+The server reads the project database live, so anything QualCoder has
+saved is visible on the next tool call; if Claude is repeating an
+earlier answer, ask it to query again. The reverse direction is the
+limitation: a QualCoder 4.0 window does not display changes written by
+this server until the project is closed and reopened there.
 
 ### Want to undo applied codings
 
 **Problem:** Applied codings but want to revert.
 
 **Solution:**
-- One wrong coding: `Delete coding 42` (`delete_coding` — the ctid is in
-  the apply output and in get_coded_segments)
+- One wrong coding: `Delete coding 42` (`delete_coding`; the ctid is in
+  the apply output and in get_coded_segments; on QualCoder 4.0 projects
+  a hidden coder's row, or a row whose memo carries a `#####` private
+  note, is refused unless you pass the override)
 - Whole batch: `restore_backup` with the backup created by the apply
   (see `list_backups`); it previews first and keeps a safety backup
 
 Or manually in Qualcoder:
 - Open project
-- Find codings by owner "AI Coding Assistant"
+- Find codings by the AI coder name (`AI Coding Assistant` by default)
 - Delete unwanted codings
 
 ### Session file corrupted or lost
@@ -729,7 +752,7 @@ Check your AI coding quality:
 ```
 In Qualcoder:
 1. Open Code Text view
-2. Filter by owner "AI Coding Assistant"
+2. Filter by the AI coder name (`AI Coding Assistant` by default)
 3. Review random sample
 4. Compare with your manual coding
 5. Adjust approach as needed
@@ -753,7 +776,7 @@ After applying:
 - [ ] Backup was created (check path)
 - [ ] Open project in Qualcoder
 - [ ] Verify codings look correct
-- [ ] Owner shows "AI Coding Assistant"
+- [ ] Owner shows the AI coder name (`AI Coding Assistant` by default)
 - [ ] Memos contain reasoning and confidence
 
 ---

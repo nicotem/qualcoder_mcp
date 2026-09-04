@@ -130,7 +130,7 @@ What are my most used codes?
 | Feature | Auto-Discovery | Fixed Project |
 |---------|---------------|---------------|
 | **Setup** | Easier (no paths to configure) | Requires full path |
-| **Multiple Projects** | ✅ Switch anytime | ❌ Need to restart Claude |
+| **Multiple Projects** | ✅ Switch anytime | ✅ Switch anytime too (`select_project` works; the variable only sets the start-up project) |
 | **First Use** | Need to select project | Immediate access |
 | **Best For** | Researchers with multiple projects | Single project workflows |
 
@@ -143,7 +143,7 @@ If auto-discovery doesn't find your projects:
 1. **Check your Qualcoder installation:**
    - Open Qualcoder
    - Look at recent projects to see where they're stored
-   - Note the full path to a `.qda` file
+   - Note the full path to a `.qda` project folder
 
 2. **Tell Claude to search there:**
    ```
@@ -160,6 +160,12 @@ If you're using auto-discovery and haven't selected a project:
 List available projects
 Select the first project
 ```
+
+When a project was selected before on this machine and still exists, the
+error also names it ("The last project used on this machine was
+<path>"), so one `select_project` call with that path recovers. The
+pointer lives in `~/.qualcoder_mcp/mru_project.json`; nothing is
+selected automatically.
 
 ### Can't find a specific project
 
@@ -186,7 +192,7 @@ Select the project in /full/path/to/project.qda
 The project selection feature adds three new tools:
 
 ### 1. `list_available_projects`
-Discovers `.qda` files in common locations
+Discovers `.qda` project folders in common locations
 
 **Optional parameter:**
 - `search_directories`: List of custom paths to search
@@ -195,10 +201,16 @@ Discovers `.qda` files in common locations
 Opens a specific Qualcoder project
 
 **Required parameter:**
-- `project_path`: Full path to `.qda` file
+- `project_path`: Path to the `.qda` project folder (or to the `data.qda` file inside it)
+
+The result reports `qualcoder_gui_signals` (best-effort heuristics for an
+open QualCoder 4.0 window; a released QualCoder 3.x is detected through
+its lock file) and remembers the selection as the last-used project.
 
 ### 3. `get_current_project`
-Shows which project is currently open
+Shows which project is currently open, whether a released QualCoder has
+it open (`qualcoder_open`, from its lock file) and the QualCoder 4.0
+heuristics (`qualcoder_gui_signals`)
 
 **No parameters**
 

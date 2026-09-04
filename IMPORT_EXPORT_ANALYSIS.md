@@ -2,7 +2,7 @@
 
 > **HISTORICAL DOCUMENT (early analysis).** This scoping report predates
 > the write-enabled releases. The server is no longer read-only and does
-> support importing text and exporting REFI-QDA — see the README and
+> support importing text and exporting REFI-QDA; see the README and
 > CHANGELOG for current capabilities.
 
 ## Executive Summary

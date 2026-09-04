@@ -1,6 +1,6 @@
 # Security Review Report - Qualcoder MCP Server
 
-> **HISTORICAL DOCUMENT — all issues listed below were resolved.** This is
+> **HISTORICAL DOCUMENT: all issues listed below were resolved.** This is
 > a point-in-time review from an early version; the findings it enumerates
 > were fixed in the releases that followed (see SECURITY_FIXES.md and the
 > CHANGELOG). It is **not** a list of current open vulnerabilities. The
