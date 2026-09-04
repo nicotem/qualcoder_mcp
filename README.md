@@ -40,8 +40,8 @@ and searchable, so every answer helps the next researcher who hits the
 same thing.
 
 **Please don't email support requests.** The author's email address in
-the package metadata and LICENSE is an authorship signature, not a
-support channel; support requests sent by email will not receive a
+the package metadata is an authorship signature, not a support
+channel; support requests sent by email will not receive a
 reply. GitHub Issues is where everything is read and tracked.
 
 See [SUPPORT.md](https://github.com/nicotem/qualcoder_mcp/blob/main/SUPPORT.md) for the full policy.
