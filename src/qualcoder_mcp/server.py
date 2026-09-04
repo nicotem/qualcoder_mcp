@@ -215,7 +215,7 @@ def _tool_guard(fn):
             return json.dumps({"error": "File or project not found."})
         except OSError as e:
             logger.error(f"OS error in {fn.__name__}: {e}")
-            return json.dumps({"error": "File system operation failed — check "
+            return json.dumps({"error": "File system operation failed: check "
                                          "disk space and permissions."})
         except sqlite3.Error as e:
             logger.error(f"SQLite error in {fn.__name__}: {e}")
@@ -554,7 +554,7 @@ def _qualcoder_open_error() -> Optional[Dict[str, Any]]:
     """Error dict when QualCoder currently has this project open.
 
     QualCoder's only concurrency control is its project_in_use.lock
-    heartbeat file — it holds NO SQLite lock while idle, so writes would
+    heartbeat file; it holds NO SQLite lock while idle, so writes would
     succeed at the SQLite level and then be silently corrupted or deleted
     by QualCoder (snapshot-based text editor, open-time orphan cleanup and
     VACUUM). Every write path must call this before touching the database.
@@ -625,7 +625,7 @@ def _resolve_category_by_name(name: str):
 
     Exact (case-sensitive) match wins; otherwise a UNIQUE case-insensitive
     match is used. code_cat's unique(name) is BINARY, so 'Theme' and
-    'theme' can legally coexist — with both present a case-insensitive
+    'theme' can legally coexist; with both present a case-insensitive
     lookup must refuse and list the candidates instead of silently picking
     the first one (QA5-1).
 
@@ -641,7 +641,7 @@ def _resolve_category_by_name(name: str):
         return ci[0]["id"], None
     if len(ci) > 1:
         return None, {
-            "error": f"Category name '{name}' is ambiguous — {len(ci)} "
+            "error": f"Category name '{name}' is ambiguous: {len(ci)} "
                      f"categories differ only by letter case. Use the exact "
                      f"spelling of the one you mean (their ids are listed).",
             "candidates": [{"id": c["id"], "name": c["name"]} for c in ci],
@@ -782,9 +782,9 @@ def _perform_write(op, create_backup: bool = True,
                 except Exception as e:
                     logger.error(f"Failed to create backup: {e}")
                     return {
-                        "error": "Failed to create a backup — check disk space "
+                        "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
-                        "message": f"Aborting to protect your data — "
+                        "message": f"Aborting to protect your data: "
                                    f"{backup_fail_detail}.",
                     }
             try:
@@ -828,7 +828,7 @@ def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]
     """Verify a session belongs to the currently open project.
 
     Session-consuming writes are bound to the project the session was
-    created in — applying a session to a different project would silently
+    created in; applying a session to a different project would silently
     corrupt it (cross-project write trapdoor).
 
     Returns:
@@ -861,7 +861,7 @@ def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]
     if session_db_path != current_db_path:
         return {
             "error": "This session belongs to a different project than the one "
-                     "currently open. Writes are bound to the session's project — "
+                     "currently open. Writes are bound to the session's project; "
                      "open it with select_project first.",
             "session_project": session_db_path.parent.name,
             "current_project": current_db_path.parent.name,
@@ -926,7 +926,7 @@ def _resolve_segment_positions(
         return True, start, start + len(needle), have_positions, None
     if len(hits) == 0:
         error = {
-            "reason": "segment_text was not found in the file — it must be an "
+            "reason": "segment_text was not found in the file; it must be an "
                       "exact, verbatim excerpt of the file text",
             "provided_snippet": _snippet(segment_text),
         }
@@ -936,7 +936,7 @@ def _resolve_segment_positions(
     return False, None, None, False, {
         "reason": f"segment_text occurs {'more than 10' if len(hits) > 10 else len(hits)} "
                   f"times in the file and the given positions do not match any of "
-                  f"them exactly — provide the correct start_pos/end_pos",
+                  f"them exactly; provide the correct start_pos/end_pos",
         "provided_snippet": _snippet(segment_text),
     }
 
@@ -1010,8 +1010,8 @@ def _sentence_spans_global(fulltext: str):
 
 
 def _crosses_speaker_turn(fulltext: str, lo: int, hi: int) -> bool:
-    """True if (lo,hi) contains a newline that starts a speaker-label line
-    — extending a quote across it would splice another speaker's words."""
+    """True if (lo,hi) contains a newline that starts a speaker-label line;
+    extending a quote across it would splice another speaker's words."""
     i = fulltext.find("\n", max(0, lo), hi)
     while i != -1:
         if _SPEAKER_LABEL_RE.match(fulltext, i + 1):
@@ -1148,7 +1148,7 @@ def _compute_span_alternatives(fulltext: str, start: int, end: int):
 
 
 def _alternative_gloss(alt: Dict[str, Any]) -> str:
-    """Render form: 'shorter (1 sentence, 89 chars)' — chars = code points."""
+    """Render form: 'shorter (1 sentence, 89 chars)'; chars = code points."""
     return f"{alt['label']} ({alt['unit']}, {alt['length']} chars)"
 
 
@@ -1369,18 +1369,39 @@ def select_project(project_path: str) -> str:
     Use this tool to change which project you're working with. You can get
     a list of available projects using 'list_available_projects' first.
 
-    The result may include a `warning` — e.g. that QualCoder currently has
-    this project open. If so, RELAY it to the user: ask them to close the
-    project in QualCoder before any coding they intend to save, because
-    all write operations will be refused until it is closed
+    The result may include a `warning`, for example that QualCoder
+    currently has this project open. If so, RELAY it to the user: ask them
+    to close the project in QualCoder before any coding they intend to
+    save, because all write operations will be refused until it is closed
     (re-check with get_current_project).
 
+    QualCoder 4.0 detection is best-effort: 4.0 writes no lock file, so
+    the result also carries `qualcoder_gui_signals`, heuristics built from
+    a write sidecar on the project database, recent activity on the 4.0 AI
+    search index or chat history, and a guarded local process scan. When
+    any are present the warning says the project APPEARS to be open in
+    QualCoder; confirm with the user before any write rather than treating
+    it as certain. When none are present the warning names the limitation
+    instead (an idle 4.0 window leaves no file trace). An open 4.0 window
+    will not display external changes until the project is reopened there.
+    If the database cannot be opened, the error says whether project-scoped
+    evidence suggests an open QualCoder window (a mid-write 4.0 window can
+    leave a hot journal) and otherwise points to a damaged database or a
+    backup restore.
+
+    A successful selection is recorded as this machine's most recently used
+    project (~/.qualcoder_mcp/mru_project.json) so that a later "no project
+    selected" error can name it; the selection itself is never restored
+    automatically.
+
     Args:
-        project_path: Full path to the .qda file you want to open
+        project_path: Path to the .qda project folder (or to the data.qda
+                      file inside it)
 
     Returns:
-        JSON with success status, project information, and possibly a
-        `warning` to pass on to the user
+        JSON with success status, project information,
+        `qualcoder_gui_signals`, and possibly a `warning` to pass on to
+        the user
     """
     try:
         switch_project(project_path)
@@ -1409,7 +1430,7 @@ def select_project(project_path: str) -> str:
             warnings.append(
                 f"QualCoder currently has this project open (user "
                 f"{holder or 'unknown'}). Ask the user to close the project "
-                f"in QualCoder before any coding they intend to save — all "
+                f"in QualCoder before any coding they intend to save; all "
                 f"write operations will be refused until it is closed. Reads "
                 f"work but may return changing data."
             )
@@ -1503,16 +1524,33 @@ def select_project(project_path: str) -> str:
 def get_current_project() -> str:
     """Get information about the currently open project.
 
-    Also reports whether QualCoder currently has this project open
-    (`qualcoder_open`, from its project_in_use.lock heartbeat). Use this
-    to re-check after asking the user to close QualCoder: proceed with
-    coding workflows only when `qualcoder_open` is false — all database
-    writes are refused while it is true.
+    Also reports whether QualCoder currently has this project open, with
+    two signals of different strength:
+    - `qualcoder_open` (boolean): QualCoder 3.x's project_in_use.lock
+      heartbeat. This is the hard gate: all database writes are refused
+      while it is true. Use it to re-check after asking the user to close
+      QualCoder, and proceed with coding workflows only when it is false.
+    - `qualcoder_gui_signals` (list, always present): best-effort
+      heuristics for an open QualCoder 4.0 window, which writes no lock
+      file (a write sidecar on the project database, recent activity on
+      the 4.0 AI search index or chat history, a running process that
+      looks like QualCoder). When any are present a `qualcoder_gui_hint`
+      says the project APPEARS to be open; that is a heuristic, so confirm
+      with the user before writing rather than treating it as certain. An
+      idle 4.0 window with no recent AI activity leaves no file trace, so
+      an empty list is not proof that no window is open.
+
+    An open QualCoder 4.0 window will not display external changes until
+    the project is reopened there.
 
     Returns:
-        JSON with current project path, basic metadata, and the
-        QualCoder-open state (qualcoder_open boolean; qualcoder_lock
-        detail when a lock file is present)
+        JSON with current project path, basic metadata, the schema report
+        (capability probes and write support), the QualCoder-open state
+        (qualcoder_open boolean; qualcoder_lock detail when a lock file is
+        present), and qualcoder_gui_signals (with qualcoder_gui_hint when
+        any signal is present). With no project open, the message names
+        the last project used on this machine when that project still
+        exists.
     """
     try:
         if current_project_path is None:
@@ -1539,7 +1577,7 @@ def get_current_project() -> str:
             result["qualcoder_lock"] = {
                 "state": "active",
                 "holder": holder or "unknown",
-                "note": "QualCoder has this project open — all database "
+                "note": "QualCoder has this project open; all database "
                         "writes will be refused until it is closed there. "
                         "Ask the user to close it, then re-check."
             }
@@ -1548,7 +1586,7 @@ def get_current_project() -> str:
                 "state": "stale",
                 "holder": holder or "unknown",
                 "note": "A leftover lock file from a QualCoder session that "
-                        "did not close cleanly — writes proceed normally."
+                        "did not close cleanly; writes proceed normally."
             }
 
         # P1-5: best-effort 4.0 GUI-open heuristics (4.0 writes no lock
@@ -1600,7 +1638,7 @@ def copy_project_to_workspace(
     except a symlink loop (a link back into a folder already being
     copied), which is skipped and reported the same way.
 
-    The copy is NOT opened automatically — use select_project on the
+    The copy is NOT opened automatically: use select_project on the
     returned path when you are ready to work on it.
 
     Args:
@@ -1736,7 +1774,10 @@ def search_files(
     PERFORMANCE GUIDE:
     - Filename search: Fast (milliseconds) - searches file names only
     - Content search: Slower (can take seconds for 100+ files) - searches full text
-    - Memo search: Fast (milliseconds) - searches file memos
+    - Memo search: Fast (milliseconds) - searches file memos. Only the
+      public part of a memo is matched and previewed: text from the first
+      '#####' marker onward (QualCoder 4.0's private-note convention) is
+      never searched or returned
 
     IMPORTANT - CLARIFICATION WORKFLOW:
     When a user's request is ambiguous (e.g., "search for files containing paul"):
@@ -1797,7 +1838,8 @@ def search_files(
     Tips:
     - For finding a specific interview by participant name, use search_filename
     - For finding specific quotes or themes, use search_content
-    - For searching your annotations, use search_memo
+    - For searching file memos, use search_memo (annotations and code
+      memos are searched by the search_memos tool)
     - You can combine multiple search locations
     - Once you have file_id, use analyze_file_with_coding() to get full content
     """
@@ -1976,7 +2018,7 @@ def export_refi_qda(
     - Default (no coding_session_id): exports ALL text codings of the currently
       open project.
     - With coding_session_id: exports that AI coding session's suggestions
-      (all statuses) — useful for reviewing suggestions in another tool
+      (all statuses), useful for reviewing suggestions in another tool
       before applying them.
 
     Position convention (QualCoder's): selections are character offsets
@@ -1986,8 +2028,9 @@ def export_refi_qda(
 
     Known limitations (documented): cases, annotations and journals are not
     included (code categories ARE preserved as nested codes); all
-    selections are attributed to a single export user rather than the
-    original coders.
+    selections are attributed to a single export user (the configured AI
+    coder name, QUALCODER_MCP_AI_CODER_NAME, default "AI Coding
+    Assistant") rather than the original coders.
 
     Args:
         output_path: Where to write the .qdpx file (must end in .qdpx; the
@@ -2019,7 +2062,7 @@ def export_refi_qda(
         return json.dumps({"error": "output_path must end in .qdpx"})
     if not out_file.parent.is_dir():
         return json.dumps({
-            "error": "The output directory does not exist — create it first "
+            "error": "The output directory does not exist; create it first "
                      "or choose an existing folder (e.g. ~/Documents)"
         })
     if out_file.exists() and not overwrite:
@@ -2030,7 +2073,7 @@ def export_refi_qda(
     project_folder = validate_qda_path(current_project_path).parent
     if project_folder in out_file.parents or out_file.parent == project_folder:
         return json.dumps({
-            "error": "Refusing to write the export inside the project folder — "
+            "error": "Refusing to write the export inside the project folder; "
                      "choose a location outside it."
         })
 
@@ -2102,7 +2145,7 @@ def export_refi_qda(
                         "coding_id": seg["id"],
                         "code_name": code["name"],
                         "file_name": seg["file_name"],
-                        "reason": "missing positions — the coding row may be damaged",
+                        "reason": "missing positions; the coding row may be damaged",
                     })
                     continue
                 if pos0 < 0 or pos1 <= pos0 or pos1 > len(fulltext):
@@ -2111,7 +2154,7 @@ def export_refi_qda(
                         "code_name": code["name"],
                         "file_name": seg["file_name"],
                         "reason": f"positions {pos0}-{pos1} invalid for the file "
-                                  f"text (length {len(fulltext)}) — likely a "
+                                  f"text (length {len(fulltext)}); likely a "
                                   f"GUI-created coding on a position-unsafe "
                                   f"(emoji/CRLF) file",
                     })
@@ -2132,7 +2175,7 @@ def export_refi_qda(
             result = {"error": "The project has no text codings to export"}
             if skipped_invalid:
                 result["error"] = (
-                    "The project has no text codings to export — all its "
+                    "The project has no text codings to export; all its "
                     "codings were skipped as invalid (see skipped_details)"
                 )
                 result["skipped_invalid_codings"] = len(skipped_invalid)
@@ -2161,7 +2204,7 @@ def export_refi_qda(
             output["av_image_codings_not_exported"] = media
             output["note"] += (
                 f" This project also has {media['av']} audio/video and "
-                f"{media['image']} image codings — REFI export covers text "
+                f"{media['image']} image codings; REFI export covers text "
                 f"codings only, so those are NOT included."
             )
         if skipped_invalid:
@@ -2258,8 +2301,14 @@ def analyze_file_with_coding(file_id: int) -> str:
         This requires seeing both coded segments AND the full transcript context.
 
     If the result contains `position_safety_warning`, you MUST relay it to
-    the user before coding or applying anything on this file — codings on
+    the user before coding or applying anything on this file: codings on
     such files can render shifted or unhighlighted in QualCoder's editor.
+
+    Coder visibility (QualCoder 4.0 projects): when the project hides some
+    coders' work, coded_segments and annotations reflect only visible
+    coders (what the user sees in QualCoder) and the result carries a
+    coder_visibility block. This tool has no coder override; use
+    get_coded_segments(coder=...) to read a specific coder's rows.
     """
     result = get_db().get_file_with_coding(file_id)
     if result is None:
@@ -2272,7 +2321,7 @@ def analyze_file_with_coding(file_id: int) -> str:
     if not result.get("file_info", {}).get("is_text", True):
         result["note"] = (
             f"This source is {result['file_info'].get('type', 'media')}, not "
-            f"text — it has no codable text content, and its image/audio-video "
+            f"text; it has no codable text content, and its image/audio-video "
             f"codings (if any) are not shown by this tool."
         )
 
@@ -2414,7 +2463,7 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0,
     NOT QualCoder's co-occurrence matrix: QualCoder's report classifies
     each unordered coding PAIR once (exact/inclusion/overlap) into an
     asymmetric code-by-code matrix, while this tool counts every
-    overlapping pair occurrence per target code — the numbers will not
+    overlapping pair occurrence per target code, so the numbers will not
     match QualCoder's Code co-occurrence report. Say so if the user asks
     for a comparison.
 
@@ -2471,6 +2520,12 @@ def get_case_code_matrix(coder: Optional[str] = None) -> str:
     coder_visibility block. Pass coder to count one specific coder's
     rows from the full data. The CSV export tool is NOT filtered
     (QualCoder report-export parity).
+
+    Args:
+        coder: Optional coder name. When given, counts only that coder's
+               codings, read from the full data regardless of QualCoder
+               4.0 visibility settings; when omitted, counts all visible
+               coders' codings.
 
     Returns:
         JSON object with:
@@ -2586,13 +2641,22 @@ def analyze_for_coding(
 
     MANDATORY QUALCODER CHECK: if the result contains `qualcoder_open: true`,
     STOP and ask the user to close QualCoder (or close this project inside
-    it) before proceeding with ANY part of the coding workflow — do not read
+    it) before proceeding with ANY part of the coding workflow: do not read
     files for coding, do not record suggestions, do not continue until the
     user confirms it is closed. All database writes are refused while
     QualCoder has the project open, so continuing would waste the whole
     suggest -> review -> approve flow only to fail at apply time. After the
     user confirms, re-check with get_current_project (its `qualcoder_open`
     field) and proceed only when it is false.
+
+    `qualcoder_open` comes from QualCoder 3.x's lock file. QualCoder 4.0
+    writes no lock file, so the result also carries `qualcoder_gui_signals`
+    (best-effort heuristics) and, when any are present, a
+    `qualcoder_gui_hint` saying the project APPEARS to be open in
+    QualCoder. That is a heuristic, not a refusal: ASK the user whether a
+    QualCoder window has this project open and continue only when they
+    confirm it does not. An empty list is not proof either (an idle 4.0
+    window leaves no file trace), so when in doubt ask before applying.
 
     WORKFLOW:
     1. I analyze the files and identify relevant segments
@@ -2603,14 +2667,14 @@ def analyze_for_coding(
     5. You apply approved suggestions using apply_codings
 
     SPAN STYLE (learned from real researcher use): prefer
-    COMPLETE-THOUGHT spans — a quote that stands alone (a full sentence
-    or small paragraph with enough context to be quotable in a paper) —
+    COMPLETE-THOUGHT spans, a quote that stands alone (a full sentence
+    or small paragraph with enough context to be quotable in a paper),
     over minimal phrases. Researchers overwhelmingly widen short spans
     at review time; err generous.
 
     CO-CODING: actively consider whether each segment warrants MULTIPLE
     codes. Coding the same span under several codes is normal, expected
-    qualitative practice (the schema supports it — record one
+    qualitative practice (the schema supports it; record one
     suggestion per code). If the researcher adds a second code to a
     fragment during review, treat that as a calibration signal: look
     for the same code pairing in subsequent segments.
@@ -2619,9 +2683,9 @@ def analyze_for_coding(
         file_ids: List of file IDs to analyze
         code_names: Optional list of specific code names to apply
         instruction: Guidance for what to look for in the analysis.
-                     Also the place to set span style once per session —
+                     Also the place to set span style once per session,
                      e.g. "code generous spans, full paragraphs" or
-                     "keep spans to single sentences" — and honor it in
+                     "keep spans to single sentences"; honor it in
                      every suggestion you record.
         min_confidence: Minimum confidence for suggestions (0.0-1.0)
 
@@ -2688,7 +2752,7 @@ def analyze_for_coding(
         action_required = (
             f"QualCoder appears to have this project open (user "
             f"{holder or 'unknown'}). Ask the user to close QualCoder (or "
-            f"close this project in it) before continuing — all database "
+            f"close this project in it) before continuing; all database "
             f"writes will be refused while it is open, so the "
             f"review-and-approve work would be wasted. Once they confirm it "
             f"is closed, re-check via get_current_project (the "
@@ -2696,7 +2760,7 @@ def analyze_for_coding(
             f"with the coding workflow."
         )
         qualcoder_banner = f"""
-⚠️ **STOP — QUALCODER HAS THIS PROJECT OPEN**
+⚠️ **STOP: QUALCODER HAS THIS PROJECT OPEN**
 
 qualcoder_open: true
 action_required: {action_required}
@@ -2838,7 +2902,7 @@ def record_suggestions(
 
     This is step 2 of the AI coding workflow: after analyze_for_coding creates
     a session, use this tool to persist the suggestions you (Claude) identified
-    by reading the files. Nothing is written to the QualCoder database — the
+    by reading the files. Nothing is written to the QualCoder database: the
     suggestions are stored in the session for the user to review, approve, and
     apply.
 
@@ -2852,15 +2916,15 @@ def record_suggestions(
       is rejected with an explanation. start_pos/end_pos may be omitted when
       the excerpt is unique in the file.
 
-    SPAN STYLE: prefer COMPLETE-THOUGHT spans — a full sentence or small
-    paragraph that stands alone as a quotable extract — over minimal
+    SPAN STYLE: prefer COMPLETE-THOUGHT spans, a full sentence or small
+    paragraph that stands alone as a quotable extract, over minimal
     phrases. Real researchers consistently widen short spans at review
     time (edit_suggestion exists for that, but getting it right first
     saves them the round-trip). If the session's `instruction` set a span
     style (e.g. "code generous spans"), honor it in every suggestion.
 
     CO-CODING: for each segment, actively ask whether it warrants MORE
-    THAN ONE code — record one suggestion per code on the same span.
+    THAN ONE code: record one suggestion per code on the same span.
     Same-span different-code suggestions are legitimate and expected in
     qualitative work; do not default to one code per fragment. When the
     researcher adds a second code to a fragment during review, treat it
@@ -2872,9 +2936,9 @@ def record_suggestions(
         suggestions: List of suggestion objects with keys:
             file_id (int, required), code_id (int) or code_name (str),
             start_pos/end_pos (int, optional if the excerpt is unique),
-            segment_text (str, required — exact excerpt),
+            segment_text (str, required; exact excerpt),
             reasoning (str), confidence (float 0.0-1.0),
-            context_before/context_after (str, optional — auto-filled)
+            context_before/context_after (str, optional; auto-filled)
         replace: If True, discard previously recorded PENDING suggestions
                  first (approved/rejected/applied are always kept)
 
@@ -2884,11 +2948,11 @@ def record_suggestions(
         Each recorded item lists its available span alternatives by label
         only ("alternatives": ["shorter","longer"]). Do NOT print the
         alternative texts. End your summary with ONE line, e.g.: "Any
-        span can be widened or narrowed — just say e.g. longer on #2."
+        span can be widened or narrowed; just say e.g. longer on #2."
         When the user asks for longer/shorter, call edit_suggestion with
-        use_alternative — never ask them for character positions.
+        use_alternative; never ask them for character positions.
         If it contains `position_safety_warning`, you MUST relay that
-        warning to the user before proceeding to approval — codings on the
+        warning to the user before proceeding to approval: codings on the
         named files can render shifted or unhighlighted in QualCoder's
         editor (reports and exports are unaffected).
 
@@ -2954,7 +3018,7 @@ def record_suggestions(
         if not file_content.get("is_text") or not fulltext:
             rejected.append({
                 "index": idx,
-                "reason": f"file '{file_content['name']}' is not a text source — "
+                "reason": f"file '{file_content['name']}' is not a text source; "
                           f"text codings require a file with text content"
             })
             continue
@@ -3091,14 +3155,14 @@ def review_suggestions(
     """Review coding suggestions in detail.
 
     Shows detailed information about specific suggestions from an analysis
-    session, WITH the surrounding text by default — researchers judge a
-    span by what is around it (is the quote complete? should it be
+    session, WITH the surrounding text by default, because researchers
+    judge a span by what is around it (is the quote complete? should it be
     wider?). Use this to examine suggestions before approving/rejecting;
     if a span needs adjusting, edit_suggestion changes it in place.
 
     SPAN ALTERNATIVES: each pending, not-yet-adjusted suggestion may
     carry ready-made shorter/longer spans (core sentence / enclosing
-    paragraph or speaker turn). Present them COMPACTLY — a one-line
+    paragraph or speaker turn). Present them COMPACTLY, as a one-line
     "want it shorter (1 sentence, 89 chars) or longer (paragraph,
     412 chars)?" affordance, never full alternative quotes per
     suggestion (decision fatigue). Surface them proactively only when
@@ -3106,8 +3170,8 @@ def review_suggestions(
     calibration signal) or asks about context; otherwise mention once
     that alternatives exist. One pick applies via
     edit_suggestion(use_alternative="shorter"|"longer"). Suggestions
-    the researcher already adjusted show "(adjusted)" and get no offers
-    — do not offer to undo their decision.
+    the researcher already adjusted show "(adjusted)" and get no offers;
+    do not offer to undo their decision.
 
     Args:
         coding_session_id: The session ID from analyze_for_coding
@@ -3181,7 +3245,7 @@ def review_suggestions(
             else:
                 picks = " / ".join(_alternative_gloss(a)
                                    for a in alternatives)
-                output.append(f"↔ Span alternatives: {picks} — apply with "
+                output.append(f"↔ Span alternatives: {picks}; apply with "
                               f"edit_suggestion(use_alternative=...)")
 
     return "\n".join(output)
@@ -3204,17 +3268,17 @@ def edit_suggestion(
     The review-time refinement tool: when the researcher wants a
     suggestion's span widened to a complete quote (or narrowed, or
     moved), or wants a different code on it, edit it here instead of
-    rejecting and re-recording. Session-only — nothing touches the
+    rejecting and re-recording. Session-only: nothing touches the
     project database until apply_codings.
 
     Span editing accepts one of:
-    - use_alternative="shorter"|"longer" — the one-call answer to
+    - use_alternative="shorter"|"longer", the one-call answer to
       "make it shorter/longer" (details under Args);
     - new start_pos and/or end_pos ("extend it to position 120"; an
-      omitted bound keeps its current value) — the stored text becomes
+      omitted bound keeps its current value): the stored text becomes
       the exact file slice for the new span;
     - a new segment_text (the exact excerpt; positions optional when it
-      occurs exactly once in the file) — verified with the same
+      occurs exactly once in the file), verified with the same
       machinery as record_suggestions, positions auto-corrected when
       the excerpt is unique.
     The surrounding context shown by review_suggestions is refreshed,
@@ -3226,7 +3290,7 @@ def edit_suggestion(
     the result's changes.span.from.
 
     Only PENDING suggestions are editable: applied ones are immutable
-    (the coding is in the database — use delete_coding + record again),
+    (the coding is in the database; use delete_coding + record again),
     and approved/rejected ones reflect a decision the user already made
     (change the decision with update_suggestion_status, then edit).
 
@@ -3236,14 +3300,14 @@ def edit_suggestion(
         start_pos: New start position (code-point offset, 0-based)
         end_pos: New end position (end-exclusive)
         segment_text: New exact excerpt (alternative to positions)
-        use_alternative: "shorter" | "longer" — apply the
+        use_alternative: "shorter" | "longer": apply the
             server-precomputed span alternative (shorter = the span
             trimmed to its core sentence; longer = the enclosing
             paragraph, else ± one sentence). This is the preferred
             response to "make #3 longer" / "widen that one": one call,
             no positions needed. Not every suggestion has both: shorter
             is absent when the span is already one sentence, longer at
-            document boundaries — on a miss the error lists which
+            document boundaries; on a miss the error lists which
             labels exist; fall back to explicit start_pos/end_pos or
             segment_text. Mutually exclusive with the manual span
             parameters.
@@ -3276,18 +3340,18 @@ def edit_suggestion(
         return json.dumps({"error": f"Suggestion {suggestion_guid} not found"})
     if sugg.status != "pending":
         hints = {
-            "applied": "the coding is already in the database — use "
+            "applied": "the coding is already in the database; use "
                        "delete_coding to remove it, then record a new "
                        "suggestion",
             "approved": "un-approve it first (update_suggestion_status "
                         "reject, then approve after editing) or leave the "
                         "decision as made",
-            "rejected": "it was rejected — record a corrected suggestion "
+            "rejected": "it was rejected; record a corrected suggestion "
                         "with record_suggestions instead, or approve it "
                         "as-is if the rejection was a mistake",
         }
         return json.dumps({
-            "error": f"Only PENDING suggestions can be edited — this one is "
+            "error": f"Only PENDING suggestions can be edited; this one is "
                      f"{sugg.status.upper()}; "
                      f"{hints.get(sugg.status, 'no edit path')}"
         })
@@ -3298,7 +3362,7 @@ def edit_suggestion(
         if manual_span:
             return json.dumps({
                 "error": "use_alternative is mutually exclusive with manual "
-                         "start_pos/end_pos/segment_text — pick one"
+                         "start_pos/end_pos/segment_text; pick one"
             })
         # Recompute from the CURRENT fulltext (stored span_alternatives are
         # presentational only — the file may have changed, and pre-v0.8
@@ -3330,7 +3394,7 @@ def edit_suggestion(
     wants_code = code_id is not None or code_name is not None
     if not wants_span and not wants_code:
         return json.dumps({
-            "error": "Nothing to change — pass start_pos/end_pos/"
+            "error": "Nothing to change: pass start_pos/end_pos/"
                      "segment_text, use_alternative, and/or "
                      "code_id/code_name"
         })
@@ -3399,7 +3463,7 @@ def edit_suggestion(
     final_code_id = new_code["id"] if new_code else sugg.code_id
     if (new_start, new_end, final_code_id) == (
             sugg.start_pos, sugg.end_pos, sugg.code_id):
-        return json.dumps({"error": "No effective change — the span and "
+        return json.dumps({"error": "No effective change: the span and "
                                     "code are unchanged"})
 
     # Refuse an edit that lands exactly on another suggestion
@@ -3412,7 +3476,7 @@ def edit_suggestion(
                 "error": f"That edit would duplicate suggestion "
                          f"{other.guid} ({other.code_name}, "
                          f"{other.start_pos}-{other.end_pos}, "
-                         f"{other.status}) — reject this one instead"
+                         f"{other.status}); reject this one instead"
             })
 
     if wants_span:
@@ -3457,7 +3521,7 @@ def edit_suggestion(
                     "The researcher is adjusting spans. From now on, when "
                     "presenting suggestions add one line offering the "
                     "shortcut: every suggestion has precomputed "
-                    "shorter/longer spans — they can just say 'longer on "
+                    "shorter/longer spans; they can just say 'longer on "
                     "#N'."
                 )
         elif use_alternative in ("shorter", "longer"):
@@ -3473,7 +3537,7 @@ def edit_suggestion(
                        "tight single-sentence spans'")
                 result["calibration_hint"] = (
                     f"That is the third '{use_alternative}' pick this "
-                    f"session — the default span length is miscalibrated. "
+                    f"session; the default span length is miscalibrated. "
                     f"Offer the session-level fix instead of continuing "
                     f"per-item picks: {fix}."
                 )
@@ -3490,7 +3554,7 @@ def edit_suggestion(
         "span_alternatives": [_alternative_gloss(a)
                               for a in sugg.span_alternatives],
         "status": sugg.status,
-        "next_step": "Still pending — approve with update_suggestion_status "
+        "next_step": "Still pending; approve with update_suggestion_status "
                      "when the user is happy with it.",
     })
     return json.dumps(result, indent=2)
@@ -3507,7 +3571,7 @@ def update_suggestion_status(
 
     Use this to record the USER'S decisions about which suggestions should
     be applied to the database. Approve only the suggestions the user has
-    actually reviewed and confirmed — do not approve on their behalf.
+    actually reviewed and confirmed; do not approve on their behalf.
 
     Suggestions already APPLIED to the database are immutable here and are
     skipped (reported as skipped_applied); to remove an applied coding,
@@ -3548,7 +3612,7 @@ def update_suggestion_status(
     skipped_note = ""
     if result.get("skipped_applied"):
         skipped_note = (
-            f"- Already applied (left unchanged): {result['skipped_applied']} — "
+            f"- Already applied (left unchanged): {result['skipped_applied']}; "
             f"applied suggestions are already in the database; to remove one, "
             f"use delete_coding\n"
         )
@@ -3650,7 +3714,7 @@ def apply_codings(
         message = ("No approved suggestions to apply. Use "
                    "`update_suggestion_status` to approve suggestions first.")
         if already_applied:
-            message = (f"No approved suggestions to apply — {already_applied} "
+            message = (f"No approved suggestions to apply: {already_applied} "
                        f"suggestion(s) in this session were already applied to "
                        f"the database in a previous run.")
         return json.dumps({
@@ -3685,7 +3749,7 @@ def apply_codings(
             problem = {"reason": f"file_id {sugg.file_id} does not exist"}
         elif not file_content.get("is_text") or not fulltext:
             problem = {"reason": f"file '{file_content['name']}' is not a text "
-                                 f"source — text codings require text content"}
+                                 f"source; text codings require text content"}
         elif sugg.code_id not in codes_by_id:
             problem = {"reason": f"code_id {sugg.code_id} does not exist"}
         elif not (isinstance(sugg.start_pos, int) and isinstance(sugg.end_pos, int)
@@ -3696,7 +3760,7 @@ def apply_codings(
                 sugg.segment_text, sugg.segment_text.replace("\u2029", "\n")):
             problem = {
                 "reason": "segment text does not match the file text at the "
-                          "stored positions — re-record this suggestion with "
+                          "stored positions; re-record this suggestion with "
                           "record_suggestions (it verifies and corrects positions)",
                 "expected_snippet": _snippet(fulltext[sugg.start_pos:sugg.end_pos]),
                 "provided_snippet": _snippet(sugg.segment_text),
@@ -3711,7 +3775,7 @@ def apply_codings(
 
     if failures:
         return json.dumps({
-            "error": f"{len(failures)} approved suggestion(s) failed validation — "
+            "error": f"{len(failures)} approved suggestion(s) failed validation; "
                      f"nothing was written and no backup was created. Fix or "
                      f"reject the listed suggestions, then apply again.",
             "failures": failures,
@@ -3744,9 +3808,9 @@ def apply_codings(
                     logger.error(f"Failed to create backup: {e}")
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": "Failed to create a backup — check disk space "
+                        "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
-                        "message": "Aborting to protect your data — nothing was written."
+                        "message": "Aborting to protect your data: nothing was written."
                     })
 
             try:
@@ -3880,7 +3944,7 @@ def import_text_file(
     QualCoder's file manager and available for coding.
 
     Optionally links the new file to an existing case (participant) in the
-    same transaction — without a case link the file is invisible to every
+    same transaction; without a case link the file is invisible to every
     case-based analysis (matrices, case reports). You can also link later
     with link_file_to_case.
 
@@ -3980,7 +4044,7 @@ def import_text_file(
                 except Exception as e:
                     logger.error(f"Failed to create backup: {e}")
                     return json.dumps({
-                        "error": "Failed to create a backup — check disk space "
+                        "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
                         "message": "Aborting to protect your data."
                     })
@@ -4056,7 +4120,7 @@ def link_file_to_case(
     """Link a source file to a case so it appears in case-based analyses.
 
     THIS WRITES TO THE DATABASE. Creates the whole-file case_text link that
-    QualCoder's own "Case file manager" would create — without it, a file
+    QualCoder's own "Case file manager" would create; without it, a file
     is invisible to get_codes_by_case, get_case_code_matrix, case reports
     and every other case-based analysis. Files imported with
     import_text_file are NOT linked to any case by default.
@@ -4136,7 +4200,7 @@ def delete_coding(coding_id: int, create_backup: bool = True,
 
     THIS WRITES TO THE DATABASE. Use it to remove a coding that was applied
     by mistake (e.g. an approved AI suggestion that turned out to be wrong).
-    It removes ONE coding — the assignment of a code to a text span — never
+    It removes ONE coding (the assignment of a code to a text span), never
     the code itself, the source file, or any other coding.
 
     A backup is created first by default, so the deletion can be undone with
@@ -4174,7 +4238,7 @@ def delete_coding(coding_id: int, create_backup: bool = True,
         coders' names and coding decisions never enter the conversation.
 
     Example:
-        "Delete coding 42 — that segment was coded wrongly"
+        "Delete coding 42, that segment was coded wrongly"
     """
     # Validate on the read-only connection BEFORE upgrading/backup: the
     # row must exist and both guards must pass (or be overridden)
@@ -4226,9 +4290,12 @@ def list_backups() -> str:
     """List the automatic backups of the currently open project.
 
     Every write operation (apply_codings, import_text_file, delete_coding,
-    restore_backup) creates a timestamped backup folder next to the project,
-    named '<project>_backup_<timestamp>.qda'. This tool lists them, newest
-    first, so you can pick one for restore_backup.
+    restore_backup and the other write tools) creates a timestamped backup
+    folder next to the project by default, named
+    '<project>_backup_<timestamp>.qda'. This tool lists them (kind 'mcp')
+    together with QualCoder's own '<project>_BKUP_*' backups found next to
+    the project (kind 'qualcoder'), newest first, so you can pick one for
+    restore_backup.
 
     Backups carry the whole project tree, ai_data/ included (QualCoder
     4.0's AI prompt library and chat history are non-regenerable user
@@ -4268,7 +4335,7 @@ def list_backups() -> str:
             "QualCoder settings 'directory' (not listed here); newer "
             "QualCoder builds write _BKUP_ backups next to the project "
             "again, and those ARE listed with kind='qualcoder'.",
-            "MCP backups (kind='mcp') accumulate until pruned — use "
+            "MCP backups (kind='mcp') accumulate until pruned; use "
             "prune_backups(keep_last=..., older_than_days=...) to reclaim "
             "disk space (retention never touches QualCoder's own backups).",
             "Backups include the whole project tree, ai_data/ included "
@@ -4286,7 +4353,7 @@ def list_backups() -> str:
 def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
     """Collect both backup families next to the project, newest first.
 
-    Families: this server's {name}_backup_{ts}[...].qda (kind 'mcp' —
+    Families: this server's {name}_backup_{ts}[...].qda (kind 'mcp',
     including the *_prerestore safety copies) and QualCoder's own
     {name}_BKUP_{...}.qda (kind 'qualcoder'). Each entry carries name,
     path, kind, created, age_days and size_mb.
@@ -4327,14 +4394,14 @@ def prune_backups(keep_last: Optional[int] = None,
                   confirm: bool = False) -> str:
     """Delete this project's own backup snapshots to reclaim disk space.
 
-    DESTRUCTIVE to your recovery points — preview first, then confirm.
+    DESTRUCTIVE to your recovery points: preview first, then confirm.
     Every write creates a full-project backup copy and they accumulate
     forever; this tool prunes them by a retention policy you choose:
 
     - keep_last=N: keep only the N newest MCP backups
     - older_than_days=D: remove MCP backups older than D days
     - both: a backup is removed only if it fails BOTH criteria (beyond the
-      newest N AND older than D days) — the conservative intersection
+      newest N AND older than D days), the conservative intersection
 
     Safety rules:
     - ONLY this server's backups are touched (the {project}_backup_*
@@ -4418,14 +4485,14 @@ def prune_backups(keep_last: Optional[int] = None,
                 b["name"] == newest_prerestore["name"]
                 for b in prerestore_removed):
             notes.append(
-                "This removes your most recent pre-restore safety snapshot — "
+                "This removes your most recent pre-restore safety snapshot, "
                 "the state saved just before the last restore_backup."
             )
 
     if not to_remove:
         return json.dumps({
             "success": True,
-            "message": "Nothing to prune — every MCP backup satisfies the "
+            "message": "Nothing to prune: every MCP backup satisfies the "
                        "retention policy.",
             "kept_count": len(kept),
         }, indent=2)
@@ -4464,7 +4531,7 @@ def prune_backups(keep_last: Optional[int] = None,
     }
     if failed:
         result["failed_to_remove"] = failed
-        result["error"] = ("Some backup folders could not be removed — "
+        result["error"] = ("Some backup folders could not be removed; "
                            "check permissions.")
     if notes:
         result["notes"] = notes
@@ -4495,12 +4562,13 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     """Restore the currently open project from one of its backups.
 
     THIS REPLACES THE CURRENT PROJECT STATE with the chosen backup snapshot.
-    Everything done since that backup is removed from the project — which is
+    Everything done since that backup is removed from the project, which is
     why this tool:
     1. does nothing until called with confirm=true (the default call returns
        a preview of what would happen),
-    2. only accepts backups of the currently open project (created by this
-       server, sitting next to the project folder),
+    2. only accepts backups of the currently open project sitting next to
+       the project folder: this server's own `<project>_backup_<timestamp>`
+       snapshots and QualCoder's own `<project>_BKUP_<timestamp>` copies,
     3. creates a safety backup of the CURRENT state first, so even a restore
        can be undone,
     4. refuses to run while QualCoder has the project open (its heartbeat
@@ -4862,7 +4930,7 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
     try:
         if not isinstance(days_old, int) or days_old < 1:
             return json.dumps({
-                "error": "days_old must be a positive integer (>= 1) — "
+                "error": "days_old must be a positive integer (>= 1); "
                          "refusing to delete recent or all sessions. To remove "
                          "a specific session use delete_coding_session."
             })
@@ -4913,14 +4981,20 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "step_2": "Claude reads the files and records its suggestions "
                           "(record_suggestions - each one is verified against "
                           "the file text)",
-                "step_3": "Review suggestions (review_suggestions)",
+                "step_3": "Review suggestions (review_suggestions; "
+                          "edit_suggestion adjusts a span or code in place "
+                          "before approval)",
                 "step_4": "Approve or reject suggestions (update_suggestion_status)",
                 "step_5": "Apply approved codings to database (apply_codings - "
                           "bound to the session's project, all-or-nothing, "
                           "automatic backup)",
                 "step_6": "Recover if needed: delete_coding removes a single "
-                          "coding; list_backups + restore_backup roll the "
-                          "whole project back"
+                          "coding (on QualCoder 4.0 projects it refuses a "
+                          "hidden coder's row without allow_hidden_coder, and "
+                          "a row whose memo carries a '#####' private note "
+                          "without confirm_private_note_deletion); "
+                          "list_backups + restore_backup roll the whole "
+                          "project back"
             },
             "key_features": [
                 "Analyze complete transcripts with full context",
@@ -4928,7 +5002,10 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "Every suggestion verified against the file text before storage",
                 "Review and approve/reject suggestions before applying",
                 "Apply codings directly to Qualcoder database (with automatic backup)",
-                "Writes refuse to run while QualCoder has the project open",
+                "Writes refuse to run while a released QualCoder (3.x) has the "
+                "project open (lock file); an open QualCoder 4.0 window is "
+                "detected only by best-effort heuristics (qualcoder_gui_signals), "
+                "so confirm with the user that no window has the project open",
                 "Session persistence - resume work anytime",
                 "Full recovery tools: delete_coding, list_backups, restore_backup"
             ]
@@ -4973,14 +5050,14 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                        "move) and/or its code during review, before approval",
             "when_to_use": "When the researcher wants a wider quote, a "
                            "tighter span, or a different code on a "
-                           "suggestion — instead of rejecting and "
+                           "suggestion, instead of rejecting and "
                            "re-recording",
             "notes": [
                 "Pending suggestions only: applied ones are immutable, "
                 "approved/rejected ones reflect a decision already made",
                 "use_alternative='shorter'|'longer' applies a ready-made "
                 "span the server computed (core sentence / enclosing "
-                "paragraph) — the one-call answer to 'make it "
+                "paragraph), the one-call answer to 'make it "
                 "shorter/longer'; alternatives are recomputed after every "
                 "edit",
                 "New spans are re-verified against the file text with the "
@@ -4994,11 +5071,11 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                        "(learned from real researcher use)",
             "span_style": [
                 "Prefer complete-thought spans: a full sentence or small "
-                "paragraph that stands alone as a quotable extract — not "
+                "paragraph that stands alone as a quotable extract, not "
                 "a minimal phrase",
                 "Set the style once per session via analyze_for_coding's "
                 "instruction parameter, e.g. instruction='code generous "
-                "spans, full paragraphs' — then honor it in every "
+                "spans, full paragraphs', then honor it in every "
                 "suggestion",
                 "Researchers can widen or narrow any span at review time "
                 "with edit_suggestion; every suggestion carries "
@@ -5006,10 +5083,10 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "one call with use_alternative",
                 "Present alternatives compactly (one line, lengths only) "
                 "and proactively only after the researcher has adjusted "
-                "spans in this session — avoid decision fatigue"
+                "spans in this session, to avoid decision fatigue"
             ],
             "co_coding": [
-                "Actively consider MULTIPLE codes per segment — record one "
+                "Actively consider MULTIPLE codes per segment: record one "
                 "suggestion per code on the same span; this is normal "
                 "qualitative practice and the schema supports it",
                 "When the researcher adds a second code to a fragment "
@@ -5033,37 +5110,15 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             "error": f"Unknown tool: {tool_name}",
             "available_tools": [
                 "analyze_for_coding",
-                "record_suggestions",
-                "review_suggestions",
-                "edit_suggestion",
-                "coding_style_guidance",
-                "update_suggestion_status",
                 "apply_codings",
-                "delete_coding",
-                "list_backups",
-                "restore_backup",
-                "export_refi_qda",
-                "copy_project_to_workspace",
-                "import_text_file",
-                "link_file_to_case",
-                "get_coding_session_info",
-                "list_coding_sessions",
-                "delete_coding_session",
-                "cleanup_old_sessions",
-                "set_memo",
-                "add_journal_entry",
-                "create_code",
-                "rename_code",
-                "recolor_code",
-                "move_code_to_category",
-                "create_category",
-                "rename_category",
-                "move_category",
-                "merge_codes",
-                "delete_code",
-                "delete_category"
+                "edit_suggestion",
+                "coding_style_guidance"
             ],
-            "tip": "Use explain_ai_coding_tools() with no arguments for an overview"
+            "tip": "Use explain_ai_coding_tools() with no arguments for an "
+                   "overview of the coding loop. Only the topics listed above "
+                   "have a dedicated help entry here; every other tool "
+                   "documents its arguments, refusals and overrides in its "
+                   "own description."
         }, indent=2)
 
 
@@ -5076,7 +5131,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
 def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
                   replace: bool = False) -> str:
     """Record BRAND-NEW code proposals discovered in the data (inductive
-    coding). Writes NOTHING to the project database — proposals live in
+    coding). Writes NOTHING to the project database: proposals live in
     the session for the user to review, refine and approve; only
     create_proposed_codes (after approval) touches the codebook.
 
@@ -5089,13 +5144,13 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
     Args:
         coding_session_id: The session ID from analyze_for_coding
         proposals: List of proposal objects with keys:
-            name (required) — the proposed code name
-            memo — the code definition (what belongs under this code)
-            rationale — why this code emerges from the data
-            color — optional #RRGGBB (default: QualCoder palette pick at
+            name (required): the proposed code name
+            memo: the code definition (what belongs under this code)
+            rationale: why this code emerges from the data
+            color: optional #RRGGBB (default: QualCoder palette pick at
             creation)
-            category — optional EXISTING category name to place it in
-            example_segments — optional evidence spans
+            category: optional EXISTING category name to place it in
+            example_segments: optional evidence spans
             [{file_id, start_pos, end_pos, segment_text}], each verified
             against the file text like record_suggestions verifies
             positions
@@ -5106,7 +5161,7 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
         JSON with recorded proposals (GUIDs for review/approval),
         per-item rejections, and collides_with flags where a proposal
         name matches an existing code (creation will refuse those unless
-        renamed — consider applying the existing code instead). If it
+        renamed; consider applying the existing code instead). If it
         contains `position_safety_warning`, you MUST relay it to the
         user before proceeding.
     """
@@ -5171,7 +5226,7 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
             if match is None:
                 rejected.append({
                     "index": idx,
-                    "reason": f"category '{category}' not found — proposals "
+                    "reason": f"category '{category}' not found; proposals "
                               f"may only target existing categories "
                               f"(create_category first if needed)",
                     "available_categories": sorted(c["name"] for c in cats)[:50],
@@ -5222,8 +5277,8 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
     if any(e.get("collides_with") for e in recorded):
         result["collision_note"] = (
             "Proposals flagged collides_with match an existing code "
-            "(case-insensitively). Creation will refuse them unless renamed "
-            "— consider applying the existing code via the normal coding "
+            "(case-insensitively). Creation will refuse them unless renamed; "
+            "consider applying the existing code via the normal coding "
             "loop instead of creating a near-duplicate."
         )
     if unsafe_files:
@@ -5301,15 +5356,15 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
                     memo: Optional[str] = None,
                     example_segments: Optional[List[Dict[str, Any]]] = None
                     ) -> str:
-    """Refine a proposed code BEFORE it is created — rename, recolour,
+    """Refine a proposed code BEFORE it is created: rename, recolour,
     recategorise, rewrite its definition, or replace its evidence spans.
 
     Session-only (writes nothing to the project). Only the provided
     fields change. Pass category="" to make the proposal uncategorised.
-    example_segments REPLACES the proposal's evidence wholesale — pass
+    example_segments REPLACES the proposal's evidence wholesale: pass
     the full corrected list (e.g. with widened spans); each span is
     verified against the file text with the same machinery as
-    propose_codes. Proposals already CREATED are immutable here — edit
+    propose_codes. Proposals already CREATED are immutable here; edit
     the real code with the codebook tools instead.
 
     Args:
@@ -5320,7 +5375,7 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
         category: Existing category name, or "" to clear
         memo: New definition text
         example_segments: Replacement evidence spans
-            [{file_id, start_pos, end_pos, segment_text}] — positions
+            [{file_id, start_pos, end_pos, segment_text}]; positions
             optional when the excerpt is unique in the file
     """
     # Bridge fix: some MCP middleware strips arguments named
@@ -5339,7 +5394,7 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
     if proposal.status == "created":
         return json.dumps({
             "error": f"Proposal '{proposal.name}' was already created as code "
-                     f"id {proposal.created_code_id} — edit the code itself "
+                     f"id {proposal.created_code_id}; edit the code itself "
                      f"with rename_code / recolor_code / "
                      f"move_code_to_category / set_memo."
         })
@@ -5395,7 +5450,7 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
         if example_segments and not kept and evidence_rejected:
             return json.dumps({
                 "error": "None of the replacement evidence spans verified "
-                         "against the file text — evidence unchanged",
+                         "against the file text; evidence unchanged",
                 "evidence_rejected": evidence_rejected,
             })
         changes["example_segments"] = (
@@ -5404,7 +5459,7 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
         proposal.example_segments = kept
 
     if not changes:
-        return json.dumps({"error": "Nothing to change — pass at least one "
+        return json.dumps({"error": "Nothing to change: pass at least one "
                                     "of name/color/category/memo/"
                                     "example_segments"})
     session.last_modified = datetime.now().isoformat()
@@ -5459,7 +5514,7 @@ def merge_proposals(coding_session_id: str, from_proposal_guid: str,
     for p in (source, target):
         if p.status == "created":
             return json.dumps({
-                "error": f"Proposal '{p.name}' was already created — merge "
+                "error": f"Proposal '{p.name}' was already created; merge "
                          f"the real codes with merge_codes instead."
             })
 
@@ -5490,10 +5545,10 @@ def merge_proposals(coding_session_id: str, from_proposal_guid: str,
 def update_proposal_status(coding_session_id: str,
                            approve: Optional[List[str]] = None,
                            reject: Optional[List[str]] = None) -> str:
-    """Approve or reject code proposals — record the USER'S decisions.
+    """Approve or reject code proposals: record the USER'S decisions.
 
     Approve only the proposals the user has actually reviewed and
-    confirmed — do not approve on their behalf. Proposals already
+    confirmed; do not approve on their behalf. Proposals already
     CREATED are immutable and skipped (skipped_created). Rejected
     proposals (and their evidence) are simply never created.
 
@@ -5528,18 +5583,18 @@ def create_proposed_codes(coding_session_id: str,
                           create_backup: bool = True) -> str:
     """Create the APPROVED code proposals in the project codebook.
 
-    THIS WRITES TO THE DATABASE — the write step of the inductive loop.
-    Each approved proposal becomes a real code (palette colour if none
-    chosen, placed in its category). With apply_coded_segments=true the
-    proposal's evidence spans are ALSO written as codings under the new
-    code; the default (false) creates the codes only, so the user can
-    review them before any codings land — the normal
+    THIS WRITES TO THE DATABASE. This is the write step of the inductive
+    loop. Each approved proposal becomes a real code (palette colour if
+    none chosen, placed in its category). With apply_coded_segments=true
+    the proposal's evidence spans are ALSO written as codings under the
+    new code; the default (false) creates the codes only, so the user can
+    review them before any codings land; the normal
     record_suggestions -> apply_codings loop can then apply the
     now-existing codes.
 
     Every approved proposal is validated BEFORE the backup and the write:
     the name must still be unique against the live codebook (exact AND
-    case-variant collisions refuse — rename the proposal first), the
+    case-variant collisions refuse; rename the proposal first), the
     category must exist, and (when applying) every evidence span must
     still match the file text. Any failure -> nothing is written.
     Rejected proposals and their evidence are never created.
@@ -5551,7 +5606,7 @@ def create_proposed_codes(coding_session_id: str,
     Args:
         coding_session_id: The session with approved proposals
         apply_coded_segments: Also write the evidence spans as codings
-                              (default: False — codes only)
+                              (default: False, codes only)
         create_backup: Create a timestamped backup before writing (default True)
 
     Returns:
@@ -5577,7 +5632,7 @@ def create_proposed_codes(coding_session_id: str,
         message = ("No approved proposals to create. Use "
                    "update_proposal_status to approve proposals first.")
         if created_n:
-            message = (f"No approved proposals to create — {created_n} "
+            message = (f"No approved proposals to create: {created_n} "
                        f"proposal(s) in this session were already created.")
         return json.dumps({"error": message,
                            "proposal_statistics": session.proposal_statistics()},
@@ -5597,7 +5652,7 @@ def create_proposed_codes(coding_session_id: str,
         key = p.name.strip().lower()
         collision = _code_name_collisions(p.name)
         if collision:
-            problem = (f"name collides with existing code '{collision}' — "
+            problem = (f"name collides with existing code '{collision}'; "
                        f"rename the proposal (update_proposal) or apply the "
                        f"existing code instead")
         elif key in batch_names:
@@ -5606,7 +5661,7 @@ def create_proposed_codes(coding_session_id: str,
             match = next((c for c in cats
                           if c["name"].lower() == p.category.lower()), None)
             if match is None:
-                problem = (f"category '{p.category}' does not exist — create "
+                problem = (f"category '{p.category}' does not exist; create "
                            f"it first with create_category")
             else:
                 category_ids[p.category] = match["id"]
@@ -5622,7 +5677,7 @@ def create_proposed_codes(coding_session_id: str,
                     break
                 if fulltext[seg["start_pos"]:seg["end_pos"]] != seg["segment_text"]:
                     problem = (f"evidence in '{seg['file_name']}' no longer "
-                               f"matches the file text — re-propose or drop it")
+                               f"matches the file text; re-propose or drop it")
                     break
                 if fid not in unsafe_files and not db_position_safe(fulltext):
                     unsafe_files[fid] = fc["name"]
@@ -5633,8 +5688,8 @@ def create_proposed_codes(coding_session_id: str,
 
     if failures:
         return json.dumps({
-            "error": f"{len(failures)} approved proposal(s) failed validation "
-                     f"— nothing was written and no backup was created.",
+            "error": f"{len(failures)} approved proposal(s) failed validation; "
+                     f"nothing was written and no backup was created.",
             "failures": failures,
         }, indent=2)
 
@@ -5739,7 +5794,7 @@ def set_memo(target_type: str, target_id: int, memo: str,
     cases have no per-coder visibility and are unaffected.
 
     Args:
-        target_type: What to attach the memo to — one of 'code', 'category',
+        target_type: What to attach the memo to: one of 'code', 'category',
                      'file', 'coding', 'case'
         target_id: The object's id (code cid / category catid / file source
                    id / coding ctid / case caseid)
@@ -6057,7 +6112,7 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
     """Reparent a category under another category (or to the top level).
 
     THIS WRITES TO THE DATABASE. Refuses any move that would create a cycle
-    (make a category its own ancestor) — such a cycle would silently hide
+    (make a category its own ancestor); such a cycle would silently hide
     the category and all its codes from QualCoder's tree.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
@@ -6121,13 +6176,13 @@ def _guarded_destructive(preview_fn, op_fn, confirm: bool,
 @_tool_guard
 def merge_codes(from_code_id: int, into_code_id: int,
                 confirm: bool = False) -> str:
-    """Merge one code into another. DESTRUCTIVE — preview first, then confirm.
+    """Merge one code into another. DESTRUCTIVE: preview first, then confirm.
 
     THIS WRITES TO THE DATABASE. All codings of `from_code_id` are reassigned
     to `into_code_id`, then `from_code_id` is deleted. This matches QualCoder
     exactly and is LOSSY BY DESIGN: where both codes already mark the same
     text span by the same coder, the source coding (with its memo/important
-    flag) is DISCARDED — the destination coding wins. Audio/video and image
+    flag) is DISCARDED; the destination coding wins. Audio/video and image
     codings are reassigned without de-duplication (as QualCoder does), which
     can create visual duplicates.
 
@@ -6161,7 +6216,7 @@ def merge_codes(from_code_id: int, into_code_id: int,
 @_tool_guard
 def delete_code(code_id: int, confirm: bool = False,
                 cascade: bool = False) -> str:
-    """Delete a code AND all its codings. DESTRUCTIVE — preview then confirm.
+    """Delete a code AND all its codings. DESTRUCTIVE: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a code removes the code itself and
     EVERY coded segment made with it (text, audio/video, and image codings).
@@ -6206,7 +6261,7 @@ def delete_code(code_id: int, confirm: bool = False,
 @mcp.tool()
 @_tool_guard
 def delete_category(category_id: int, confirm: bool = False) -> str:
-    """Delete a category. DESTRUCTIVE to the category — preview then confirm.
+    """Delete a category. DESTRUCTIVE to the category: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a category is SHALLOW and safe for
     your coding: its codes and its direct sub-categories are moved to the top
@@ -6251,10 +6306,10 @@ def merge_category(from_category_id: int,
                    confirm: bool = False) -> str:
     """Merge a category into another category (or into the top level).
 
-    DESTRUCTIVE to the category — preview first, then confirm. The source
+    DESTRUCTIVE to the category: preview first, then confirm. The source
     category's codes and direct sub-categories are reparented to the
     target (unlike delete_category, which sends them to the top level),
-    then the source category is removed. Coded data is never touched —
+    then the source category is removed. Coded data is never touched;
     codings key on the code, not the category. Merging into a descendant
     of the source is refused (it would orphan the subtree).
 
@@ -6312,11 +6367,13 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
     """Attach a note (annotation) to a text span of a file.
 
     THIS WRITES TO THE DATABASE. An annotation is a researcher note
-    anchored to characters [start_pos, end_pos) of a text file — distinct
+    anchored to characters [start_pos, end_pos) of a text file, distinct
     from a coding (no code involved) and from a file memo (span-specific).
     The note must be non-empty: the note IS the annotation, and clearing
     it later (update_annotation with "") deletes it, exactly as QualCoder
-    behaves. One annotation per coder per exact span.
+    behaves, unless the note carries a '#####' private section, in which
+    case the row is kept with the private section intact and only the
+    public text is cleared. One annotation per coder per exact span.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6331,7 +6388,7 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
 
     Returns:
         JSON with the new annotation (anid, span, note). If it contains
-        `position_safety_warning`, you MUST relay it to the user — spans
+        `position_safety_warning`, you MUST relay it to the user: spans
         on such files can render shifted in QualCoder's editor.
     """
     owner = _default_owner()
@@ -6366,7 +6423,7 @@ def update_annotation(annotation_id: int, memo: str,
 
     THIS WRITES TO THE DATABASE. Matches QualCoder exactly: editing
     updates the note and its date (owner and the anchored span never
-    change); clearing the note to "" deletes the annotation row —
+    change); clearing the note to "" deletes the annotation row, since
     QualCoder never keeps an empty annotation. The response says whether
     it updated or deleted.
 
@@ -6420,7 +6477,7 @@ def delete_annotation(annotation_id: int, create_backup: bool = True,
     """Delete an annotation by its anid.
 
     THIS WRITES TO THE DATABASE. Removes one annotation (the note on a
-    text span) — never the text, codings, or anything else. A backup is
+    text span), never the text, codings, or anything else. A backup is
     created first by default.
 
     Two guards, each with an explicit override the user must ask for:
@@ -6528,7 +6585,7 @@ def create_attribute_type(name: str, applies_to: str,
     to every entity of one domain (e.g. a case attribute "Age" gives
     every case an Age cell). Creating one also back-fills an empty
     placeholder row for every EXISTING entity of that domain, exactly as
-    QualCoder does — an unset attribute is the empty string, never a
+    QualCoder does; an unset attribute is the empty string, never a
     missing row.
 
     Attribute names are GLOBAL across all three domains: a case
@@ -6543,7 +6600,7 @@ def create_attribute_type(name: str, applies_to: str,
     Args:
         name: The attribute name (unique across ALL domains)
         applies_to: 'case', 'file' or 'journal' (QualCoder's real domain
-                    set — there is no 'both')
+                    set; there is no 'both')
         value_type: 'character' (default) or 'numeric'. Numeric values
                     are stored as text but validated and compared as
                     numbers. There is no path back from numeric data to
@@ -6568,7 +6625,7 @@ def create_attribute_type(name: str, applies_to: str,
     if "error" not in result:
         result["note"] = (
             f"{result['attribute_type']['placeholders_created']} existing "
-            f"{applies_to}(s) received an empty placeholder value — set "
+            f"{applies_to}(s) received an empty placeholder value; set "
             f"real values with set_attribute."
         )
     return json.dumps(result, indent=2)
@@ -6582,13 +6639,13 @@ def set_attribute(target_type: str, target_id: int, attribute_name: str,
 
     THIS WRITES TO THE DATABASE. The attribute must already exist (see
     create_attribute_type and list_attribute_types) and must belong to
-    the target's domain — a case attribute cannot be set on a file.
+    the target's domain; a case attribute cannot be set on a file.
     Pass value="" to unset: QualCoder represents "no value" as an empty
     cell, the row itself always remains.
 
     Numeric attributes require a number ("30", "4.5", "1e3"): a
     non-numeric value is refused with an error. (QualCoder's own GUI
-    silently blanks invalid numeric input — this server refuses instead,
+    silently blanks invalid numeric input; this server refuses instead,
     so nothing is lost without the user knowing.)
 
     Refused while QualCoder has the project open (heartbeat lock): ask
@@ -6629,7 +6686,7 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
     """Resolve and validate an export path (export_refi_qda posture).
 
     Accepts a full file path (required suffix, parent must exist, refuse
-    existing unless overwrite) or an existing DIRECTORY — then QualCoder's
+    existing unless overwrite) or an existing DIRECTORY; then QualCoder's
     own convention applies: the report's default filename, with collision
     suffixes _0, _1, … appended before the extension (helpers.py:147-150).
     Always refuses to write inside the project folder.
@@ -6649,7 +6706,7 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
             counter += 1
             if counter > 999:
                 return None, {"error": "Too many existing exports with "
-                                       "this name — clean up or give a "
+                                       "this name; clean up or give a "
                                        "full file path"}
         # SEC P-1: the join above tacks a fresh final component onto the
         # already-resolved directory, so it is NOT itself resolved — a
@@ -6670,7 +6727,7 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
                                    f"(or be an existing directory)"}
         if not out_file.parent.is_dir():
             return None, {
-                "error": "The output directory does not exist — create it "
+                "error": "The output directory does not exist; create it "
                          "first or choose an existing folder "
                          "(e.g. ~/Documents)"
             }
@@ -6683,7 +6740,7 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
     if project_folder in out_file.parents or out_file.parent == project_folder:
         return None, {
             "error": "Refusing to write the export inside the project "
-                     "folder — choose a location outside it."
+                     "folder; choose a location outside it."
         }
     return out_file, None
 
@@ -6697,7 +6754,7 @@ _FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
 def _defuse_formula_cell(value):
     """OWASP CSV-injection defusal: prefix a single quote so the
     spreadsheet treats the cell as text. Applied to every string cell
-    (DB-derived names, memos, seltext, coder names — and headers built
+    (DB-derived names, memos, seltext, coder names, and headers built
     from them) when sanitize_formulas is on."""
     if isinstance(value, str) and value.startswith(_FORMULA_TRIGGER_CHARS):
         return f"'{value}"
@@ -6723,14 +6780,14 @@ def _write_csv_file(out_file: Path, rows, quote_all: bool,
 def _sanitization_note(sanitize: bool, is_csv: bool = True) -> str:
     """The disclosure every export result carries about V8-1 mode."""
     if not is_csv:
-        return ("sanitize_formulas applies to CSV cells only — this "
+        return ("sanitize_formulas applies to CSV cells only; this "
                 "format has no spreadsheet cells")
     if sanitize:
         return ("formulas sanitized for spreadsheet safety: cells starting "
                 "with = + - @ tab or CR are prefixed with ' (this "
                 "deliberately breaks byte-parity with QualCoder's own "
                 "export)")
-    return ("verbatim export — cells starting with = are evaluated by "
+    return ("verbatim export; cells starting with = are evaluated by "
             "Excel; pass sanitize_formulas=true to neutralize")
 
 
@@ -6750,7 +6807,7 @@ def _resolve_names_ci(requested, available, kind: str):
                 return None, {
                     "error": f"{kind} name '{name}' is ambiguous "
                              f"(case-insensitive matches: "
-                             f"{sorted(a['name'] for a in ci)}) — use the "
+                             f"{sorted(a['name'] for a in ci)}); use the "
                              f"exact name"
                 }
             else:
@@ -6851,7 +6908,7 @@ def export_codebook(output_path: str, format: str = "csv",
     """Export the full codebook (codes + category tree) to a file.
 
     Read-only. Content mirrors QualCoder's own Codebook export: the tree
-    in depth order, each code with its colour and its coding count —
+    in depth order, each code with its colour and its coding count,
     counted exactly as QualCoder counts it (text + image + A/V codings,
     all coders, no filters, orphaned codings included).
 
@@ -6862,17 +6919,17 @@ def export_codebook(output_path: str, format: str = "csv",
     file.
 
     Formats:
-    - "csv": flat table `Tree, Id, Type, Color, Count[, Memo]` — the
+    - "csv": flat table `Tree, Id, Type, Color, Count[, Memo]`; the
       Tree cell carries the depth prefix (`...` per level, QualCoder's
       codebook convention), Id is `catid:N`/`cid:N`.
     - "txt": QualCoder's Codebook text shape (`...Category: X` /
       `...Code: Y, Count: N`, `MEMO:` lines when include_memos).
-    - "md": Markdown — headings per category depth, codes as bullets.
+    - "md": Markdown: headings per category depth, codes as bullets.
     All files are UTF-8 with BOM (QualCoder's export encoding).
 
     Args:
         output_path: Target file (matching extension), or an existing
-                     directory — then the default name `Codebook.csv`
+                     directory; then the default name `Codebook.csv`
                      etc. is used, with `_0`, `_1` collision suffixes
         format: "csv" (default), "txt" or "md"
         include_memos: Include code/category memos (default True)
@@ -6946,7 +7003,7 @@ def export_codebook(output_path: str, format: str = "csv",
                 else:
                     n_codes += 1
                     color = f" `{item['color']}`" if item.get("color") else ""
-                    lines.append(f"- **{item['name']}**{color} — "
+                    lines.append(f"- **{item['name']}**{color}: "
                                  f"{freq.get(item['id'], 0)} coding(s)")
                     if include_memos and memo:
                         lines.append(f"  > {memo}")
@@ -6994,13 +7051,13 @@ def export_coded_segments_report(
       Coded_Memo` then `Category` × N (the code's category chain,
       immediate parent first, padded to the deepest chain).
       Case mode: `Case, Filename, Coder, Coded, ...`.
-      `Id` is `ctid:N`. UTF-8 with BOM, every cell quoted, CRLF rows —
+      `Id` is `ctid:N`. UTF-8 with BOM, every cell quoted, CRLF rows,
       the exact dialect QualCoder writes.
     - txt: the on-screen report serialization (Search parameters header,
       then `[pos0-pos1] Codename, File: ..., Coder: ...` headings with
       the quoted text).
     - Case mode uses the CONTAINMENT rule (a coding belongs to a case
-      iff fully inside one of the case's text spans) — the rule
+      iff fully inside one of the case's text spans), the rule
       QualCoder's coding report uses, stated in the response because the
       GUI ships a second, different rule elsewhere.
     - Text codings only; image/AV codings are not included (disclosed).
@@ -7011,24 +7068,28 @@ def export_coded_segments_report(
     Mention this to the user if they plan to share the exported
     file.
 
+    Coder visibility: this file export reads all coders' rows regardless
+    of QualCoder 4.0's per-coder visibility setting, as QualCoder's own
+    report export does; the coder argument is a plain owner filter.
+
     Args:
         output_path: Target file, or an existing directory (default name
                      `Coded_segments.csv`/`.txt`, `_0` collision suffixes)
         code_names: Codes to include (default: all). Exact name wins,
                     else unique case-insensitive match.
         case_names: Switch to CASE mode and filter to these cases
-        coder: Exact coder name (default "" = all coders — exact match,
+        coder: Exact coder name (default "" = all coders; exact match,
                never a substring, like QualCoder)
         file_ids: Restrict to these files
         search_text: Only segments whose text contains this substring
         important: Only segments flagged important
         include_variables: Append `FileVar_{name}` columns (and, in case
                            mode, `CaseVar_{name}`) with attribute values
-                           per row — QualCoder's "variables" checkbox
+                           per row, QualCoder's "variables" checkbox
         format: "csv" (default) or "txt"
         sanitize_formulas: Neutralize spreadsheet formula injection in
             CSV cells (values starting with = + - @ tab or CR get a '
-            prefix — coded seltext is untrusted source text and the
+            prefix; coded seltext is untrusted source text and the
             sharpest vector). Default False = byte-parity with
             QualCoder's own export; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
@@ -7169,7 +7230,7 @@ def export_coded_segments_report(
             "important_only": important,
         },
         "disclosures": [
-            "Text codings only — image and A/V codings are not included",
+            "Text codings only; image and A/V codings are not included",
             "Codings on deleted files are excluded (source join), exactly "
             "as QualCoder's report",
         ],
@@ -7199,7 +7260,7 @@ def export_frequencies_csv(output_path: str,
     Read-only. Numbers match QualCoder's report EXACTLY: one count per
     coding row across ALL THREE media tables (text, image, A/V), one
     column per coder plus Total, category rows carrying recursive
-    subtree totals, and — like QualCoder — codings whose file was
+    subtree totals, and, like QualCoder, codings whose file was
     deleted still count.
 
     DIVERGENCE NOTE (disclosed here and in the response): the
@@ -7216,7 +7277,7 @@ def export_frequencies_csv(output_path: str,
         output_path: Target .csv file, or an existing directory (default
                      name `Code_frequencies.csv`, `_0` suffixes)
         sanitize_formulas: Neutralize spreadsheet formula injection
-            (cells starting with = + - @ tab or CR get a ' prefix —
+            (cells starting with = + - @ tab or CR get a ' prefix;
             code and coder names are DB-derived text). Default False =
             byte-parity with QualCoder; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
@@ -7316,7 +7377,7 @@ def export_frequencies_csv(output_path: str,
                          "subtree totals; orphaned codings included",
         "divergence_note": "get_coding_frequencies (the conversational "
                            "tool) counts text codings on existing files "
-                           "only — its numbers can be lower than this "
+                           "only; its numbers can be lower than this "
                            "QualCoder-parity export.",
     }, indent=2)
 
@@ -7330,22 +7391,25 @@ def export_case_code_matrix_csv(output_path: str,
 
     Read-only. Rows are cases, columns are codes, cells are the number
     of coded text segments of that code contained in that case. Uses the
-    CONTAINMENT rule — the same rule as get_case_code_matrix and
+    CONTAINMENT rule, the same rule as get_case_code_matrix and
     QualCoder's coding report: a coding counts for a case iff its span
     lies fully inside one of the case's text spans on the same file.
     The rule is stated in the response because QualCoder itself ships a
     SECOND, different rule (its comparison table counts by file linkage,
-    including codings outside the case's spans) — matrices from the two
+    including codings outside the case's spans); matrices from the two
     rules are not comparable.
 
     No totals row/column (parity with QualCoder's matrix exports).
-    UTF-8 with BOM, CRLF rows.
+    UTF-8 with BOM, CRLF rows. Coder visibility: this export counts all
+    coders' codings regardless of QualCoder 4.0's per-coder visibility
+    setting, matching QualCoder's own report exports; the conversational
+    get_case_code_matrix honors visibility by default.
 
     Args:
         output_path: Target .csv file, or an existing directory (default
                      name `Case_code_matrix.csv`, `_0` suffixes)
         sanitize_formulas: Neutralize spreadsheet formula injection
-            (cells starting with = + - @ tab or CR get a ' prefix —
+            (cells starting with = + - @ tab or CR get a ' prefix;
             case and code names are DB-derived text). Default False =
             byte-parity with QualCoder; one word turns on safety.
         overwrite: Allow replacing an existing file (default False)
@@ -7378,7 +7442,7 @@ def export_case_code_matrix_csv(output_path: str,
                          "the same file (QualCoder coding-report rule; "
                          "text codings on existing files). QualCoder's "
                          "comparison table uses file-linkage counting "
-                         "instead — its numbers will differ.",
+                         "instead; its numbers will differ.",
     }, indent=2)
 
 

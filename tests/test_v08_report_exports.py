@@ -179,7 +179,7 @@ class TestE4Codebook:
         text = Path(out["output_path"]).read_text(encoding="utf-8-sig")
         assert "# Codebook: test_project" in text
         assert "## Category A" in text
-        assert "- **Stress** `#FF0000` — 1 coding(s)" in text
+        assert "- **Stress** `#FF0000`: 1 coding(s)" in text
 
     def test_memos_can_be_omitted(self, setup_server, tmp_path):
         out = json.loads(server.export_codebook(

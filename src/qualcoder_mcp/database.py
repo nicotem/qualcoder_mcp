@@ -120,7 +120,7 @@ QUALCODER_COLORS = [
 ]
 
 DB_LOCKED_MESSAGE = (
-    "The project database is locked — QualCoder may have it open. "
+    "The project database is locked; QualCoder may have it open. "
     "Close the project in QualCoder (or wait a moment) and try again."
 )
 
@@ -199,7 +199,7 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
 
     Returns:
         (state, holder) where state is 'absent', 'active' (heartbeat within
-        30 s — QualCoder is running with this project open) or 'stale'
+        30 s, QualCoder is running with this project open) or 'stale'
         (QualCoder crashed or the file is unreadable).
     """
     lock = Path(project_dir) / QUALCODER_LOCK_FILENAME
@@ -417,7 +417,7 @@ def hold_project_lock(project_dir: Union[str, Path]):
     it is absent, create it (username + epoch, mode 'x') so a QualCoder
     launched mid-write politely refuses to open the project; delete it on
     exit. A stale foreign lock is left alone (QualCoder's next open shows
-    its "not properly closed" prompt) and we proceed WITHOUT holding —
+    its "not properly closed" prompt) and we proceed WITHOUT holding;
     callers must re-check the lock state immediately before committing.
 
     Yields:
@@ -1243,7 +1243,7 @@ class QualcoderDatabase:
         """Check database version and log warnings if unsupported.
 
         Also records whether project.about identifies the database as a
-        QualCoder project — QualCoder's own open check requires the
+        QualCoder project; QualCoder's own open check requires the
         substring "QualCoder" in about and refuses otherwise with "This is
         not a QualCoder database" (__main__.py:2698-2709, COMPAT V3).
         """
@@ -1507,7 +1507,7 @@ class QualcoderDatabase:
         return current
 
     def effective_category(self, cid, maps=None):
-        """(catid, name) of the code's TOP ANCESTOR code's category — how
+        """(catid, name) of the code's TOP ANCESTOR code's category, how
         master attributes sub-code counts (reports.py:287-313). (None,
         None) for uncategorised chains; identical to the direct category
         on v14/v15 (no supercid)."""
@@ -3239,7 +3239,7 @@ class QualcoderDatabase:
                                "Failed to compute codebook frequencies")
 
     def get_raw_coding_counts(self) -> List[Dict[str, Any]]:
-        """Per-(code, coder) raw row counts over all three coding tables —
+        """Per-(code, coder) raw row counts over all three coding tables,
         the exact number source of QualCoder's Code Frequencies report
         (reports.py:177-280): no source join (orphaned fids count), one
         count per coding row regardless of length or medium."""
@@ -3272,12 +3272,12 @@ class QualcoderDatabase:
         File mode (no case_ids, :1504-1519): one row per code_text row,
         joined to code_name and source; ordered code name, file name,
         pos0. Case mode (:1628-1649): joined through case_text with the
-        CONTAINMENT rule — a coding belongs to a case iff fully inside
+        CONTAINMENT rule (a coding belongs to a case iff fully inside
         one of the case's case_text spans on the same fid
-        (pos0 >= case.pos0 AND pos1 <= case.pos1) — ordered code name,
+        (pos0 >= case.pos0 AND pos1 <= case.pos1)), ordered code name,
         case name. Coder filter is an EXACT owner match (never LIKE);
         search_text is a seltext substring; important filters
-        important=1. Text codings only (image/AV excluded — disclosed by
+        important=1. Text codings only (image/AV excluded, disclosed by
         the caller). Orphaned codings are excluded by the source join,
         exactly as upstream.
         """
@@ -4503,7 +4503,7 @@ class QualcoderDatabase:
             target_type: One of 'code', 'category', 'file', 'coding', 'case'
             target_id: The row id (cid/catid/source id/ctid/caseid)
             memo: The memo text. '' clears it (QualCoder's empty-string
-                  convention — memos are never NULL).
+                  convention; memos are never NULL).
             auto_commit: Commit immediately (default True)
             allow_hidden_coder: For target_type 'coding' only: explicit
                   override to write on a coding owned by a coder the
@@ -4607,7 +4607,7 @@ class QualcoderDatabase:
         """Add a research journal entry.
 
         Args:
-            name: Journal entry name/title (must be unique — journal has
+            name: Journal entry name/title (must be unique; journal has
                   unique(name))
             entry: The journal text (jentry)
             owner: Coder name for attribution
@@ -4713,7 +4713,7 @@ class QualcoderDatabase:
 
     def rename_code(self, code_id: int, new_name: str,
                     auto_commit: bool = True) -> Dict[str, Any]:
-        """Rename a code (code_name.name — unique among codes)."""
+        """Rename a code (code_name.name, unique among codes)."""
         self._require_write_access()
         code_id = validate_id(code_id, "code_id")
         if not new_name or not isinstance(new_name, str) or not new_name.strip():
@@ -4943,7 +4943,7 @@ class QualcoderDatabase:
 
     def rename_category(self, category_id: int, new_name: str,
                         auto_commit: bool = True) -> Dict[str, Any]:
-        """Rename a category (code_cat.name — unique among categories)."""
+        """Rename a category (code_cat.name, unique among categories)."""
         self._require_write_access()
         category_id = validate_id(category_id, "category_id")
         if not new_name or not isinstance(new_name, str) or not new_name.strip():
@@ -5034,7 +5034,7 @@ class QualcoderDatabase:
                 raise ValueError(
                     "That move would make the category its own ancestor "
                     "(a cycle), which would hide it and its codes from "
-                    "QualCoder's tree — refusing."
+                    "QualCoder's tree; refusing."
                 )
             self.conn.execute(
                 "UPDATE code_cat SET supercatid = ? WHERE catid = ?",
@@ -5127,7 +5127,7 @@ class QualcoderDatabase:
         (cid,fid,pos0,pos1,owner) collision the destination row wins untouched
         and the source row is DELETED (no memo-concat, no important OR-ing).
         code_av/code_image have no unique constraint and are reassigned
-        unconditionally (no dedup — true duplicates can result, as upstream).
+        unconditionally (no dedup; true duplicates can result, as upstream).
         The source code_name row is deleted last. One atomic transaction.
         """
         self._require_write_access()
@@ -5431,7 +5431,7 @@ class QualcoderDatabase:
         """Create an annotation on a text span.
 
         QualCoder contract (memos-journals.md §4.1): insert ONLY when the
-        memo is non-empty — an annotation never exists with memo='' (the
+        memo is non-empty; an annotation never exists with memo='' (the
         memo is the annotation). Positions are character offsets into the
         file's fulltext; unique(fid,pos0,pos1,owner) is pre-checked
         app-side for a clean error.
@@ -5440,7 +5440,7 @@ class QualcoderDatabase:
         file_id = validate_id(file_id, "file_id")
         if not isinstance(memo, str) or not memo.strip():
             raise ValueError(
-                "memo must be a non-empty string — an annotation IS its "
+                "memo must be a non-empty string; an annotation IS its "
                 "note; there is no empty annotation"
             )
         _reject_if_too_long(memo, "memo")
@@ -5490,7 +5490,7 @@ class QualcoderDatabase:
             if existing:
                 raise ValueError(
                     f"An annotation by '{owner}' already exists on this exact "
-                    f"span (anid={existing['anid']}) — edit it with "
+                    f"span (anid={existing['anid']}); edit it with "
                     f"update_annotation instead"
                 )
             # Overlap check (cases-attributes.md §7.1): the GUI never
@@ -5511,7 +5511,7 @@ class QualcoderDatabase:
                     f"(anid={overlapping['anid']}, "
                     f"{overlapping['pos0']}-{overlapping['pos1']}). "
                     f"QualCoder never keeps overlapping annotations by one "
-                    f"coder — edit the existing one with update_annotation, "
+                    f"coder; edit the existing one with update_annotation, "
                     f"or delete it first"
                 )
             cursor = self.conn.execute(
@@ -5563,7 +5563,7 @@ class QualcoderDatabase:
 
         QualCoder contract (memos-journals.md §4.2/§4.3): annotation is one
         of the three date-on-edit objects (memo AND date updated; owner and
-        the span untouched); clearing the memo deletes the annotation —
+        the span untouched); clearing the memo deletes the annotation;
         never leave an empty one. Keyed by anid, never pos0 (the upstream
         delete-by-pos0 bug is documented; do not replicate it).
 
@@ -5706,7 +5706,7 @@ class QualcoderDatabase:
             if self.would_create_category_cycle(from_category_id,
                                                 into_category_id):
                 raise ValueError(
-                    "Cannot merge a category into its own descendant — "
+                    "Cannot merge a category into its own descendant; "
                     "that would orphan the subtree"
                 )
             target_desc = {"id": into_category_id, "name": dest["name"]}
@@ -5748,7 +5748,7 @@ class QualcoderDatabase:
                 0 if carries_memo else self._count_private_notes(
                     "code_cat", "catid = ?", (from_category_id,))),
             "note": "Merging a category reparents its codes and direct "
-                    "sub-categories to the target (codings are untouched — "
+                    "sub-categories to the target (codings are untouched; "
                     "they key on the code, not the category), then deletes "
                     "the source category." + memo_note,
         }
@@ -5963,7 +5963,7 @@ class QualcoderDatabase:
         Writes the attribute_type row exactly as every QualCoder entry
         point does, then performs the placeholder back-fill: one empty
         ('' value) attribute row per existing entity of the domain. The
-        back-fill is load-bearing — QualCoder's GUI table, exports and
+        back-fill is load-bearing; QualCoder's GUI table, exports and
         sorting assume every entity has a row for every attribute of its
         domain, and the case-side auto-heal is a no-op in 3.8.2, so
         skipping it here would leave cases silently dropped from
@@ -5984,7 +5984,7 @@ class QualcoderDatabase:
         if applies_to not in self._ATTRIBUTE_DOMAINS:
             raise ValueError(
                 "applies_to must be 'case', 'file' or 'journal' (QualCoder's "
-                "real domain set — there is no 'both')"
+                "real domain set; there is no 'both')"
             )
         if value_type not in ("character", "numeric"):
             raise ValueError("value_type must be 'character' or 'numeric'")
@@ -5992,7 +5992,7 @@ class QualcoderDatabase:
             raise ValueError(
                 f"'{name}' is reserved for QualCoder's reference importer "
                 f"(Ref_* attributes are created automatically by RIS/nbib "
-                f"import) — choose another name"
+                f"import); choose another name"
             )
         if memo:
             _reject_if_too_long(memo, "memo")
@@ -6010,7 +6010,7 @@ class QualcoderDatabase:
             if existing:
                 raise ValueError(
                     f"An attribute named '{name}' already exists (as a "
-                    f"{existing['caseOrFile']} attribute) — attribute names "
+                    f"{existing['caseOrFile']} attribute); attribute names "
                     f"are global across cases, files and journals"
                 )
 
@@ -6046,7 +6046,7 @@ class QualcoderDatabase:
             except Exception:
                 pass
             raise ValueError(
-                f"An attribute named '{name}' already exists — attribute "
+                f"An attribute named '{name}' already exists; attribute "
                 f"names are global across cases, files and journals"
             ) from None
         except sqlite3.Error as e:
@@ -6075,14 +6075,14 @@ class QualcoderDatabase:
         QualCoder contract (cases-attributes.md §4.1/§4.2): input is
         stripped; the domain-filtered valuetype gates numeric values;
         the write is insert-if-missing then update, keyed
-        (id, name, attr_type) — never assume the placeholder row exists
+        (id, name, attr_type); never assume the placeholder row exists
         (QualCoder's case-side placeholder heal is a no-op in 3.8.2).
         Byte-fidelity per domain: the case path refreshes owner+date on
         update, the file/journal paths write value only, exactly like the
         three GUI paths.
 
         Deliberate deviation (documented): a non-castable value for a
-        numeric attribute is REJECTED with an error — QualCoder silently
+        numeric attribute is REJECTED with an error; QualCoder silently
         replaces it with '' (interactive data loss). '' itself is the
         canonical "unset" and is always accepted.
         """
@@ -6119,12 +6119,12 @@ class QualcoderDatabase:
             ).fetchone()
             if not att:
                 raise ValueError(
-                    f"Attribute '{attr_name}' does not exist — create it "
+                    f"Attribute '{attr_name}' does not exist; create it "
                     f"first with create_attribute_type"
                 )
             if att["caseOrFile"] != target_type:
                 raise ValueError(
-                    f"'{attr_name}' is a {att['caseOrFile']} attribute — it "
+                    f"'{attr_name}' is a {att['caseOrFile']} attribute; it "
                     f"cannot be set on a {target_type}"
                 )
             if att["valuetype"] == "numeric" and value != "":

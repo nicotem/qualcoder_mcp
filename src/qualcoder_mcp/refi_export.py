@@ -302,7 +302,7 @@ class RefiQdaExporter:
         """Add Sources section with files and coded segments.
 
         Sources are referenced with the internal:// URL scheme and GUID
-        filenames per spec §8.3/8.4 — QualCoder's importer hard-depends on
+        filenames per spec §8.3/8.4; QualCoder's importer hard-depends on
         the internal:/ prefix (refi.py:880).
 
         Args:
@@ -472,7 +472,7 @@ class RefiQdaExporter:
         a flat sources/ folder whose members are GUID-named .txt files
         (UTF-8, no BOM), referenced from the XML as internal://<guid>.txt.
 
-        Suggestions are validated first — stale code/file references,
+        Suggestions are validated first; stale code/file references,
         out-of-bounds positions, or files without text content fail the
         export loudly instead of producing a .qdpx that crashes importers.
 
@@ -606,7 +606,7 @@ class RefiQdaExporter:
                 if length == 0:
                     warnings.append(
                         f"Suggestion {i}: File ID {suggestion.file_id} has no "
-                        f"text content — selections cannot be exported for it"
+                        f"text content; selections cannot be exported for it"
                     )
                 elif isinstance(suggestion.end_pos, int) and suggestion.end_pos > length:
                     warnings.append(
@@ -623,7 +623,7 @@ class RefiQdaExporter:
                 warnings.append(
                     f"Suggestion {i}: missing or non-integer positions "
                     f"(start={suggestion.start_pos!r}, end={suggestion.end_pos!r}) "
-                    f"— the coding row may be damaged"
+                    f"; the coding row may be damaged"
                 )
                 continue
 
