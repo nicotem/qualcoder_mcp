@@ -9,9 +9,15 @@ Before starting, make sure you have:
 - ✅ **A Mac computer** (or Linux/Windows - paths will be slightly different)
 - ✅ **Qualcoder installed** with at least one project created
   - Download from: https://github.com/ccbogel/QualCoder
-  - Make sure you know where your `.qda` project file is located
-- ✅ **Claude Desktop installed**
-  - Download from: https://claude.ai/download
+  - Make sure you know where your `.qda` project folder is located
+    (QualCoder projects are folders ending in `.qda`, with a `data.qda`
+    database file inside)
+  - Supported: projects from QualCoder 3.8.x and from the QualCoder
+    4.0-Beta pre-release (project schemas v14 through v17); see
+    "Supported QualCoder versions" in the README
+- ✅ **An MCP host**: the step-by-step guide below uses Claude Desktop
+  (download from: https://claude.ai/download); recipes for Claude Code
+  and LM Studio follow further down
 - ✅ **Python 3.10 or newer**
   - Check by opening Terminal and typing: `python3 --version`
   - If not installed, get it from: https://www.python.org/downloads/
@@ -36,7 +42,7 @@ uv tool install qualcoder-mcp
 This gives you a `qualcoder-mcp` command; get its absolute path with
 `which qualcoder-mcp` and use THAT as the `command` in the Claude
 configuration of Step 6 (no `args` needed). Everything else in this
-guide — project configuration, testing, updating — applies unchanged.
+guide (project configuration, testing, updating) applies unchanged.
 
 The step-by-step install below is the **contributor path**: use it if
 you want to read or modify the source, or run the test suite.
@@ -104,6 +110,14 @@ pip install -e .
 ```
 
 This will install all necessary components. You'll see several lines of output - this is normal!
+
+To run the test suite as well, install the development extras and run
+pytest from the repository root:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest
+```
 
 ---
 
@@ -187,7 +201,10 @@ Now we need to tell Claude Desktop about the MCP server. You have two options:
 
 **Replace**:
 - `YOUR_USERNAME` with your Mac username
-- The path in `QUALCODER_PROJECT_PATH` with your actual `.qda` file location
+- The path in `QUALCODER_PROJECT_PATH` with your actual `.qda` project
+  folder (the path to the `data.qda` file inside it is accepted too).
+  If the path does not exist the server refuses to start and prints
+  "Error: Database file not found: <path>" to the host's log
 
 4. **Save and Close** the configuration file
 
@@ -203,18 +220,21 @@ Now we need to tell Claude Desktop about the MCP server. You have two options:
 
 3. **Verify it's working**:
    - Open a new conversation
-   - Type: "Can you see my Qualcoder project?"
-   - If configured correctly, Claude should be able to access your data!
+   - Type: "List my available Qualcoder projects" (Option A) or "Give
+     me a summary of my Qualcoder project" (Option B)
+   - If configured correctly, Claude calls the qualcoder tools and
+     answers from your project. If it says it has no such tool, the
+     server is not connected: see Troubleshooting below
 
 ---
 
 ## Alternative: Claude Code and other MCP clients
 
-Claude Desktop is not required — the server speaks standard MCP over
+Claude Desktop is not required: the server speaks standard MCP over
 stdio, so **any MCP client can host it** (researchers run it under
 Claude Code, including in editor side panels such as Obsidian's).
 
-**Claude Code** — register it with one command (use the venv Python
+**Claude Code**: register it with one command (use the venv Python
 path from Step 5):
 
 ```bash
@@ -235,7 +255,65 @@ Or add a `.mcp.json` to the folder you run Claude Code from:
 ```
 
 The optional `env` block with `QUALCODER_PROJECT_PATH` (Option B above)
-works the same way. Every feature behaves identically in any client.
+works the same way in `.mcp.json`; on the command line pass it with
+`-e`:
+
+```bash
+claude mcp add qualcoder -e QUALCODER_PROJECT_PATH=/path/to/MyProject.qda -- ~/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server
+```
+
+The server behaves the same under any client; which tools are
+registered is decided by `QUALCODER_MCP_TOOLSET` (see "Environment
+variables the server reads" below), not by the client.
+
+---
+
+## Environment variables the server reads
+
+All configuration is by environment variables in the `env` block of the
+server entry (Claude Desktop config, `.mcp.json`, LM Studio's mcp.json),
+or with `claude mcp add -e NAME=value ...` for Claude Code. Every
+variable is optional.
+
+- `QUALCODER_PROJECT_PATH`: a project to open at start-up (Option B
+  above): the folder ending in `.qda`, or the `data.qda` file inside it.
+  If the path does not exist the server refuses to start and prints
+  "Error: Database file not found: <path>" to stderr. Without it, select
+  a project with the tools (Option A).
+- `QUALCODER_MCP_TOOLSET`: `full` (default) registers all 67 tools;
+  `core` registers the 20-tool supervised coding set for local models
+  (see the LM Studio recipe). Any other value stops the server at
+  start-up with an error naming the valid values. Resources and prompts
+  are not affected.
+- `QUALCODER_MCP_AI_CODER_NAME`: the coder name written on every row
+  this server creates (codings, annotations, journal entries, imports,
+  cases, codes, categories, attributes, and the Users entry of a REFI-QDA
+  export). Default `AI Coding Assistant`. Set it to `AI Agent` to use the
+  exact name QualCoder 4.0's built-in assistant writes under; that
+  groups this server's work with the assistant's in 4.0's per-coder
+  visibility toggle, undo and reports, which is the coherent choice for
+  a project worked on by both tools. The value is trimmed and must be
+  non-empty, at most 80 characters, single-line plain text (no control
+  characters, no line or paragraph separators, no bidirectional
+  formatting characters) and must not contain `#####`, the QualCoder 4.0
+  private-memo marker. An invalid value stops the server at start-up
+  with "Error: QUALCODER_MCP_AI_CODER_NAME ..." on stderr. Do not set it
+  to your own QualCoder coder name: AI rows would then be
+  indistinguishable from yours in QualCoder.
+
+  ```json
+  "env": {
+    "QUALCODER_MCP_AI_CODER_NAME": "AI Agent"
+  }
+  ```
+
+- `QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA`: expert override. Writes to a
+  project whose database schema is newer than the schemas this release
+  is verified against (v14 through v17, QualCoder master commit
+  `9bddf17`) are refused to protect the data, and the refusal names this
+  variable. Setting it to `1` lets those writes proceed; every write
+  result then carries a warning. Use it only with backups you trust, and
+  verify the results in QualCoder.
 
 ---
 
@@ -350,20 +428,21 @@ that evaluation is planned, which is one reason this recipe is marked
 Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 67 tools by
-default, and the serialized tool definitions alone measure about 91,000
-characters, roughly 23k tokens. That exceeds LM Studio's 8k default
-context before you type a word, and tool counts this size are far past
-where small-model tool selection degrades. Set
-`QUALCODER_MCP_TOOLSET=core` (in the config of Step 5) to register only
-the 20-tool supervised coding set, measured at about 33,000 characters,
-roughly 8.3k tokens.
+default, and the serialized tool definitions alone measure about
+118,000 characters, roughly 29k tokens (measured for v0.11.0-alpha).
+That exceeds LM Studio's 8k default context several times over before
+you type a word, and tool counts this size are far past where
+small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
+(in the config of Step 5) to register only the 20-tool supervised
+coding set, measured at about 44,000 characters, roughly 11k tokens.
 
-**Step 4. Raise the context length.** Even the core toolset's ~8.3k
-tokens of schema exceed the 8k default context. When loading the model,
-set the context length to at least 16k for the core toolset (leaving
-roughly half the window for your transcript excerpts and conversation),
-or 32k+ if you must run the full surface. Use the model load settings
-dialog or a per-model default
+**Step 4. Raise the context length.** Even the core toolset's roughly
+11k tokens of schema exceed the 8k default context. When loading the
+model, set the context length to at least 16k for the core toolset
+(that leaves about 5k tokens for your transcript excerpts and
+conversation; 32k is more comfortable), or 64k if you must run the
+full surface (its schema alone is about 29k tokens). Use the model
+load settings dialog or a per-model default
 (<https://lmstudio.ai/docs/app/advanced/per-model>).
 
 **Step 5. Add the server.** Open the Program tab in the right sidebar,
@@ -504,22 +583,40 @@ Make sure your `.qda` file is in one of these locations, or tell Claude to searc
 List available projects in ["/path/to/your/projects"]
 ```
 
-### "QUALCODER_PROJECT_PATH not set" (Option A)
+### "No Qualcoder project selected" (Option A)
 
-This is normal! Just use the tools to select a project:
+With dynamic project selection this is normal at the start of a
+session: the server has no project open until one is selected. The
+error reads "No Qualcoder project selected. Use 'list_available_projects'
+to discover projects, then 'select_project' to choose one. Or set
+QUALCODER_PROJECT_PATH environment variable." (`get_current_project`
+says "No project currently open" instead.) Just select a project:
 ```
 List my available Qualcoder projects
 Select the "ProjectName" project
 ```
+
+When a project was selected before on this machine and still exists,
+the same error ends with "The last project used on this machine was
+<path>. Use select_project with that path to continue with it." That
+pointer is read from `~/.qualcoder_mcp/mru_project.json`, which
+`select_project` writes on every successful selection; the selection is
+never restored automatically, so one `select_project` call is still
+needed. If the error comes back in the middle of a conversation, the
+host has restarted the server process between turns and the in-memory
+selection was lost; the hint gets you back with one call. For
+single-project work, pinning `QUALCODER_PROJECT_PATH` in the server's
+`env` block (Option B) avoids that round trip.
 
 ### Python Not Found
 
 If you get "python command not found":
 
 1. Install Python from https://www.python.org/downloads/
-2. Or install via Homebrew:
+2. Or install via Homebrew (any Python 3.10 or newer works; the test
+   matrix runs 3.10 and 3.13):
    ```bash
-   brew install python@3.10
+   brew install python
    ```
 
 ### Permission Denied Errors
@@ -527,12 +624,36 @@ If you get "python command not found":
 If you get permission errors:
 
 ```bash
-# Make sure the file is readable
-chmod +r /path/to/your/project.qda
+# The project is a folder: reading needs read and traverse permission,
+# and the coding tools need write permission on the folder and on its
+# parent (backups are created next to the project)
+chmod -R u+rwX /path/to/your/project.qda
 
 # Or check who owns it
-ls -l /path/to/your/project.qda
+ls -ld /path/to/your/project.qda
 ```
+
+### Tools missing or unchanged after an upgrade
+
+The client starts the server once per session and reads the tool list
+at that moment. After `pip install --upgrade` (or `git pull` and
+reinstall), fully quit the client and reopen it (Claude Desktop: Cmd+Q,
+not just closing the window; Claude Code: end the session and start a
+new one; LM Studio: toggle the server off and on in mcp.json, or
+restart LM Studio). Until then the old process, with the old tool list,
+keeps running.
+
+### Reading the server log
+
+The server writes its log lines (INFO and above) to standard error; the
+host decides where that goes. Claude Desktop shows it under Settings >
+Developer > Show Logs. LM Studio on macOS persists it into
+`~/Library/Logs/LM Studio/main.log`; search that file for
+`qualcoder_mcp` to find the server's start-up lines (which report the
+toolset mode and the number of tools registered) and any errors. The
+log never contains memo text; it does carry project file names, code
+and case names and, for a database that will not open, the SQLite
+error text.
 
 ---
 
@@ -545,7 +666,7 @@ Check out the main README.md for:
 - Full list of available tools
 - Advanced features (co-occurrence analysis, demographics, etc.)
 
-### Try the New Features (v0.2.0)
+### Try some richer queries
 
 **Rich Transcript Analysis**:
 ```
@@ -570,7 +691,7 @@ Create a case-code matrix
 
 Updates are manual (a new release does not install itself).
 
-**PyPI install** — one command:
+**PyPI install**, one command:
 
 ```bash
 ~/qualcoder-mcp-venv/bin/pip install --upgrade qualcoder-mcp
@@ -578,7 +699,7 @@ Updates are manual (a new release does not install itself).
 # uv:    uv tool upgrade qualcoder-mcp
 ```
 
-**Git (contributor) install** — when new versions are released:
+**Git (contributor) install**, when new versions are released:
 
 ```bash
 # Go to the installation folder
@@ -594,13 +715,26 @@ git pull
 pip install -e .
 ```
 
-Then **fully quit and relaunch your Claude client** (Claude Desktop:
-Cmd+Q, then reopen; Claude Code: restart the session). New tools only
-appear after the restart — the client launches the server once per
-session.
+Then **fully quit and relaunch your MCP client** (Claude Desktop:
+Cmd+Q, then reopen; Claude Code: restart the session; LM Studio: toggle
+the server off and on in mcp.json, or restart LM Studio). New tools
+only appear after the restart; the client launches the server once per
+session and reads its tool list then.
 
-To confirm the update took, ask Claude: *"What version of the
-QualCoder server is running?"*
+To confirm the update took, check the installed version from the
+terminal:
+
+```bash
+~/qualcoder-mcp-venv/bin/pip show qualcoder-mcp          # PyPI venv
+# pipx:  pipx list
+# uv:    uv tool list
+# git:   ~/Documents/qualcoder_mcp/venv/bin/pip show qualcoder-mcp
+```
+
+The server also reports its version to the host in the MCP handshake
+(`serverInfo.version`); whether the assistant can see and repeat it
+depends on the host, so asking Claude "what version is running?" is a
+convenience, not proof.
 
 Updating never touches your data: the server is code-only, and your
 QualCoder projects and backups stay exactly where they are.
@@ -626,7 +760,7 @@ and pre-0.9 session files load unchanged (verified end-to-end, a
 
 You have two paths. Both work; pick one.
 
-### Path A — stay on the git install (simplest, no config change)
+### Path A: stay on the git install (simplest, no config change)
 
 ```bash
 cd ~/Documents/qualcoder_mcp   # your clone
@@ -638,15 +772,15 @@ Then fully quit and relaunch your Claude client. Your existing
 configuration keeps working unchanged, forever. Good if you don't want
 to touch your setup.
 
-### Path B — switch to the PyPI install (recommended going forward)
+### Path B: switch to the PyPI install (recommended going forward)
 
 *Available from v0.9.0 (the first release published to PyPI).*
 
-**Use a FRESH environment — do not install into the old clone's venv.**
+**Use a FRESH environment. Do not install into the old clone's venv.**
 (If you run `pip install qualcoder-mcp` inside the old venv, pip sees
 the editable install, reports "Requirement already satisfied", and
-silently does nothing — you'd still be running the old code. Verified
-behaviour, and the reason these instructions exist.)
+silently does nothing, so you would still be running the old code.
+Verified behaviour, and the reason these instructions exist.)
 
 **1. Install into a fresh venv (or pipx/uv):**
 
@@ -664,7 +798,7 @@ ls ~/qualcoder-mcp-venv/bin/qualcoder-mcp   # plain venv
 which qualcoder-mcp                          # pipx / uv
 ```
 
-**3. Update your Claude client config** — change `command` to that
+**3. Update your Claude client config**: change `command` to that
 path and REMOVE the `args` line.
 
 Claude Desktop, before:
@@ -692,10 +826,10 @@ Claude Desktop, after:
 }
 ```
 
-(Keep your `env` block with `QUALCODER_PROJECT_PATH`, if you had one —
+(Keep your `env` block with `QUALCODER_PROJECT_PATH`, if you had one;
 it works the same.)
 
-Claude Code: re-register once —
+Claude Code: re-register once:
 
 ```bash
 claude mcp remove qualcoder
@@ -704,8 +838,11 @@ claude mcp add qualcoder -- ~/qualcoder-mcp-venv/bin/qualcoder-mcp
 
 (or edit `.mcp.json` the same way as the Desktop config above).
 
-**4. Fully quit and relaunch the client**, then confirm by asking
-Claude: *"What version of the qualcoder server is running?"*
+**4. Fully quit and relaunch the client**, then confirm the installed
+version with `~/qualcoder-mcp-venv/bin/pip show qualcoder-mcp` (or
+`pipx list` / `uv tool list`). Whether the assistant can also tell you
+the running version depends on the host (see "Updating the MCP
+Server" above).
 
 **5. Optional cleanup, once the new install is confirmed working:**
 delete the old clone and its venv. Keeping them around breaks nothing.
@@ -729,7 +866,7 @@ or uninstall the editable first:
 
 Both verified: pip cleanly removes the editable hooks and the wheel
 takes over (your existing `venv/bin/python -m qualcoder_mcp.server`
-config even keeps working). The catch — and why the fresh venv is
+config even keeps working). The catch, and why the fresh venv is
 recommended instead: from that moment `git pull` in the clone no
 longer affects what runs, which is a confusing state to leave lying
 around.
@@ -739,7 +876,14 @@ around.
 
 ## Getting Help
 
-- **Technical Issues**: Check the main README.md troubleshooting section
+- **Problems with this server**: check the Troubleshooting section
+  above and the README's troubleshooting section, then open an issue on
+  [GitHub Issues](https://github.com/nicotem/qualcoder_mcp/issues).
+  That is the only support channel (email requests receive no reply);
+  see [SUPPORT.md](SUPPORT.md). Never paste research data into an
+  issue; a redacted or synthetic example is enough. Include your
+  QualCoder version, the server version, your host (Claude Desktop,
+  Claude Code, LM Studio) and the toolset mode (full or core).
 - **MCP Documentation**: https://modelcontextprotocol.io/
 - **Qualcoder Help**: https://github.com/ccbogel/QualCoder/wiki
 - **Claude Desktop**: https://claude.ai/help
@@ -750,17 +894,35 @@ around.
 
 If you want to remove the MCP server:
 
-1. **Remove from Claude Desktop**:
-   - Settings > Developer > Edit Config
-   - Delete the "qualcoder" section
-   - Save and restart
+1. **Remove it from your client**:
+   - Claude Desktop: Settings > Developer > Edit Config, delete the
+     "qualcoder" section, save, then fully quit and reopen Claude Desktop
+   - Claude Code: `claude mcp remove qualcoder`
+   - LM Studio: delete the "qualcoder" block from mcp.json
 
-2. **Delete the files**:
+2. **Remove the package**:
    ```bash
+   # PyPI install in its own venv: delete the venv
+   rm -rf ~/qualcoder-mcp-venv
+   # pipx:  pipx uninstall qualcoder-mcp
+   # uv:    uv tool uninstall qualcoder-mcp
+   # Git (contributor) install: delete the clone (its venv is inside it)
    rm -rf ~/Documents/qualcoder_mcp
    ```
 
-Your Qualcoder projects are **never modified** by this server, so they'll remain intact!
+3. **Optionally remove the server's own state**: `~/.qualcoder_mcp/`
+   holds the AI-coding session files (`sessions/`) and the last-used
+   project pointer (`mru_project.json`). Nothing else is stored there.
+
+Uninstalling does not touch your QualCoder projects. Note that the
+server does write to projects when you use its coding tools (always
+after taking a backup), so the changes you approved during use, and the
+backup folders it created next to each project
+(`<project>_backup_<timestamp>.qda`), stay where they are. Remove
+backups you no longer need with the `prune_backups` tool before
+uninstalling, or by hand afterwards. Workspace copies made with
+`copy_project_to_workspace` live in `~/Documents/Qualcoder MCP
+Projects/`.
 
 ---
 
