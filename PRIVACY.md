@@ -31,15 +31,23 @@ must understand:
 What stays local, always:
 
 - your QualCoder project itself (the `.qda` folder and database)
-- automatic backups created before writes
+- automatic backups created before writes, and the safety backup a
+  confirmed restore_backup takes first: timestamped
+  `<project>_backup_<timestamp>.qda` folders placed next to the project
+  folder
 - exported files (CSV/txt/md reports, REFI-QDA `.qdpx`)
+- project copies made by copy_project_to_workspace, in
+  `~/Documents/Qualcoder MCP Projects/` by default (each carries the
+  same content as a backup, so the `ai_data/` and symlink rules below
+  apply to it)
 - AI-coding session files (`~/.qualcoder_mcp/sessions/`)
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
   select_project). It has one outward flow: when a tool is called
   before a project is selected, the error message names that path as a
-  recovery hint, so a project path chosen in one MCP host or session
+  recovery hint (only while that project still exists on disk), so a
+  project path chosen in one MCP host or session
   can appear in another host's conversation on the same account.
   Nothing is ever selected automatically from it; only a path with the
   shape select_project itself records is ever echoed, and deleting the
@@ -102,7 +110,10 @@ keeps the same promise:
   itself.
 
 The private zone stays in your project database on disk; this
-convention controls only what enters the AI conversation.
+convention controls only what enters the AI conversation. The QualCoder
+4.0 behavior described in this section and the next two was verified
+against QualCoder master at commit 9bddf17 (pulled 2026-08-25, when 4.0
+was in beta); README.md and CHANGELOG.md carry the same pin.
 
 ## Coder visibility: reading and writing what the user sees
 
@@ -111,8 +122,11 @@ visibility setting stored in the project database). When that setting
 is present in a project:
 
 - **Reads** go through QualCoder's own visibility views by default, so
-  coded segments, searches, frequencies, co-occurrence, matrices and
-  case and code listings reflect what the user sees in QualCoder.
+  coded segments, coded-text searches, the annotation matches of memo
+  searches, the file view with its codings and annotations, code
+  detail counts, frequencies, co-occurrence, matrices and the
+  codes-by-case and cases-by-code listings reflect what the user sees
+  in QualCoder.
   Results disclose when hidden-coder filtering shaped them as a COUNT
   of hidden coders, never their names. An explicit `coder` argument
   reads that coder's rows from the full data instead, the same
@@ -123,13 +137,15 @@ is present in a project:
   REFUSE unless the caller passes `allow_hidden_coder=true`; the
   refusal says only that the row belongs to a coder currently hidden
   in QualCoder, never who or how many. With the override, the result
-  echoes ids only (as QualCoder's AI server does), never the hidden
-  coder's name, code, span or text. The confirm-gated cascades
+  echoes ids only (as QualCoder's AI server does; update_annotation
+  also echoes back the public note text the AI itself just supplied),
+  never the hidden coder's name, code, span or text. The confirm-gated cascades
   (delete_code, delete_category, merge_codes, merge_category) report
   in their preview how many affected codings belong to hidden coders,
   as a count. If the visibility state cannot be read (the view exists
   but does not answer), these tools return an error and change nothing,
-  with or without the override; they never assume a row is visible.
+  with or without the override; they never assume a row is visible, and
+  the cascade previews return an error rather than an undercount.
   - Deliberate disclosure: because the refusal fires only on a hidden
     coder's row and changes nothing, it confirms that a given coding or
     annotation id belongs to a hidden coder (never whose, and never how
@@ -155,8 +171,11 @@ folders.
 
 This server never writes into `ai_data/` (it is QualCoder's own
 territory). Its backups and workspace copies include `ai_data/` whole,
-minus exactly the files QualCoder's own backups skip: `search.sqlite`
-and sqlite sidecar files. That mirrors upstream behavior, keeps the
+minus exactly the files QualCoder 4.0's own backups skip
+(`search.sqlite`, `search.sqlite-*`, `*.sqlite-shm`, `*.sqlite-wal` and
+`*.sqlite-journal`) and, in addition, any `*.lock` file (QualCoder 3.8's
+backups skipped those too, and a copied lock file would make QualCoder
+report the copy as not properly closed). That mirrors upstream behavior, keeps the
 non-regenerable prompt library and chat history safe in every backup,
 and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
@@ -167,7 +186,8 @@ Two further rules touch files on your disk:
 - **Symlinks.** Unlike QualCoder's own backups, this server's backups
   and workspace copies do not follow a symlink that points outside the
   project folder, or that dangles: such entries are skipped, and the
-  result reports how many (and which) were skipped, so a shared or
+  result reports how many (and which, up to twenty names) were
+  skipped, so a shared or
   untrusted project folder cannot pull files from elsewhere on your
   disk into a backup. Symlinks that resolve inside the project are
   copied as before, with one exception: a symlink loop (a link that
@@ -185,13 +205,23 @@ Two further rules touch files on your disk:
   get_current_project, analyze_for_coding and the restore_backup
   preview, which is the default confirm=false call) also looks at the
   list of processes running on this machine (`ps` or `tasklist`, or
-  psutil when installed). The listing is filtered in memory for QualCoder's
-  own process name and only the NUMBER of matches is reported into the
-  conversation; process names, command lines and other users'
-  processes never leave the server, and nothing from the list is
-  stored on disk. This is a heuristic: it can miss an open window and
-  it can count an unrelated process whose command line mentions
-  QualCoder.
+  psutil when installed). The listing is filtered in memory for
+  process names and command lines that mention QualCoder (this
+  server's own name is blanked out first) and only the NUMBER of
+  matches is reported into the conversation; process names, command
+  lines and other users' processes never leave the server, the
+  filtered matches are held in memory for at most five seconds so that
+  back-to-back calls do not rescan, and nothing from the list is
+  stored on disk. The other signals in that field come from the
+  project folder alone: whether `data.qda` has a write sidecar
+  (`-journal`, `-wal` or `-shm`), and whether
+  `ai_data/search.sqlite-wal`, `ai_data/search.sqlite-shm` or
+  `ai_data/chat_history.sqlite` exist and how recently they were
+  modified; only presence and timestamps are read, never contents.
+  This is a heuristic: it can miss an open window (an idle 4.0 window
+  with no recent AI activity leaves no file trace, so only the process
+  scan can see it) and it can count an unrelated process whose command
+  line mentions QualCoder.
 
 ## Your governance options, from default to fully local (Experimental)
 
@@ -212,7 +242,8 @@ Improvement setting yourself. The governing documents:
 - Consumer Terms of Service (effective date shown: October 8, 2025):
   <https://www.anthropic.com/legal/consumer-terms>, which state:
   > "We may use Materials to provide, maintain, and improve the
-  > Services, including training our models, unless you opt out"
+  > Services, including training our models, unless you opt out of
+  > training through your account settings"
 - Privacy Policy (effective date shown: July 8, 2026):
   <https://www.anthropic.com/legal/privacy>
 - Privacy Center article "Is my data used for model training?":
@@ -259,8 +290,9 @@ INSTALL.md recipe "Claude Code with an Anthropic API key".
 
 Same commercial-terms footing. The August 2025 consumer announcement
 (<https://www.anthropic.com/news/updates-to-our-consumer-terms>,
-quoted 2026-08-17) lists what the consumer training changes do NOT
-touch:
+quoted 2026-08-17; the page renders the items as a bulleted list,
+joined here with semicolons) lists what the consumer training changes
+do NOT touch:
 
 > "These updates do not apply to services under our Commercial Terms,
 > including: Claude for Work, which includes our Team and Enterprise
@@ -381,7 +413,8 @@ will ask, and the summary above depends on them:
 - **Consult your institution's DPO or ethics board** if you are unsure,
   before the analysis, not after.
 - Remember that the server's safety features (read-only default,
-  automatic local backups, refuse-while-QualCoder-is-open, and for
+  automatic local backups, refuse-while-QualCoder-is-open through the
+  lock file QualCoder 3.x writes, and for
   QualCoder 4.0 a best-effort check of this machine's process list that
   reports only a count, never names or command lines) protect your
   project's **integrity on disk**; they do not change what leaves the
