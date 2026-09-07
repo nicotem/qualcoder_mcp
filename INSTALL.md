@@ -386,10 +386,11 @@ like this one work identically.
 ## LM Studio (fully local) (Experimental)
 
 > **Status: Experimental.** Written from LM Studio's official
-> documentation (pages verified 2026-08-17; instructions written against
-> LM Studio 0.4.21, which requires 0.3.17 or newer for MCP). Hands-on
-> verification of this recipe is pending, and we have not yet evaluated
-> how well any local model performs with this server. Expect to
+> documentation (pages verified 2026-08-17; MCP support needs LM Studio
+> 0.3.17 or newer). The maintainer verified this recipe as functional
+> against LM Studio 0.4.22 on 2026-09-07: the server loads and tool
+> calls complete without breaking. We have not yet evaluated how well
+> any local model performs coding work with this server. Expect to
 > supervise closely and report what you find.
 
 [LM Studio](https://lmstudio.ai) runs open-weight models entirely on
@@ -475,9 +476,9 @@ Studio shows a confirmation dialog where you can inspect and edit the
 arguments and allow the call once or always. Keep confirmations on:
 they are your audit point for what the model is doing to your project.
 If your LM Studio build offers per-chat or per-tool toggles for MCP
-servers, disable the server in chats that do not need it (we have not
-yet click-verified the exact toggle granularity in the current build;
-this sentence will be updated after the hands-on pass).
+servers, disable the server in chats that do not need it (toggle
+granularity was not part of the 0.4.22 functional check; this sentence
+will be updated when it has been verified).
 
 **Step 7. Verify offline (recommended for data-governance records).**
 Disconnect from the network and work. Model inference, chats, and all
@@ -486,9 +487,9 @@ internet only for model search/downloads, runtime downloads, and update
 checks (<https://lmstudio.ai/docs/app/offline>). A note that you
 verified this yourself is good evidence for a data-management plan.
 
-**What to expect (honest, unverified).** We have not yet evaluated
-local models with this server, which is why the feature is
-Experimental. From the published evidence on many-tool MCP use, expect
+**What to expect (honest; model quality not yet evaluated).** We have
+not yet evaluated local models with this server, which is why the
+feature is Experimental. From the published evidence on many-tool MCP use, expect
 a narrower workflow than with Claude: use the core toolset, work one
 document or one code at a time, and verify codings as you go. Long
 transcripts should be worked in sections. Multi-step batch operations
@@ -501,8 +502,17 @@ Troubleshooting: a context overflow typically appears as the model
 ignoring tools, emitting malformed tool calls, or the host reporting an
 overflow; lower the tool surface (core mode), raise the context, or
 shorten the chat. After editing mcp.json or upgrading the package,
-toggle the server off and on or restart LM Studio (community-reported
-stdio lifecycle rough edges: lmstudio-bug-tracker issues #731, #732).
+toggle the server off and on or restart LM Studio so the new process
+is the one in use. LM Studio may also restart the MCP server process
+between turns (observed with 0.4.12), which drops the in-memory
+project selection. Since 0.11 every "no project selected" error names
+the last project used on this machine, so recovery is one
+`select_project` call. If you work on a single project, set
+`QUALCODER_PROJECT_PATH` in the LM Studio entry (as in Step 5) so that
+project is selected at every start. The quality consequences of
+different local models for coding work have not yet been evaluated
+(that evaluation is planned work), so treat local-model results with
+corresponding care.
 
 ---
 
