@@ -5,11 +5,11 @@ the AI: everything from the first '#####' marker onward is never shown
 to the model, and AI memo updates preserve that private suffix
 verbatim (upstream src/qualcoder/ai_memo.py:28-59 at pin 9bddf17,
 applied to tool results in ai_mcp_server.py:210-223). This server
-honors the same convention on every memo it returns to the client and
+honours the same convention on every memo it returns to the client and
 on every memo it writes, so a project touched by both tools keeps the
 same promise to the researcher.
 
-Behavior is matched to upstream ai_memo.py exactly (independent MIT
+Behaviour is matched to upstream ai_memo.py exactly (independent MIT
 implementation of the same contract; upstream is LGPL):
 
 - Split: the FIRST marker wins; the private suffix starts AT the
@@ -113,7 +113,7 @@ def strip_private_memos(value: Any) -> Any:
     """Recursively strip private suffixes from a result payload.
 
     Walks dicts, lists and tuples; every string under a 'memo' key is
-    reduced to its public part (upstream's payload sanitizer contract,
+    reduced to its public part (upstream's payload sanitiser contract,
     ai_mcp_server.py:210-223). Everything else passes through
     unchanged. Returns a new structure; the input is not mutated.
     """

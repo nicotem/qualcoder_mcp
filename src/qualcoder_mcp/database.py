@@ -476,10 +476,10 @@ def position_safe(fulltext: str) -> bool:
 
 
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
-    """Convert a sqlite3 error from a query into a typed, sanitized error.
+    """Convert a sqlite3 error from a query into a typed, sanitised error.
 
     Locked databases get a distinct, actionable error; everything else is
-    logged in full and re-raised as a generic sanitized RuntimeError.
+    logged in full and re-raised as a generic sanitised RuntimeError.
     """
     if isinstance(e, sqlite3.OperationalError) and _is_locked_error(e):
         raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
@@ -605,7 +605,7 @@ def validate_qda_path(db_path: str) -> Path:
 
 
 def normalize_coder(coder: Optional[str]) -> Optional[str]:
-    """Normalize an explicit coder filter: None or blank means no filter.
+    """Normalise an explicit coder filter: None or blank means no filter.
 
     QualCoder 4.0's own AI strips coder names and drops empty ones
     before choosing the base table over the visible view (ai_chat.py at
@@ -823,7 +823,7 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
     at pin 9bddf17): a hostile or shared project folder must not pull
     files from outside the project into a backup or workspace copy, and a
     dangling link must not abort the copy (S-P1). Symlinks resolving inside
-    the project keep the previous behavior (dereferenced into a real copy),
+    the project keep the previous behaviour (dereferenced into a real copy),
     with one exception: an in-project DIRECTORY link whose target is a
     folder the copy is already inside (documents/up -> .., a link to any
     ancestor, or two folders linking to each other) is a symlink loop.
@@ -1091,7 +1091,7 @@ def private_note_refusal(kind: str, row_id: int,
 
     Says only that the row carries a '#####' private note the assistant
     cannot see and that the override is required; never quotes, counts or
-    characterizes the note (S-P2). Its very presence discloses that a
+    characterises the note (S-P2). Its very presence discloses that a
     private note exists on the row, a trade the owner accepted and
     PRIVACY.md documents.
     """
@@ -1150,7 +1150,7 @@ class QualcoderDatabase:
     """Interface to read data from a Qualcoder SQLite database."""
 
     def __init__(self, db_path: str, read_only: bool = True):
-        """Initialize connection to Qualcoder database.
+        """Initialise connection to Qualcoder database.
 
         Args:
             db_path: Path to the .qda database file or project folder
@@ -3365,7 +3365,7 @@ class QualcoderDatabase:
             code_id: The code ID to find co-occurrences for
             window_size: If 0, finds codes in same segment (overlap).
                         If > 0, finds codes within N characters
-            coder: Explicit coder filter; analyzes the BASE table rows
+            coder: Explicit coder filter; analyses the BASE table rows
                    of this owner only (P1-3 override). Default reads
                    through code_text_visible when the project has QC
                    4.0 coder visibility.
@@ -3892,7 +3892,7 @@ class QualcoderDatabase:
             owner: Name of the person creating the code
             memo: Optional description/definition of the code
             category_id: Optional category ID to place code in
-            color: Hex color code #RRGGBB (default: random pick from
+            color: Hex colour code #RRGGBB (default: random pick from
                    QualCoder's own palette, like GUI-created codes)
             auto_commit: Commit immediately (default True). Pass False to
                          defer the commit to the caller (batch/lock recheck).
@@ -4181,7 +4181,7 @@ class QualcoderDatabase:
             memo: Optional file memo
 
         Returns:
-            The normalized (NFC, stripped) filename to store
+            The normalised (NFC, stripped) filename to store
 
         Raises:
             ValueError: If any input is invalid or the filename exists
@@ -4258,7 +4258,7 @@ class QualcoderDatabase:
         """Import text content as a new source file in the QualCoder project.
 
         Creates a new source record with mediapath=NULL, matching QualCoder's
-        "create text file" behavior. Also creates attribute placeholders for
+        "create text file" behaviour. Also creates attribute placeholders for
         any existing file-type attribute types.
 
         Args:
@@ -4755,7 +4755,7 @@ class QualcoderDatabase:
 
     def recolor_code(self, code_id: int, color: str,
                      auto_commit: bool = True) -> Dict[str, Any]:
-        """Set a code's color (strict #RRGGBB, QualCoder's format)."""
+        """Set a code's colour (strict #RRGGBB, QualCoder's format)."""
         self._require_write_access()
         code_id = validate_id(code_id, "code_id")
         if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
@@ -4767,13 +4767,13 @@ class QualcoderDatabase:
             )
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Recolored code {code_id} -> {color}")
+            logger.info(f"Recoloured code {code_id} -> {color}")
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
             except Exception:
                 pass
-            _raise_query_error(e, "recolor_code", "Failed to recolor code")
+            _raise_query_error(e, "recolor_code", "Failed to recolour code")
         return {"code_id": code_id, "name": old["name"],
                 "old_color": old["color"], "new_color": color}
 

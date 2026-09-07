@@ -188,7 +188,7 @@ DB_UNAVAILABLE_ERROR = (
 
 
 def _tool_guard(fn):
-    """Convert anticipated exceptions into sanitized error JSON.
+    """Convert anticipated exceptions into sanitised error JSON.
 
     Applied to every MCP tool so that failures (no project selected, locked
     database, old schema, validation errors, corruption) reach the client as
@@ -334,7 +334,7 @@ def switch_project(project_path: str, read_only: bool = True) -> None:
 
 
 def get_db(read_only: bool = True) -> QualcoderDatabase:
-    """Get or initialize the database connection.
+    """Get or initialise the database connection.
 
     Args:
         read_only: If True (default), opens in read-only mode.
@@ -594,7 +594,7 @@ def _write_gate_error() -> Optional[Dict[str, Any]]:
     explicit override, or when QualCoder currently has the project open.
     Capability probes, never version strings, decide support (S1); the
     database layer enforces the same gate in _require_write_access
-    (defense in depth); the early check here produces a clean error
+    (defence in depth); the early check here produces a clean error
     before any backup is made.
     """
     supported, reason, _overridden = get_db().write_support()
@@ -753,7 +753,7 @@ def _perform_write(op, create_backup: bool = True,
 
     Args:
         op: Callable op(write_db) that performs the mutation with
-            auto_commit=False and returns a JSON-serializable success dict.
+            auto_commit=False and returns a JSON-serialisable success dict.
         create_backup: Create a timestamped backup before writing.
         backup_fail_detail: Tail of the "nothing was ..." message on backup
             failure (e.g. "nothing was deleted").
@@ -1170,8 +1170,8 @@ def get_project_info() -> str:
 def list_all_codes() -> str:
     """Get a list of all codes in the project.
 
-    Returns all codes with their names, categories, colors, memos, and metadata.
-    Codes are organized hierarchically by category.
+    Returns all codes with their names, categories, colours, memos, and metadata.
+    Codes are organised hierarchically by category.
     """
     codes = get_db().list_codes()
     return _ai_json(codes, indent=2)
@@ -1913,7 +1913,7 @@ def search_memos(query: str, limit: int = 50) -> str:
     matches and returns only the public part of each memo.
 
     Coder visibility (QualCoder 4.0 projects): annotation matches
-    honor the project's per-coder visibility by default (hidden
+    honour the project's per-coder visibility by default (hidden
     coders' annotations are not returned, matching what the user sees
     in QualCoder), and the result then carries a coder_visibility
     block. Code and file memos have no per-coder visibility in
@@ -2271,21 +2271,21 @@ def get_project_summary() -> str:
 @mcp.tool()
 @_tool_guard
 def analyze_file_with_coding(file_id: int) -> str:
-    """Analyze a text file with all its coded segments for rich context analysis.
+    """Analyse a text file with all its coded segments for rich context analysis.
 
     This tool retrieves the complete text of a file along with all coding information,
     enabling deep analysis that considers both coded segments and the full context.
-    Perfect for analyzing interview transcripts, documents, or any text where you need
+    Perfect for analysing interview transcripts, documents, or any text where you need
     to see both the structured coding and the complete narrative.
 
     Use this when you want to:
     - Answer questions that require understanding the full context
     - Find passages that may not be directly coded but are relevant
-    - Analyze how a participant discusses multiple themes
+    - Analyse how a participant discusses multiple themes
     - Understand the relationship between coded and uncoded text
 
     Args:
-        file_id: The numeric ID of the file to analyze
+        file_id: The numeric ID of the file to analyse
 
     Returns:
         JSON object with:
@@ -2472,15 +2472,15 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0,
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
-    (otherwise it stays a plain array). Pass coder to analyze one
+    (otherwise it stays a plain array). Pass coder to analyse one
     specific coder's rows from the full data instead.
 
     Args:
-        code_id: The numeric ID of the code to analyze
+        code_id: The numeric ID of the code to analyse
         window_size: How to define "co-occurrence":
                     - 0 (default): Codes that overlap the same text segment
                     - N > 0: Codes within N characters of each other
-        coder: Optional coder name; analyzes that coder's rows from the
+        coder: Optional coder name; analyses that coder's rows from the
                base tables, bypassing the visibility filter
 
     Returns:
@@ -2560,7 +2560,7 @@ def get_codes_by_case(case_id: int, coder: Optional[str] = None) -> str:
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
-    (otherwise it stays a plain array). Pass coder to analyze one
+    (otherwise it stays a plain array). Pass coder to analyse one
     specific coder's rows from the full data instead.
 
     Args:
@@ -2597,7 +2597,7 @@ def get_cases_by_code(code_id: int, coder: Optional[str] = None) -> str:
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
-    (otherwise it stays a plain array). Pass coder to analyze one
+    (otherwise it stays a plain array). Pass coder to analyse one
     specific coder's rows from the full data instead.
 
     Args:
@@ -2633,7 +2633,7 @@ def analyze_for_coding(
     instruction: str = "Code all relevant segments",
     min_confidence: float = 0.7
 ) -> str:
-    """Analyze files and suggest codings for user review.
+    """Analyse files and suggest codings for user review.
 
     This tool performs AI analysis and returns suggestions in a conversational
     format for the user to review in the chat. NO changes are made to the
@@ -2659,7 +2659,7 @@ def analyze_for_coding(
     window leaves no file trace), so when in doubt ask before applying.
 
     WORKFLOW:
-    1. I analyze the files and identify relevant segments
+    1. I analyse the files and identify relevant segments
     2. I present suggestions to you in the chat with reasoning
     3. You review and can ask questions about specific suggestions
        (edit_suggestion adjusts a span or code during review)
@@ -2680,12 +2680,12 @@ def analyze_for_coding(
     for the same code pairing in subsequent segments.
 
     Args:
-        file_ids: List of file IDs to analyze
+        file_ids: List of file IDs to analyse
         code_names: Optional list of specific code names to apply
         instruction: Guidance for what to look for in the analysis.
                      Also the place to set span style once per session,
                      e.g. "code generous spans, full paragraphs" or
-                     "keep spans to single sentences"; honor it in
+                     "keep spans to single sentences"; honour it in
                      every suggestion you record.
         min_confidence: Minimum confidence for suggestions (0.0-1.0)
 
@@ -2699,7 +2699,7 @@ def analyze_for_coding(
         - Unique GUID for each suggestion
 
     Example:
-        "Analyze files 1-3 for DATA PRACTICES codes"
+        "Analyse files 1-3 for DATA PRACTICES codes"
     """
     db = get_db()
 
@@ -2921,7 +2921,7 @@ def record_suggestions(
     phrases. Real researchers consistently widen short spans at review
     time (edit_suggestion exists for that, but getting it right first
     saves them the round-trip). If the session's `instruction` set a span
-    style (e.g. "code generous spans"), honor it in every suggestion.
+    style (e.g. "code generous spans"), honour it in every suggestion.
 
     CO-CODING: for each segment, actively ask whether it warrants MORE
     THAN ONE code: record one suggestion per code on the same span.
@@ -4975,7 +4975,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
     tool_help = {
         "overview": {
             "title": "AI-Assisted Coding for Qualcoder",
-            "description": "Use Claude to help code your qualitative data. Claude can analyze interview transcripts, suggest codes, and create coded segments that you can review and apply directly to your Qualcoder project.",
+            "description": "Use Claude to help code your qualitative data. Claude can analyse interview transcripts, suggest codes, and create coded segments that you can review and apply directly to your Qualcoder project.",
             "workflow": {
                 "step_1": "Create an analysis session (analyze_for_coding)",
                 "step_2": "Claude reads the files and records its suggestions "
@@ -4997,7 +4997,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                           "project back"
             },
             "key_features": [
-                "Analyze complete transcripts with full context",
+                "Analyse complete transcripts with full context",
                 "Suggest coded segments with confidence scores",
                 "Every suggestion verified against the file text before storage",
                 "Review and approve/reject suggestions before applying",
@@ -5011,7 +5011,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             ]
         },
         "analyze_for_coding": {
-            "purpose": "Main AI coding tool - analyzes files and suggests coded segments",
+            "purpose": "Main AI coding tool - analyses files and suggests coded segments",
             "when_to_use": "When you want to automatically code interview transcripts or documents",
             "parameters": {
                 "file_ids": "List of file IDs to code (required)",
@@ -5022,7 +5022,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
             "examples": [
                 {"prompt": "Code files 1, 2, and 3", "explanation": "Codes 3 files with all available codes"},
                 {"prompt": "Code interview transcripts with 'workplace stress' codes", "explanation": "Filters to stress-related codes only"},
-                {"prompt": "Analyze file 5 for themes about motivation", "explanation": "Focuses AI on specific theme"}
+                {"prompt": "Analyse file 5 for themes about motivation", "explanation": "Focuses AI on specific theme"}
             ],
             "tips": [
                 "Be specific in your instruction for better results",
@@ -5075,7 +5075,7 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                 "a minimal phrase",
                 "Set the style once per session via analyze_for_coding's "
                 "instruction parameter, e.g. instruction='code generous "
-                "spans, full paragraphs', then honor it in every "
+                "spans, full paragraphs', then honour it in every "
                 "suggestion",
                 "Researchers can widen or narrow any span at review time "
                 "with edit_suggestion; every suggestion carries "
@@ -5328,7 +5328,7 @@ def review_proposals(coding_session_id: str,
         lines.append(f"**Proposal {i}** (GUID: `{p.guid}`)")
         lines.append(f"Status: {p.status.upper()}")
         lines.append(f"🏷️  **Name:** {p.name}")
-        lines.append(f"🎨 Color: {p.color or '(palette pick at creation)'}")
+        lines.append(f"🎨 Colour: {p.color or '(palette pick at creation)'}")
         lines.append(f"📁 Category: {p.category or '(uncategorised)'}")
         if p.memo:
             lines.append(f"**Definition:** {p.memo}")
@@ -5888,7 +5888,7 @@ def create_code(name: str, category: Optional[str] = None,
     """Create a new code in the codebook.
 
     THIS WRITES TO THE DATABASE. Adds a code that can then be applied to
-    segments. Code names are unique. The color defaults to a random pick
+    segments. Code names are unique. The colour defaults to a random pick
     from QualCoder's own palette (like GUI-created codes).
 
     SUB-CODES (projects with schema v16 or newer only): pass
@@ -5904,7 +5904,7 @@ def create_code(name: str, category: Optional[str] = None,
         name: The code name (must be unique among codes)
         category: Optional category name to place the code in (matched
                   case-insensitively; must already exist)
-        color: Optional #RRGGBB hex color (default: random palette color)
+        color: Optional #RRGGBB hex colour (default: random palette colour)
         memo: Optional code definition/memo
         parent_code_id: Optional cid of an existing code to nest under
                         (v16+ sub-code; mutually exclusive with category)
@@ -5982,7 +5982,7 @@ def rename_code(code_id: int, new_name: str,
 @_tool_guard
 def recolor_code(code_id: int, color: str,
                  create_backup: bool = True) -> str:
-    """Set a code's color (#RRGGBB). THIS WRITES TO THE DATABASE.
+    """Set a code's colour (#RRGGBB). THIS WRITES TO THE DATABASE.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -5990,15 +5990,15 @@ def recolor_code(code_id: int, color: str,
 
     Args:
         code_id: The code's cid
-        color: Hex color in #RRGGBB format
+        color: Hex colour in #RRGGBB format
         create_backup: Create a timestamped backup before writing (default True)
     """
     result = _perform_write(
         lambda wdb: {"success": True,
-                     "message": "Recolored code",
+                     "message": "Recoloured code",
                      **wdb.recolor_code(code_id, color, auto_commit=False)},
         create_backup=create_backup,
-        backup_fail_detail="the code color was not changed",
+        backup_fail_detail="the code colour was not changed",
     )
     return json.dumps(result, indent=2)
 
@@ -6786,12 +6786,12 @@ def _sanitization_note(sanitize: bool, is_csv: bool = True) -> str:
         return ("sanitize_formulas applies to CSV cells only; this "
                 "format has no spreadsheet cells")
     if sanitize:
-        return ("formulas sanitized for spreadsheet safety: cells starting "
+        return ("formulas sanitised for spreadsheet safety: cells starting "
                 "with = + - @ tab or CR are prefixed with ' (this "
                 "deliberately breaks byte-parity with QualCoder's own "
                 "export)")
     return ("verbatim export; cells starting with = are evaluated by "
-            "Excel; pass sanitize_formulas=true to neutralize")
+            "Excel; pass sanitize_formulas=true to neutralise")
 
 
 def _resolve_names_ci(requested, available, kind: str):
@@ -6936,7 +6936,7 @@ def export_codebook(output_path: str, format: str = "csv",
                      etc. is used, with `_0`, `_1` collision suffixes
         format: "csv" (default), "txt" or "md"
         include_memos: Include code/category memos (default True)
-        sanitize_formulas: Neutralize spreadsheet formula injection in
+        sanitize_formulas: Neutralise spreadsheet formula injection in
             CSV cells (values starting with = + - @ tab or CR get a '
             prefix). Default False = byte-parity with QualCoder's own
             export; one word turns on safety when the data may contain
@@ -6945,7 +6945,7 @@ def export_codebook(output_path: str, format: str = "csv",
 
     Returns:
         JSON with output_path, counts, the counting rule used, and
-        which sanitization mode was applied.
+        which sanitisation mode was applied.
     """
     if format not in ("csv", "txt", "md"):
         return json.dumps({"error": "format must be 'csv', 'txt' or 'md'"})
@@ -7056,7 +7056,7 @@ def export_coded_segments_report(
       Case mode: `Case, Filename, Coder, Coded, ...`.
       `Id` is `ctid:N`. UTF-8 with BOM, every cell quoted, CRLF rows,
       the exact dialect QualCoder writes.
-    - txt: the on-screen report serialization (Search parameters header,
+    - txt: the on-screen report serialisation (Search parameters header,
       then `[pos0-pos1] Codename, File: ..., Coder: ...` headings with
       the quoted text).
     - Case mode uses the CONTAINMENT rule (a coding belongs to a case
@@ -7090,7 +7090,7 @@ def export_coded_segments_report(
                            mode, `CaseVar_{name}`) with attribute values
                            per row, QualCoder's "variables" checkbox
         format: "csv" (default) or "txt"
-        sanitize_formulas: Neutralize spreadsheet formula injection in
+        sanitize_formulas: Neutralise spreadsheet formula injection in
             CSV cells (values starting with = + - @ tab or CR get a '
             prefix; coded seltext is untrusted source text and the
             sharpest vector). Default False = byte-parity with
@@ -7279,7 +7279,7 @@ def export_frequencies_csv(output_path: str,
     Args:
         output_path: Target .csv file, or an existing directory (default
                      name `Code_frequencies.csv`, `_0` suffixes)
-        sanitize_formulas: Neutralize spreadsheet formula injection
+        sanitize_formulas: Neutralise spreadsheet formula injection
             (cells starting with = + - @ tab or CR get a ' prefix;
             code and coder names are DB-derived text). Default False =
             byte-parity with QualCoder; one word turns on safety.
@@ -7406,12 +7406,12 @@ def export_case_code_matrix_csv(output_path: str,
     UTF-8 with BOM, CRLF rows. Coder visibility: this export counts all
     coders' codings regardless of QualCoder 4.0's per-coder visibility
     setting, matching QualCoder's own report exports; the conversational
-    get_case_code_matrix honors visibility by default.
+    get_case_code_matrix honours visibility by default.
 
     Args:
         output_path: Target .csv file, or an existing directory (default
                      name `Case_code_matrix.csv`, `_0` suffixes)
-        sanitize_formulas: Neutralize spreadsheet formula injection
+        sanitize_formulas: Neutralise spreadsheet formula injection
             (cells starting with = + - @ tab or CR get a ' prefix;
             case and code names are DB-derived text). Default False =
             byte-parity with QualCoder; one word turns on safety.
@@ -7455,20 +7455,20 @@ def export_case_code_matrix_csv(output_path: str,
 
 @mcp.prompt()
 def analyze_theme(theme_name: str) -> str:
-    """Generate a prompt for analyzing a specific theme or code.
+    """Generate a prompt for analysing a specific theme or code.
 
-    This prompt template helps analyze patterns and insights
+    This prompt template helps analyse patterns and insights
     related to a particular code or theme in the data.
 
     Args:
-        theme_name: The name of the code/theme to analyze
+        theme_name: The name of the code/theme to analyse
     """
-    return f"""Please analyze the theme '{theme_name}' in this Qualcoder project.
+    return f"""Please analyse the theme '{theme_name}' in this Qualcoder project.
 
 Use the following tools to gather information:
 1. First, use search_coded_text or list_all_codes to find the code
 2. Then use get_coded_segments to retrieve all segments for this code
-3. Analyze the segments and identify:
+3. Analyse the segments and identify:
    - Key patterns and recurring ideas
    - Variations in how the theme appears
    - Relationships to other themes
@@ -7481,7 +7481,7 @@ Provide a comprehensive thematic analysis with specific examples from the data."
 def compare_codes(code1: str, code2: str) -> str:
     """Generate a prompt for comparing two codes.
 
-    This prompt template helps analyze similarities and differences
+    This prompt template helps analyse similarities and differences
     between two codes or themes.
 
     Args:
@@ -7493,7 +7493,7 @@ def compare_codes(code1: str, code2: str) -> str:
 Use these tools to gather data:
 1. Use get_coded_segments for both codes
 2. Use get_coding_frequencies to compare usage patterns
-3. Analyze:
+3. Analyse:
    - How frequently each code is used
    - Similarities in the types of segments they code
    - Differences in meaning and application
@@ -7525,25 +7525,25 @@ Create a summary that includes:
 - Key themes (most frequently used codes)
 - Any notable patterns or insights
 
-Format the summary as a clear, well-organized report."""
+Format the summary as a clear, well-organised report."""
 
 
 @mcp.prompt()
 def explore_case(case_name: str) -> str:
     """Generate a prompt for exploring a specific case.
 
-    This prompt template helps analyze all data related to
+    This prompt template helps analyse all data related to
     a particular case or participant.
 
     Args:
         case_name: The name of the case to explore
     """
-    return f"""Please explore and analyze the case '{case_name}' in this Qualcoder project.
+    return f"""Please explore and analyse the case '{case_name}' in this Qualcoder project.
 
 Use these tools to gather information:
 1. list_all_cases to find the case
 2. get_case_info to get all text segments for this case
-3. Analyze the case data to identify:
+3. Analyse the case data to identify:
    - Key characteristics or themes for this case
    - What makes this case unique
    - Important quotes or segments

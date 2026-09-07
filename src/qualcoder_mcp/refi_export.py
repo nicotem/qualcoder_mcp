@@ -50,7 +50,7 @@ _MAX_INTERNAL_FILE_BYTES = 2_147_483_647
 def _xml_safe(text) -> str:
     """Strip characters that are invalid in XML 1.0 from a string.
 
-    ElementTree will happily serialize C0 control characters, but the
+    ElementTree will happily serialise C0 control characters, but the
     result is not well-formed XML: minidom (and any conformant parser,
     including the QDA tools importing the .qdpx) rejects it. Database
     content (code names, memos, file names) is user-authored and may
@@ -72,7 +72,7 @@ def _xml_safe(text) -> str:
 
 
 def _utc_now() -> str:
-    """xsd:dateTime in actual UTC (not local time mislabeled as Z)."""
+    """xsd:dateTime in actual UTC (not local time mislabelled as Z)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -81,7 +81,7 @@ class RefiQdaExporter:
 
     def __init__(self, db: QualcoderDatabase,
                  ai_user_name: str = "AI Coding Assistant"):
-        """Initialize exporter with database connection.
+        """Initialise exporter with database connection.
 
         Args:
             db: QualcoderDatabase instance

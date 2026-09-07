@@ -404,7 +404,7 @@ class TestV81FormulaSanitization:
         assert b'"\'=EVIL()"' in raw
         assert b'"\'@evil_coder"' in raw
         assert b'"=EVIL()"' not in raw
-        assert "sanitized for spreadsheet safety" in out["sanitization"]
+        assert "sanitised for spreadsheet safety" in out["sanitization"]
         # a csv round-trip yields the prefixed value (spreadsheet-safe text)
         rows = _read_csv(out["output_path"])
         assert any(cell == "'=cmd|'/c calc'!A1"

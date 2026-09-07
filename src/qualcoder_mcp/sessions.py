@@ -58,7 +58,7 @@ class CodingSuggestion:
         self.ai_memo = reasoning
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
+        """Convert to dictionary for JSON serialisation."""
         return {
             "file_id": self.file_id,
             "file_name": self.file_name,
@@ -517,7 +517,7 @@ class SessionManager:
     def __init__(self, storage_dir: str = "~/.qualcoder_mcp/sessions"):
         self.storage_dir = Path(storage_dir).expanduser()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"SessionManager initialized with storage: {self.storage_dir}")
+        logger.info(f"SessionManager initialised with storage: {self.storage_dir}")
 
     @classmethod
     def _validate_session_id(cls, session_id: str) -> str:
