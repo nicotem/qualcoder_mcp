@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.0-alpha] - 2026-09-04
+## [0.11.0-alpha] - 2026-09-07
 
 QualCoder 4.0's AI subsystem defines conventions that live in the
 project itself. This release makes qualcoder-mcp follow them, so a
@@ -222,6 +222,27 @@ the shape `select_project` itself records (`<folder>.qda/data.qda`,
 no control or bidirectional formatting characters) that still exists
 as a file is ever echoed. PRIVACY.md, README and INSTALL list the
 file.
+
+### Documentation
+
+- British English is the house spelling for all prose from this
+  release on: README, INSTALL, PRIVACY, SUPPORT, CONTRIBUTING, this
+  changelog (historical entries included), the issue templates, every
+  tool, resource and prompt description, and every user-facing runtime
+  string (error texts, notes, result messages). Identifiers are
+  unchanged: tool names (`analyze_for_coding`, `sanitize_formulas`,
+  `recolor_code`), argument names, result keys, environment variable
+  names, file names and SQL keep their exact spelling. CONTRIBUTING.md
+  records the rule in its style section.
+- CITATION.cff (software citation metadata, with the maintainer's
+  ORCID) and CONTRIBUTING.md (issue routing, the review-before-merge
+  process, style rules and scope) are new in this release.
+- INSTALL.md's LM Studio recipe records the maintainer's functional
+  verification against LM Studio 0.4.22 (2026-09-07) and replaces the
+  community-reported lifecycle note with the observed behaviour: the
+  host may restart the server process between turns, which the
+  recovery hint and `QUALCODER_PROJECT_PATH` cover. Model-quality
+  evaluation for local models remains planned work.
 
 ### Upgrading from 0.10.x
 
