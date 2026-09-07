@@ -2,7 +2,7 @@
 name = "qualcoder-mcp"
 version = "0.11.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
-authors = [{name = "Niccolo Tempini", email = "n.tempini@exeter.ac.uk"}]
+authors = [{name = "Niccolò Tempini", email = "n.tempini@exeter.ac.uk"}]
 # PEP 639 SPDX license expression (setuptools >= 77). The old
 # "License :: OSI Approved :: MIT License" classifier is deprecated in
 # favour of this expression and deliberately NOT listed below.
