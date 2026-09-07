@@ -14,7 +14,7 @@ server (the conversational workflow, v0.6.0 and later).
 
 ## How It Works
 
-1. **You** ask Claude to analyze files for specific codes
+1. **You** ask Claude to analyse files for specific codes
    (`analyze_for_coding` creates a session)
 2. **Claude** reads the files and records its suggestions into the
    session (`record_suggestions`); every suggestion is verified against
@@ -63,7 +63,7 @@ first, and mistakes can be undone (`delete_coding` for one coding,
 
 ```
 You:    Copy "Interview Study" to the workspace and open the copy.
-You:    Analyze files 1-3 for the codes "Workplace Stress" and
+You:    Analyse files 1-3 for the codes "Workplace Stress" and
         "Coping Strategies".
 Claude: (creates a session, reads the files, records suggestions,
          presents them with reasoning and confidence scores)
@@ -103,7 +103,7 @@ Ask "Explain the AI coding tools" any time; the built-in
 3. **Set Clear Instructions**: Be specific about what you're looking for
    ("segments where participants describe feeling overwhelmed, not just
    mentions of the word stress")
-4. **Know Your Data**: Familiarize yourself with the files being coded
+4. **Know Your Data**: Familiarise yourself with the files being coded
 
 ### During AI Coding
 

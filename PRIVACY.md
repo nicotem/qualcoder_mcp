@@ -61,7 +61,7 @@ sensitive content you hold.
 
 QualCoder 4.0 introduces a marker for memos: everything from the first
 `#####` onward is a private zone that its built-in AI never sees. This
-server honors the same convention, so a project touched by both tools
+server honours the same convention, so a project touched by both tools
 keeps the same promise:
 
 - **Reads**: every tool and resource that returns memo content (code,
@@ -75,7 +75,7 @@ keeps the same promise:
   the public text. An existing private zone survives every memo write
   verbatim, and a `#####` in AI-supplied text is not written (code and
   category names and coder names copied into provenance notes are
-  neutralized too), so the AI can never create, read, replace, or
+  neutralised too), so the AI can never create, read, replace, or
   delete a private zone through a memo write.
 - **Whole-row deletes** are the one qualification to that sentence.
   Tools that remove an entire row remove any private note on it
@@ -89,7 +89,7 @@ keeps the same promise:
     `confirm_private_note_deletion=true`, and for such a row a backup
     is always taken first, even when `create_backup=false` was asked.
     The refusal says only that a private note exists on that row; it
-    never quotes, counts or characterizes it.
+    never quotes, counts or characterises it.
   - The cascades (delete_code, delete_category, merge_codes,
     merge_category) require a preview and a confirm, always back up
     first, and their preview reports how many rows carrying a private
@@ -111,7 +111,7 @@ keeps the same promise:
 
 The private zone stays in your project database on disk; this
 convention controls only what enters the AI conversation. The QualCoder
-4.0 behavior described in this section and the next two was verified
+4.0 behaviour described in this section and the next two was verified
 against QualCoder master at commit 9bddf17 (pulled 2026-08-25, when 4.0
 was in beta); README.md and CHANGELOG.md carry the same pin.
 
@@ -175,7 +175,7 @@ minus exactly the files QualCoder 4.0's own backups skip
 (`search.sqlite`, `search.sqlite-*`, `*.sqlite-shm`, `*.sqlite-wal` and
 `*.sqlite-journal`) and, in addition, any `*.lock` file (QualCoder 3.8's
 backups skipped those too, and a copied lock file would make QualCoder
-report the copy as not properly closed). That mirrors upstream behavior, keeps the
+report the copy as not properly closed). That mirrors upstream behaviour, keeps the
 non-regenerable prompt library and chat history safe in every backup,
 and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
@@ -228,7 +228,7 @@ Two further rules touch files on your disk:
 Which terms govern the AI processing is decided by the host you run and
 the account you sign into, not by this server. Four rungs, each with
 what changes and what to check. Discipline note: we quote official
-pages verbatim with their URLs and never characterize terms in our own
+pages verbatim with their URLs and never characterise terms in our own
 voice; every quote below was pulled on 2026-08-17, terms change, and
 the linked pages govern. (The multi-host support itself is Experimental
 and not yet capability-evaluated; see the INSTALL.md recipes.)
@@ -324,7 +324,7 @@ local)".
 
 ### Cross-rung cautions
 
-- Feedback mechanisms, safety flagging, and opt-in programs can pierce
+- Feedback mechanisms, safety flagging, and opt-in programmes can pierce
   every Anthropic route. Never use feedback features (thumbs,
   /feedback, /bug) in sessions containing participant data.
 - Claude Code has side channels: error reporting, session surveys,
@@ -341,7 +341,7 @@ local)".
 
 ## What this means for research data
 
-Your participants may have consented to *you* analyzing their data;
+Your participants may have consented to *you* analysing their data;
 that is not the same as consenting to their data being processed by a
 third-party AI provider. Whether this flow is acceptable for a given
 project is **the researcher's responsibility to determine**, and the
@@ -362,7 +362,7 @@ processing, and how terms differ between consumer plans, the API, and
 enterprise offerings), consult **Anthropic's own privacy
 documentation** for the current terms:
 <https://www.anthropic.com/privacy>. Those terms vary by product and
-change over time; this document deliberately does not characterize
+change over time; this document deliberately does not characterise
 them.
 
 ## Before you use real participant data, check these

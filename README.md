@@ -4,21 +4,21 @@ A Model Context Protocol (MCP) server that connects an MCP host (Claude Desktop,
 
 ## What is this?
 
-This MCP server lets an AI assistant directly access and analyze your Qualcoder projects. Claude Desktop is the primary worked example throughout these docs, but any MCP host works (see "Choosing your AI host" below). The assistant can:
+This MCP server lets an AI assistant directly access and analyse your Qualcoder projects. Claude Desktop is the primary worked example throughout these docs, but any MCP host works (see "Choosing your AI host" below). The assistant can:
 
 - 📊 Read your codes, categories, and coding structure
 - 📝 Access coded text segments and original source documents
-- 📖 **Analyze complete transcripts with coding context**
+- 📖 **Analyse complete transcripts with coding context**
 - 🔍 Search through your qualitative data
 - 📈 Generate coding frequency reports
-- 💭 Analyze themes and patterns
+- 💭 Analyse themes and patterns
 - 🔗 **Discover co-occurrence patterns between codes**
 - 📋 Compare codes and cases
 - 👥 **Query by demographics/attributes** (age, gender, etc.)
 - 🎯 **Create case-code matrices for comparative analysis**
 - 🗒️ Search through memos and annotations
 - 🤖 **AI-assisted coding**: suggest → review → approve → apply, so nothing is written until you say so
-- 🏷️ **Codebook editing**: create, rename, recolor, merge, move, and delete codes and categories
+- 🏷️ **Codebook editing**: create, rename, recolour, merge, move, and delete codes and categories
 - 💾 **Memo & journal writing**: annotate codes, files, codings, and cases; keep a research journal
 - ↩️ **Undo & restore**: delete a coding, list backups, and restore a whole project to an earlier state
 - 📥 **Import transcripts** and link files to cases
@@ -82,7 +82,7 @@ to most private:
 | Route | What it means | Where to read more |
 |---|---|---|
 | **Claude consumer plans** (claude.ai, Claude Desktop, Claude Code with a Free/Pro/Max login) | The easiest path. Check your own Model Improvement setting at [claude.ai/settings/data-privacy-controls](https://claude.ai/settings/data-privacy-controls); do not assume a default. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rung 1 |
-| **Anthropic commercial-terms routes** (Claude Code with a Console API key; Team/Enterprise accounts) | Same Claude capability; different terms attach to the traffic. Institutions should prefer organizational accounts. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rungs 2 and 3; [INSTALL.md API-key recipe](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#claude-code-with-an-anthropic-api-key-experimental) |
+| **Anthropic commercial-terms routes** (Claude Code with a Console API key; Team/Enterprise accounts) | Same Claude capability; different terms attach to the traffic. Institutions should prefer organisational accounts. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rungs 2 and 3; [INSTALL.md API-key recipe](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#claude-code-with-an-anthropic-api-key-experimental) |
 | **Fully local models** (LM Studio and similar MCP hosts) | Participant data is never sent to any AI provider. The trade is capability: local models are markedly weaker on many-tool work, and we have not yet evaluated any local model with this server (evaluation pending; that is why this is Experimental). Requires the reduced core toolset. | [PRIVACY.md](https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md), rung 4; [INSTALL.md LM Studio recipe](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#lm-studio-fully-local-experimental) |
 
 The multi-host support (the core toolset and the two recipes) is
@@ -107,12 +107,12 @@ host and not capability-evaluated on local models.
 > project database itself (capability probes), not by version numbers, so
 > projects migrated by either QualCoder version work interchangeably.
 >
-> Because QualCoder 4.0 is a pre-release, its behavior may change before the
+> Because QualCoder 4.0 is a pre-release, its behaviour may change before the
 > final release. Claims about 4.0 compatibility are valid as of commit `9bddf17`
 > (2026-08-25) and will be re-verified against the final release. One known
 > limitation: released
 > QualCoder versions signal "project open" through a lock file, which qualcoder-mcp
-> honors; the 4.0-Beta pre-release builds no longer use a lock file, so qualcoder-mcp
+> honours; the 4.0-Beta pre-release builds no longer use a lock file, so qualcoder-mcp
 > falls back to best-effort heuristics there (reported as
 > `qualcoder_gui_signals` by `select_project`, `get_current_project`,
 > `analyze_for_coding` and the `restore_backup` preview:
@@ -468,7 +468,7 @@ pip install -e .                # picks up any new dependencies
 
 Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code. **New tools only appear after the client restart**: the client starts the server once per session, so an update takes effect on the next launch, not mid-conversation.
 
-To check which version is installed, run `pip show qualcoder-mcp` in the environment you installed into (`pipx list` or `uv tool list` for those installers); version `0.11.0-alpha` shows as `0.11.0a0`, its normalized form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
+To check which version is installed, run `pip show qualcoder-mcp` in the environment you installed into (`pipx list` or `uv tool list` for those installers); version `0.11.0-alpha` shows as `0.11.0a0`, its normalised form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
 
 Updates never touch your data: the server is code-only, so your
 QualCoder projects and their backups stay exactly where they are.
@@ -505,7 +505,7 @@ Search file content for 'workplace stress'
 Search for files containing motivation (in both filenames and content)
 ```
 
-### Analyzing Themes
+### Analysing Themes
 
 ```
 Show me all the text segments coded with "participant motivation"
@@ -522,7 +522,7 @@ Search for segments containing the word "education"
 ### Deeper Analysis
 
 ```
-Analyze the theme "workplace culture" and identify key patterns
+Analyse the theme "workplace culture" and identify key patterns
 ```
 
 ```
@@ -536,7 +536,7 @@ What are the main themes in case "Participant 5"?
 ### NEW: Rich Transcript Analysis
 
 ```
-Analyze the interview transcript for participant 3, showing me both the coded segments and the full context. What does this participant say that relates to the Wisdom of the Crowds argument?
+Analyse the interview transcript for participant 3, showing me both the coded segments and the full context. What does this participant say that relates to the Wisdom of the Crowds argument?
 ```
 
 ```
@@ -612,9 +612,9 @@ Copy my project "Interview Study" to the workspace for AI coding
 
 (the `copy_project_to_workspace` tool does this; then open the copy with `select_project`)
 
-**Step 2: Analyze Files**
+**Step 2: Analyse Files**
 ```
-Analyze files 1-3 for WORKPLACE-STRESS and COPING-STRATEGIES codes
+Analyse files 1-3 for WORKPLACE-STRESS and COPING-STRATEGIES codes
 ```
 
 Claude will:
@@ -710,7 +710,7 @@ The MCP server exposes these resources (read-only data):
 
 ## Available Tools
 
-Claude can use these tools to analyze your data. The full toolset
+Claude can use these tools to analyse your data. The full toolset
 (the default, `QUALCODER_MCP_TOOLSET=full`) registers 67 tools; the
 argument lists below are abbreviated, and each tool's own description
 carries the complete list.
@@ -725,7 +725,7 @@ carries the complete list.
 > update_suggestion_status, apply_codings, create_code, set_memo,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
-> loudly at startup. Measured for v0.11.0-alpha (the serialized tool
+> loudly at startup. Measured for v0.11.0-alpha (the serialised tool
 > definitions: name, description and input schema, the same method as
 > the CHANGELOG), the definitions run to about 118,000 characters for
 > `full`, roughly 29k tokens at four characters per token, and about
@@ -842,7 +842,7 @@ Built-in prompt templates for common analysis tasks:
 - `analyze_theme(theme_name)` - Deep dive into a specific theme
 - `compare_codes(code1, code2)` - Compare two codes
 - `summarize_project()` - Create project overview
-- `explore_case(case_name)` - Analyze a specific case
+- `explore_case(case_name)` - Analyse a specific case
 
 ## Troubleshooting
 
@@ -1032,7 +1032,7 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Review-time span editing (`edit_suggestion`) with server-computed shorter/longer alternatives
 - ✅ Report exports: codebook, coded segments, frequencies, case×code matrix (CSV/txt/md, QualCoder-parity numbers)
 - ✅ Annotations, category merge, case creation, attribute schema and values
-- ✅ Backup retention (`prune_backups`) and opt-in CSV formula sanitization
+- ✅ Backup retention (`prune_backups`) and opt-in CSV formula sanitisation
 
 **Completed in v0.9.0:**
 - ✅ **PyPI packaging**: `pip install qualcoder-mcp` (or a one-command `pipx`/`uvx` install): no git clone, no manual venv, and updates via `pip install --upgrade`
@@ -1067,7 +1067,7 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 This project is licensed under the MIT License. See [LICENSE](https://github.com/nicotem/qualcoder_mcp/blob/main/LICENSE) file for details.
 
-## Acknowledgments
+## Acknowledgements
 
 - [Qualcoder](https://github.com/ccbogel/QualCoder) by Dr. Colin Curtain and Dr. Kai Dröge
 - [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic

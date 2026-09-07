@@ -159,7 +159,7 @@ Instead of CSV/JSON + custom import script, we:
 **Step 2.1**: AI codes files (same as before)
 ```
 User: "Code files 3, 5, and 7 using these codes"
-AI analyzes and stores suggestions in memory
+AI analyses and stores suggestions in memory
 ```
 
 **Step 2.2**: Export to REFI-QDA XML format

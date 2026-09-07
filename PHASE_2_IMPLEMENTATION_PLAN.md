@@ -18,7 +18,7 @@
 **1. Test Qualcoder Project** (`scripts/create_test_project.py`)
 - Complete .qda database with proper schema (v8)
 - 3 interview transcripts (workplace stress theme)
-- 10 codes organized in 3 categories
+- 10 codes organised in 3 categories
 - 3 cases with demographic attributes
 - Sample coded segments for testing
 - Located at: `~/Documents/qualcoder_mcp_test/test_project.qda`
@@ -73,7 +73,7 @@ User ←→ Claude Desktop ←→ MCP Server (server.py) ←→ Components
 
 ### Tool 1: `suggest_coding_for_files` ⭐ Core Tool
 
-**Purpose**: Main AI coding tool - analyzes files and generates coded segment suggestions
+**Purpose**: Main AI coding tool - analyses files and generates coded segment suggestions
 
 **Implementation**:
 ```python
@@ -92,7 +92,7 @@ def suggest_coding_for_files(
 2. Get file content for each file using `analyze_file_with_coding()`
 3. If code_names specified, filter to those codes only
 4. For each file:
-   - Use Claude to analyze text
+   - Use Claude to analyse text
    - Identify relevant segments for each code
    - Generate confidence scores
    - Create CodingSuggestion objects
@@ -255,7 +255,7 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
 
 ### Tool 8: `suggest_new_codes`
 
-**Purpose**: AI analyzes files and suggests new codes to add
+**Purpose**: AI analyses files and suggests new codes to add
 
 **Implementation**:
 ```python
@@ -271,7 +271,7 @@ def suggest_new_codes(
 **Logic Flow**:
 1. Get file content for each file
 2. If existing_codes_context, include current codebook
-3. Use Claude to analyze and suggest new codes
+3. Use Claude to analyse and suggest new codes
 4. For each suggested code:
    - Generate name, description, category
    - Find example segments
@@ -382,7 +382,7 @@ Create an interactive HTML report generator that allows users to review AI codin
 3. **Suggestion Cards**
    - File name and position
    - Coded text (highlighted)
-   - Code name with color badge
+   - Code name with colour badge
    - AI memo
    - Confidence score (visual bar)
    - Approve/Reject buttons
@@ -623,7 +623,7 @@ Create `tests/test_ai_coding.py`:
 
 **Option A**: Use Claude's native capabilities within the conversation
 - Tools return prompts/context
-- Claude analyzes and structures results
+- Claude analyses and structures results
 - Tools just format the output
 
 **Option B**: Use Claude API directly (requires API key)
@@ -680,7 +680,7 @@ Create `tests/test_ai_coding.py`:
 - Rely on Claude's context window
 
 **Option C**: Hybrid
-- Analyze full file for overview
+- Analyse full file for overview
 - Chunk for detailed coding
 
 **Recommendation**: Start with Option B, add Option A if needed

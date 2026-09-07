@@ -18,7 +18,7 @@
 
 ## Overview
 
-This implementation will add AI-assisted coding capabilities to the Qualcoder MCP server while maintaining read-only safety for the main database. The AI will analyze files, suggest coded segments, and export them in REFI-QDA XML format for review and import into Qualcoder.
+This implementation will add AI-assisted coding capabilities to the Qualcoder MCP server while maintaining read-only safety for the main database. The AI will analyse files, suggest coded segments, and export them in REFI-QDA XML format for review and import into Qualcoder.
 
 ---
 
@@ -28,7 +28,7 @@ This implementation will add AI-assisted coding capabilities to the Qualcoder MC
 ┌─────────────────────────────────────────────────────────────┐
 │ Phase 1: Code Discovery (Optional - if new codes needed)   │
 ├─────────────────────────────────────────────────────────────┤
-│ 1. AI analyzes files → suggests new codes                  │
+│ 1. AI analyses files → suggests new codes                  │
 │ 2. User reviews & approves code suggestions                │
 │ 3. Export new codes as REFI-QDA Codebook XML               │
 │ 4. User imports into Qualcoder (File > Import > Codebook)  │
@@ -488,7 +488,7 @@ HTML Template includes:
 - Segment cards with:
   - File name + position
   - Coded text (highlighted)
-  - Code name (color-coded)
+  - Code name (colour-coded)
   - AI memo
   - Confidence bar
   - Approve/Reject buttons
@@ -628,12 +628,12 @@ def generate_deterministic_guid(self, entity_type: str, entity_id: Union[int, st
 User: "I have 5 interview transcripts (files 10-14). Help me code them
       with themes related to workplace satisfaction."
 
-Claude: "I'll analyze those interviews. First, let me read them to
+Claude: "I'll analyse those interviews. First, let me read them to
         understand the content."
 
 [Uses analyze_file_with_coding for files 10-14]
 
-Claude: "I've analyzed all 5 interviews. I found discussions about:
+Claude: "I've analysed all 5 interviews. I found discussions about:
         - Management relationships
         - Work-life balance
         - Career growth
@@ -893,7 +893,7 @@ Document all new features:
 - Basic code discovery
 
 ### v0.4.0 - Enhanced AI Coding (Future)
-- Batch coding optimization
+- Batch coding optimisation
 - Advanced pattern recognition
 - Code refinement suggestions
 - Coding consistency checks
@@ -903,7 +903,7 @@ Document all new features:
 - Code hierarchy suggestions
 - Memo enhancement suggestions
 - Relationship detection
-- Visualization exports
+- Visualisation exports
 
 ---
 

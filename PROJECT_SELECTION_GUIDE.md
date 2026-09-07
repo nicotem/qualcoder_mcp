@@ -238,7 +238,7 @@ This project contains:
 - 342 coded segments
 - Last updated: 2024-10-28
 
-What would you like to analyze?
+What would you like to analyse?
 
 # Now you can work normally
 You: Show me the most frequently used codes

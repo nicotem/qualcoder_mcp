@@ -372,7 +372,7 @@ local transcript cache. Never use feedback features (thumbs, /feedback,
 /bug) in sessions containing participant data.
 
 **5. Governance note.** For unambiguous commercial-terms coverage, use
-an organizational Console account rather than a personal one;
+an organisational Console account rather than a personal one;
 [PRIVACY.md](PRIVACY.md) quotes the two scope clauses that make the
 difference and deliberately does not resolve them for you.
 
@@ -428,7 +428,7 @@ that evaluation is planned, which is one reason this recipe is marked
 Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 67 tools by
-default, and the serialized tool definitions alone measure about
+default, and the serialised tool definitions alone measure about
 118,000 characters, roughly 29k tokens (measured for v0.11.0-alpha).
 That exceeds LM Studio's 8k default context several times over before
 you type a word, and tool counts this size are far past where
@@ -547,7 +547,7 @@ Show me all files in my project
 
 What are the most frequently used codes?
 
-Analyze the transcript for file 1 with all its coding
+Analyse the transcript for file 1 with all its coding
 ```
 
 ---
@@ -670,7 +670,7 @@ Check out the main README.md for:
 
 **Rich Transcript Analysis**:
 ```
-Analyze file 3 with all its coding. What does this participant say about motivation?
+Analyse file 3 with all its coding. What does this participant say about motivation?
 ```
 
 **Demographic Queries**:
@@ -934,6 +934,6 @@ Now that you're installed, you can:
 2. ✅ Get AI-assisted thematic analysis
 3. ✅ Discover patterns and relationships in your coding
 4. ✅ Query by demographics and attributes
-5. ✅ Analyze complete transcripts with coding context
+5. ✅ Analyse complete transcripts with coding context
 
-**Happy analyzing!** 🎉
+**Happy analysing!** 🎉

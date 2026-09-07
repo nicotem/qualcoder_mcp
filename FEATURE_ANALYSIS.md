@@ -78,7 +78,7 @@
 **Use Case**:
 - "Show me the relationship network between codes"
 - "What codes are linked to 'motivation'?"
-- "Visualize code hierarchies"
+- "Visualise code hierarchies"
 
 **Value**: ⭐⭐⭐⭐ Great for theoretical development
 
@@ -145,14 +145,14 @@
 
 #### 10. **Batch Operations**
 - Export multiple code reports at once
-- Analyze multiple codes simultaneously
+- Analyse multiple codes simultaneously
 
 **Value**: ⭐⭐ Convenience
 
 #### 11. **Text Mining Integration**
 - Word frequency analysis
 - N-gram extraction
-- Topic modeling results
+- Topic modelling results
 
 **Value**: ⭐⭐ Already in Qualcoder UI
 
@@ -212,9 +212,9 @@ def list_coding_differences(code_id: int)
 def get_code_links()
 def get_code_network(code_id: int)
 ```
-**Why**: Theoretical development, visualization
+**Why**: Theoretical development, visualisation
 
-### Phase 3: Specialized Features (Optional) 🎯
+### Phase 3: Specialised Features (Optional) 🎯
 
 **6. Media Coding**
 ```python
@@ -323,6 +323,6 @@ def get_inter_coder_reliability()
 - Testing: 45 min
 
 **Phase 2 (Advanced)**: 2 hours
-**Phase 3 (Specialized)**: 3+ hours
+**Phase 3 (Specialised)**: 3+ hours
 
 **Recommendation**: Implement Phase 1 now - these are the most universally useful features that will benefit any qualitative researcher.

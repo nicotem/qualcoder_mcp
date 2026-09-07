@@ -15,7 +15,7 @@ Complete guide to using Claude for AI-assisted qualitative coding with the conve
 
 The AI coding workflow in v0.4.0+ uses a **conversational approval process** where:
 
-1. Claude analyzes your files and creates suggestions
+1. Claude analyses your files and creates suggestions
 2. You review suggestions in the chat conversation
 3. You explicitly approve or reject specific suggestions
 4. Claude writes only approved suggestions directly to the database
@@ -98,15 +98,15 @@ Claude will:
 
 ### Step 2: Create Analysis Session
 
-Ask Claude to analyze specific files with specific codes:
+Ask Claude to analyse specific files with specific codes:
 
 ```
-Analyze files 1, 2, and 3 for the codes "Workplace Stress" and "Coping Strategies"
+Analyse files 1, 2, and 3 for the codes "Workplace Stress" and "Coping Strategies"
 ```
 
 Or more detailed:
 ```
-Analyze interview file 5 and code any segments related to:
+Analyse interview file 5 and code any segments related to:
 - Motivation
 - Barriers to participation
 - Positive outcomes
@@ -128,7 +128,7 @@ Use a minimum confidence threshold of 0.7
 
 **What you'll see:**
 ```
-I've analyzed files 1-3 for Workplace Stress and Coping Strategies.
+I've analysed files 1-3 for Workplace Stress and Coping Strategies.
 
 Session ID: abc123-def456-789...
 
@@ -285,7 +285,7 @@ Applying 6 approved codings...
    open must close and reopen it to show the new codings)
 2. Open the workspace project: `~/Documents/Qualcoder MCP Projects/Interview Study.qda`
 3. Go to **Coding > Code Text**
-4. Select the files you analyzed
+4. Select the files you analysed
 5. You should see the AI-generated codings with:
    - Owner: the AI coder name (`AI Coding Assistant` by default)
    - Memo containing reasoning and confidence score
@@ -307,12 +307,12 @@ Copy "Focus Group Study.qda" to the workspace
 
 **You:**
 ```
-Analyze file 3 for "Participant Motivation" and "Barriers" codes
+Analyse file 3 for "Participant Motivation" and "Barriers" codes
 ```
 
 **Claude:**
 ```
-I've analyzed file 3 (focus_group_transcript.txt).
+I've analysed file 3 (focus_group_transcript.txt).
 
 Session ID: 7a8b9c...
 
@@ -375,7 +375,7 @@ Open the project in Qualcoder to see your AI-generated codings!
 
 **You:**
 ```
-Copy "Interview Series.qda" to workspace and analyze file 7 with these codes:
+Copy "Interview Series.qda" to workspace and analyse file 7 with these codes:
 - Work-Life Balance
 - Career Satisfaction
 - Professional Development
@@ -386,7 +386,7 @@ Minimum confidence 0.75
 **Claude:**
 ```
 ✓ Project copied to workspace
-Analyzing file 7...
+Analysing file 7...
 
 Session ID: d4e5f6...
 
@@ -477,7 +477,7 @@ Code this file
 
 ✅ Good:
 ```
-Analyze file 5 for segments related to:
+Analyse file 5 for segments related to:
 - Workplace Stress (look for expressions of feeling overwhelmed,
   time pressure, or negative emotional responses to work demands)
 - Coping Strategies (identify any mention of how participants
@@ -488,7 +488,7 @@ Use confidence threshold 0.75
 
 **2. Start with Small Batches**
 
-Don't analyze 20 files at once on your first try. Start with:
+Don't analyse 20 files at once on your first try. Start with:
 - 1-3 files
 - 2-4 codes
 - Review the results
@@ -514,7 +514,7 @@ You don't have to complete everything at once:
 
 ```
 # Day 1
-Analyze files 1-5 for Motivation codes
+Analyse files 1-5 for Motivation codes
 
 # Later, same day or next day
 Load session abc123 and show me the suggestions
@@ -698,34 +698,34 @@ Process many files in batches:
 
 ```
 # Batch 1
-Analyze files 1-5 for Motivation codes
+Analyse files 1-5 for Motivation codes
 
 # Review and apply
 
 # Batch 2
-Analyze files 6-10 for Motivation codes
+Analyse files 6-10 for Motivation codes
 
 # Review and apply
 ```
 
 ### Using Multiple Code Sets
 
-Analyze same files with different codes:
+Analyse same files with different codes:
 
 ```
 # Pass 1: Emotions
-Analyze files 1-3 for:
+Analyse files 1-3 for:
 - Positive Emotions
 - Negative Emotions
 - Ambivalent Feelings
 
 # Apply
 
-# Pass 2: Behaviors
-Analyze files 1-3 for:
-- Coping Behaviors
-- Avoidance Behaviors
-- Help-Seeking Behaviors
+# Pass 2: Behaviours
+Analyse files 1-3 for:
+- Coping Behaviours
+- Avoidance Behaviours
+- Help-Seeking Behaviours
 
 # Apply
 ```
@@ -736,12 +736,12 @@ Iterate to improve:
 
 ```
 # First pass with low threshold
-Analyze file 5 with min confidence 0.6
+Analyse file 5 with min confidence 0.6
 
 # Review to see what's borderline
 
 # Second pass with tuned instructions
-Analyze file 5 again but only code segments that explicitly
+Analyse file 5 again but only code segments that explicitly
 mention [specific criteria], confidence 0.75
 ```
 

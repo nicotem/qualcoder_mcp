@@ -14,20 +14,20 @@ project itself. This release makes qualcoder-mcp follow them, so a
 project touched by both tools behaves consistently. Where a convention
 depends on the schema (per-coder visibility, the merge provenance
 memo), its presence is detected by probing schema objects, never
-version strings, and pre-4.0 projects keep their previous behavior.
+version strings, and pre-4.0 projects keep their previous behaviour.
 Conventions that need no schema support (the `#####` memo marker, the
 configurable coder name, the private-note delete guards, the backup
 rules, the recovery hint) apply on every supported schema, v14 through
 v17. No tool was added or removed (67 in the full toolset, 20 in
 `core`); the changes are new optional arguments, new result fields and
-changed defaults, summarized under "Upgrading from 0.10.x" below.
+changed defaults, summarised under "Upgrading from 0.10.x" below.
 Parity claims in this section were verified against QualCoder master
 at pinned commit 9bddf17 (2026-08-25). `pseudonymise_source`, which
 the 0.10.0 notes deferred to v0.11, is not in this release. Gated
 through a QA round, a Security gate and two re-verification rounds;
 the suite at the release commit: 1534 passed, 45 skipped, 0 failed.
 
-### Added: '#####' memo privacy (QC 4.0 convention honored everywhere)
+### Added: '#####' memo privacy (QC 4.0 convention honoured everywhere)
 
 Memo text from the first `#####` marker onward is the researcher's
 private zone: QualCoder 4.0 never shows it to its AI, and now neither
@@ -50,7 +50,7 @@ does this server.
   keeps the row), merge provenance notes land before the private zone,
   and a `#####` in AI-supplied text is never written. Code and
   category names and coder names copied into a provenance note are
-  neutralized (any run of five or more hashes collapses to four), so a
+  neutralised (any run of five or more hashes collapses to four), so a
   name can never plant a private zone in the target memo.
 - `merge_category` now carries the source category's memo into the
   target under a `[Merged from category: ...]` provenance note, as
@@ -90,7 +90,7 @@ the same rules (one shared validator: non-empty, at most 80 characters,
 no Unicode control characters including C1, no line or paragraph
 separators, no bidirectional formatting characters, no `#####`
 marker; ordinary names in any script, ZWJ and ZWNJ included, are
-accepted). Note, a behavior change on every project: journal entries,
+accepted). Note, a behaviour change on every project: journal entries,
 codes (from `create_code` and `create_proposed_codes`), categories,
 annotations, cases, attribute types and attribute values were
 previously attributed to the project's own coder name, and the source
@@ -111,7 +111,7 @@ QualCoder. An explicit `coder` argument on `get_coded_segments`,
 `search_coded_text`, `get_coding_frequencies`,
 `find_cooccurring_codes`, `get_case_code_matrix`, `get_codes_by_case`,
 and `get_cases_by_code` reads that coder's rows from the full base
-data instead. Annotations honor visibility the same way (in
+data instead. Annotations honour visibility the same way (in
 `analyze_file_with_coding` and in the annotation matches of
 `search_memos`, which has no coder override). Results disclose when
 hidden-coder filtering shaped them (a count, never hidden coders'
@@ -240,7 +240,7 @@ file.
   `update_annotation`, `delete_annotation` and `set_memo`;
   `confirm_private_note_deletion` on `delete_coding` and
   `delete_annotation`.
-- Behavior changes on every project (schema v14 through v17): memo
+- Behaviour changes on every project (schema v14 through v17): memo
   text from the first `#####` marker onward is no longer returned to
   the AI and survives AI memo writes; rows this server creates other
   than codings are attributed to the configured AI coder name instead
@@ -257,8 +257,8 @@ file.
   changed. The Markdown codebook export (`export_codebook` with
   `format="md"`) separates a code's name from its coding count with a
   colon instead of an em dash.
-- Behavior changes only on QualCoder 4.0 projects (detected by schema
-  probes, never version strings): reads honor per-coder visibility by
+- Behaviour changes only on QualCoder 4.0 projects (detected by schema
+  probes, never version strings): reads honour per-coder visibility by
   default and results may carry a `coder_visibility` block (three
   array-shaped results are then wrapped in an object, see above); writes
   that target a hidden coder's row by id are refused without
@@ -350,9 +350,9 @@ Ground-truthed against the unreleased QualCoder development tree
   attribute sub-codes to their top ancestor's category; codebook,
   coded-segments report chains and REFI-QDA export all preserve the
   nesting (REFI round-trips into QualCoder's importer).
-- **Parity hardening**: whole-file case links standardized on
+- **Parity hardening**: whole-file case links standardised on
   pos1=len(fulltext) with a dedupe that treats both historical
-  spellings as the same link; import normalizes lone CR too; backups
+  spellings as the same link; import normalises lone CR too; backups
   ignore sqlite sidecar files; backup notes version-scoped; journal
   attribute domain and new system owner names tolerated everywhere.
 - **Concurrency posture for QualCoder 4.0**: the 4.0 development
@@ -364,7 +364,7 @@ Ground-truthed against the unreleased QualCoder development tree
   plainly.
 - **Nothing regresses for v14/3.8.2 users**: v14/v15 recipes are
   byte-exact to 3.8.2 (verified by differential tests); all
-  hierarchy-aware behavior activates only when the project actually
+  hierarchy-aware behaviour activates only when the project actually
   has the sub-code column.
 - Deferred: pseudonymise_source moves to v0.11 (contract note only).
 
@@ -378,7 +378,7 @@ Ground-truthed against the unreleased QualCoder development tree
   and the safety pair copy_project_to_workspace / delete_coding /
   list_backups). Required for local models, optional elsewhere;
   unknown values fail loudly at startup; resources and prompts are
-  unaffected. Measured serialized tool JSON: full = 91,111 chars
+  unaffected. Measured serialised tool JSON: full = 91,111 chars
   (about 22.8k tokens at chars/4); core = 33,006 chars (about 8.3k
   tokens). Functionally tested end to end over stdio in core mode.
 - **Host-choice documentation**: README "Choosing your AI host:
@@ -487,13 +487,13 @@ implemented against QualCoder 3.8.2 source ground truth, shaped by the
 first tester's feedback, and gated through independent QA and security
 review plus six-platform CI. Tool surface: 48 → 67.
 
-### Security: opt-in CSV formula sanitization (V8-1)
+### Security: opt-in CSV formula sanitisation (V8-1)
 
 All four report exporters gain `sanitize_formulas` (default **False**).
 CSV cells whose text starts with `=` `+` `-` `@` tab or CR are treated
 as live formulas by Excel/LibreOffice/Google Sheets (CSV injection,
 CWE-1236), and quoting does not defuse them. Pass
-`sanitize_formulas=true` to neutralize every such cell with the
+`sanitize_formulas=true` to neutralise every such cell with the
 standard `'` prefix (applied to all DB-derived text: code/category/
 case/coder names, memos, and coded seltext: raw source text, the
 sharpest vector). The default stays **verbatim** because these
@@ -634,7 +634,7 @@ review time.
 - **Annotation addenda** (dossier §7): `add_annotation` now refuses a
   same-coder OVERLAPPING annotation (the GUI never creates one, and
   overlapping rows are hazardous to QualCoder's pos0-keyed clear path),
-  pointing at the existing row; read paths tolerate and normalize
+  pointing at the existing row; read paths tolerate and normalise
   REFI-born empty/NULL-memo annotation rows.
 
 ### Added: inductive / open coding (v0.8 phase A)
@@ -732,7 +732,7 @@ and fault injection). Tool surface: 36 → 48.
   `delete_code` (bulk delete, previews the coding count QualCoder's
   dialog omits), `delete_category` (shallow reparent to top level, no
   cascade to coded data).
-- All new write tools honor the QualCoder lock, refuse below schema v14,
+- All new write tools honour the QualCoder lock, refuse below schema v14,
   back up before writing, and reject over-length memo/journal content
   rather than silently truncate it. Implemented against QualCoder 3.8.2
   source ground truth.
@@ -748,14 +748,14 @@ and fault injection). Tool surface: 36 → 48.
 - LLM-guidance hardening: every write tool documents the
   QualCoder-open refusal with the close → re-check → retry recipe;
   position-safety warnings are imperative (relay to the researcher) and
-  re-signaled at apply time; `analyze_for_coding` returns structured
+  re-signalled at apply time; `analyze_for_coding` returns structured
   `session_id`/`qualcoder_open`/`action_required` fields alongside the
   prose banner; `update_suggestion_status` documents the
   applied-is-immutable rule and models user-decision-centric approval;
   `select_project`'s QualCoder-open warning is imperative.
 - Performance at scale: `find_cooccurring_codes` no longer O(n²) per
   densely-coded file (1.46 s → ~5 ms at 8k codings; no schema changes to
-  user databases); REFI export serializes once (the pretty-print reparse
+  user databases); REFI export serialises once (the pretty-print reparse
   doubled peak memory).
 - Researcher-facing honesty: REFI export discloses audio/video and image
   codings it cannot carry; `analyze_file_with_coding` flags non-text
@@ -817,7 +817,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   actually importable: `internal://{guid}.txt` source references and
   GUID-named members per spec §8.3/8.4 (QualCoder's importer
   hard-depends on the `internal:/` scheme), unqualified Project `name`
-  attribute, XML-1.0 character sanitization (control characters in
+  attribute, XML-1.0 character sanitisation (control characters in
   memos/code names crashed the exporter), validate-before-export (stale
   references and empty-content files fail loudly instead of producing
   archives that crash importers), per-document GUID uniqueness, category
@@ -859,7 +859,7 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   `apply_codings` explains the batch was already applied instead of
   failing wholesale on the duplicate constraint.
 - **Writes match QualCoder's value contract**: `important` stored as
-  1/NULL (never 0), new-code colors drawn from QualCoder's own palette
+  1/NULL (never 0), new-code colours drawn from QualCoder's own palette
   with strict `#RRGGBB` validation, and writes hard-require schema v14
   (older projects: "open and save in QualCoder 3.8 to upgrade").
 - **Position semantics documented and enforced** (code-point offsets,
@@ -867,24 +867,24 @@ REFI-QDA revival), hardened through three QA/security review rounds.
   its own AI pipeline use). One-way U+2029→`\n` tolerance for text
   copied from GUI-created codings; per-file `position_safe` warnings on
   texts where QualCoder's GUI diverges (its documented emoji/CRLF bug);
-  `import_text_file` strips a leading BOM and normalizes CRLF so new
+  `import_text_file` strips a leading BOM and normalises CRLF so new
   files are position-safe from birth.
 
 ### Changed: robustness and correctness
 
-- Locked databases are reported as locked (previously mislabeled
+- Locked databases are reported as locked (previously mislabelled
   "Invalid or corrupted SQLite database"), and a failed read-write
   upgrade no longer leaves the server with a dead connection that broke
   every subsequent call.
 - Old-schema projects (pre-v14 columns) and corrupted databases are
   refused at connect/select with clear guidance instead of raw
-  tracebacks; all 30+ tools return sanitized `{"error": ...}` JSON for
+  tracebacks; all 30+ tools return sanitised `{"error": ...}` JSON for
   anticipated failures.
 - Backup names get a uniquifying suffix; two writes in the same second
   no longer abort with "File exists".
 - Imports are fully validated (including NUL/control-character filenames
   that bypassed both duplicate guards, now rejected with NFC
-  normalization) BEFORE the read-write upgrade and backup, so rejected
+  normalisation) BEFORE the read-write upgrade and backup, so rejected
   calls no longer litter full-project backup copies.
 - `validate_qda_path` accepts only what QualCoder can open: a lowercase
   `.qda` directory containing `data.qda` (bare `.qda` files and
@@ -965,7 +965,7 @@ This release adds powerful file search capabilities to eliminate the need for fi
 ### Changed
 
 - File discovery workflow now uses dedicated MCP tools instead of filesystem commands
-- Improved tool descriptions to guide Claude toward correct tool usage
+- Improved tool descriptions to guide Claude towards correct tool usage
 - Better performance awareness with warnings for resource-intensive operations
 
 ## [0.3.0] - 2025-10-28
@@ -978,7 +978,7 @@ This release adds comprehensive AI-assisted coding capabilities, allowing Claude
 
 **Core AI Coding Tools:**
 1. **`suggest_coding_for_files(file_ids, code_names, instruction, min_confidence)`**
-   - Main AI coding tool that analyzes files and suggests coded segments
+   - Main AI coding tool that analyses files and suggests coded segments
    - Uses Claude's native analysis (no API key required)
    - Creates coding session with all suggestions stored separately from database
    - Returns session ID for review and export
@@ -1011,7 +1011,7 @@ This release adds comprehensive AI-assisted coding capabilities, allowing Claude
 
 **Code Discovery Tools:**
 8. **`suggest_new_codes(file_ids, instruction, existing_codes_context)`**
-   - AI analyzes files and suggests new codes to add
+   - AI analyses files and suggests new codes to add
    - Shows existing codes to avoid duplicates
    - Returns code suggestions with descriptions and examples
 
@@ -1072,7 +1072,7 @@ This release adds comprehensive AI-assisted coding capabilities, allowing Claude
 
 ```
 1. User: "Code files 1-3 with workplace stress codes"
-2. Claude analyzes files, creates CodingSuggestions
+2. Claude analyses files, creates CodingSuggestions
 3. Claude saves session with all suggestions
 4. User reviews session statistics
 5. User: "Export as REFI-QDA"
@@ -1125,7 +1125,7 @@ To use AI coding:
 
 - HTML review interface for visual approval/rejection
 - Automatic chunking for large files
-- Batch coding optimization
+- Batch coding optimisation
 - Code refinement suggestions
 - Multi-coder collaboration support
 
@@ -1226,7 +1226,7 @@ This release enables several critical research workflows:
 **Rich Contextual Analysis:**
 ```
 "What does Paul say about Wisdom of the Crowds? Consider both coded segments and the full transcript."
-"Analyze how this participant discusses motivation throughout the entire interview"
+"Analyse how this participant discusses motivation throughout the entire interview"
 ```
 
 ## [0.1.0] - 2025-10-27
@@ -1242,9 +1242,9 @@ This release enables several critical research workflows:
 #### Security
 - Comprehensive security review and hardening
 - Path validation for .qda files
-- Input validation and sanitization
+- Input validation and sanitisation
 - LIKE wildcard escaping
-- Error message sanitization
+- Error message sanitisation
 - Context manager for database cleanup
 - Read-only database access enforcement
 
@@ -1280,7 +1280,7 @@ This release enables several critical research workflows:
 - **0.x.0**: New features, no breaking changes
 - **0.0.x**: Bug fixes and minor improvements
 
-### Feature Prioritization
+### Feature Prioritisation
 Based on qualitative research needs:
 1. ⭐⭐⭐⭐⭐ Essential features (attributes, co-occurrence, case-code matrix, rich analysis)
 2. ⭐⭐⭐⭐ Important features (coder comparison, code relationships)
@@ -1294,7 +1294,7 @@ Based on qualitative research needs:
 - Code relationships and network data
 - Enhanced statistics
 
-**Phase 3 - Specialized Features** (v0.4.0):
+**Phase 3 - Specialised Features** (v0.4.0):
 - Media segment access (images, audio, video)
 - Timeline analysis
 - Saved queries execution

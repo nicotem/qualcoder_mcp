@@ -77,16 +77,16 @@ Claude Desktop > Settings > Developer > Edit Config
 
 ## What is Qualcoder?
 
-Qualcoder is a free, open-source qualitative data analysis (QDA) application written in Python for analyzing text, images, audio, and video data.
+Qualcoder is a free, open-source qualitative data analysis (QDA) application written in Python for analysing text, images, audio, and video data.
 
 ### Key Features
 
 - **Multi-format Support**: txt, odt, docx, html, md, epub, PDF
 - **Media Coding**: Images, audio, video (requires VLC)
-- **Hierarchical Coding**: Tree-like categorization of codes
-- **Case Management**: Organize data by cases/participants
+- **Hierarchical Coding**: Tree-like categorisation of codes
+- **Case Management**: Organise data by cases/participants
 - **Annotations & Memos**: Rich note-taking capabilities
-- **Reports**: Coding frequencies, coder comparisons, visualizations
+- **Reports**: Coding frequencies, coder comparisons, visualisations
 - **AI Integration**: GPT-4 and open-source models for assisted coding
 - **Cross-platform**: Windows, macOS, Linux
 - **Offline-first**: No internet required
@@ -131,7 +131,7 @@ Qualcoder uses a SQLite database with the following key tables:
 - `stored_sql`: Saved SQL queries
 - `manage_files_display`: File display settings
 - `files_filter`: File filter settings
-- Graph visualization tables (gr_*)
+- Graph visualisation tables (gr_*)
 
 ### Project File Structure
 
@@ -162,7 +162,7 @@ python3 -m qualcoder
 
 The Qualcoder MCP will enable Claude to:
 1. **Query coded data**: Search and retrieve coded segments
-2. **Analyze coding patterns**: Identify themes and relationships
+2. **Analyse coding patterns**: Identify themes and relationships
 3. **Access project information**: List codes, categories, files, cases
 4. **Read source documents**: Access the original text/data
 5. **Generate reports**: Create coding summaries and comparisons

@@ -18,7 +18,7 @@ The Qualcoder MCP server **currently has NO built-in import capabilities** for c
 ✅ `search_coded_text()` - Search and return coded segments
 ✅ `get_coded_segments()` - Retrieve all segments for a code
 ✅ Full transcript analysis with coding context
-✅ JSON-serializable output for all queries
+✅ JSON-serialisable output for all queries
 
 ### MISSING IMPORT FEATURES:
 ❌ No built-in import for CSV files
@@ -86,7 +86,7 @@ Columns:
 ├── catid (INTEGER, FOREIGN KEY → code_cat.catid)
 │   └── Category this code belongs to
 ├── color (TEXT)
-│   └── RGB color for visualization
+│   └── RGB colour for visualisation
 ├── owner (TEXT)
 │   └── Code creator
 └── date (TEXT)
@@ -376,7 +376,7 @@ def import_coded_segments_from_csv(db_path, csv_path, coder_name):
    └── Maintain owner audit trail (log who imported data)
 
 3. DATABASE INTEGRITY
-   ├── Use parameterized queries (never string concatenation)
+   ├── Use parameterised queries (never string concatenation)
    ├── Enable FOREIGN KEY constraints
    ├── Wrap in transaction with rollback on failure
    ├── Verify constraints after insertion
@@ -490,7 +490,7 @@ def add_coded_segment(
 ```
 
 ### Output Format:
-- All exports are JSON-serializable
+- All exports are JSON-serialisable
 - Include metadata (dates, owners, codes)
 - Preserve all segment information
 - Include statistics and context

@@ -54,8 +54,8 @@ is looked at first.
    ```
 
    The whole suite must pass, on your platform and on the CI. Every new
-   behavior needs a test that fails without the change, including the
-   edge cases of any upstream behavior you are matching. Do not add
+   behaviour needs a test that fails without the change, including the
+   edge cases of any upstream behaviour you are matching. Do not add
    skips without a stated reason in the test. One scale test (10k+
    codings, a 500k-character document) is opt-in behind
    `TRACK6_GIANT=1` and is not part of a normal run.
@@ -67,9 +67,9 @@ is looked at first.
    pins).
 6. **Document the change.** Add an entry under `Unreleased` in
    `CHANGELOG.md` (Keep a Changelog format). Update the docstring of
-   every tool whose arguments or behavior changed: the docstrings are
+   every tool whose arguments or behaviour changed: the docstrings are
    the documentation the AI model reads. Update `README.md`,
-   `INSTALL.md` and `PRIVACY.md` where they describe the behavior you
+   `INSTALL.md` and `PRIVACY.md` where they describe the behaviour you
    changed; `PRIVACY.md` is the contract for what a tool result may
    disclose.
 
@@ -77,13 +77,13 @@ is looked at first.
 
 Nothing is merged on a green CI alone. Every change also goes through a
 QA review and a security review. The QA review checks that each new
-behavior has a test that fails without it, that the edge cases of the
-matched upstream behavior are covered, and that the tests are
+behaviour has a test that fails without it, that the edge cases of the
+matched upstream behaviour are covered, and that the tests are
 Windows-safe and encoding-safe. The security review looks at write
 paths, file and symlink handling, what a tool result discloses into the
 AI conversation, and what a hostile project folder or a hostile model
 input could make the server do. Findings from both are fixed and
-re-verified before the merge, and behavior changes that come out of them
+re-verified before the merge, and behaviour changes that come out of them
 are recorded in the CHANGELOG. The maintainer runs both reviews; expect
 them to take longer than the CI, and expect requests for more tests
 rather than fewer.
@@ -103,7 +103,7 @@ rather than fewer.
 - **No em dashes in prose.** This applies to documentation, docstrings,
   error strings, CHANGELOG entries and commit messages. Use a colon, a
   comma, parentheses or a new sentence.
-- **Capability probes, never version strings.** Behavior keys on the
+- **Capability probes, never version strings.** Behaviour keys on the
   existence of tables, columns and views (`SchemaCapabilities` in
   `database.py`), the way QualCoder's own migration ladder does. The
   version string is informational, with one exception: the forward
@@ -125,7 +125,7 @@ rather than fewer.
 - **No tool argument named `session_id`.** Some MCP middleware strips
   that name before the call reaches the server; the session tools use
   `coding_session_id`. Check new argument names against other
-  routing-flavored names (`request_id`, `conversation_id`, `user_id`,
+  routing-flavoured names (`request_id`, `conversation_id`, `user_id`,
   `context`, `metadata`) as well.
 - **Runtime dependencies stay minimal.** The package has one runtime
   dependency (`mcp`). A new one needs a reason in the pull request;
@@ -133,17 +133,24 @@ rather than fewer.
   `psutil` is used).
 - **Synthetic test data only.** Never commit a `.qda` project, a real
   transcript or any research text. Test fixtures are built in code.
-- **Spelling** follows the surrounding file. The codebase has both
-  British and American spelling; do not change one to the other in
-  passing.
+- **British English in all prose.** Documentation, docstrings, tool
+  and prompt descriptions, error strings, result notes, CHANGELOG
+  entries and commit messages use British spelling (behaviour, colour,
+  analyse, organise, initialise, licence as a noun). Identifiers are
+  never changed: tool names (`analyze_for_coding`, `sanitize_formulas`,
+  `recolor_code`), argument names, JSON result keys, environment
+  variable names, file names, SQL, and proper names such as "MIT
+  License" keep their exact spelling, including when a sentence
+  mentions them. Code comments follow the same rule when a line is
+  touched.
 
 ## Scope
 
 The design is for general use, principles first. A feature is justified
-on general grounds: parity with QualCoder's own behavior, general
+on general grounds: parity with QualCoder's own behaviour, general
 mappings that hold for any project, capability probes rather than
 special cases. Requests that fit only one research project, one
-researcher's habits or one MCP host are usually declined or generalized
+researcher's habits or one MCP host are usually declined or generalised
 first. The same rule applies to the maintainer's own projects.
 
 ## License
@@ -152,5 +159,5 @@ qualcoder-mcp is released under the MIT License (see
 [LICENSE](LICENSE)). By contributing you agree that your contribution is
 licensed under the same terms. QualCoder itself is licensed under the
 LGPL-3.0: do not copy its source into this repository. Re-implement the
-behavior independently and cite the upstream file and line you matched,
+behaviour independently and cite the upstream file and line you matched,
 as `memo_privacy.py` does.

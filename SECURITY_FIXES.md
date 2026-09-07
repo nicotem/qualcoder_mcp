@@ -2,7 +2,7 @@
 
 ## Date: 2025-10-28
 
-This document summarizes the security improvements made to the Qualcoder MCP server following the comprehensive security review documented in `SECURITY_REVIEW.md`.
+This document summarises the security improvements made to the Qualcoder MCP server following the comprehensive security review documented in `SECURITY_REVIEW.md`.
 
 ## HIGH Priority Fixes Applied
 
@@ -202,7 +202,7 @@ def _check_version(self):
 |----------|--------|-------|
 | Path Validation | ❌ None | ✅ Complete |
 | Input Validation | ❌ None | ✅ Type + Range checks |
-| Error Handling | ❌ Raw errors | ✅ Sanitized errors |
+| Error Handling | ❌ Raw errors | ✅ Sanitised errors |
 | LIKE Escaping | ❌ Vulnerable | ✅ Escaped |
 | Connection Cleanup | ⚠️ Unreliable | ✅ Explicit + Context mgr |
 | Schema Validation | ❌ None | ✅ Required tables checked |
@@ -215,8 +215,8 @@ def _check_version(self):
 
 - **MED-5**: Rate Limiting - Not implemented (would require FastMCP middleware)
 - **MED-6**: Large exports - Reduced limit from 1000 to 500
-- **LOW-1**: Linear search optimization - Not critical for typical use
-- **LOW-2**: Error response standardization - Consistent enough for v1
+- **LOW-1**: Linear search optimisation - Not critical for typical use
+- **LOW-2**: Error response standardisation - Consistent enough for v1
 
 ### Rationale:
 
@@ -260,7 +260,7 @@ Before deploying, test:
 
 **After Fixes**: LOW risk
 - Comprehensive input validation
-- Defense in depth approach
+- Defence in depth approach
 - Proper error handling and logging
 - Suitable for personal and shared use
 

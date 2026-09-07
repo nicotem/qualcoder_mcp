@@ -112,8 +112,8 @@ Qualcoder may show a preview of what will be imported:
 - **Selections**: Number of coded segments to import
 
 **Review carefully**:
-- ✅ All codes are recognized (green checkmark or listed)
-- ✅ All files are recognized
+- ✅ All codes are recognised (green checkmark or listed)
+- ✅ All files are recognised
 - ⚠️ Any warnings or conflicts are noted
 
 ### Step 5: Confirm Import
@@ -370,7 +370,7 @@ You can import multiple AI coding sessions into the same project:
 To import only specific suggestions:
 
 1. Use `update_suggestion_status` to reject unwanted suggestions
-2. Export only approved suggestions (default behavior)
+2. Export only approved suggestions (default behaviour)
 3. Alternatively, export as JSON, filter manually, import into new `.qdpx`
 
 ### Testing Imports

@@ -12,7 +12,7 @@
 
 ## Executive Summary
 
-The Qualcoder MCP server was reviewed for security vulnerabilities and code quality issues. The code demonstrates **good security practices** in several areas, particularly SQL injection prevention through parameterized queries and read-only database access. However, **several medium-priority issues** were identified that should be addressed to improve robustness and security.
+The Qualcoder MCP server was reviewed for security vulnerabilities and code quality issues. The code demonstrates **good security practices** in several areas, particularly SQL injection prevention through parameterised queries and read-only database access. However, **several medium-priority issues** were identified that should be addressed to improve robustness and security.
 
 **Overall Risk Level**: MEDIUM
 **Critical Issues**: 0
@@ -27,7 +27,7 @@ The Qualcoder MCP server was reviewed for security vulnerabilities and code qual
 ### 1. SQL Injection Prevention - EXCELLENT
 **Status**: ✅ Secure
 
-All database queries use parameterized queries with `?` placeholders:
+All database queries use parameterised queries with `?` placeholders:
 
 ```python
 cursor = self.conn.execute(
@@ -203,7 +203,7 @@ def get_code_details(self, code_id: int) -> Optional[Dict[str, Any]]:
 **Severity**: MEDIUM
 **File**: `database.py:426-449`, `database.py:527-581`
 
-**Issue**: User input in LIKE queries is not escaped. SQLite wildcards (`%`, `_`) in user input could cause unexpected behavior.
+**Issue**: User input in LIKE queries is not escaped. SQLite wildcards (`%`, `_`) in user input could cause unexpected behaviour.
 
 **Current Code**:
 ```python
@@ -254,7 +254,7 @@ get_code_details("'; DROP TABLE code_name; --")  # Type mismatch
 get_code_details(None)  # Could cause errors
 ```
 
-**Risk**: LOW - parameterized queries protect against injection, but could cause crashes
+**Risk**: LOW - parameterised queries protect against injection, but could cause crashes
 
 **Recommendation**:
 ```python
@@ -398,7 +398,7 @@ segments = get_db().get_coded_text_segments(code_id, limit=500)
 
 **Issue**: Error responses are JSON objects, but success responses have different structures.
 
-**Recommendation**: Standardize error response format across all tools.
+**Recommendation**: Standardise error response format across all tools.
 
 ### LOW-3: No Database Schema Validation
 **Severity**: LOW
@@ -472,14 +472,14 @@ def check_database_version(self):
 ### Long Term (Low Priority)
 9. Database schema validation
 10. Version compatibility checks
-11. Standardize error responses
+11. Standardise error responses
 12. Add comprehensive test suite
 
 ---
 
 ## Security Best Practices Followed
 
-✅ Parameterized SQL queries (prevents SQL injection)
+✅ Parameterised SQL queries (prevents SQL injection)
 ✅ Read-only database access (prevents data modification)
 ✅ No use of eval/exec (prevents code injection)
 ✅ Type hints for API clarity
@@ -490,7 +490,7 @@ def check_database_version(self):
 
 ## Conclusion
 
-The Qualcoder MCP server demonstrates **fundamentally sound security practices**, particularly in the critical area of SQL injection prevention. The identified issues are primarily about **defense in depth** and **robustness** rather than critical vulnerabilities.
+The Qualcoder MCP server demonstrates **fundamentally sound security practices**, particularly in the critical area of SQL injection prevention. The identified issues are primarily about **defence in depth** and **robustness** rather than critical vulnerabilities.
 
 **Recommended Action**: Address HIGH priority issues before production use, particularly:
 - Path validation
