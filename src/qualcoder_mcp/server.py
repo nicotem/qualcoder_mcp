@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import json
+import argparse
 import shutil
 import logging
 import sqlite3
@@ -8535,8 +8536,61 @@ def _apply_toolset(mode: str) -> Dict[str, Any]:
     return removed
 
 
-def main():
+# One paragraph for a researcher who starts the server by hand in a terminal
+# (v0.12, A5). An MCP host never presents a TTY on stdin, so the notice only
+# ever appears in that situation; it goes to stderr (stdout is the MCP
+# transport) and the server keeps waiting as before.
+TTY_NOTICE = (
+    "qualcoder-mcp is an MCP server. It is normally started by an MCP host "
+    "(Claude Desktop, Claude Code, LM Studio or another MCP client) and speaks "
+    "JSON-RPC over standard input and output, so when it is started by hand in "
+    "a terminal it prints nothing and waits for a host that is not there. To "
+    "check that the installation works, run 'qualcoder-mcp --version' (or "
+    "'python -m qualcoder_mcp.server --version'); to use the server, add it to "
+    "your host's MCP configuration as described in INSTALL.md. Press Ctrl+C to "
+    "stop this process."
+)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """`--version` prints the installed package version and exits 0.
+
+    The version comes from importlib.metadata through the package's
+    __version__ (the single source of truth is pyproject.toml, read from
+    the installed distribution), the same value the MCP handshake
+    advertises in serverInfo.version.
+    """
+    parser = argparse.ArgumentParser(
+        prog="qualcoder-mcp",
+        description="MCP server for QualCoder projects. It is started by an "
+                    "MCP host over stdio; run it with --version to check the "
+                    "installed version.")
+    parser.add_argument("--version", action="version",
+                        version=f"qualcoder-mcp {_package_version}")
+    return parser
+
+
+def _stdin_is_tty(stream=None) -> bool:
+    """True when stdin is an interactive terminal rather than a host pipe."""
+    stream = sys.stdin if stream is None else stream
+    try:
+        return bool(stream is not None and stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _print_tty_notice_if_interactive(stream=None, err=None) -> bool:
+    """Print TTY_NOTICE to stderr when stdin is a TTY; never exits."""
+    if not _stdin_is_tty(stream):
+        return False
+    print(TTY_NOTICE, file=err if err is not None else sys.stderr, flush=True)
+    return True
+
+
+def main(argv: Optional[List[str]] = None):
     """Main entry point for the MCP server."""
+    _build_arg_parser().parse_args(sys.argv[1:] if argv is None else argv)
+
     # Check for optional pre-configured project (Option B: Fixed Project)
     # EXPERIMENTAL: reduced tool surface for local-model hosts. Fail
     # loudly on unknown values; a silent fallback would give a researcher
@@ -8568,6 +8622,9 @@ def main():
         # Option A: Dynamic project selection
         logger.info("Starting Qualcoder MCP server in dynamic mode (no project pre-configured)")
         logger.info("Use 'list_available_projects' and 'select_project' to open a project")
+
+    # Started by hand in a terminal? Say what is going on, then wait as before
+    _print_tty_notice_if_interactive()
 
     # Run the server using stdio transport
     mcp.run(transport="stdio")

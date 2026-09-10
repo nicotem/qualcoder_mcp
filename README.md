@@ -468,7 +468,7 @@ pip install -e .                # picks up any new dependencies
 
 Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code. **New tools only appear after the client restart**: the client starts the server once per session, so an update takes effect on the next launch, not mid-conversation.
 
-To check which version is installed, run `pip show qualcoder-mcp` in the environment you installed into (`pipx list` or `uv tool list` for those installers); version `0.11.0-alpha` shows as `0.11.0a0`, its normalised form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
+To check which version is installed, run the server with `--version` in the environment you installed into: `~/qualcoder-mcp-venv/bin/qualcoder-mcp --version` (PyPI venv), `qualcoder-mcp --version` after `pipx` or `uv tool` (both put the command on your PATH), or `venv/bin/python -m qualcoder_mcp.server --version` in a git clone. It prints `qualcoder-mcp` followed by the version and exits; version `0.11.0-alpha` shows as `0.11.0a0`, its normalised form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
 
 Updates never touch your data: the server is code-only, so your
 QualCoder projects and their backups stay exactly where they are.
@@ -875,11 +875,14 @@ source venv/bin/activate
 # Set the project path
 export QUALCODER_PROJECT_PATH="/path/to/your/project.qda"
 
+# Check the installed version (prints it and exits)
+python -m qualcoder_mcp.server --version
+
 # Run the server (it will use stdio)
 python -m qualcoder_mcp.server
 ```
 
-The server should start without errors. Press Ctrl+C to stop.
+Started by hand like this, the server prints one paragraph explaining that it expects an MCP host on its standard input and output, then waits; that is the expected behaviour, not an error (an MCP host never sees the paragraph). Press Ctrl+C to stop.
 
 ### Using MCP Inspector for Development
 

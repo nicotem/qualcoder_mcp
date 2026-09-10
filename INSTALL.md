@@ -529,6 +529,20 @@ technically comfortable users can adapt the pattern today.
 
 ## Testing Your Installation
 
+### From the terminal (no client needed)
+
+```bash
+~/qualcoder-mcp-venv/bin/qualcoder-mcp --version
+# pipx / uv tool installs put the command on your PATH: qualcoder-mcp --version
+# git install:  ~/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server --version
+```
+
+It prints `qualcoder-mcp` and the installed version, then exits. If you
+start the server itself by hand (the same command without `--version`),
+it prints one paragraph saying that it expects an MCP host on its
+standard input and output and then waits; that is the expected
+behaviour, not an error. Press Ctrl+C to stop it.
+
 ### If you used Option A (Dynamic):
 
 In Claude Desktop, try:
@@ -567,6 +581,13 @@ Analyse the transcript for file 1 with all its coding
 ## Troubleshooting
 
 ### "The server isn't responding"
+
+0. **Check the installation from the terminal**: run
+   `~/qualcoder-mcp-venv/bin/qualcoder-mcp --version` (or the command
+   your install uses, see "Testing Your Installation"). If it prints the
+   version, the package is installed and the interpreter works, and the
+   problem is in the client configuration below. If it fails, reinstall
+   (see "Updating the MCP Server").
 
 1. **Check your paths**:
    - Make sure the Python path is correct in your config
@@ -737,10 +758,9 @@ To confirm the update took, check the installed version from the
 terminal:
 
 ```bash
-~/qualcoder-mcp-venv/bin/pip show qualcoder-mcp          # PyPI venv
-# pipx:  pipx list
-# uv:    uv tool list
-# git:   ~/Documents/qualcoder_mcp/venv/bin/pip show qualcoder-mcp
+~/qualcoder-mcp-venv/bin/qualcoder-mcp --version          # PyPI venv
+# pipx / uv tool:  qualcoder-mcp --version
+# git:   ~/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server --version
 ```
 
 The server also reports its version to the host in the MCP handshake
@@ -851,8 +871,8 @@ claude mcp add qualcoder -- ~/qualcoder-mcp-venv/bin/qualcoder-mcp
 (or edit `.mcp.json` the same way as the Desktop config above).
 
 **4. Fully quit and relaunch the client**, then confirm the installed
-version with `~/qualcoder-mcp-venv/bin/pip show qualcoder-mcp` (or
-`pipx list` / `uv tool list`). Whether the assistant can also tell you
+version with `~/qualcoder-mcp-venv/bin/qualcoder-mcp --version` (or
+`qualcoder-mcp --version` after a `pipx` or `uv tool` install). Whether the assistant can also tell you
 the running version depends on the host (see "Updating the MCP
 Server" above).
 
