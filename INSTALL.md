@@ -430,19 +430,21 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 67 tools by
 default, and the serialised tool definitions alone measure about
-118,000 characters, roughly 29k tokens (measured for v0.11.0-alpha).
+127,000 characters, roughly 32k tokens (measured for the 0.12 development
+branch; the methodology guidance added in 0.12 accounts for the growth
+since 0.11).
 That exceeds LM Studio's 8k default context several times over before
 you type a word, and tool counts this size are far past where
 small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
 (in the config of Step 5) to register only the 20-tool supervised
-coding set, measured at about 44,000 characters, roughly 11k tokens.
+coding set, measured at about 49,000 characters, roughly 12k tokens.
 
 **Step 4. Raise the context length.** Even the core toolset's roughly
-11k tokens of schema exceed the 8k default context. When loading the
+12k tokens of schema exceed the 8k default context. When loading the
 model, set the context length to at least 16k for the core toolset
 (that leaves about 5k tokens for your transcript excerpts and
 conversation; 32k is more comfortable), or 64k if you must run the
-full surface (its schema alone is about 29k tokens). Use the model
+full surface (its schema alone is about 32k tokens). Use the model
 load settings dialog or a per-model default
 (<https://lmstudio.ai/docs/app/advanced/per-model>).
 

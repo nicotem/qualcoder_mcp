@@ -9,7 +9,7 @@ subprocess and drives it over the genuine stdio JSON-RPC transport using the
 
   1. Handshake: initialize + tools/list  (exactly 54 tools, every inputSchema
      a well-formed JSON Schema, no empty descriptions).
-  2. resources/list (6 concrete) + resources/templates/list (3) = 9 resources,
+  2. resources/list (7 concrete) + resources/templates/list (3) = 10 resources,
      prompts/list (4).
   3. Real round-trip calls over the wire: select_project, get_project_summary,
      a LARGE read payload, and a full WRITE-path approval flow
@@ -58,9 +58,9 @@ PROJECTS_DIR = RUN_DIR / "projects"
 HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
 
 EXPECTED_TOOLS = 67
-EXPECTED_CONCRETE_RESOURCES = 6
+EXPECTED_CONCRETE_RESOURCES = 7   # six data resources + qualcoder://guidance/methods (0.12)
 EXPECTED_RESOURCE_TEMPLATES = 3
-EXPECTED_RESOURCES_TOTAL = 9
+EXPECTED_RESOURCES_TOTAL = 10
 EXPECTED_PROMPTS = 4
 
 # jsonschema is installed in the worktree venv; when this module is run under a
@@ -419,6 +419,38 @@ def test_roundtrip_select_and_summary(standard_project):
     assert stats["total_files"] == 2
     assert stats["total_codes"] == 3
     assert stats["total_coded_segments"] == 3
+
+
+def test_initialize_carries_methodology_instructions():
+    """v0.12 (D6): the initialize result's `instructions` string is the
+    server's three-sentence evidence-discipline note, delivered over the
+    real stdio transport (best effort: whether a host shows it to the
+    model is host behaviour)."""
+    async def scenario():
+        async with stdio_client(server_params()) as (read, write):
+            async with ClientSession(read, write) as s:
+                init = await s.initialize()
+                return init.instructions or ""
+
+    instructions = run(scenario())
+    assert "evidence discipline" in instructions
+    assert "qualcoder://guidance/methods" in instructions
+    assert "\u2014" not in instructions
+
+
+def test_methods_guidance_resource_over_wire():
+    """The static resource is served over the wire as Markdown and needs
+    no project (this client never selects one)."""
+    async def scenario():
+        async with Client() as s:
+            res = await s.read_resource("qualcoder://guidance/methods")
+            block = res.contents[0]
+            return getattr(block, "mimeType", None), getattr(block, "text", "")
+
+    mime, text = run(scenario())
+    assert mime == "text/markdown"
+    assert text.startswith("# Methods notes")
+    assert "10.31235/osf.io/d6e9m" in text
 
 
 def test_read_resource_over_wire(standard_project):

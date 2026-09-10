@@ -76,6 +76,19 @@ Claude: (backs up, writes, reports the new coding IDs)
 Ask "Explain the AI coding tools" any time; the built-in
 `explain_ai_coding_tools` help covers every step.
 
+The analysis tools carry the evidence discipline QualCoder 4.0's own
+assistant works under: base every claim on text read through the
+tools, quote it verbatim (the server rejects any excerpt that is not
+a literal slice of the file), treat a null result as a valid result,
+and judge whether a request is methodologically sound for the study
+before acting (in the four-way vocabulary allow, allow_with_caveat,
+reframe_and_ask, refuse, explained to you in plain words). Ask for
+`explain_ai_coding_tools("grounding_rules")` or
+`explain_ai_coding_tools("methodology_vocabulary")`, or read the
+`qualcoder://guidance/methods` resource, which also cites the method
+literature QualCoder 4.0 ships prompts for. None of this replaces your
+approval of each suggestion.
+
 ## Tool Reference (current)
 
 | Tool | Purpose |

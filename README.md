@@ -707,6 +707,7 @@ The MCP server exposes these resources (read-only data):
 - `qualcoder://cases/list` - All cases
 - `qualcoder://cases/{id}` - Case details
 - `qualcoder://journal` - Journal entries
+- `qualcoder://guidance/methods` - Static methods notes: the grounding rules, the four-way methodological vocabulary (allow, allow_with_caveat, reframe_and_ask, refuse) and citations to the method literature QualCoder 4.0 ships prompts for; needs no project
 
 ## Available Tools
 
@@ -774,12 +775,12 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `review_suggestions(coding_session_id, suggestion_guids, show_context)` - Show detailed information about specific suggestions
 - `edit_suggestion(coding_session_id, suggestion_guid, start_pos, end_pos, segment_text, use_alternative, code_id, code_name)` - Adjust a pending suggestion's span or code before approval (session-only; server-computed shorter/longer alternatives)
 - `update_suggestion_status(coding_session_id, approve, reject)` - Approve or reject suggestions by GUID
-- `apply_codings(coding_session_id, create_backup, owner)` - **WRITES TO DATABASE** - Apply approved suggestions (bound to the session's project, validated before backup, all-or-nothing)
+- `apply_codings(coding_session_id, create_backup, owner)` - **WRITES TO DATABASE** - Apply approved suggestions (bound to the session's project, validated before backup, all-or-nothing; a suggestion whose identical coding is already in the project is reported as already existing and skipped, not written twice)
 - `get_coding_session_info(coding_session_id)` - View all details of a coding session
 - `list_coding_sessions(project_path, days_old)` - List all saved coding sessions
 - `delete_coding_session(coding_session_id)` - Delete a saved session file (not the codings)
 - `cleanup_old_sessions(days_old)` - Delete session files older than N days (N >= 1)
-- `explain_ai_coding_tools(tool_name)` - Built-in help for this workflow
+- `explain_ai_coding_tools(tool_name)` - Built-in help for this workflow, including `grounding_rules`, `methodology_vocabulary` and `methods_notes`
 
 **Inductive Coding (proposing new codes):**
 - `propose_codes(coding_session_id, proposals, replace)` - Record brand-new code proposals discovered in the data
@@ -841,7 +842,7 @@ Built-in prompt templates for common analysis tasks:
 
 - `analyze_theme(theme_name)` - Deep dive into a specific theme
 - `compare_codes(code1, code2)` - Compare two codes
-- `summarize_project()` - Create project overview
+- `summarize_project()` - Describe the state of a project (data, codebook, coding progress), without drawing conclusions from counts
 - `explore_case(case_name)` - Analyse a specific case
 
 ## Troubleshooting
