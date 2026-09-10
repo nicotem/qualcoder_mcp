@@ -152,6 +152,12 @@ is present in a project:
     many coders are hidden), and an id can be tested this way without a
     write or a backup. The owner accepts this trade so that a hidden
     coder's work is never changed without an explicit decision.
+  - `apply_codings` skips an approved suggestion whose identical coding
+    (same code, file, span and coder) already exists and reports its
+    coding id. The check reads the base table, because the unique
+    constraint lives there; so if the AI coder name itself is hidden
+    in QualCoder, the result reveals that one such row exists (its id
+    only, never its memo or anything about other hidden coders).
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.

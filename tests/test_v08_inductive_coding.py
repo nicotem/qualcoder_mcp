@@ -255,11 +255,17 @@ class TestA3UpdateProposal:
         guid = _propose_one(sid)
         assert "error" in json.loads(
             server.update_proposal(sid, guid, color="red"))
+        # v0.12 (D5): a palette member is kept as is (case-only canonical
+        # form); an off-palette request is snapped and disclosed
         out = json.loads(server.update_proposal(
-            sid, guid, color="#AA00BB", memo="Sharper definition"))
+            sid, guid, color="#AC58FA", memo="Sharper definition"))
+        assert out["color_snapped"] is False
         session = server.session_manager.load_session(sid)
         p = session.get_proposal_by_guid(guid)
-        assert p.color == "#AA00BB" and p.memo == "Sharper definition"
+        assert p.color == "#AC58FA" and p.memo == "Sharper definition"
+        out = json.loads(server.update_proposal(sid, guid, color="#AA00BB"))
+        assert out["color_snapped"] is True and out["color_requested"] == "#AA00BB"
+        assert out["changes"]["color"]["to"] == "#7D26CD"
 
     def test_nothing_to_change(self, setup_server):
         sid = _make_session(setup_server)

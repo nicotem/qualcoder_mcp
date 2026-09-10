@@ -268,8 +268,11 @@ class TestMergeCategory:
 
     def test_ambiguous_target_name_refused(self, tree):
         project, ids = tree
-        server.create_category("theme", create_backup=False)
-        server.create_category("Theme", create_backup=False)
+        # Only the GUI can create case variants now (v0.12, X2): seed them
+        # directly, as a GUI would
+        for name in ("theme", "Theme"):
+            _exec(project, "INSERT INTO code_cat (name, memo, owner, date) "
+                           "VALUES (?, '', 'TestCoder', '2024-01-15')", (name,))
         out = json.loads(server.merge_category(ids["B"],
                                                into_category="THEME"))
         assert "ambiguous" in out["error"].lower()
@@ -299,9 +302,13 @@ class TestCreateCase:
                     (case["id"],))
         assert attr["value"] == ""  # placeholder
 
-    def test_duplicate_name_refused(self, setup_server, qualcoder_db_path):
+    def test_duplicate_name_is_idempotent(self, setup_server, qualcoder_db_path):
+        """v0.12 (D5): a duplicate create answers with the existing row."""
         out = json.loads(server.create_case("Case A", create_backup=False))
-        assert "already exists" in out["error"]
+        assert "error" not in out
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert out["match"] == "exact" and out["case"]["id"] == 1
+        assert _row(qualcoder_db_path, "SELECT COUNT(*) AS n FROM cases")["n"] == 1
 
     def test_whitespace_name_refused(self, setup_server, qualcoder_db_path):
         out = json.loads(server.create_case("   ", create_backup=False))

@@ -408,22 +408,31 @@ class TestMergeGotchas:
             if t not in ("code_name", "code_text", "code_av", "code_image"):
                 assert after[t] == before[t], f"table {t} changed"
 
-    def test_c8_rename_collision_precheck_and_binary_case_sensitivity(
+    def test_c8_rename_collision_precheck_and_case_insensitive_rule(
             self, setup_server, qualcoder_db_path):
+        """v0.10 pinned BINARY-collation parity here ('coping' and 'Coping'
+        two codes). Owner ruling X2 (v0.12, QualCoder 4.0 parity,
+        ai_mcp_server.py:1836-1843 and 1501-1518 at 9bddf17) reverses it:
+        a rename that collides case-insensitively with ANOTHER row is
+        refused, and a case-variant create answers with the existing row."""
         out = json.loads(server.rename_code(1, "Coping"))
-        assert "error" in out and "already exists" in out["error"]
-        # BINARY collation: a case-variant of another code's name is DISTINCT
+        assert "error" in out and "Another code already uses the name" in out["error"]
         out = json.loads(server.rename_code(1, "coping"))
-        assert out.get("success") is True
+        assert "error" in out and "(id 2)" in out["error"]
         names = {r["name"] for r in _rows(qualcoder_db_path,
                                           "SELECT name FROM code_name")}
-        assert {"coping", "Coping"} <= names
-        # same for categories (global, case-sensitive unique)
+        assert names == {"Stress", "Coping"}
+        # a case-only respelling of the SAME row proceeds
+        out = json.loads(server.rename_code(2, "COPING"))
+        assert out.get("success") is True and out["changed"] is True
+        # categories follow the same rule
         json.loads(server.create_category("Theme"))
         out = json.loads(server.create_category("theme"))
-        assert out.get("success") is True, out
+        assert out["created"] is False and out["match"] == "case_insensitive", out
         out = json.loads(server.create_category("Theme"))
-        assert "error" in out
+        assert out["created"] is False and out["match"] == "exact"
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_cat WHERE lower(name)='theme'")["n"] == 1
 
     def test_c9_palette_default_and_strict_recolor(self, setup_server,
                                                    qualcoder_db_path):
@@ -433,11 +442,15 @@ class TestMergeGotchas:
         for bad in ("#zzzzzz", "#FFF", "red", "FF0000", "#12345G", ""):
             out = json.loads(server.recolor_code(cid, bad))
             assert "error" in out, bad
+        # v0.12 (D5): a palette member given in lower case is stored in the
+        # palette's own upper-case spelling; QualCoder compares colour
+        # strings, so '#0d47a1' would have been off-palette to it
         ok = json.loads(server.recolor_code(cid, "#0d47a1"))
-        assert ok.get("success") is True
+        assert ok.get("success") is True and ok["changed"] is True
+        assert ok["color_snapped"] is False and ok["color_requested"] == "#0d47a1"
         assert _row(qualcoder_db_path,
                     "SELECT color FROM code_name WHERE cid = ?",
-                    (cid,))["color"] == "#0d47a1"
+                    (cid,))["color"] == "#0D47A1"
 
 
 # =============================================================================

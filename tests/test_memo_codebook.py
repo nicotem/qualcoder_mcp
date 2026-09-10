@@ -203,9 +203,12 @@ class TestCreateCode:
         out = json.loads(server.create_code("X", category="Nope"))
         assert "not found" in out["error"]
 
-    def test_duplicate_name_rejected(self, setup_server, qualcoder_db_path):
+    def test_duplicate_name_is_idempotent(self, setup_server, qualcoder_db_path):
+        """v0.12 (D5): a duplicate create is an answer, not an error."""
         out = json.loads(server.create_code("Stress", create_backup=False))
-        assert "already exists" in out["error"]
+        assert "error" not in out
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert out["match"] == "exact" and out["code"]["id"] == 1
 
     def test_invalid_color_rejected(self, setup_server, qualcoder_db_path):
         out = json.loads(server.create_code("Y", color="#zzzzzz",
@@ -216,9 +219,10 @@ class TestCreateCode:
 class TestRenameAndRecolorAndMove:
 
     def test_rename_precheck_collision(self, setup_server, qualcoder_db_path):
-        """gotcha #14: rename pre-checks unique(name) with a clean error."""
+        """gotcha #14: rename pre-checks unique(name) with a clean error
+        (v0.12: the collision rule is case-insensitive and names the id)."""
         out = json.loads(server.rename_code(1, "Coping", create_backup=False))
-        assert "already exists" in out["error"]
+        assert "Another code already uses the name 'Coping' (id 2)" in out["error"]
         # unchanged
         assert _row(qualcoder_db_path, "SELECT name FROM code_name WHERE cid=1")[0] == "Stress"
 
@@ -235,19 +239,26 @@ class TestRenameAndRecolorAndMove:
         assert out["success"] is True
 
     def test_recolor_strict_hex(self, setup_server, qualcoder_db_path):
-        assert json.loads(server.recolor_code(1, "#00FF00",
-                                              create_backup=False))["new_color"] == "#00FF00"
+        # v0.12 (D5): the stored colour is the nearest palette colour
+        # (#00FF00 is off-palette; QualCoder's matcher lands on #00FF7F)
+        out = json.loads(server.recolor_code(1, "#00FF00", create_backup=False))
+        assert out["new_color"] == "#00FF7F" and out["color_snapped"] is True
+        assert json.loads(server.recolor_code(1, "#00FF7F",
+                                              create_backup=False))["changed"] is False
         assert "hex format" in json.loads(
             server.recolor_code(1, "blue", create_backup=False))["error"]
 
     def test_move_code_to_category_and_uncategorise(self, setup_server,
                                                     qualcoder_db_path):
+        # cid 1 starts in Category A: a move there is a no-op (v0.12, D5)
         assert json.loads(server.move_code_to_category(1, "Category A",
-                                                       create_backup=False))["new_category_id"] == 1
+                                                       create_backup=False))["changed"] is False
         # None -> uncategorised (NULL)
         out = json.loads(server.move_code_to_category(1, None, create_backup=False))
         assert out["new_category_id"] is None
         assert _row(qualcoder_db_path, "SELECT catid FROM code_name WHERE cid=1")[0] is None
+        assert json.loads(server.move_code_to_category(1, "Category A",
+                                                       create_backup=False))["new_category_id"] == 1
 
 
 class TestCategoryCreateRenameMove:
@@ -258,9 +269,10 @@ class TestCategoryCreateRenameMove:
         assert out["category"]["supercatid"] == 1
 
     def test_rename_category_precheck(self, setup_server, qualcoder_db_path):
-        server.create_category("Other", create_backup=False)
+        other = json.loads(server.create_category("Other", create_backup=False))
         out = json.loads(server.rename_category(1, "Other", create_backup=False))
-        assert "already exists" in out["error"]
+        assert (f"Another category already uses the name 'Other' "
+                f"(id {other['category']['id']})") in out["error"]
 
     def test_move_category_cycle_refused(self, setup_server, qualcoder_db_path):
         """gotcha #17: reparent under a descendant is refused (cycle guard)."""
@@ -279,14 +291,20 @@ class TestCategoryCreateRenameMove:
                                                create_backup=False))["category"]["id"]
         assert json.loads(server.move_category(b, None, create_backup=False))["new_supercatid"] is None
 
-    def test_global_case_sensitive_unique_name(self, setup_server,
-                                               qualcoder_db_path):
-        """gotcha #18: unique(name) is global; 'Category A' vs 'category a'
-        are distinct (BINARY), but a second 'Category A' collides."""
-        assert json.loads(server.create_category("category a",
-                                                 create_backup=False))["category"]
-        assert "already exists" in json.loads(
-            server.create_category("Category A", create_backup=False))["error"]
+    def test_global_case_insensitive_unique_name(self, setup_server,
+                                                 qualcoder_db_path):
+        """gotcha #18 revised by owner ruling X2 (v0.12): unique(name) is
+        global and the tool compares names case-insensitively, as QualCoder
+        4.0's own MCP server does. 'category a' answers with the existing
+        'Category A' (match: case_insensitive); a second 'Category A' is
+        an exact duplicate. Neither creates a row or an error."""
+        out = json.loads(server.create_category("category a",
+                                                create_backup=False))
+        assert out["created"] is False and out["match"] == "case_insensitive"
+        assert out["category"]["id"] == 1 and out["requested"] == {"name": "category a"}
+        out = json.loads(server.create_category("Category A", create_backup=False))
+        assert out["created"] is False and out["match"] == "exact"
+        assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_cat")[0] == 1
 
 
 # =============================================================================

@@ -351,8 +351,10 @@ def test_unicode_vectors_apply_codings_seltext(fulltext, segment, p0, p1):
 
 
 # ===========================================================================
-# Test G - a suggestion duplicating an existing AI row rolls back cleanly:
-#          error returned, no orphan/dup, DB row count unchanged.
+# Test G - a suggestion duplicating an existing AI row is idempotent
+#          (v0.12, D5): no error, no write, no backup, row count unchanged,
+#          the suggestion marked applied; the DB invariants still hold.
+#          (Before v0.12 this pinned an error plus rollback.)
 # ===========================================================================
 def test_duplicate_apply_rolls_back_cleanly():
     run = _new_run_dir()
@@ -377,10 +379,14 @@ def test_duplicate_apply_rolls_back_cleanly():
             reasoning="r", confidence=0.9, status="approved",
         )
         sess = H.make_session(path, [sugg])
+        folder = Path(path)
+        backups_before = sorted(folder.parent.glob(f"{folder.stem}_backup_*"))
         raw = server.apply_codings(sess.session_id, create_backup=True)
         _assert_read_only()
-        assert _is_error(raw), f"expected duplicate to fail, got: {raw}"
+        assert not _is_error(raw), f"duplicate apply must not error: {raw}"
+        assert "EVERY APPROVED CODING IS ALREADY IN THE DATABASE" in raw
         assert H.row_counts(path)["code_text"] == before, "duplicate apply changed row count"
+        assert sorted(folder.parent.glob(f"{folder.stem}_backup_*")) == backups_before
         _assert_core(path)
     finally:
         H.teardown_server(saved)

@@ -101,9 +101,11 @@ REQUIRED_COLUMNS = {
     "project": ["codername"],
 }
 
-# QualCoder's code color palette (color_selector.py:53-65, QualCoder 3.8.2).
-# New codes get a random pick from this palette, exactly like codes created
-# in the QualCoder GUI.
+# QualCoder's code colour palette: 120 upper-case #RRGGBB strings, laid out
+# as 12 rows of 10 (color_selector.py:52-65 at master 9bddf17; byte-identical
+# at 3.8.2, color_selector.py:53-66). New codes get a random pick from this
+# palette, exactly like codes created in the QualCoder GUI, and colours the
+# AI supplies are snapped onto it (snap_to_palette below).
 QUALCODER_COLORS = [
     "#F5F6CE", "#F2F5A9", "#F4FA58", "#F7FE2E", "#DDE600", "#F8ECE0", "#F6E3CE", "#F5D0A9", "#F7BE81", "#FAAC58",
     "#F5ECCE", "#F3E2A9", "#F5DA81", "#F7D358", "#FACC2E", "#FFE2CC", "#FFC599", "#FFA866", "#FF8B33", "#FF6F00",
@@ -118,6 +120,86 @@ QUALCODER_COLORS = [
     "#DADAF5", "#B5B5EC", "#9090E3", "#6B6BDA", "#4646D1", "#CEE3F6", "#A9D0F5", "#81BEF7", "#3498DB", "#5882FA",
     "#CEDAEC", "#9EB5D9", "#6D91C6", "#3D6CB3", "#0D47A1", "#E8E8E8", "#D8D8D8", "#C8C8C8", "#B8B8B8", "#A8A8A8",
 ]
+
+# Strict #RRGGBB: '#zzzzzz' passed an older prefix/length check but renders
+# black or undefined in QualCoder's QColor and luminance arithmetic.
+HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def validate_color(color: Any) -> str:
+    """Return color unchanged when it is a strict #RRGGBB string, else raise.
+
+    Deliberate deviation from QualCoder 4.0's MCP server, which silently
+    replaces an invalid colour with a random palette member
+    (ai_mcp_server.py:3336-3344 at 9bddf17): a refused argument is more
+    honest than a silent random pick (D5 section 3.1).
+    """
+    if not isinstance(color, str) or not HEX_COLOR_RE.fullmatch(color):
+        raise ValueError(f"color must be hex format #RRGGBB, got {color}")
+    return color
+
+
+def snap_to_palette(color: str) -> str:
+    """Nearest QualCoder palette colour, by QualCoder's own rule.
+
+    Independent reimplementation of color_matcher
+    (color_selector.py:144-162 at master 9bddf17; identical body at 3.8.2,
+    color_selector.py:145-163), the function QualCoder 4.0's own MCP
+    server applies to every colour a model supplies on create
+    (ai_mcp_server.py:3336-3344) and QualCoder applies on REFI-QDA import
+    (refi.py:236-241). The arithmetic is kept exactly: distance is the
+    MEAN ABSOLUTE RGB difference (|dr| + |dg| + |db|) / 3, the palette is
+    scanned in order with a strict less-than, so on a tie the lowest
+    palette index wins, and the result is the palette string, therefore
+    upper case whatever the case of the input. A palette member maps to
+    itself. The metric ignores saturation, so a pure grey often lands on
+    a pale hue rather than one of the five palette greys ('#FFFFFF' ->
+    '#F8E0F7', '#000000' -> '#1B5E20'); that quirk is upstream's and is
+    kept as parity, not improved.
+
+    Precondition: color already passed validate_color (a malformed value
+    would raise ValueError from int(..., 16) here, exactly as upstream).
+    """
+    color = color.upper()
+    test_r = int(color[1:3], 16)
+    test_g = int(color[3:5], 16)
+    test_b = int(color[5:7], 16)
+    best_color, best_diff = "#D8D8D8", 255.0
+    for candidate in QUALCODER_COLORS:
+        r = int(candidate[1:3], 16)
+        g = int(candidate[3:5], 16)
+        b = int(candidate[5:7], 16)
+        diff = (abs(r - test_r) + abs(g - test_g) + abs(b - test_b)) / 3
+        if diff < best_diff:
+            best_color, best_diff = candidate, diff
+    return best_color
+
+
+def normalize_name(name: Any) -> str:
+    """Collapse whitespace runs to one space and strip; '' for non-strings.
+
+    QualCoder 4.0's own MCP server applies this to every code, category
+    and case name it stores or compares (ai_mcp_server.py:1391, 1470,
+    1832, 2284 at 9bddf17). str.split() treats every Unicode whitespace
+    character as a separator, so tab and no-break-space runs collapse too.
+    """
+    if not isinstance(name, str):
+        return ""
+    return " ".join(name.split())
+
+
+def name_key(name: Any) -> str:
+    """Comparison key for the duplicate-name rule (owner ruling X2).
+
+    Whitespace-normalised, then Unicode NFC, then casefold(): 'Coping'
+    and 'coping' are the same name, so are 'Émotion' and 'émotion' and
+    the NFD spelling of either. Broader than QualCoder 4.0's
+    lower(name)=lower(?) (ai_mcp_server.py:1409-1412, 1501-1505,
+    2293-2296), which folds ASCII letters only; the stricter direction
+    is the safer one for a codebook (D5 section 3.2).
+    """
+    return unicodedata.normalize("NFC", normalize_name(name)).casefold()
+
 
 DB_LOCKED_MESSAGE = (
     "The project database is locked; QualCoder may have it open. "
@@ -3875,6 +3957,24 @@ class QualcoderDatabase:
             logger.error(f"Database error in add_coding: {e}")
             raise RuntimeError(f"Failed to add coding: {e}") from None
 
+    def find_text_coding(self, code_id: int, file_id: int, start_pos: int,
+                         end_pos: int, owner: str) -> Optional[int]:
+        """ctid of an identical text coding, or None.
+
+        Reads the BASE table on purpose: code_text's unique constraint
+        (cid, fid, pos0, pos1, owner) lives there (__main__.py:1819-1821
+        at 9bddf17, 3.8.2 __main__.py:2379-2381), so a row that QualCoder
+        4.0's coder visibility hides would still make an insert fail.
+        Mirrors the per-coding already_exists check of 4.0's own MCP
+        server (ai_mcp_server.py:1602-1619).
+        """
+        row = self.conn.execute(
+            "SELECT ctid FROM code_text WHERE cid = ? AND fid = ? "
+            "AND pos0 = ? AND pos1 = ? AND owner = ?",
+            (code_id, file_id, start_pos, end_pos, owner)
+        ).fetchone()
+        return int(row["ctid"]) if row else None
+
     def add_code(
         self,
         name: str,
@@ -3905,11 +4005,12 @@ class QualcoderDatabase:
             RuntimeError: If database is read-only or operation fails
         """
         self._require_write_access()
-        # Strip and reject whitespace-only names (QA5-3), consistent with
-        # add_category/rename_code/rename_category
-        if not name or not isinstance(name, str) or not name.strip():
+        # Collapse whitespace runs and strip, refusing whitespace-only names
+        # (QA5-3; QualCoder 4.0's own normalisation, normalize_name),
+        # consistent with add_category/rename_code/rename_category
+        name = normalize_name(name)
+        if not name:
             raise ValueError("name must be a non-empty string")
-        name = name.strip()
         validate_string(name, "name")
 
         if not owner or not isinstance(owner, str):
@@ -3947,13 +4048,15 @@ class QualcoderDatabase:
                 raise ValueError(
                     f"Parent code ID {parent_code_id} does not exist")
 
-        # Default to a random QualCoder palette color (what the GUI does);
-        # validate strictly - '#zzzzzz' passed the old prefix/length check
-        # but renders black/undefined in QualCoder's QColor/luminance math
+        # Default to a random QualCoder palette colour (what the GUI does);
+        # a supplied colour is validated strictly, then snapped onto the
+        # palette by QualCoder's own nearest-colour rule (snap_to_palette),
+        # so every code this server writes carries a palette colour, as
+        # every GUI-created code does
         if color is None:
             color = random.choice(QUALCODER_COLORS)
-        if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
-            raise ValueError(f"color must be hex format #RRGGBB, got {color}")
+        else:
+            color = snap_to_palette(validate_color(color))
 
         # Current timestamp
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -4713,12 +4816,16 @@ class QualcoderDatabase:
 
     def rename_code(self, code_id: int, new_name: str,
                     auto_commit: bool = True) -> Dict[str, Any]:
-        """Rename a code (code_name.name, unique among codes)."""
+        """Rename a code (code_name.name, unique among codes).
+
+        Exact-name collision check only; the case-insensitive rule (owner
+        ruling X2) is applied by the tool layer before this is reached.
+        """
         self._require_write_access()
         code_id = validate_id(code_id, "code_id")
-        if not new_name or not isinstance(new_name, str) or not new_name.strip():
+        new_name = normalize_name(new_name)
+        if not new_name:
             raise ValueError("new_name must be a non-empty string")
-        new_name = new_name.strip()
         validate_string(new_name, "new_name")
         try:
             old = self._get_code_row(code_id)
@@ -4755,11 +4862,14 @@ class QualcoderDatabase:
 
     def recolor_code(self, code_id: int, color: str,
                      auto_commit: bool = True) -> Dict[str, Any]:
-        """Set a code's colour (strict #RRGGBB, QualCoder's format)."""
+        """Set a code's colour (strict #RRGGBB, snapped onto the palette).
+
+        The stored value is the nearest QualCoder palette colour to the
+        request (snap_to_palette); new_color in the result is that value.
+        """
         self._require_write_access()
         code_id = validate_id(code_id, "code_id")
-        if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
-            raise ValueError(f"color must be hex format #RRGGBB, got {color}")
+        color = snap_to_palette(validate_color(color))
         try:
             old = self._get_code_row(code_id)
             self.conn.execute(
@@ -4898,9 +5008,9 @@ class QualcoderDatabase:
                      auto_commit: bool = True) -> Dict[str, Any]:
         """Create a code category (code_cat)."""
         self._require_write_access()
-        if not name or not isinstance(name, str) or not name.strip():
+        name = normalize_name(name)
+        if not name:
             raise ValueError("name must be a non-empty string")
-        name = name.strip()
         validate_string(name, "name")
         if not owner or not isinstance(owner, str) or not owner.strip():
             raise ValueError("owner must be a non-empty string")
@@ -4943,12 +5053,16 @@ class QualcoderDatabase:
 
     def rename_category(self, category_id: int, new_name: str,
                         auto_commit: bool = True) -> Dict[str, Any]:
-        """Rename a category (code_cat.name, unique among categories)."""
+        """Rename a category (code_cat.name, unique among categories).
+
+        Exact-name collision check only; the case-insensitive rule (owner
+        ruling X2) is applied by the tool layer before this is reached.
+        """
         self._require_write_access()
         category_id = validate_id(category_id, "category_id")
-        if not new_name or not isinstance(new_name, str) or not new_name.strip():
+        new_name = normalize_name(new_name)
+        if not new_name:
             raise ValueError("new_name must be a non-empty string")
-        new_name = new_name.strip()
         validate_string(new_name, "new_name")
         try:
             old = self._get_category_row(category_id)
@@ -5866,9 +5980,9 @@ class QualcoderDatabase:
         attribute type (attr_type='case', attribute.id = the new caseid).
         """
         self._require_write_access()
-        if not name or not isinstance(name, str) or not name.strip():
+        name = normalize_name(name)
+        if not name:
             raise ValueError("name must be a non-empty string")
-        name = name.strip()
         validate_string(name, "name")
         if not owner or not isinstance(owner, str) or not owner.strip():
             raise ValueError("owner must be a non-empty string")

@@ -36,6 +36,11 @@ from .database import (
     normalize_coder,
     hold_project_lock,
     QUALCODER_LOCK_FILENAME,
+    QUALCODER_COLORS,
+    validate_color,
+    snap_to_palette,
+    normalize_name,
+    name_key,
     position_safe as db_position_safe,
 )
 from .memo_privacy import extract_ai_memo, strip_private_memos
@@ -624,10 +629,11 @@ def _resolve_category_by_name(name: str):
     """Resolve a category name to its catid, refusing ambiguous matches.
 
     Exact (case-sensitive) match wins; otherwise a UNIQUE case-insensitive
-    match is used. code_cat's unique(name) is BINARY, so 'Theme' and
-    'theme' can legally coexist; with both present a case-insensitive
-    lookup must refuse and list the candidates instead of silently picking
-    the first one (QA5-1).
+    match is used (name_key: whitespace-normalised, NFC, casefold). The
+    schema's unique(name) is BINARY, so the GUI can legally create 'Theme'
+    and 'theme' side by side; with both present a case-insensitive lookup
+    must refuse and list the candidates instead of silently picking the
+    first one (QA5-1).
 
     Returns:
         (category_id, None) on success, (None, error_dict) otherwise.
@@ -636,7 +642,8 @@ def _resolve_category_by_name(name: str):
     exact = [c for c in cats if c["name"] == name]
     if len(exact) == 1:
         return exact[0]["id"], None
-    ci = [c for c in cats if c["name"].lower() == str(name).lower()]
+    key = name_key(name)
+    ci = [c for c in cats if name_key(c["name"]) == key]
     if len(ci) == 1:
         return ci[0]["id"], None
     if len(ci) > 1:
@@ -650,6 +657,226 @@ def _resolve_category_by_name(name: str):
         "error": f"Category '{name}' not found",
         "available_categories": sorted(c["name"] for c in cats)[:50],
     }
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-name rule and no-op vocabulary (v0.12, D5; owner ruling X2)
+# ---------------------------------------------------------------------------
+# QualCoder 4.0's own MCP server treats a create whose name already exists
+# (lower(name)=lower(?)) as an idempotent answer, not an error
+# (ai_mcp_server.py:1409-1427 categories, 1501-1518 codes, 2293-2306 cases
+# at 9bddf17), and a move that changes nothing as reason "unchanged"
+# (1976-1982, 2046-2052). This server follows both, with one vocabulary:
+# every duplicate create answers created: false, reason: already_exists,
+# every no-op write answers changed: false, reason: unchanged. Names are
+# compared under name_key (Unicode casefold plus NFC, broader than 4.0's
+# ASCII lower()); the DB layer keeps its strict raise-on-duplicate contract
+# as the race backstop, and the pre-check runs BEFORE _perform_write so a
+# duplicate or a no-op costs no lock, no read-write upgrade and no backup.
+
+def _find_existing_by_name(rows, name: str, kind: str, plural: str):
+    """Find the row a requested name refers to, under the X2 rule.
+
+    Tier 1: exactly one row whose NFC form equals the request byte for
+    byte ("exact"). Tier 2: exactly one row equal under name_key
+    ("case_insensitive"). Two or more matches (a codebook the GUI filled
+    with 'Theme' and 'theme') is an ambiguity the caller must resolve by
+    exact spelling, the rule _resolve_category_by_name applies.
+
+    Returns:
+        (row, match, None) on a match, (None, None, error_dict) on an
+        ambiguity, (None, None, None) when nothing matches.
+    """
+    wanted = unicodedata.normalize("NFC", normalize_name(name))
+    exact = [r for r in rows
+             if unicodedata.normalize("NFC", r["name"]) == wanted]
+    if len(exact) == 1:
+        return exact[0], "exact", None
+    key = name_key(name)
+    ci = [r for r in rows if name_key(r["name"]) == key]
+    if not exact and len(ci) == 1:
+        return ci[0], "case_insensitive", None
+    if len(ci) > 1 or len(exact) > 1:
+        candidates = ci if len(ci) > 1 else exact
+        return None, None, {
+            "error": f"{kind.capitalize()} name '{normalize_name(name)}' "
+                     f"matches {len(candidates)} existing {plural} that "
+                     f"differ only by letter case or Unicode form; use the "
+                     f"exact spelling of the one you mean (their ids are "
+                     f"listed).",
+            "candidates": [{"id": r["id"], "name": r["name"]}
+                           for r in candidates],
+        }
+    return None, None, None
+
+
+def _rename_collision(rows, row_id: int, new_name: str, kind: str):
+    """Error dict when new_name collides with ANOTHER row's name (X2), or
+    None. Mirrors 4.0's rename rule: lower(name)=lower(?) AND id != ?
+    (ai_mcp_server.py:1836-1843 at 9bddf17), under name_key."""
+    key = name_key(new_name)
+    others = [r for r in rows if r["id"] != row_id and name_key(r["name"]) == key]
+    if not others:
+        return None
+    ids = ", ".join(str(r["id"]) for r in others)
+    label = "id" if len(others) == 1 else "ids"
+    return {
+        "error": f"Another {kind} already uses the name '{others[0]['name']}' "
+                 f"({label} {ids}).",
+        "candidates": [{"id": r["id"], "name": r["name"]} for r in others],
+    }
+
+
+def _unchanged(message: str, **ref) -> Dict[str, Any]:
+    """The one no-op result shape: nothing written, no backup made."""
+    return {"changed": False, "reason": "unchanged", "message": message, **ref}
+
+
+def _memo_not_applied_clause(memo: Optional[str]) -> str:
+    # A supplied memo is never applied to an existing row (4.0 does not
+    # either, ai_mcp_server.py:1414-1427); say so and point at set_memo.
+    if memo is None or not str(memo).strip():
+        return ""
+    return " Its memo was not changed; use set_memo."
+
+
+def _existing_code_result(rows, name: str, *, has_supercid: bool,
+                          category: Optional[str], category_id: Optional[int],
+                          parent_code_id: Optional[int],
+                          color_target: Optional[str], memo: Optional[str]):
+    """already_exists result for create_code, or an ambiguity error, or None."""
+    row, match, err = _find_existing_by_name(rows, name, "code", "codes")
+    if err is not None:
+        return err
+    if row is None:
+        return None
+    echo = {
+        "id": row["id"],
+        "name": row["name"],
+        "category": row.get("category"),
+        "category_id": row.get("category_id"),
+    }
+    if has_supercid:
+        echo["parent_code_id"] = row.get("parent_code_id")
+    echo.update({
+        "color": row.get("color"),
+        "memo": row.get("memo", ""),
+        "owner": row.get("owner"),
+        "date": row.get("date"),
+    })
+    requested: Dict[str, Any] = {}
+    message = (f"A code named '{row['name']}' already exists (id {row['id']}); "
+               f"nothing was created. Use id {row['id']}.")
+    if normalize_name(name) != row["name"]:
+        requested["name"] = normalize_name(name)
+    if category is not None and category_id != row.get("category_id"):
+        requested["category"] = category
+        stored = row.get("category")
+        where = f"in category '{stored}'" if stored else "not in any category"
+        message += (f" It is {where}, not in '{category}'; use "
+                    f"move_code_to_category if that was the intent.")
+    if (has_supercid and parent_code_id is not None
+            and parent_code_id != row.get("parent_code_id")):
+        requested["parent_code_id"] = parent_code_id
+        message += (f" It is not nested under code {parent_code_id}; "
+                    f"re-parenting a sub-code is done in QualCoder.")
+    if color_target is not None and color_target != row.get("color"):
+        requested["color"] = color_target
+    message += _memo_not_applied_clause(memo)
+    result = {
+        "created": False,
+        "reason": "already_exists",
+        "match": match,
+        "message": message,
+        "code": echo,
+    }
+    if requested:
+        result["requested"] = requested
+    return result
+
+
+def _existing_category_result(rows, name: str, *, parent_category: Optional[str],
+                              supercatid: Optional[int], memo: Optional[str]):
+    """already_exists result for create_category, or an ambiguity error, or None."""
+    row, match, err = _find_existing_by_name(rows, name, "category", "categories")
+    if err is not None:
+        return err
+    if row is None:
+        return None
+    by_id = {r["id"]: r for r in rows}
+    parent = by_id.get(row.get("parent_id"))
+    echo = {
+        "id": row["id"],
+        "name": row["name"],
+        "parent_id": row.get("parent_id"),
+        "parent_name": parent["name"] if parent else None,
+        "memo": row.get("memo", ""),
+        "owner": row.get("owner"),
+        "date": row.get("date"),
+    }
+    requested: Dict[str, Any] = {}
+    message = (f"A category named '{row['name']}' already exists "
+               f"(id {row['id']}); nothing was created. Use id {row['id']}.")
+    if normalize_name(name) != row["name"]:
+        requested["name"] = normalize_name(name)
+    if parent_category is not None and supercatid != row.get("parent_id"):
+        requested["parent_category"] = parent_category
+        where = (f"nested under '{parent['name']}'" if parent
+                 else "at the top level")
+        message += (f" It is {where}, not under '{parent_category}'; use "
+                    f"move_category if that was the intent.")
+    message += _memo_not_applied_clause(memo)
+    result = {
+        "created": False,
+        "reason": "already_exists",
+        "match": match,
+        "message": message,
+        "category": echo,
+    }
+    if requested:
+        result["requested"] = requested
+    return result
+
+
+def _existing_case_result(rows, name: str, *, memo: Optional[str]):
+    """already_exists result for create_case, or an ambiguity error, or None."""
+    row, match, err = _find_existing_by_name(rows, name, "case", "cases")
+    if err is not None:
+        return err
+    if row is None:
+        return None
+    message = (f"A case named '{row['name']}' already exists (id {row['id']}); "
+               f"nothing was created. Use id {row['id']}.")
+    message += _memo_not_applied_clause(memo)
+    result = {
+        "created": False,
+        "reason": "already_exists",
+        "match": match,
+        "message": message,
+        "case": {
+            "id": row["id"],
+            "name": row["name"],
+            "memo": row.get("memo", ""),
+            "owner": row.get("owner"),
+            "date": row.get("date"),
+        },
+    }
+    if normalize_name(name) != row["name"]:
+        result["requested"] = {"name": normalize_name(name)}
+    return result
+
+
+def _color_disclosure(requested: Optional[str], stored: Optional[str]) -> Dict[str, Any]:
+    """color_requested / color_snapped fields for a result that stores a
+    colour; empty when no colour was supplied. Case-only canonicalisation
+    ('#0d47a1' -> '#0D47A1') is the same colour and reports false."""
+    if requested is None:
+        return {}
+    return {
+        "color_requested": requested,
+        "color_snapped": (stored or "").upper() != requested.upper(),
+    }
+
 
 
 # P1-2 attribution config: one configurable coder name for every row this
@@ -2836,12 +3063,14 @@ Once Claude records and presents suggestions, you can:
 
 def _code_name_collisions(name: str) -> Optional[str]:
     """Existing code name(s) a proposal name collides with (QA5-1 style:
-    exact match first, else case-insensitive matches), or None."""
+    exact match first, else case-insensitive matches under name_key), or
+    None."""
     codes = get_db().list_codes()
     exact = [c["name"] for c in codes if c["name"] == name]
     if exact:
         return exact[0]
-    ci = [c["name"] for c in codes if c["name"].lower() == name.lower()]
+    key = name_key(name)
+    ci = [c["name"] for c in codes if name_key(c["name"]) == key]
     return ", ".join(ci) if ci else None
 
 
@@ -3669,6 +3898,12 @@ def apply_codings(
     - All codings are written in a single all-or-nothing transaction.
     - Applied suggestions are marked "applied" so the session cannot be
       double-applied by accident.
+    - An approved suggestion whose identical coding (same code, file,
+      span and coder) is already in the project is not written again: it
+      is marked applied, listed in the result as already in the database
+      with its ctid, and the rest are written as one batch. When every
+      approved suggestion already exists nothing is written and no
+      backup is made.
     - If the success output contains `position_safety_warning`, relay it
       to the user: the written file is position-unsafe (emoji/CRLF) and
       the codings may render shifted in QualCoder's editor.
@@ -3782,8 +4017,53 @@ def apply_codings(
             "total_approved": len(approved)
         }, indent=2)
 
+    # Idempotency per suggestion (D5 section 3.3; 4.0's per-coding
+    # already_exists, ai_mcp_server.py:1602-1619 at 9bddf17): an approved
+    # suggestion whose identical coding (code, file, span, owner) is
+    # already in the BASE table is left as it is, marked applied in the
+    # session, and reported with its ctid; the others are written in one
+    # transaction. Detected before the backup so a fully redundant batch
+    # costs nothing and cannot fail on the unique constraint.
+    already_existing = []
+    to_write = []
+    for sugg in approved:
+        ctid = ro_db.find_text_coding(sugg.code_id, sugg.file_id,
+                                      sugg.start_pos, sugg.end_pos, owner)
+        if ctid is None:
+            to_write.append(sugg)
+        else:
+            already_existing.append({"guid": sugg.guid, "ctid": ctid,
+                                     "file": sugg.file_name,
+                                     "code": sugg.code_name})
+
+    def _already_existing_lines() -> List[str]:
+        if not already_existing:
+            return []
+        lines = [
+            f"\nℹ️ **Already in the database: {len(already_existing)}** "
+            f"(already_existing_count: {len(already_existing)}). "
+            f"{len(already_existing)} approved suggestion(s) were already in "
+            f"the database under coder '{owner}' and were left as they are; "
+            f"they are marked applied in the session.\n"
+        ]
+        for r in already_existing:
+            lines.append(f"  - {r['code']} in {r['file']} (ctid={r['ctid']}, "
+                         f"guid={r['guid']})")
+        return lines
+
+    if not to_write:
+        session.mark_applied([r["guid"] for r in already_existing])
+        session_manager.save_session(session)
+        output = ["\n✅ **NOTHING TO WRITE: EVERY APPROVED CODING IS ALREADY "
+                  "IN THE DATABASE**\n",
+                  "No backup was made and nothing was written.\n"]
+        output.extend(_already_existing_lines())
+        output.append("\n\nA second apply_codings call on this session will "
+                      "report that the suggestions were already applied.")
+        return "\n".join(output)
+
     # Refuse on pre-v14 schemas and while QualCoder has the project open
-    # (heartbeat lock file — SQLite locks say nothing about an idle session)
+    # (heartbeat lock file: SQLite locks say nothing about an idle session)
     lock_error = _write_gate_error()
     if lock_error is not None:
         return json.dumps(lock_error)
@@ -3814,7 +4094,7 @@ def apply_codings(
                     })
 
             try:
-                for sugg in approved:
+                for sugg in to_write:
                     # Create memo with reasoning and confidence
                     memo = f"{sugg.reasoning}\n\n[AI Confidence: {sugg.confidence:.2f}]"
 
@@ -3846,7 +4126,7 @@ def apply_codings(
                 # every touched file's text still matches what positions
                 # were validated against (catches a lockless QualCoder 4.0
                 # editor and any stale-lock race the gate missed)
-                for fid in sorted({s.file_id for s in approved}):
+                for fid in sorted({s.file_id for s in to_write}):
                     validated_text = (file_cache[fid] or {}).get("content") or ""
                     write_db.verify_fulltext_unchanged(
                         fid, write_db.fingerprint_of_text(validated_text))
@@ -3875,15 +4155,17 @@ def apply_codings(
     # Downgrade back to read-only after successful write
     _downgrade_to_readonly()
 
-    # Mark the written suggestions as applied so a re-run cannot double-apply
-    session.mark_applied([r["guid"] for r in results])
+    # Mark the written suggestions as applied so a re-run cannot double-apply;
+    # the ones that were already in the database are applied by definition
+    session.mark_applied([r["guid"] for r in results]
+                         + [r["guid"] for r in already_existing])
     session_manager.save_session(session)
 
     # Re-signal position safety at the write step (track4 #6): if any file
     # just written to is position-unsafe, say so in the success output too
     unsafe_written = sorted({
         (file_cache[s.file_id] or {}).get("name", str(s.file_id))
-        for s in approved
+        for s in to_write
         if not db_position_safe((file_cache[s.file_id] or {}).get("content") or "")
     })
 
@@ -3919,6 +4201,8 @@ def apply_codings(
         output.append(f"\n📄 **{file_name}**: {len(file_results)} codings")
         for r in file_results:
             output.append(f"  - {r['code']} (ctid={r['ctid']})")
+
+    output.extend(_already_existing_lines())
 
     output.append(f"\n\n**You can now open the project in Qualcoder to see the AI-coded segments.**")
     output.append(f"All codings are attributed to '{owner}' with confidence scores in memos.")
@@ -5148,7 +5432,12 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
             memo: the code definition (what belongs under this code)
             rationale: why this code emerges from the data
             color: optional #RRGGBB (default: QualCoder palette pick at
-            creation)
+            creation). Colours are stored as the nearest QualCoder
+            palette colour (120 fixed colours, as the QualCoder colour
+            picker offers); the recorded entry reports the stored colour
+            and whether it was snapped. Greys may snap to a pale hue:
+            the palette has five greys and the matching rule is
+            QualCoder's own.
             category: optional EXISTING category name to place it in
             example_segments: optional evidence spans
             [{file_id, start_pos, end_pos, segment_text}], each verified
@@ -5213,12 +5502,17 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
                              "reason": f"a proposal named '{name}' already "
                                        f"exists in this session"})
             continue
-        color = item.get("color")
+        color_requested = item.get("color")
+        color = color_requested
         if color is not None and (not isinstance(color, str)
                                   or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color)):
             rejected.append({"index": idx,
                              "reason": f"color must be #RRGGBB, got {color!r}"})
             continue
+        if color is not None:
+            # Snap at proposal time so review_proposals shows the colour
+            # that create_proposed_codes will store (D5 section 3.1)
+            color = snap_to_palette(color)
         category = item.get("category")
         if category is not None:
             match = next((c for c in cats
@@ -5251,6 +5545,9 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
         seen_names.add(name.lower())
         entry = {"guid": proposal.guid, "name": name,
                  "category": category, "evidence_count": len(evidence)}
+        if color_requested is not None:
+            entry["color"] = color
+            entry.update(_color_disclosure(color_requested, color))
         if proposal.collides_with:
             entry["collides_with"] = proposal.collides_with
         if evidence_rejected:
@@ -5371,7 +5668,11 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
         coding_session_id: The session ID
         proposal_guid: The proposal to refine
         name: New name (collision flag is refreshed)
-        color: New #RRGGBB colour
+        color: New #RRGGBB colour, stored as the nearest QualCoder palette
+               colour (120 fixed colours, as the QualCoder colour picker
+               offers); the result reports the stored colour and whether
+               it was snapped. Greys may snap to a pale hue: the palette
+               has five greys and the matching rule is QualCoder's own.
         category: Existing category name, or "" to clear
         memo: New definition text
         example_segments: Replacement evidence spans
@@ -5416,11 +5717,14 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
         changes["name"] = (proposal.name, new_name)
         proposal.name = new_name
         proposal.collides_with = _code_name_collisions(new_name)
+    color_disclosure: Dict[str, Any] = {}
     if color is not None:
         if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
             return json.dumps({"error": f"color must be #RRGGBB, got {color!r}"})
-        changes["color"] = (proposal.color, color)
-        proposal.color = color
+        snapped = snap_to_palette(color)
+        changes["color"] = (proposal.color, snapped)
+        proposal.color = snapped
+        color_disclosure = _color_disclosure(color, snapped)
     if category is not None:
         if category == "":
             changes["category"] = (proposal.category, None)
@@ -5467,7 +5771,8 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
 
     result = {"success": True, "guid": proposal.guid,
               "changes": {k: {"from": v[0], "to": v[1]}
-                          for k, v in changes.items()}}
+                          for k, v in changes.items()},
+              **color_disclosure}
     if proposal.collides_with:
         result["collides_with"] = proposal.collides_with
     if evidence_rejected:
@@ -5888,8 +6193,26 @@ def create_code(name: str, category: Optional[str] = None,
     """Create a new code in the codebook.
 
     THIS WRITES TO THE DATABASE. Adds a code that can then be applied to
-    segments. Code names are unique. The colour defaults to a random pick
-    from QualCoder's own palette (like GUI-created codes).
+    segments. Code names are unique across the whole codebook (no
+    per-category scope) and compared case-insensitively. The colour
+    defaults to a random pick from QualCoder's own palette (like
+    GUI-created codes).
+
+    IDEMPOTENT: if a code with this name already exists (exactly, or
+    differing only by letter case), nothing is written and no backup is
+    made; the result is `created: false, reason: already_exists` with the
+    existing row under `code` (use its id), `match` (exact or
+    case_insensitive) and, under `requested`, only the arguments that
+    differ from the stored row (spelling, category, parent, colour). A
+    supplied memo is never applied to an existing code (set_memo does
+    that). Successful creates carry `created: true`. Whitespace runs in
+    the name collapse to one space.
+
+    Colours are stored as the nearest QualCoder palette colour (120 fixed
+    colours, as the QualCoder colour picker offers); the result reports
+    the stored colour (`color`) and whether it was snapped
+    (`color_requested`, `color_snapped`). Greys may snap to a pale hue:
+    the palette has five greys and the matching rule is QualCoder's own.
 
     SUB-CODES (projects with schema v16 or newer only): pass
     parent_code_id to nest the new code under an existing CODE instead of
@@ -5901,21 +6224,26 @@ def create_code(name: str, category: Optional[str] = None,
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
-        name: The code name (must be unique among codes)
+        name: The code name (unique among codes, case-insensitively)
         category: Optional category name to place the code in (matched
                   case-insensitively; must already exist)
-        color: Optional #RRGGBB hex colour (default: random palette colour)
+        color: Optional #RRGGBB hex colour (default: random palette
+               colour; a supplied colour is snapped onto the palette)
         memo: Optional code definition/memo
         parent_code_id: Optional cid of an existing code to nest under
                         (v16+ sub-code; mutually exclusive with category)
         create_backup: Create a timestamped backup before writing (default True)
 
     Returns:
-        JSON with the new code's id, name, category and color
+        JSON with the new code's id, name, category and color, or the
+        already_exists answer described above
 
     Example:
         "Create a code 'Institutional distrust' in the Wellbeing category"
     """
+    norm_name = normalize_name(name)
+    if not norm_name:
+        return json.dumps({"error": "name must be a non-empty string"})
     category_id = None
     if category is not None:
         if parent_code_id is not None:
@@ -5926,26 +6254,64 @@ def create_code(name: str, category: Optional[str] = None,
         category_id, err = _resolve_category_by_name(str(category))
         if err is not None:
             return json.dumps(err, indent=2)
+    color_target = None
+    if color is not None:
+        color_target = snap_to_palette(validate_color(color))
+
+    # Write tools refuse while QualCoder has the project open, whatever the
+    # arguments (the QA invariant); the idempotency pre-check comes after
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+
+    ro_db = get_db()
+    caps = getattr(ro_db, "capabilities", None)
+    has_supercid = bool(caps is not None and caps.has_supercid)
+
+    def _existing(rows):
+        return _existing_code_result(
+            rows, norm_name, has_supercid=has_supercid, category=category,
+            category_id=category_id, parent_code_id=parent_code_id,
+            color_target=color_target, memo=memo)
+
+    # Read-only pre-check: a duplicate costs no lock, upgrade or backup
+    dup = _existing(ro_db.list_codes())
+    if dup is not None:
+        return _ai_json(dup, indent=2)
 
     owner = _default_owner()
 
     def _op(wdb):
-        cid = wdb.add_code(name=name, owner=owner, memo=memo,
+        # In-transaction re-check: a row that appeared while we prepared
+        # (another writer) yields the same answer, decorated with the
+        # backup_path _perform_write adds (disclosed, not hidden)
+        dup = _existing(wdb.list_codes())
+        if dup is not None:
+            return dup
+        cid = wdb.add_code(name=norm_name, owner=owner, memo=memo,
                            category_id=category_id, color=color,
                            parent_code_id=parent_code_id,
                            auto_commit=False)
         details = wdb.get_code_details(cid)
+        stored_color = details.get("color")
+        message = f"Created code '{details['name']}'"
+        disclosure = _color_disclosure(color, stored_color)
+        if disclosure.get("color_snapped"):
+            message += (f" with colour {stored_color}, the nearest QualCoder "
+                        f"palette colour to {color}")
         return {
             "success": True,
-            "message": f"Created code '{name}'",
+            "created": True,
+            "message": message,
             "code": {
                 "id": cid,
                 "name": details["name"],
                 "category": details.get("category"),
                 "parent_code_id": parent_code_id,
-                "color": details.get("color"),
+                "color": stored_color,
                 "memo": details.get("memo", ""),
             },
+            **disclosure,
         }
 
     result = _perform_write(_op, create_backup=create_backup,
@@ -5959,22 +6325,61 @@ def rename_code(code_id: int, new_name: str,
                 create_backup: bool = True) -> str:
     """Rename a code. THIS WRITES TO THE DATABASE. Names are unique.
 
+    A new name that matches ANOTHER code case-insensitively is refused
+    (the result names that code's id); a case-only respelling of this
+    code's own name proceeds; the identical current name answers
+    `changed: false, reason: unchanged` with nothing written and no
+    backup made. Successful renames carry `changed: true`.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
-        new_name: The new name (must not collide with another code)
+        new_name: The new name (must not collide with another code,
+                  case-insensitively)
         create_backup: Create a timestamped backup before writing (default True)
     """
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": "Renamed code",
-                     **wdb.rename_code(code_id, new_name, auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the code was not renamed",
-    )
+    new_name = normalize_name(new_name)
+    if not new_name:
+        return json.dumps({"error": "new_name must be a non-empty string"})
+    code_id = validate_id(code_id, "code_id")
+
+    def _precheck(rows):
+        """(result_dict, None) to answer without writing, or (None, ok)."""
+        by_id = {c["id"]: c for c in rows}
+        row = by_id.get(code_id)
+        if row is None:
+            return {"error": f"Code ID {code_id} does not exist"}, None
+        if row["name"] == new_name:
+            return _unchanged(
+                f"Code '{row['name']}' (id {code_id}) already has that name; "
+                f"nothing was written.",
+                code={"id": code_id, "name": row["name"]}), None
+        clash = _rename_collision(rows, code_id, new_name, "code")
+        if clash is not None:
+            return clash, None
+        return None, True
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer, _ = _precheck(get_db().list_codes())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        answer, _ = _precheck(wdb.list_codes())
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        return {"success": True, "changed": True, "message": "Renamed code",
+                **wdb.rename_code(code_id, new_name, auto_commit=False)}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the code was not renamed")
     return json.dumps(result, indent=2)
 
 
@@ -5984,22 +6389,67 @@ def recolor_code(code_id: int, color: str,
                  create_backup: bool = True) -> str:
     """Set a code's colour (#RRGGBB). THIS WRITES TO THE DATABASE.
 
+    Colours are stored as the nearest QualCoder palette colour (120 fixed
+    colours, as the QualCoder colour picker offers); the result reports
+    the stored colour (`new_color`) and whether it was snapped
+    (`color_requested`, `color_snapped`). Greys may snap to a pale hue:
+    the palette has five greys and the matching rule is QualCoder's own.
+    When the code already has exactly the target colour the result is
+    `changed: false, reason: unchanged` with nothing written and no
+    backup made; a stored value that differs only by letter case, or a
+    stored off-palette colour, is a real change and is written (QualCoder
+    compares colour strings). Successful recolours carry `changed: true`.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         code_id: The code's cid
-        color: Hex colour in #RRGGBB format
+        color: Hex colour in #RRGGBB format (snapped onto the palette)
         create_backup: Create a timestamped backup before writing (default True)
     """
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": "Recoloured code",
-                     **wdb.recolor_code(code_id, color, auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the code colour was not changed",
-    )
+    target = snap_to_palette(validate_color(color))
+    code_id = validate_id(code_id, "code_id")
+    disclosure = _color_disclosure(color, target)
+
+    def _precheck(db_):
+        details = db_.get_code_details(code_id)
+        if details is None:
+            return {"error": f"Code ID {code_id} does not exist"}
+        if details.get("color") == target:
+            return _unchanged(
+                f"Code '{details['name']}' already has colour {target}; "
+                f"nothing was written.",
+                code={"id": code_id, "name": details["name"], "color": target},
+                **disclosure)
+        return None
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer = _precheck(get_db())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        answer = _precheck(wdb)
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        out = wdb.recolor_code(code_id, color, auto_commit=False)
+        message = (f"Recoloured code '{out['name']}' from {out['old_color']} "
+                   f"to {out['new_color']}")
+        if disclosure.get("color_snapped"):
+            message += f" (nearest palette colour to {color})"
+        if out["old_color"] not in QUALCODER_COLORS:
+            message += "; the previous value was not a palette colour"
+        return {"success": True, "changed": True, "message": message,
+                **out, **disclosure}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the code colour was not changed")
     return json.dumps(result, indent=2)
 
 
@@ -6010,7 +6460,12 @@ def move_code_to_category(code_id: int,
                           create_backup: bool = True) -> str:
     """Move a code into a category (or out of any category).
 
-    THIS WRITES TO THE DATABASE.
+    THIS WRITES TO THE DATABASE. When the code is already where the call
+    would put it, the result is `changed: false, reason: unchanged` with
+    nothing written and no backup made. On projects with sub-code support
+    (schema v16+) moving a sub-code to "no category" is a real change: it
+    detaches the code from its parent code. Successful moves carry
+    `changed: true`.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6027,15 +6482,50 @@ def move_code_to_category(code_id: int,
         category_id, err = _resolve_category_by_name(str(category))
         if err is not None:
             return json.dumps(err, indent=2)
+    code_id = validate_id(code_id, "code_id")
 
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": "Moved code",
-                     **wdb.move_code_to_category(code_id, category_id,
-                                                 auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the code was not moved",
-    )
+    ro_db = get_db()
+    caps = getattr(ro_db, "capabilities", None)
+    has_supercid = bool(caps is not None and caps.has_supercid)
+
+    def _precheck(rows):
+        row = next((c for c in rows if c["id"] == code_id), None)
+        if row is None:
+            return {"error": f"Code ID {code_id} does not exist"}
+        # 4.0 compares BOTH parent pointers (ai_mcp_server.py:2046 at
+        # 9bddf17): a sub-code (supercid set, catid NULL) moved to "no
+        # category" clears supercid, so it is not a no-op
+        same_category = row.get("category_id") == category_id
+        detached = (not has_supercid) or row.get("parent_code_id") is None
+        if same_category and detached:
+            where = (f"in category '{row.get('category')}'"
+                     if category_id is not None else "uncategorised")
+            return _unchanged(
+                f"Code '{row['name']}' is already {where}; nothing was written.",
+                code={"id": code_id, "name": row["name"],
+                      "category_id": row.get("category_id"),
+                      "category": row.get("category")})
+        return None
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer = _precheck(ro_db.list_codes())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        answer = _precheck(wdb.list_codes())
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        return {"success": True, "changed": True, "message": "Moved code",
+                **wdb.move_code_to_category(code_id, category_id,
+                                            auto_commit=False)}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the code was not moved")
     return json.dumps(result, indent=2)
 
 
@@ -6047,36 +6537,66 @@ def create_category(name: str, parent_category: Optional[str] = None,
     """Create a code category. THIS WRITES TO THE DATABASE.
 
     Categories group codes (and can nest under a parent category). Names
-    are unique among categories.
+    are unique among categories, globally (no per-parent scope) and
+    compared case-insensitively.
+
+    IDEMPOTENT: if a category with this name already exists (exactly, or
+    differing only by letter case), nothing is written and no backup is
+    made; the result is `created: false, reason: already_exists` with the
+    existing row under `category` (use its id), `match` (exact or
+    case_insensitive) and, under `requested`, only the arguments that
+    differ from the stored row (spelling, parent). A supplied memo is
+    never applied to an existing category (set_memo does that).
+    Successful creates carry `created: true`. Whitespace runs in the name
+    collapse to one space.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
-        name: The category name (unique among categories)
+        name: The category name (unique among categories, case-insensitively)
         parent_category: Optional parent category name (case-insensitive) to
                          nest under; omit for a top-level category
         memo: Optional category memo
         create_backup: Create a timestamped backup before writing (default True)
     """
+    norm_name = normalize_name(name)
+    if not norm_name:
+        return json.dumps({"error": "name must be a non-empty string"})
     supercatid = None
     if parent_category is not None:
         supercatid, err = _resolve_category_by_name(str(parent_category))
         if err is not None:
             return json.dumps(err, indent=2)
 
+    def _existing(rows):
+        return _existing_category_result(
+            rows, norm_name, parent_category=parent_category,
+            supercatid=supercatid, memo=memo)
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    dup = _existing(get_db().list_categories())
+    if dup is not None:
+        return _ai_json(dup, indent=2)
+
     owner = _default_owner()
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": f"Created category '{name}'",
-                     "category": wdb.add_category(name, owner,
-                                                  supercatid=supercatid,
-                                                  memo=memo, auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the category was not created",
-    )
-    return json.dumps(result, indent=2)
+
+    def _op(wdb):
+        dup = _existing(wdb.list_categories())
+        if dup is not None:
+            return dup
+        created = wdb.add_category(norm_name, owner, supercatid=supercatid,
+                                   memo=memo, auto_commit=False)
+        return {"success": True, "created": True,
+                "message": f"Created category '{created['name']}'",
+                "category": created}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the category was not created")
+    return _ai_json(result, indent=2)
 
 
 @mcp.tool()
@@ -6085,23 +6605,58 @@ def rename_category(category_id: int, new_name: str,
                     create_backup: bool = True) -> str:
     """Rename a category. THIS WRITES TO THE DATABASE. Names are unique.
 
+    A new name that matches ANOTHER category case-insensitively is
+    refused (the result names that category's id); a case-only
+    respelling of this category's own name proceeds; the identical
+    current name answers `changed: false, reason: unchanged` with nothing
+    written and no backup made. Successful renames carry `changed: true`.
+
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
         category_id: The category's catid
-        new_name: The new name (must not collide with another category)
+        new_name: The new name (must not collide with another category,
+                  case-insensitively)
         create_backup: Create a timestamped backup before writing (default True)
     """
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": "Renamed category",
-                     **wdb.rename_category(category_id, new_name,
-                                           auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the category was not renamed",
-    )
+    new_name = normalize_name(new_name)
+    if not new_name:
+        return json.dumps({"error": "new_name must be a non-empty string"})
+    category_id = validate_id(category_id, "category_id")
+
+    def _precheck(rows):
+        row = next((c for c in rows if c["id"] == category_id), None)
+        if row is None:
+            return {"error": f"Category ID {category_id} does not exist"}
+        if row["name"] == new_name:
+            return _unchanged(
+                f"Category '{row['name']}' (id {category_id}) already has "
+                f"that name; nothing was written.",
+                category={"id": category_id, "name": row["name"]})
+        return _rename_collision(rows, category_id, new_name, "category")
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer = _precheck(get_db().list_categories())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        answer = _precheck(wdb.list_categories())
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        return {"success": True, "changed": True,
+                "message": "Renamed category",
+                **wdb.rename_category(category_id, new_name,
+                                      auto_commit=False)}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the category was not renamed")
     return json.dumps(result, indent=2)
 
 
@@ -6113,7 +6668,10 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
 
     THIS WRITES TO THE DATABASE. Refuses any move that would create a cycle
     (make a category its own ancestor); such a cycle would silently hide
-    the category and all its codes from QualCoder's tree.
+    the category and all its codes from QualCoder's tree. When the
+    category is already under the requested parent (or already at the top
+    level) the result is `changed: false, reason: unchanged` with nothing
+    written and no backup made. Successful moves carry `changed: true`.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -6130,15 +6688,50 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
         new_supercatid, err = _resolve_category_by_name(str(parent_category))
         if err is not None:
             return json.dumps(err, indent=2)
+    category_id = validate_id(category_id, "category_id")
 
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": "Moved category",
-                     **wdb.move_category(category_id, new_supercatid,
-                                         auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the category was not moved",
-    )
+    def _precheck(db_):
+        rows = db_.list_categories()
+        row = next((c for c in rows if c["id"] == category_id), None)
+        if row is None:
+            return {"error": f"Category ID {category_id} does not exist"}
+        # 4.0's order (ai_mcp_server.py:1968-1982 at 9bddf17): existence,
+        # then the cycle guard, then unchanged. A cycle is left to the DB
+        # layer's refusal so the error precedence is preserved.
+        if db_.would_create_category_cycle(category_id, new_supercatid):
+            return None
+        if row.get("parent_id") == new_supercatid:
+            if new_supercatid is None:
+                where = "at the top level"
+            else:
+                parent = next((c for c in rows if c["id"] == new_supercatid), None)
+                where = f"under '{parent['name'] if parent else new_supercatid}'"
+            return _unchanged(
+                f"Category '{row['name']}' is already {where}; nothing was "
+                f"written.",
+                category={"id": category_id, "name": row["name"],
+                          "parent_id": row.get("parent_id")})
+        return None
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer = _precheck(get_db())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        answer = _precheck(wdb)
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        return {"success": True, "changed": True, "message": "Moved category",
+                **wdb.move_category(category_id, new_supercatid,
+                                    auto_commit=False)}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the category was not moved")
     return json.dumps(result, indent=2)
 
 
@@ -6549,30 +7142,57 @@ def create_case(name: str, memo: Optional[str] = None,
     THIS WRITES TO THE DATABASE. Cases group data by participant; link
     files to the new case with link_file_to_case (or import_text_file's
     case_name parameter) so they appear in case-based analyses. Case
-    names are unique. Placeholder rows are created for any existing case
-    attributes, exactly as QualCoder does.
+    names are unique and compared case-insensitively. Placeholder rows
+    are created for any existing case attributes, exactly as QualCoder
+    does.
+
+    IDEMPOTENT: if a case with this name already exists (exactly, or
+    differing only by letter case), nothing is written and no backup is
+    made; the result is `created: false, reason: already_exists` with the
+    existing row under `case` (use its id) and `match` (exact or
+    case_insensitive). A supplied memo is never applied to an existing
+    case (set_memo does that). Successful creates carry `created: true`.
+    Whitespace runs in the name collapse to one space.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
-        name: The case name (unique among cases)
+        name: The case name (unique among cases, case-insensitively)
         memo: Optional case memo
         create_backup: Create a timestamped backup before writing (default True)
 
     Example:
         "Create a case for participant Dana"
     """
+    norm_name = normalize_name(name)
+    if not norm_name:
+        return json.dumps({"error": "name must be a non-empty string"})
+
+    def _existing(rows):
+        return _existing_case_result(rows, norm_name, memo=memo)
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    dup = _existing(get_db().list_cases())
+    if dup is not None:
+        return _ai_json(dup, indent=2)
+
     owner = _default_owner()
-    result = _perform_write(
-        lambda wdb: {"success": True,
-                     "message": f"Created case '{name.strip() if isinstance(name, str) else name}'",
-                     "case": wdb.add_case(name, owner, memo=memo,
-                                          auto_commit=False)},
-        create_backup=create_backup,
-        backup_fail_detail="the case was not created",
-    )
+
+    def _op(wdb):
+        dup = _existing(wdb.list_cases())
+        if dup is not None:
+            return dup
+        created = wdb.add_case(norm_name, owner, memo=memo, auto_commit=False)
+        return {"success": True, "created": True,
+                "message": f"Created case '{created['name']}'",
+                "case": created}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the case was not created")
     return _ai_json(result, indent=2)
 
 

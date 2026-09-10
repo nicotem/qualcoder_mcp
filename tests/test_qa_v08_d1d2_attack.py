@@ -254,9 +254,12 @@ class TestCreateCaseAndBackfill:
         assert _row(qualcoder_db_path,
                     "SELECT value FROM attribute WHERE name='CaseAttr' AND id=?",
                     (caseid,))["value"] == ""
-        # duplicate name refused
-        assert "error" in json.loads(server.create_case("participant x")) or \
-            "error" in json.loads(server.create_case("Participant X"))
+        # duplicate name: idempotent answer, no second row (v0.12, X2)
+        for variant in ("participant x", "Participant X"):
+            dup = json.loads(server.create_case(variant))
+            assert dup["created"] is False and dup["case"]["id"] == caseid
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM cases WHERE lower(name)='participant x'")["n"] == 1
 
     def test_import_backfill_file_domain_only(self, setup_server,
                                               qualcoder_db_path):

@@ -1,0 +1,692 @@
+"""v0.12 Batch A, items A1 and A2 (dossier D5, owner ruling X2).
+
+Palette colour snapping with QualCoder's exact color_matcher arithmetic,
+idempotent creates (created: false, reason: already_exists), the
+case-insensitive duplicate rule (Unicode casefold plus NFC), no-op moves,
+renames and recolours (changed: false, reason: unchanged), and per-coding
+idempotency in apply_codings.
+
+Parity pins vendor literal copies of the upstream palette and matcher at
+QualCoder master 9bddf17 (src/qualcoder/color_selector.py:52-65 and
+:144-162; byte-identical at the 3.8.2 tag, :53-66 and :145-163) so a
+drift in either direction fails here.
+
+Windows-safe: no paths beyond the tmp fixtures, no wall-clock waits,
+non-ASCII names travel through SQLite as text only.
+"""
+
+import json
+import sqlite3
+import random
+import unicodedata
+from pathlib import Path
+
+import pytest
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))  # sibling test helpers
+
+import qualcoder_mcp.server as server
+from qualcoder_mcp.database import (QualcoderDatabase, QUALCODER_COLORS,
+                                    snap_to_palette, normalize_name, name_key)
+from test_v17_support import make_project, add_subcode  # noqa: E402
+from test_qc40_visibility import _apply_visibility_schema  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Vendored upstream ground truth (color_selector.py at 9bddf17)
+# ---------------------------------------------------------------------------
+
+UPSTREAM_COLORS = [
+    "#F5F6CE", "#F2F5A9", "#F4FA58", "#F7FE2E", "#DDE600", "#F8ECE0", "#F6E3CE", "#F5D0A9", "#F7BE81", "#FAAC58",
+    "#F5ECCE", "#F3E2A9", "#F5DA81", "#F7D358", "#FACC2E", "#FFE2CC", "#FFC599", "#FFA866", "#FF8B33", "#FF6F00",
+    "#F8E6E0", "#F6D8CE", "#F5BCA9", "#F79F81", "#FA8258", "#FADCCC", "#F5B999", "#F09666", "#EB7333", "#E65100",
+    "#F8E0E0", "#F6CECE", "#F5A9A9", "#F78181", "#FA5858", "#F0D1D1", "#E2A4A4", "#D37676", "#C54949", "#B71C1C",
+    "#F2D6CE", "#E5AE9D", "#D8866D", "#CB5E3C", "#BF360C", "#E7CEDB", "#CF9EB8", "#B76E95", "#9F3E72", "#880E4F",
+    "#F8E0E6", "#F6CED8", "#F5A9BC", "#F7819F", "#FA5882", "#F8E0F7", "#F6CEF5", "#F5A9F2", "#F781F3", "#FA58F4",
+    "#D1DED2", "#A3BEA5", "#769E78", "#487E4B", "#1B5E20", "#DEE9E4", "#BED3C9", "#9EBDAE", "#7EA793", "#5E9179",
+    "#CEF6E3", "#A9F5D0", "#81F7BE", "#58FAAC", "#00FF7F", "#E0F8E0", "#CEF6CE", "#A9F5A9", "#81F781", "#58FA58",
+    "#D0F5A9", "#BEF781", "#ACFA58", "#9AFE2E", "#80FF00", "#CEF6F5", "#A9F5F2", "#81F7F3", "#58FAF4", "#00F0F0",
+    "#E4D3F5", "#CAA8EB", "#B07CE1", "#9651D7", "#7D26CD", "#ECE0F8", "#E3CEF6", "#D0A9F5", "#BE81F7", "#AC58FA",
+    "#DADAF5", "#B5B5EC", "#9090E3", "#6B6BDA", "#4646D1", "#CEE3F6", "#A9D0F5", "#81BEF7", "#3498DB", "#5882FA",
+    "#CEDAEC", "#9EB5D9", "#6D91C6", "#3D6CB3", "#0D47A1", "#E8E8E8", "#D8D8D8", "#C8C8C8", "#B8B8B8", "#A8A8A8"
+    ]
+
+
+def upstream_color_matcher(hex_color):
+    """Literal copy of color_selector.color_matcher at 9bddf17 (:144-162)."""
+    if len(hex_color) != 7:
+        return "#D8D8D8"  # light gray
+    test_r = int(hex_color[1:3], 16)
+    test_g = int(hex_color[3:5], 16)
+    test_b = int(hex_color[5:7], 16)
+
+    best_match = ["#D8D8D8", 255.0]  # light gray default, colour difference
+    for c in UPSTREAM_COLORS:
+        r = int(c[1:3], 16)
+        g = int(c[3:5], 16)
+        b = int(c[5:7], 16)
+        diff = (abs(r - test_r) + abs(g - test_g) + abs(b - test_b)) / 3
+        if diff < best_match[1]:
+            best_match = [c, diff]
+    return best_match[0]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _con(project_path):
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _row(project_path, sql, args=()):
+    con = _con(project_path)
+    try:
+        return con.execute(sql, args).fetchone()
+    finally:
+        con.close()
+
+
+def _rows(project_path, sql, args=()):
+    con = _con(project_path)
+    try:
+        return con.execute(sql, args).fetchall()
+    finally:
+        con.close()
+
+
+def _exec(project_path, sql, args=()):
+    con = _con(project_path)
+    try:
+        con.execute(sql, args)
+        con.commit()
+    finally:
+        con.close()
+
+
+def _reload():
+    server.switch_project(server.current_project_path)
+
+
+def _backups(project_path):
+    project = Path(project_path)
+    return sorted(project.parent.glob(f"{project.stem}_backup_*"))
+
+
+def _count(project_path, table):
+    return _row(project_path, f"SELECT COUNT(*) AS n FROM {table}")["n"]
+
+
+def _sid():
+    return json.loads(server.analyze_for_coding([1]))["coding_session_id"]
+
+
+def _record(sid, items):
+    out = json.loads(server.record_suggestions(sid, items))
+    assert out["recorded_count"] == len(items), out
+    return [r["guid"] for r in out["recorded"]]
+
+
+STRESS = {"file_id": 1, "code_name": "Stress",
+          "segment_text": "I feel stressed about deadlines",
+          "reasoning": "explicit", "confidence": 0.9}
+COPING = {"file_id": 1, "code_name": "Coping",
+          "segment_text": "I cope by exercising",
+          "reasoning": "explicit", "confidence": 0.9}
+
+
+# ===========================================================================
+# A1: palette and matcher parity
+# ===========================================================================
+
+class TestPaletteParity:
+
+    def test_palette_identical_to_pinned_upstream(self):
+        assert QUALCODER_COLORS == UPSTREAM_COLORS
+        assert len(QUALCODER_COLORS) == 120
+        assert len(set(QUALCODER_COLORS)) == 120
+        for c in QUALCODER_COLORS:
+            assert c == c.upper() and c.startswith("#") and len(c) == 7
+        assert QUALCODER_COLORS[115:120] == [
+            "#E8E8E8", "#D8D8D8", "#C8C8C8", "#B8B8B8", "#A8A8A8"]
+
+    def test_matcher_parity_on_grid_and_sample(self):
+        """Stride-9 RGB grid (24,389 inputs) plus a seeded random sample of
+        5,000: snap_to_palette equals upstream color_matcher everywhere."""
+        for r in range(0, 256, 9):
+            for g in range(0, 256, 9):
+                for b in range(0, 256, 9):
+                    c = f"#{r:02X}{g:02X}{b:02X}"
+                    assert snap_to_palette(c) == upstream_color_matcher(c), c
+        rng = random.Random(9_0_1)
+        for _ in range(5000):
+            c = f"#{rng.randrange(256):02X}{rng.randrange(256):02X}{rng.randrange(256):02X}"
+            assert snap_to_palette(c) == upstream_color_matcher(c), c
+
+    def test_palette_members_map_to_themselves_in_upper_case(self):
+        for c in QUALCODER_COLORS:
+            assert snap_to_palette(c) == c
+            assert snap_to_palette(c.lower()) == c
+
+    @pytest.mark.parametrize("given, expected", [
+        # dossier D5 section 1.3, computed with the upstream function
+        ("#FF0000", "#E65100"), ("#00FF00", "#00FF7F"), ("#0000FF", "#0D47A1"),
+        ("#123456", "#0D47A1"), ("#0d47a1", "#0D47A1"), ("#D8D8D8", "#D8D8D8"),
+        # tie: equidistant from #880E4F (index 49) and #1B5E20 (index 64);
+        # strict less-than in palette order keeps the lower index
+        ("#000046", "#880E4F"),
+        # achromatic quirk kept as parity: the metric ignores saturation
+        ("#FFFFFF", "#F8E0F7"), ("#000000", "#1B5E20"), ("#808080", "#769E78"),
+        ("#888888", "#7EA793"), ("#E0E0E0", "#DEE9E4"),
+    ])
+    def test_named_cases(self, given, expected):
+        assert snap_to_palette(given) == expected
+        assert upstream_color_matcher(given.upper()) == expected
+
+    def test_invalid_colours_still_refused_everywhere(self, setup_server,
+                                                       qualcoder_db_path):
+        bad = ("#zzzzzz", "#FFF", "red", "FF0000", "#12345G", "")
+        for b in bad:
+            assert "hex format" in json.loads(
+                server.create_code(f"X{b}", color=b, create_backup=False))["error"]
+            assert "hex format" in json.loads(
+                server.recolor_code(1, b, create_backup=False))["error"]
+        sid = _sid()
+        out = json.loads(server.propose_codes(
+            sid, [{"name": f"P{i}", "color": b} for i, b in enumerate(bad)]))
+        assert out["recorded_count"] == 0 and out["rejected_count"] == len(bad)
+        guid = json.loads(server.propose_codes(
+            sid, [{"name": "Good"}]))["recorded"][0]["guid"]
+        for b in bad:
+            assert "error" in json.loads(server.update_proposal(sid, guid, color=b))
+        assert _backups(qualcoder_db_path) == []
+
+
+class TestColourSnappingOnWrites:
+
+    def test_create_code_snaps_and_discloses(self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_code("Red-ish", color="#FF0000",
+                                            create_backup=False))
+        assert out["success"] is True and out["created"] is True
+        assert out["code"]["color"] == "#E65100"
+        assert out["color_requested"] == "#FF0000" and out["color_snapped"] is True
+        assert "nearest QualCoder palette colour to #FF0000" in out["message"]
+        assert _row(qualcoder_db_path, "SELECT color FROM code_name WHERE cid=?",
+                    (out["code"]["id"],))["color"] == "#E65100"
+
+    def test_create_code_palette_member_not_reported_as_snapped(
+            self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_code("Blue", color="#0d47a1",
+                                            create_backup=False))
+        assert out["code"]["color"] == "#0D47A1"
+        assert out["color_snapped"] is False  # same colour, canonical case
+        assert "nearest" not in out["message"]
+        out = json.loads(server.create_code("Plain", create_backup=False))
+        assert "color_requested" not in out and "color_snapped" not in out
+        assert out["code"]["color"] in QUALCODER_COLORS
+
+    def test_recolor_unchanged_when_stored_equals_target(self, setup_server,
+                                                          qualcoder_db_path):
+        _exec(qualcoder_db_path, "UPDATE code_name SET color='#0D47A1' WHERE cid=1")
+        _reload()
+        before = _backups(qualcoder_db_path)
+        row_before = dict(_row(qualcoder_db_path, "SELECT * FROM code_name WHERE cid=1"))
+        out = json.loads(server.recolor_code(1, "#0d47a1"))
+        assert out == {
+            "changed": False, "reason": "unchanged",
+            "message": "Code 'Stress' already has colour #0D47A1; nothing was written.",
+            "code": {"id": 1, "name": "Stress", "color": "#0D47A1"},
+            "color_requested": "#0d47a1", "color_snapped": False,
+        }
+        assert _backups(qualcoder_db_path) == before
+        assert dict(_row(qualcoder_db_path, "SELECT * FROM code_name WHERE cid=1")) == row_before
+
+    def test_recolor_repairs_legacy_lower_case(self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path, "UPDATE code_name SET color='#0d47a1' WHERE cid=1")
+        _reload()
+        out = json.loads(server.recolor_code(1, "#0D47A1", create_backup=False))
+        assert out["success"] is True and out["changed"] is True
+        assert out["old_color"] == "#0d47a1" and out["new_color"] == "#0D47A1"
+        assert out["color_snapped"] is False
+        assert _row(qualcoder_db_path, "SELECT color FROM code_name WHERE cid=1")["color"] == "#0D47A1"
+
+    def test_recolor_off_palette_stored_value_is_a_change(self, setup_server,
+                                                            qualcoder_db_path):
+        # fixture code 1 carries #FF0000, which is not a palette colour
+        out = json.loads(server.recolor_code(1, "#FF0000", create_backup=False))
+        assert out["changed"] is True and out["new_color"] == "#E65100"
+        assert out["color_snapped"] is True and out["color_requested"] == "#FF0000"
+        assert "nearest palette colour to #FF0000" in out["message"]
+        assert "not a palette colour" in out["message"]
+
+    def test_recolor_unknown_code_costs_no_backup(self, setup_server, qualcoder_db_path):
+        out = json.loads(server.recolor_code(999, "#0D47A1"))
+        assert out["error"] == "Code ID 999 does not exist"
+        assert _backups(qualcoder_db_path) == []
+
+    def test_proposals_snap_at_record_time(self, setup_server, qualcoder_db_path):
+        sid = _sid()
+        out = json.loads(server.propose_codes(
+            sid, [{"name": "Deadline pressure", "color": "#FF0000"},
+                  {"name": "Calm", "color": "#a9f5d0"},
+                  {"name": "Nocolour"}]))
+        rec = {r["name"]: r for r in out["recorded"]}
+        assert rec["Deadline pressure"]["color"] == "#E65100"
+        assert rec["Deadline pressure"]["color_snapped"] is True
+        assert rec["Deadline pressure"]["color_requested"] == "#FF0000"
+        assert rec["Calm"]["color"] == "#A9F5D0" and rec["Calm"]["color_snapped"] is False
+        assert "color" not in rec["Nocolour"]
+        review = server.review_proposals(sid)
+        assert "#E65100" in review and "#FF0000" not in review
+        # update_proposal likewise
+        guid = rec["Nocolour"]["guid"]
+        out = json.loads(server.update_proposal(sid, guid, color="#0000FF"))
+        assert out["changes"]["color"]["to"] == "#0D47A1"
+        assert out["color_snapped"] is True and out["color_requested"] == "#0000FF"
+        # create_proposed_codes stores the palette colour
+        server.update_proposal_status(sid, approve=[rec["Deadline pressure"]["guid"], guid])
+        out = json.loads(server.create_proposed_codes(sid, create_backup=False))
+        assert out["success"] is True
+        colours = {r["name"]: r["color"] for r in _rows(
+            qualcoder_db_path, "SELECT name, color FROM code_name")}
+        assert colours["Deadline pressure"] == "#E65100"
+        assert colours["Nocolour"] == "#0D47A1"
+
+    def test_create_proposed_codes_collision_rule_unchanged(self, setup_server,
+                                                             qualcoder_db_path):
+        sid = _sid()
+        out = json.loads(server.propose_codes(
+            sid, [{"name": "stress"}, {"name": "Fresh"}]))
+        assert out["recorded"][0]["collides_with"] == "Stress"
+        server.update_proposal_status(sid, approve=[r["guid"] for r in out["recorded"]])
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.create_proposed_codes(sid))
+        assert "error" in out and out["failures"][0]["name"] == "stress"
+        assert "nothing was written and no backup was created" in out["error"]
+        assert _backups(qualcoder_db_path) == before
+        assert "Fresh" not in {r["name"] for r in _rows(
+            qualcoder_db_path, "SELECT name FROM code_name")}
+
+
+# ===========================================================================
+# A2: name helpers
+# ===========================================================================
+
+class TestNameHelpers:
+
+    def test_normalize_name_collapses_unicode_whitespace(self):
+        assert normalize_name("  Work \t stress  now ") == "Work stress now"
+        assert normalize_name("   ") == "" and normalize_name(None) == ""
+
+    def test_name_key_folds_case_and_unicode_form(self):
+        nfd = unicodedata.normalize("NFD", "Émotion")
+        assert name_key("Émotion") == name_key("émotion") == name_key(nfd)
+        assert name_key("Coping") == name_key("COPING ") == name_key(" coping")
+        assert name_key("Stress") != name_key("Stressed")
+
+
+# ===========================================================================
+# A2: idempotent creates
+# ===========================================================================
+
+class TestIdempotentCreates:
+
+    def test_exact_duplicates_cost_nothing(self, setup_server, qualcoder_db_path):
+        before = _backups(qualcoder_db_path)
+        counts = {t: _count(qualcoder_db_path, t) for t in ("code_name", "code_cat", "cases")}
+
+        out = json.loads(server.create_code("Stress"))
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert out["match"] == "exact" and "success" not in out and "error" not in out
+        assert out["code"] == {
+            "id": 1, "name": "Stress", "category": "Category A", "category_id": 1,
+            "color": "#FF0000", "memo": "Stress code", "owner": "TestCoder",
+            "date": "2024-01-15"}
+        assert "requested" not in out
+        assert out["message"] == ("A code named 'Stress' already exists (id 1); "
+                                  "nothing was created. Use id 1.")
+
+        out = json.loads(server.create_category("Category A"))
+        assert out["created"] is False and out["match"] == "exact"
+        assert out["category"] == {
+            "id": 1, "name": "Category A", "parent_id": None, "parent_name": None,
+            "memo": "", "owner": "TestCoder", "date": "2024-01-15"}
+
+        out = json.loads(server.create_case("Case A"))
+        assert out["created"] is False and out["match"] == "exact"
+        assert out["case"] == {"id": 1, "name": "Case A", "memo": "First case",
+                               "owner": "TestCoder", "date": "2024-01-15"}
+
+        assert _backups(qualcoder_db_path) == before
+        assert {t: _count(qualcoder_db_path, t) for t in counts} == counts
+
+    def test_case_variant_duplicate(self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_code("coping"))
+        assert out["created"] is False and out["match"] == "case_insensitive"
+        assert out["code"]["name"] == "Coping" and out["code"]["id"] == 2
+        assert out["requested"] == {"name": "coping"}
+        assert _count(qualcoder_db_path, "code_name") == 2
+
+    def test_unicode_case_and_form(self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_code("Émotion", create_backup=False))
+        assert out["created"] is True
+        cid = out["code"]["id"]
+        for variant in ("émotion", unicodedata.normalize("NFD", "Émotion"),
+                        unicodedata.normalize("NFD", "émotion")):
+            out = json.loads(server.create_code(variant))
+            assert out["created"] is False and out["code"]["id"] == cid, variant
+        out = json.loads(server.create_code(unicodedata.normalize("NFD", "Émotion")))
+        assert out["match"] == "exact"  # same letters, NFC and NFD agree
+        assert _count(qualcoder_db_path, "code_name") == 3
+
+    def test_whitespace_normalisation(self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_code("Work  stress", create_backup=False))
+        assert out["created"] is True and out["code"]["name"] == "Work stress"
+        for variant in ("Coping ", " Coping", "Cop ing", "Work\tstress",
+                        "Work  stress", "  work   STRESS "):
+            out = json.loads(server.create_code(variant))
+            expect = "Coping" if "op" in variant else "Work stress"
+            if variant == "Cop ing":
+                assert out["created"] is True, out  # a different name
+                continue
+            assert out["created"] is False and out["code"]["name"] == expect, variant
+        assert _count(qualcoder_db_path, "code_name") == 4
+        assert "non-empty" in json.loads(server.create_code("  \t "))["error"]
+
+    def test_category_mismatch_is_disclosed_not_moved(self, setup_server,
+                                                       qualcoder_db_path):
+        json.loads(server.create_category("Category B", create_backup=False))
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.create_code("Stress", category="category b"))
+        assert out["created"] is False
+        assert out["requested"] == {"category": "category b"}
+        assert "move_code_to_category" in out["message"]
+        assert "in category 'Category A'" in out["message"]
+        assert _row(qualcoder_db_path, "SELECT catid FROM code_name WHERE cid=1")["catid"] == 1
+        assert _backups(qualcoder_db_path) == before
+        # same category requested: nothing to disclose
+        out = json.loads(server.create_code("Stress", category="Category A"))
+        assert "requested" not in out
+
+    def test_parent_category_mismatch_on_create_category(self, setup_server,
+                                                          qualcoder_db_path):
+        json.loads(server.create_category("Category B", create_backup=False))
+        out = json.loads(server.create_category("Category A", parent_category="Category B"))
+        assert out["created"] is False
+        assert out["requested"] == {"parent_category": "Category B"}
+        assert "move_category" in out["message"] and "at the top level" in out["message"]
+        assert _row(qualcoder_db_path, "SELECT supercatid FROM code_cat WHERE catid=1")["supercatid"] is None
+
+    def test_memo_not_applied_and_private_zone_hidden(self, setup_server,
+                                                       qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_name SET memo='public part\n#####\nsecret note' WHERE cid=1")
+        _reload()
+        out = json.loads(server.create_code("Stress", memo="a new definition"))
+        assert out["created"] is False
+        assert "Its memo was not changed; use set_memo." in out["message"]
+        assert out["code"]["memo"].strip() == "public part"
+        assert "secret" not in json.dumps(out)
+        assert _row(qualcoder_db_path, "SELECT memo FROM code_name WHERE cid=1")["memo"].endswith("secret note")
+        out = json.loads(server.create_category("Category A", memo="x"))
+        assert "use set_memo" in out["message"]
+        out = json.loads(server.create_case("Case A", memo="x"))
+        assert "use set_memo" in out["message"]
+        out = json.loads(server.create_case("Case A"))
+        assert "set_memo" not in out["message"]
+
+    def test_ambiguity_lists_candidates(self, setup_server, qualcoder_db_path):
+        for name in ("Theme", "theme"):  # only the GUI can create these now
+            _exec(qualcoder_db_path,
+                  "INSERT INTO code_cat (name, memo, owner, date) VALUES (?, '', 'TestCoder', '2024-01-15')",
+                  (name,))
+        _reload()
+        out = json.loads(server.create_category("THEME"))
+        assert "error" in out and "matches 2 existing categories" in out["error"]
+        assert {c["name"] for c in out["candidates"]} == {"Theme", "theme"}
+        out = json.loads(server.create_category("Theme"))
+        assert out["created"] is False and out["match"] == "exact"
+        assert out["category"]["name"] == "Theme"
+        assert _count(qualcoder_db_path, "code_cat") == 3
+
+    def test_race_path_discloses_backup(self, setup_server, qualcoder_db_path,
+                                         monkeypatch):
+        """The read-only pre-check misses (simulated), the in-transaction
+        re-check finds the row: same answer, plus the backup_path that was
+        taken (disclosed, not hidden)."""
+        real = QualcoderDatabase.list_codes
+        calls = {"n": 0}
+
+        def flaky(self_):
+            calls["n"] += 1
+            return [] if calls["n"] == 1 else real(self_)
+
+        monkeypatch.setattr(QualcoderDatabase, "list_codes", flaky)
+        out = json.loads(server.create_code("Stress"))
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert "backup_path" in out and calls["n"] >= 2
+        assert _count(qualcoder_db_path, "code_name") == 2
+
+    def test_successful_creates_carry_created_true(self, setup_server,
+                                                    qualcoder_db_path):
+        out = json.loads(server.create_code("New code", create_backup=False))
+        assert out["success"] is True and out["created"] is True
+        out = json.loads(server.create_category("New cat", create_backup=False))
+        assert out["success"] is True and out["created"] is True
+        assert out["category"]["name"] == "New cat"
+        out = json.loads(server.create_case("New case", create_backup=False))
+        assert out["success"] is True and out["created"] is True
+
+    def test_create_category_echo_goes_through_ai_json(self, setup_server,
+                                                        qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "UPDATE code_cat SET memo='shown\n#####\nprivate' WHERE catid=1")
+        _reload()
+        out = json.loads(server.create_category("category a"))
+        assert out["category"]["memo"].strip() == "shown"
+        assert "private" not in json.dumps(out)
+
+
+# ===========================================================================
+# A2: no-op moves and renames
+# ===========================================================================
+
+class TestNoOpMovesAndRenames:
+
+    def test_move_code_to_current_category_unchanged(self, setup_server,
+                                                      qualcoder_db_path):
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.move_code_to_category(1, "Category A"))
+        assert out["changed"] is False and out["reason"] == "unchanged"
+        assert out["code"]["category_id"] == 1
+        assert _backups(qualcoder_db_path) == before
+        # a real move still writes and says so
+        out = json.loads(server.move_code_to_category(1, None, create_backup=False))
+        assert out["success"] is True and out["changed"] is True
+        out = json.loads(server.move_code_to_category(1, None))
+        assert out["changed"] is False and "uncategorised" in out["message"]
+
+    def test_move_category_under_current_parent_unchanged(self, setup_server,
+                                                           qualcoder_db_path):
+        b = json.loads(server.create_category("B", parent_category="Category A",
+                                              create_backup=False))["category"]["id"]
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.move_category(b, "Category A"))
+        assert out["changed"] is False and "under 'Category A'" in out["message"]
+        out = json.loads(server.move_category(1, None))
+        assert out["changed"] is False and "top level" in out["message"]
+        assert _backups(qualcoder_db_path) == before
+        # the cycle guard still wins on a real move
+        out = json.loads(server.move_category(1, "B", create_backup=False))
+        assert "cycle" in out["error"]
+        out = json.loads(server.move_category(b, None, create_backup=False))
+        assert out["changed"] is True and out["new_supercatid"] is None
+
+    def test_rename_code_rules(self, setup_server, qualcoder_db_path):
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.rename_code(1, "Stress"))
+        assert out["changed"] is False and out["reason"] == "unchanged"
+        out = json.loads(server.rename_code(1, " Stress  "))
+        assert out["changed"] is False
+        out = json.loads(server.rename_code(1, "coping"))
+        assert out["error"] == "Another code already uses the name 'Coping' (id 2)."
+        assert out["candidates"] == [{"id": 2, "name": "Coping"}]
+        assert _backups(qualcoder_db_path) == before
+        out = json.loads(server.rename_code(1, "STRESS", create_backup=False))
+        assert out["success"] is True and out["changed"] is True
+        assert out["new_name"] == "STRESS"
+        assert _row(qualcoder_db_path, "SELECT name FROM code_name WHERE cid=1")["name"] == "STRESS"
+
+    def test_rename_category_rules(self, setup_server, qualcoder_db_path):
+        other = json.loads(server.create_category("Other", create_backup=False))["category"]["id"]
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.rename_category(1, "Category A"))
+        assert out["changed"] is False and out["reason"] == "unchanged"
+        out = json.loads(server.rename_category(1, "other"))
+        assert out["error"] == f"Another category already uses the name 'Other' (id {other})."
+        assert _backups(qualcoder_db_path) == before
+        out = json.loads(server.rename_category(1, "CATEGORY A", create_backup=False))
+        assert out["changed"] is True and out["new_name"] == "CATEGORY A"
+
+    def test_unknown_ids_cost_no_backup(self, setup_server, qualcoder_db_path):
+        assert json.loads(server.rename_code(99, "x"))["error"] == "Code ID 99 does not exist"
+        assert json.loads(server.move_code_to_category(99, None))["error"] == "Code ID 99 does not exist"
+        assert json.loads(server.rename_category(99, "x"))["error"] == "Category ID 99 does not exist"
+        assert json.loads(server.move_category(99, None))["error"] == "Category ID 99 does not exist"
+        assert _backups(qualcoder_db_path) == []
+
+
+class TestSubcodeMoves:
+    """v16+ compares both parent pointers (4.0, ai_mcp_server.py:2046)."""
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        from qualcoder_mcp.sessions import SessionManager
+        saved = (server.db, server.current_project_path, server.session_manager)
+        server.db = None
+        server.current_project_path = None
+        server.session_manager = SessionManager(str(tmp_path / "sessions"))
+
+        def open_version(version):
+            folder = make_project(tmp_path, version)
+            out = json.loads(server.select_project(str(folder)))
+            assert out.get("success") is True, out
+            return folder
+
+        yield open_version
+        if server.db is not None:
+            try:
+                server.db.close()
+            except Exception:
+                pass
+        server.db, server.current_project_path, server.session_manager = saved
+
+    def test_subcode_to_no_category_is_a_change_on_v16(self, env):
+        folder = env("v16")
+        add_subcode(folder, 3, "Sub", supercid=1)
+        _reload()
+        out = json.loads(server.move_code_to_category(3, None, create_backup=False))
+        assert out["changed"] is True
+        row = _row(folder, "SELECT catid, supercid FROM code_name WHERE cid=3")
+        assert row["catid"] is None and row["supercid"] is None
+        out = json.loads(server.move_code_to_category(3, None))
+        assert out["changed"] is False
+
+    def test_uncategorised_code_to_no_category_unchanged_on_v14(self, env):
+        folder = env("v14")
+        _exec(folder, "UPDATE code_name SET catid=NULL WHERE cid=2")
+        _reload()
+        out = json.loads(server.move_code_to_category(2, None))
+        assert out["changed"] is False and out["reason"] == "unchanged"
+        assert _backups(folder) == []
+
+    def test_parent_code_mismatch_disclosed_on_v16(self, env):
+        folder = env("v16")
+        add_subcode(folder, 3, "Sub", supercid=1)
+        _reload()
+        out = json.loads(server.create_code("sub", parent_code_id=2))
+        assert out["created"] is False and out["match"] == "case_insensitive"
+        assert out["requested"] == {"name": "sub", "parent_code_id": 2}
+        assert out["code"]["parent_code_id"] == 1
+        assert "re-parenting a sub-code is done in QualCoder" in out["message"]
+
+
+# ===========================================================================
+# A2: apply_codings per-coding idempotency
+# ===========================================================================
+
+class TestApplyCodingsAlreadyExisting:
+
+    def test_existing_identical_coding_is_skipped_and_marked(self, setup_server,
+                                                              qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo) "
+              "VALUES (1, 1, 'I feel stressed about deadlines', 24, 55, "
+              "'AI Coding Assistant', '2024-01-15', 'earlier run')")
+        _reload()
+        ctid = _row(qualcoder_db_path,
+                    "SELECT ctid FROM code_text WHERE owner='AI Coding Assistant'")["ctid"]
+        sid = _sid()
+        g_stress, g_coping = _record(sid, [STRESS, COPING])
+        server.update_suggestion_status(sid, approve=[g_stress, g_coping])
+        n_before = _count(qualcoder_db_path, "code_text")
+        out = server.apply_codings(sid, create_backup=False)
+        assert "Successfully Applied: 1 codings" in out
+        assert "already_existing_count: 1" in out
+        assert f"ctid={ctid}, guid={g_stress}" in out
+        assert _count(qualcoder_db_path, "code_text") == n_before + 1
+        session = server.session_manager.load_session(sid)
+        assert {s.status for s in session.suggestions} == {"applied"}
+
+    def test_all_existing_writes_nothing(self, setup_server, qualcoder_db_path):
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo) "
+              "VALUES (1, 1, 'I feel stressed about deadlines', 24, 55, "
+              "'AI Coding Assistant', '2024-01-15', '')")
+        _reload()
+        sid = _sid()
+        (guid,) = _record(sid, [STRESS])
+        server.update_suggestion_status(sid, approve=[guid])
+        before = _backups(qualcoder_db_path)
+        n_before = _count(qualcoder_db_path, "code_text")
+        out = server.apply_codings(sid)  # default create_backup=True
+        assert "EVERY APPROVED CODING IS ALREADY IN THE DATABASE" in out
+        assert "No backup was made and nothing was written" in out
+        assert _backups(qualcoder_db_path) == before
+        assert _count(qualcoder_db_path, "code_text") == n_before
+        session = server.session_manager.load_session(sid)
+        assert session.get_suggestion_by_guid(guid).status == "applied"
+        again = json.loads(server.apply_codings(sid))
+        assert "already applied" in again["error"]
+
+    def test_same_span_under_another_owner_is_written(self, setup_server,
+                                                       qualcoder_db_path):
+        # fixture ctid 1 is TestCoder's coding of exactly this span
+        sid = _sid()
+        (guid,) = _record(sid, [STRESS])
+        server.update_suggestion_status(sid, approve=[guid])
+        n_before = _count(qualcoder_db_path, "code_text")
+        out = server.apply_codings(sid, create_backup=False)
+        assert "Successfully Applied: 1 codings" in out
+        assert "already_existing" not in out
+        assert _count(qualcoder_db_path, "code_text") == n_before + 1
+
+    def test_hidden_row_detected_through_base_table(self, setup_server,
+                                                     qualcoder_db_path):
+        """A 4.0 project hides the AI coder's earlier rows: the visible view
+        does not show them, the unique constraint still applies, so the
+        detection reads the base table. The result carries the ctid and
+        says nothing else about hidden coders."""
+        _apply_visibility_schema(qualcoder_db_path, hidden_coder="AI Coding Assistant")
+        _reload()
+        assert server.db.capabilities.has_coder_names
+        sid = _sid()
+        (guid,) = _record(sid, [STRESS])
+        server.update_suggestion_status(sid, approve=[guid])
+        out = server.apply_codings(sid, create_backup=False)
+        assert "ctid=3" in out and "already_existing_count: 1" in out
+        assert "hidden" not in out.lower()

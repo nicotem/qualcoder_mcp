@@ -425,8 +425,13 @@ class TestNameResolutionAmbiguity:
 
     def test_qa5_1_case_ambiguous_category_refused(self, setup_server,
                                                    qualcoder_db_path):
-        assert json.loads(server.create_category("Theme"))["success"]
-        assert json.loads(server.create_category("theme"))["success"]
+        # v0.12 (X2): create_category treats case variants as one name, so
+        # the ambiguous pair is seeded the way only the GUI can make it
+        for name in ("Theme", "theme"):
+            _exec(qualcoder_db_path,
+                  "INSERT INTO code_cat (name, memo, owner, date) "
+                  "VALUES (?, '', 'TestCoder', '2024-01-15')", (name,))
+        _reload()
         out = json.loads(server.move_code_to_category(1, "THEME"))
         # desired: explicit refusal naming both candidates
         assert "error" in out and "ambiguous" in out["error"].lower()
