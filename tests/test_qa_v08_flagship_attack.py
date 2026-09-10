@@ -42,7 +42,7 @@ def _reload():
 
 
 def _sid():
-    return json.loads(server.analyze_for_coding([1]))["session_id"]
+    return json.loads(server.analyze_for_coding([1]))["coding_session_id"]
 
 
 def _add_file(p, fid, name, text):

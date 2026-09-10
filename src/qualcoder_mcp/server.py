@@ -3242,7 +3242,6 @@ Once Claude records and presents suggestions, you can:
     # `qualcoder_open: true` / `action_required:` markers).
     envelope: Dict[str, Any] = {
         "coding_session_id": session.session_id,
-        "session_id": session.session_id,  # deprecated duplicate of coding_session_id (kept one release)
         # Always present (false when clear), matching get_current_project's
         # always-present field so structured consumers get a consistent
         # shape (QA6-1)
@@ -3560,7 +3559,6 @@ def record_suggestions(
 
     result = {
         "coding_session_id": session_id,
-        "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
         "recorded_count": len(recorded),
         "recorded": recorded,
         "rejected_count": len(rejected),
@@ -3841,7 +3839,6 @@ def edit_suggestion(
     ro_db = get_db()
     changes: Dict[str, Any] = {}
     result: Dict[str, Any] = {"coding_session_id": session_id,
-                              "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
                               "guid": sugg.guid}
 
     # --- code change (existing codes only, record_suggestions rules) ---
@@ -5304,9 +5301,11 @@ def get_coding_session_info(coding_session_id: str) -> str:
 
         # Return full session data. The on-disk format keeps its
         # "session_id" key (internal schema unchanged); the API-facing
-        # primary key is coding_session_id.
+        # key is coding_session_id only (the deprecated duplicate was
+        # removed in 0.12).
         payload = {"coding_session_id": session.session_id}
         payload.update(session.to_dict())
+        payload.pop("session_id", None)
         return json.dumps(payload, indent=2)
 
     except Exception as e:
@@ -5352,7 +5351,8 @@ def list_coding_sessions(
 
         for entry in sessions:
             if isinstance(entry, dict) and "session_id" in entry:
-                entry["coding_session_id"] = entry["session_id"]
+                # API-facing key only; the on-disk key is unchanged
+                entry["coding_session_id"] = entry.pop("session_id")
         return json.dumps({
             "session_count": len(sessions),
             "sessions": sessions
@@ -5391,7 +5391,6 @@ def delete_coding_session(coding_session_id: str) -> str:
                 "success": True,
                 "message": f"Session {session_id} deleted",
                 "coding_session_id": session_id,
-                "session_id": session_id  # deprecated duplicate of coding_session_id (kept one release)
             }, indent=2)
         else:
             return json.dumps({
@@ -5859,7 +5858,6 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
 
     result: Dict[str, Any] = {
         "coding_session_id": session_id,
-        "session_id": session_id,  # deprecated duplicate of coding_session_id (kept one release)
         "recorded_count": len(recorded),
         "recorded": recorded,
         "rejected_count": len(rejected),

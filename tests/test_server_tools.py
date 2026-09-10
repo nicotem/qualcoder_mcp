@@ -525,7 +525,8 @@ class TestGetCodingSessionInfo:
         session = session_with_suggestions
         result = server.get_coding_session_info(session.session_id)
         data = json.loads(result)
-        assert data["session_id"] == session.session_id
+        assert data["coding_session_id"] == session.session_id
+        assert "session_id" not in data  # deprecated duplicate removed in 0.12
         assert len(data["suggestions"]) == 2
 
     def test_nonexistent_session(self, setup_server):

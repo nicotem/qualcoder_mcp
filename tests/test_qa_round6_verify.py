@@ -322,15 +322,16 @@ class TestGuidanceEnvelope:
         structured-field client must use .get('qualcoder_open', False). This
         test pins the actual behavior; the absence is flagged in the report.
         """
-        # absent lock: envelope has session_id + instructions; the open-signal
+        # absent lock: envelope has coding_session_id + instructions; the open-signal
         # fields are omitted (absence == not open)
         raw = server.analyze_for_coding([1])
         payload = json.loads(raw)
         assert payload.get("qualcoder_open", False) is False
-        assert isinstance(payload["session_id"], str) and payload["session_id"]
+        assert isinstance(payload["coding_session_id"], str) and payload["coding_session_id"]
+        assert "session_id" not in payload  # deprecated duplicate removed in 0.12
         assert "ANALYSIS SESSION CREATED" in payload["instructions"]
         # prose still parseable the old way (back-compat pin)
-        assert payload["session_id"] == raw.split(
+        assert payload["coding_session_id"] == raw.split(
             "Session ID: `")[1].split("`")[0]
 
         # fresh lock: real fields present AND banner appears
@@ -372,7 +373,7 @@ class TestGuidanceEnvelope:
               "INSERT INTO source (id, name, fulltext) VALUES (70, 'emoji.txt', ?)",
               (emoji,))
         _reload()
-        sid = json.loads(server.analyze_for_coding([70]))["session_id"]
+        sid = json.loads(server.analyze_for_coding([70]))["coding_session_id"]
         rec = json.loads(server.record_suggestions(sid, [{
             "file_id": 70, "code_name": "Stress",
             "segment_text": "I feel very stressed"}]))
