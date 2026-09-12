@@ -567,6 +567,63 @@ class TestIdempotentCreates:
 # A2: no-op moves and renames
 # ===========================================================================
 
+class TestRecolourRacePath:
+    """Fix round 1, F7. D5 section 3.4 step 3: when the stored colour
+    becomes equal to the target between the read-only pre-check and the
+    write, the op returns the same `unchanged` answer decorated with
+    backup_path. Only the create_code race was pinned."""
+
+    def test_recolour_race_returns_unchanged_with_the_backup_disclosed(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        real = QualcoderDatabase.get_code_details
+        calls = {"n": 0}
+
+        def flaky(self_, code_id):
+            calls["n"] += 1
+            details = real(self_, code_id)
+            if calls["n"] == 1 and details is not None:
+                # The pre-check sees the old colour; by the time the write
+                # connection looks, another writer has set the target.
+                details = dict(details)
+                details["color"] = "#F5D0A9"
+            return details
+
+        _exec(qualcoder_db_path, "UPDATE code_name SET color='#0D47A1' WHERE cid=1")
+        _reload()
+        before = _backups(qualcoder_db_path)
+        monkeypatch.setattr(QualcoderDatabase, "get_code_details", flaky)
+
+        out = json.loads(server.recolor_code(1, "#0d47a1"))
+        assert out["changed"] is False and out["reason"] == "unchanged"
+        assert out["color_requested"] == "#0d47a1"
+        assert out["color_snapped"] is False
+        assert out["code"] == {"id": 1, "name": "Stress", "color": "#0D47A1"}
+        assert "backup_path" in out                 # taken, so disclosed
+        assert calls["n"] >= 2
+        assert len(_backups(qualcoder_db_path)) == len(before) + 1
+        assert _row(qualcoder_db_path,
+                    "SELECT color FROM code_name WHERE cid=1")["color"] == "#0D47A1"
+
+    def test_code_deleted_between_the_precheck_and_the_write(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """The other arm of the same re-check: the row is gone by the time
+        the write connection looks, so the op raises and _perform_write
+        turns that into an error with nothing written."""
+        real = QualcoderDatabase.get_code_details
+        calls = {"n": 0}
+
+        def vanishing(self_, code_id):
+            calls["n"] += 1
+            return real(self_, code_id) if calls["n"] == 1 else None
+
+        monkeypatch.setattr(QualcoderDatabase, "get_code_details", vanishing)
+        out = json.loads(server.recolor_code(1, "#00FF7F"))
+        assert "error" in out and "does not exist" in out["error"]
+        assert calls["n"] >= 2
+        assert _row(qualcoder_db_path,
+                    "SELECT color FROM code_name WHERE cid=1")["color"] == "#FF0000"
+
+
 class TestNoOpMovesAndRenames:
 
     def test_move_code_to_current_category_unchanged(self, setup_server,
@@ -632,6 +689,88 @@ class TestNoOpMovesAndRenames:
         assert _backups(qualcoder_db_path) == []
 
 
+class TestProposalNameNormalisation:
+    """Fix round 1, F10. add_code stores normalize_name, so the proposal
+    pipeline has to key its duplicate checks the same way. It used to key
+    them on strip().lower(), which let whitespace twins through
+    pre-validation and collide on the insert AFTER the backup, breaking
+    the docstring promise that every approved proposal is validated before
+    the backup and the write (D5 section 3.3)."""
+
+    def test_whitespace_twins_are_refused_at_propose_time(self, setup_server,
+                                                          qualcoder_db_path):
+        sid = _sid()
+        out = json.loads(server.propose_codes(sid, [{"name": "Work  stress"}]))
+        assert out["recorded_count"] == 1
+        assert out["recorded"][0]["name"] == "Work stress"   # stored collapsed
+
+        out = json.loads(server.propose_codes(sid, [{"name": "Work stress"}]))
+        assert out["recorded_count"] == 0
+        assert "already exists in this session" in out["rejected"][0]["reason"]
+
+    def test_twins_in_one_batch_never_reach_the_backup(self, setup_server,
+                                                       qualcoder_db_path):
+        """Both spellings forced onto the session (an old session file could
+        hold them), then approved: pre-validation refuses the batch, so no
+        backup is taken and no row is written."""
+        from qualcoder_mcp.sessions import ProposedCode
+
+        sid = _sid()
+        session = server.session_manager.load_session(sid)
+        for spelling in ("Work  stress", "Work stress"):
+            proposal = ProposedCode(name=spelling)
+            proposal.status = "approved"
+            session.add_proposal(proposal)
+        server.session_manager.save_session(session)
+
+        before = _backups(qualcoder_db_path)
+        n_before = _count(qualcoder_db_path, "code_name")
+        out = json.loads(server.create_proposed_codes(sid))
+        assert "failed validation" in out["error"]
+        assert "another approved proposal in this batch has the same name" in \
+            out["failures"][0]["reason"]
+        assert _backups(qualcoder_db_path) == before
+        assert _count(qualcoder_db_path, "code_name") == n_before
+
+    def test_created_echo_matches_the_stored_row(self, setup_server,
+                                                 qualcoder_db_path):
+        """An old session file can still hold an un-collapsed name; the echo
+        has to report the name as stored, not as proposed."""
+        from qualcoder_mcp.sessions import ProposedCode
+
+        sid = _sid()
+        session = server.session_manager.load_session(sid)
+        proposal = ProposedCode(name="Work  stress")
+        proposal.name = "Work  stress"          # as an older release recorded it
+        proposal.status = "approved"
+        session.add_proposal(proposal)
+        server.session_manager.save_session(session)
+
+        out = json.loads(server.create_proposed_codes(sid, create_backup=False))
+        echo = out["created_codes"][0]
+        assert echo["name"] == "Work stress"
+        stored = _row(qualcoder_db_path,
+                      "SELECT name FROM code_name WHERE cid = ?",
+                      (echo["code_id"],))["name"]
+        assert stored == echo["name"]
+
+    def test_update_proposal_rename_uses_the_same_key(self, setup_server,
+                                                      qualcoder_db_path):
+        sid = _sid()
+        first = json.loads(server.propose_codes(sid, [{"name": "Work stress"}]))
+        second = json.loads(server.propose_codes(sid, [{"name": "Home strain"}]))
+        guid = second["recorded"][0]["guid"]
+        assert first["recorded_count"] == 1
+
+        out = json.loads(server.update_proposal(sid, guid, name="work  stress"))
+        assert "error" in out and "already named" in out["error"]
+
+        out = json.loads(server.update_proposal(sid, guid, name="Home  strain "))
+        assert out.get("error") is None
+        assert server.session_manager.load_session(sid) \
+            .get_proposal_by_guid(guid).name == "Home strain"
+
+
 class TestSubcodeMoves:
     """v16+ compares both parent pointers (4.0, ai_mcp_server.py:2046)."""
 
@@ -674,6 +813,25 @@ class TestSubcodeMoves:
         _reload()
         out = json.loads(server.move_code_to_category(2, None))
         assert out["changed"] is False and out["reason"] == "unchanged"
+        assert _backups(folder) == []
+
+    def test_parent_code_id_disclosed_on_a_v14_duplicate(self, env):
+        """Fix round 1, F9. A fresh create with parent_code_id is refused on
+        a pre-v16 project, but a DUPLICATE create used to answer
+        already_exists and say nothing about the parameter, so the model was
+        told "use id 1" and never learned that the project cannot hold
+        sub-codes. The parameter is now disclosed under `requested` with the
+        reason. The refusal itself stays in the DB layer, which re-probes on
+        the write connection: a cached refusal here would block a write to a
+        project migrated mid-session (pinned in test_qa_v17_gate_core.py)."""
+        folder = env("v14")
+        existing = _row(folder, "SELECT name FROM code_name WHERE cid=1")["name"]
+
+        out = json.loads(server.create_code(existing, parent_code_id=2))
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert out["requested"] == {"parent_code_id": 2}
+        assert "no sub-code support" in out["message"]
+        assert "parent_code_id" not in out["code"]      # v14 echo has no slot
         assert _backups(folder) == []
 
     def test_parent_code_mismatch_disclosed_on_v16(self, env):

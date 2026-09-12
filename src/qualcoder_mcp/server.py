@@ -908,7 +908,17 @@ def _existing_code_result(rows, name: str, *, has_supercid: bool,
         where = f"in category '{stored}'" if stored else "not in any category"
         message += (f" It is {where}, not in '{category}'; use "
                     f"move_code_to_category if that was the intent.")
-    if (has_supercid and parent_code_id is not None
+    if parent_code_id is not None and not has_supercid:
+        # A fresh create with this parameter is refused outright on a
+        # pre-v16 project; a duplicate must not silently drop it, or the
+        # model is told "use id N" and never learns that the project
+        # cannot hold sub-codes at all.
+        requested["parent_code_id"] = parent_code_id
+        message += (" This project's schema has no sub-code support "
+                    "(v16 or newer is needed for the code_name.supercid "
+                    "column), so parent_code_id could not have been "
+                    "honoured here in any case.")
+    elif (has_supercid and parent_code_id is not None
             and parent_code_id != row.get("parent_code_id")):
         requested["parent_code_id"] = parent_code_id
         message += (f" It is not nested under code {parent_code_id}; "
@@ -5804,7 +5814,10 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
     recorded, rejected = [], []
     unsafe_files: Dict[int, str] = {}
     file_cache: Dict[int, Optional[Dict[str, Any]]] = {}
-    seen_names = {p.name.strip().lower() for p in session.proposed_codes
+    # Keyed the way the codebook is (name_key: whitespace collapsed, NFC,
+    # casefold), so two proposals that would collide on the unique(name)
+    # constraint are caught here rather than after the backup.
+    seen_names = {name_key(p.name) for p in session.proposed_codes
                   if p.status != "rejected"}
 
     for idx, item in enumerate(proposals):
@@ -5815,8 +5828,8 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
         if not isinstance(name, str) or not name.strip():
             rejected.append({"index": idx, "reason": "name (non-empty string) is required"})
             continue
-        name = name.strip()
-        if name.lower() in seen_names:
+        name = normalize_name(name)
+        if name_key(name) in seen_names:
             rejected.append({"index": idx,
                              "reason": f"a proposal named '{name}' already "
                                        f"exists in this session"})
@@ -5861,7 +5874,7 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
             collides_with=_code_name_collisions(name),
         )
         session.add_proposal(proposal)
-        seen_names.add(name.lower())
+        seen_names.add(name_key(name))
         entry = {"guid": proposal.guid, "name": name,
                  "category": category, "evidence_count": len(evidence)}
         if color_requested is not None:
@@ -6022,10 +6035,10 @@ def update_proposal(coding_session_id: str, proposal_guid: str,
     if name is not None:
         if not isinstance(name, str) or not name.strip():
             return json.dumps({"error": "name must be a non-empty string"})
-        new_name = name.strip()
+        new_name = normalize_name(name)
         clash = any(p.guid != proposal.guid
                     and p.status != "rejected"
-                    and p.name.strip().lower() == new_name.lower()
+                    and name_key(p.name) == name_key(new_name)
                     for p in session.proposed_codes)
         if clash:
             return json.dumps({
@@ -6272,7 +6285,12 @@ def create_proposed_codes(coding_session_id: str,
 
     for p in approved:
         problem = None
-        key = p.name.strip().lower()
+        # name_key, not strip().lower(): 'Work  stress' and 'Work stress'
+        # are one name to add_code (it stores normalize_name), so keying
+        # the batch any other way lets twins through pre-validation and
+        # collide on the insert, after the backup (D5 section 3.3 promises
+        # validation before the backup and the write).
+        key = name_key(p.name)
         collision = _code_name_collisions(p.name)
         if collision:
             problem = (f"name collides with existing code '{collision}'; "
@@ -6322,8 +6340,9 @@ def create_proposed_codes(coding_session_id: str,
         created = []
         codings_applied = 0
         for p in approved:
+            stored_name = normalize_name(p.name)
             cid = wdb.add_code(
-                name=p.name.strip(),
+                name=stored_name,
                 owner=owner,
                 memo=p.memo or "",
                 category_id=(category_ids.get(p.category)
@@ -6333,7 +6352,7 @@ def create_proposed_codes(coding_session_id: str,
             )
             p.created_code_id = cid
             created.append({"proposal_guid": p.guid, "code_id": cid,
-                            "name": p.name.strip(),
+                            "name": stored_name,      # the name as stored
                             "category": p.category})
             if apply_coded_segments:
                 for seg in p.example_segments:
