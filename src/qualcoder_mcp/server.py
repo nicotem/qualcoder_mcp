@@ -808,8 +808,12 @@ def _find_existing_by_name(rows, name: str, kind: str, plural: str):
         ambiguity, (None, None, None) when nothing matches.
     """
     wanted = unicodedata.normalize("NFC", normalize_name(name))
+    # normalize_name on BOTH sides (D5 section 3.2): a stored name that
+    # differs only by a run of whitespace is the same name, so it must
+    # match in tier 1 rather than fall through to the case-insensitive
+    # tier and be labelled a case difference that is not there.
     exact = [r for r in rows
-             if unicodedata.normalize("NFC", r["name"]) == wanted]
+             if unicodedata.normalize("NFC", normalize_name(r["name"])) == wanted]
     if len(exact) == 1:
         return exact[0], "exact", None
     key = name_key(name)
@@ -821,9 +825,9 @@ def _find_existing_by_name(rows, name: str, kind: str, plural: str):
         return None, None, {
             "error": f"{kind.capitalize()} name '{normalize_name(name)}' "
                      f"matches {len(candidates)} existing {plural} that "
-                     f"differ only by letter case or Unicode form; use the "
-                     f"exact spelling of the one you mean (their ids are "
-                     f"listed).",
+                     f"differ only by letter case, spacing or Unicode "
+                     f"form; use the exact spelling of the one you mean "
+                     f"(their ids are listed).",
             "candidates": [{"id": r["id"], "name": r["name"]}
                            for r in candidates],
         }
@@ -863,8 +867,17 @@ def _memo_not_applied_clause(memo: Optional[str]) -> str:
 def _existing_code_result(rows, name: str, *, has_supercid: bool,
                           category: Optional[str], category_id: Optional[int],
                           parent_code_id: Optional[int],
+                          color_requested: Optional[str],
                           color_target: Optional[str], memo: Optional[str]):
-    """already_exists result for create_code, or an ambiguity error, or None."""
+    """already_exists result for create_code, or an ambiguity error, or None.
+
+    `color_requested` is the argument as the caller gave it and
+    `color_target` is that colour after palette snapping. The comparison
+    with the stored colour uses the snapped target, because that is what
+    a write would have stored, but `requested` echoes the argument as
+    given, and `color_requested` / `color_snapped` disclose the snap the
+    same way every other colour-carrying result in this batch does.
+    """
     row, match, err = _find_existing_by_name(rows, name, "code", "codes")
     if err is not None:
         return err
@@ -900,8 +913,13 @@ def _existing_code_result(rows, name: str, *, has_supercid: bool,
         requested["parent_code_id"] = parent_code_id
         message += (f" It is not nested under code {parent_code_id}; "
                     f"re-parenting a sub-code is done in QualCoder.")
+    disclosure = _color_disclosure(color_requested, color_target)
     if color_target is not None and color_target != row.get("color"):
-        requested["color"] = color_target
+        requested["color"] = color_requested
+    if disclosure.get("color_snapped"):
+        message += (f" The colour you asked for ({color_requested}) is not a "
+                    f"QualCoder palette colour; the nearest one is "
+                    f"{color_target}.")
     message += _memo_not_applied_clause(memo)
     result = {
         "created": False,
@@ -910,6 +928,7 @@ def _existing_code_result(rows, name: str, *, has_supercid: bool,
         "message": message,
         "code": echo,
     }
+    result.update(disclosure)
     if requested:
         result["requested"] = requested
     return result
@@ -6571,7 +6590,7 @@ def create_code(name: str, category: Optional[str] = None,
         return _existing_code_result(
             rows, norm_name, has_supercid=has_supercid, category=category,
             category_id=category_id, parent_code_id=parent_code_id,
-            color_target=color_target, memo=memo)
+            color_requested=color, color_target=color_target, memo=memo)
 
     # Read-only pre-check: a duplicate costs no lock, upgrade or backup
     dup = _existing(ro_db.list_codes())

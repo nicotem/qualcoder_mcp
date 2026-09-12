@@ -18,6 +18,7 @@ non-ASCII names travel through SQLite as text only.
 import json
 import sqlite3
 import random
+import time
 import unicodedata
 from pathlib import Path
 
@@ -29,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).parent))  # sibling test helpers
 
 import qualcoder_mcp.server as server
 from qualcoder_mcp.database import (QualcoderDatabase, QUALCODER_COLORS,
-                                    snap_to_palette, normalize_name, name_key)
+                                    QUALCODER_LOCK_FILENAME, snap_to_palette,
+                                    normalize_name, name_key, validate_qda_path)
 from test_v17_support import make_project, add_subcode  # noqa: E402
 from test_qc40_visibility import _apply_visibility_schema  # noqa: E402
 
@@ -115,6 +117,10 @@ def _reload():
 def _backups(project_path):
     project = Path(project_path)
     return sorted(project.parent.glob(f"{project.stem}_backup_*"))
+
+
+def _lock(project_path):
+    return validate_qda_path(project_path).parent / QUALCODER_LOCK_FILENAME
 
 
 def _count(project_path, table):
@@ -363,6 +369,72 @@ class TestIdempotentCreates:
 
         assert _backups(qualcoder_db_path) == before
         assert {t: _count(qualcoder_db_path, t) for t in counts} == counts
+
+    def test_duplicate_echoes_the_colour_argument_not_the_snapped_one(
+            self, setup_server, qualcoder_db_path):
+        """Fix round 1, F6. `requested` lists the ARGUMENTS that differ from
+        the stored row (D5 section 3.3), so the colour echoed there is the
+        one the caller gave. The comparison still uses the snapped target,
+        because that is what a write would have stored, and the snap is
+        disclosed with the same color_requested / color_snapped pair every
+        other colour-carrying result in this batch uses."""
+        before = _backups(qualcoder_db_path)
+        out = json.loads(server.create_code("stress", color="#FF0000"))
+        assert out["created"] is False and out["reason"] == "already_exists"
+        assert out["code"]["color"] == "#FF0000"        # the stored row
+        assert out["requested"] == {"name": "stress", "color": "#FF0000"}
+        assert out["color_requested"] == "#FF0000"
+        assert out["color_snapped"] is True
+        assert "#E65100" in out["message"]              # the nearest palette colour
+        assert _backups(qualcoder_db_path) == before
+        assert _count(qualcoder_db_path, "code_name") == 2
+
+    def test_duplicate_with_a_palette_colour_reports_no_snap(
+            self, setup_server, qualcoder_db_path):
+        # Stored #0D47A1, asked for the same colour in lower case: nothing
+        # differs, so no `requested` colour and no snap.
+        _exec(qualcoder_db_path, "UPDATE code_name SET color='#0D47A1' WHERE cid=1")
+        _reload()
+        out = json.loads(server.create_code("Stress", color="#0d47a1"))
+        assert out["created"] is False
+        assert out["color_requested"] == "#0d47a1"
+        assert out["color_snapped"] is False
+        assert "requested" not in out
+        assert "nearest" not in out["message"]
+
+    def test_whitespace_only_difference_is_an_exact_match(
+            self, setup_server, qualcoder_db_path):
+        """Fix round 1, F11. D5 section 3.2 compares after whitespace
+        normalisation in BOTH tiers. A GUI-created row with a double space
+        used to fall through to tier 2 and be labelled a case difference
+        that was not there."""
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_name (cid, name, memo, catid, owner, date, color) "
+              "VALUES (9, 'Work  stress', '', NULL, 'gui_user', '2024-01-15', "
+              "'#F5D0A9')")
+        _reload()
+        out = json.loads(server.create_code("Work stress"))
+        assert out["created"] is False
+        assert out["match"] == "exact"                  # not case_insensitive
+        assert out["code"]["id"] == 9
+        assert out["requested"] == {"name": "Work stress"}
+        assert _count(qualcoder_db_path, "code_name") == 3
+
+    def test_whitespace_twins_are_an_ambiguity_like_case_twins(
+            self, setup_server, qualcoder_db_path):
+        """Both tiers now normalise, so a codebook holding both spellings is
+        ambiguous in tier 1 exactly as it already was in tier 2."""
+        for cid, name in ((9, "Work  stress"), (10, "Work stress")):
+            _exec(qualcoder_db_path,
+                  "INSERT INTO code_name (cid, name, memo, catid, owner, date, color) "
+                  "VALUES (?, ?, '', NULL, 'gui_user', '2024-01-15', '#F5D0A9')",
+                  (cid, name))
+        _reload()
+        out = json.loads(server.create_code("work stress"))
+        assert "error" in out and "spacing" in out["error"]
+        assert sorted(c["id"] for c in out["candidates"]) == [9, 10]
+        assert _count(qualcoder_db_path, "code_name") == 4
+        assert _backups(qualcoder_db_path) == []
 
     def test_case_variant_duplicate(self, setup_server, qualcoder_db_path):
         out = json.loads(server.create_code("coping"))
@@ -662,6 +734,60 @@ class TestApplyCodingsAlreadyExisting:
         assert session.get_suggestion_by_guid(guid).status == "applied"
         again = json.loads(server.apply_codings(sid))
         assert "already applied" in again["error"]
+
+    def test_all_existing_answers_before_the_write_gate(self, setup_server,
+                                                        qualcoder_db_path):
+        """The declared exception to "the gate comes first" (D5, fix round 1
+        F8). Eight codebook tools refuse under a QualCoder lock whatever the
+        arguments; apply_codings scans for codings that are already in the
+        database first, so a fully redundant batch answers "nothing to
+        write" even while the project is open. Nothing reaches the project
+        either way, and the CHANGELOG now says so."""
+        _exec(qualcoder_db_path,
+              "INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner, date, memo) "
+              "VALUES (1, 1, 'I feel stressed about deadlines', 24, 55, "
+              "'AI Coding Assistant', '2024-01-15', '')")
+        _reload()
+        sid = _sid()
+        (guid,) = _record(sid, [STRESS])
+        server.update_suggestion_status(sid, approve=[guid])
+
+        before = _backups(qualcoder_db_path)
+        n_before = _count(qualcoder_db_path, "code_text")
+        lock = _lock(qualcoder_db_path)
+        lock.write_text(f"gui_user\n{time.time()}", encoding="utf-8")
+        try:
+            out = server.apply_codings(sid)
+        finally:
+            lock.unlink()
+
+        assert "EVERY APPROVED CODING IS ALREADY IN THE DATABASE" in out
+        assert "gui_user" not in out            # not the lock refusal
+        assert _backups(qualcoder_db_path) == before
+        assert _count(qualcoder_db_path, "code_text") == n_before
+        # The session file is still updated: the suggestion is applied.
+        assert server.session_manager.load_session(sid) \
+            .get_suggestion_by_guid(guid).status == "applied"
+
+    def test_a_batch_with_work_to_do_still_refuses_under_the_lock(
+            self, setup_server, qualcoder_db_path):
+        """The exception is narrow: as soon as one approved suggestion would
+        be written, the lock refusal comes back and nothing is touched."""
+        sid = _sid()
+        (guid,) = _record(sid, [STRESS])
+        server.update_suggestion_status(sid, approve=[guid])
+        before = _backups(qualcoder_db_path)
+        n_before = _count(qualcoder_db_path, "code_text")
+        lock = _lock(qualcoder_db_path)
+        lock.write_text(f"gui_user\n{time.time()}", encoding="utf-8")
+        try:
+            out = server.apply_codings(sid)
+        finally:
+            lock.unlink()
+
+        assert "gui_user" in out
+        assert _backups(qualcoder_db_path) == before
+        assert _count(qualcoder_db_path, "code_text") == n_before
 
     def test_same_span_under_another_owner_is_written(self, setup_server,
                                                        qualcoder_db_path):

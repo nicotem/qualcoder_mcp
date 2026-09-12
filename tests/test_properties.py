@@ -356,7 +356,7 @@ def test_unicode_vectors_apply_codings_seltext(fulltext, segment, p0, p1):
 #          the suggestion marked applied; the DB invariants still hold.
 #          (Before v0.12 this pinned an error plus rollback.)
 # ===========================================================================
-def test_duplicate_apply_rolls_back_cleanly():
+def test_duplicate_apply_is_idempotent_no_write_no_backup():
     run = _new_run_dir()
     saved = H.save_server_state()
     try:
