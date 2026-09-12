@@ -271,6 +271,9 @@ class TestInductiveLoop:
                 "guid": str(uuid.uuid4()),
             }],
         }
+        # The manager creates its storage directory on the first save
+        # (v0.12 fix round 1, F16); this test seeds a file by hand.
+        server.session_manager.storage_dir.mkdir(parents=True, exist_ok=True)
         f = server.session_manager.storage_dir / f"session_{sid}.json"
         f.write_text(json.dumps(v07), encoding="utf-8")
 

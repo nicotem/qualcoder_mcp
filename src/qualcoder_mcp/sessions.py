@@ -515,9 +515,18 @@ class SessionManager:
     )
 
     def __init__(self, storage_dir: str = "~/.qualcoder_mcp/sessions"):
+        # Constructing a manager must not touch the disk: the server
+        # builds one at import time, and `qualcoder-mcp --version` would
+        # otherwise create the storage directory before it had even read
+        # its own command line (v0.12 fix round 1, F16). The directory is
+        # created on the first save; every read path copes with its
+        # absence (a glob over a missing directory yields nothing).
         self.storage_dir = Path(storage_dir).expanduser()
+        logger.debug(f"SessionManager storage: {self.storage_dir}")
+
+    def _ensure_storage_dir(self) -> None:
+        """Create the storage directory; called before every write."""
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"SessionManager initialised with storage: {self.storage_dir}")
 
     @classmethod
     def _validate_session_id(cls, session_id: str) -> str:
@@ -553,6 +562,7 @@ class SessionManager:
             ValueError: If session ID is not valid UUID4 format
         """
         self._validate_session_id(session.session_id)
+        self._ensure_storage_dir()
         filepath = self.storage_dir / f"session_{session.session_id}.json"
         try:
             with open(filepath, 'w', encoding='utf-8') as f:

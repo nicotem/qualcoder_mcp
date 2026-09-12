@@ -161,6 +161,8 @@ withholds project data.
 - `qualcoder-mcp --version` and `python -m qualcoder_mcp.server
   --version` print the installed package version (from the package
   metadata, the same value the MCP handshake advertises) and exit 0.
+  Nothing else is written: no log line on standard error, and no state
+  directory created before the command line has been read.
 - Started with standard input on a terminal rather than a host's pipe,
   the server prints one paragraph to standard error explaining that an
   MCP host normally starts it, how to check the installation and how to

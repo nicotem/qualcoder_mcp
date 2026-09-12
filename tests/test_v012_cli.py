@@ -72,6 +72,50 @@ class TestVersionFlag:
         assert proc.returncode == 0, proc.stderr
         assert qualcoder_mcp.__version__ in proc.stdout
 
+    def test_version_says_nothing_on_stderr_and_creates_no_state(self, tmp_path):
+        """Fix round 1, F16. Importing the module used to call
+        logging.basicConfig and build a SessionManager, so `--version`
+        printed an INFO line above the version and created
+        ~/.qualcoder_mcp/sessions before it had read its own command line.
+        A fresh HOME proves neither happens."""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(REPO / "src")
+        env.pop("QUALCODER_PROJECT_PATH", None)
+        home = tmp_path / "home"
+        home.mkdir()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)          # Path.home() on Windows
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "qualcoder_mcp.server", "--version"],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            timeout=120)
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == f"qualcoder-mcp {qualcoder_mcp.__version__}"
+        assert proc.stderr == ""
+        assert not (home / ".qualcoder_mcp").exists()
+
+    def test_importing_the_module_writes_nothing_and_touches_nothing(self, tmp_path):
+        """The module may configure logging at import (the plain stderr
+        format has to win over FastMCP's rich one), but it must not LOG and
+        must not create anything, or --version speaks second."""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(REPO / "src")
+        env.pop("QUALCODER_PROJECT_PATH", None)
+        home = tmp_path / "home"
+        home.mkdir()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = subprocess.run(
+            [sys.executable, "-c", "import qualcoder_mcp.server"],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ""
+        assert proc.stderr == ""
+        assert list(home.iterdir()) == []
+
     def test_unknown_argument_is_refused_with_usage(self, capsys):
         with pytest.raises(SystemExit) as exc:
             server.main(["--bogus"])

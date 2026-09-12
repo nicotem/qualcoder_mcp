@@ -48,7 +48,13 @@ from .memo_privacy import extract_ai_memo, strip_private_memos
 from .sessions import (SessionManager, AICodingSession, CodingSuggestion,
                        ProposedCode)
 
-# Set up logging
+# Set up logging. The handler is installed at import, before FastMCP is
+# constructed, so the server's own plain stderr format wins over the rich
+# one FastMCP would otherwise install. Nothing may LOG at import time,
+# though: `qualcoder-mcp --version` and the usage error for an unknown
+# argument have to answer on their own stream with nothing above them
+# (v0.12 fix round 1, F16), and argument parsing necessarily happens
+# after the module is imported.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -8626,6 +8632,9 @@ def _print_tty_notice_if_interactive(stream=None, err=None) -> bool:
 
 def main(argv: Optional[List[str]] = None):
     """Main entry point for the MCP server."""
+    # Parse before anything else speaks: --version and the usage error for
+    # an unknown argument must answer on their own stream with no log line
+    # above them (v0.12 fix round 1, F16).
     _build_arg_parser().parse_args(sys.argv[1:] if argv is None else argv)
 
     # Check for optional pre-configured project (Option B: Fixed Project)

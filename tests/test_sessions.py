@@ -360,16 +360,27 @@ class TestAICodingSession:
 class TestSessionManager:
     """Tests for SessionManager class."""
 
-    def test_constructor_creates_directory(self, temp_session_dir):
-        """Test that SessionManager creates storage directory."""
+    def test_storage_directory_is_created_on_first_save(self, temp_session_dir,
+                                                        sample_session_data):
+        """The constructor touches nothing on disk (v0.12 fix round 1, F16:
+        `qualcoder-mcp --version` used to create the storage directory
+        before it had read its own command line). Reads cope with the
+        directory not being there; the first save creates it."""
         storage_path = Path(temp_session_dir) / "new_dir"
         assert not storage_path.exists()
 
         manager = SessionManager(str(storage_path))
 
+        assert manager.storage_dir == storage_path
+        assert not storage_path.exists()
+        assert manager.list_sessions() == []
+        assert manager.cleanup_old_sessions(days_old=0) == 0
+        assert manager.session_exists("00000000-0000-4000-8000-000000000000") is False
+
+        manager.save_session(AICodingSession(**sample_session_data))
+
         assert storage_path.exists()
         assert storage_path.is_dir()
-        assert manager.storage_dir == storage_path
 
     def test_save_session(self, temp_session_dir, sample_session_data):
         """Test saving a session to disk."""
