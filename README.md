@@ -726,12 +726,15 @@ carries the complete list.
 > update_suggestion_status, apply_codings, create_code, set_memo,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
-> loudly at startup. Measured for v0.11.0-alpha (the serialised tool
-> definitions: name, description and input schema, the same method as
-> the CHANGELOG), the definitions run to about 118,000 characters for
-> `full`, roughly 29k tokens at four characters per token, and about
-> 44,000 characters for `core`, roughly 11k tokens; see the LM Studio
-> recipe in INSTALL.md for what that means for context length.
+> loudly at startup. Measured for the 0.12 development branch (the
+> serialised tool definitions: name, description and input schema, the
+> same method as the CHANGELOG, under Python 3.13), the definitions run
+> to about 127,000 characters for `full`, roughly 32k tokens at four
+> characters per token, and about 49,000 characters for `core`, roughly
+> 12k tokens. On Python 3.10 to 3.12 the same definitions measure about
+> five per cent more, because those interpreters keep the docstring
+> indentation that 3.13 strips. See the LM Studio recipe in INSTALL.md
+> for what that means for context length.
 
 **Project Management:**
 - `list_available_projects(search_directories)` - Discover Qualcoder projects on your system

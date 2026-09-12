@@ -122,9 +122,11 @@ Show me the most frequently used codes
 When a new version is released: `cd` into the cloned folder, run
 `git pull`, then `venv/bin/pip install -e .`, and **fully quit and
 relaunch your Claude client**; new tools only appear after the
-restart. Confirm the installed version with `venv/bin/pip show
-qualcoder-mcp` (version `0.11.0-alpha` shows as `0.11.0a0`). Updates
-never touch your projects or backups (the server is code-only).
+restart. Confirm the installed version with `venv/bin/python -m
+qualcoder_mcp.server --version`, which prints the version and exits
+(`venv/bin/pip show qualcoder-mcp` still works and spells
+`0.11.0-alpha` as `0.11.0a0`). Updates never touch your projects or
+backups (the server is code-only).
 
 ## Troubleshooting
 

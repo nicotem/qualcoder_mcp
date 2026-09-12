@@ -85,8 +85,13 @@ Owner ruling X2 (QualCoder 4.0 parity, `ai_mcp_server.py:1409-1427`,
   codes through this server. The database constraint is still BINARY,
   so QualCoder's GUI can create such pairs; when it has, a create or
   lookup that matches both is refused with the candidates listed.
-- Write tools still refuse while QualCoder has the project open, and
-  that refusal comes before the duplicate or no-op check.
+- The eight codebook tools still refuse while QualCoder has the project
+  open, and that refusal comes before the duplicate or no-op check.
+  `apply_codings` is the exception: its scan for codings that are
+  already in the database runs first, so a batch in which every
+  approved suggestion already exists answers "nothing to write" rather
+  than the lock refusal. Nothing is written to the project either way;
+  the suggestions are marked applied in the session file.
 
 ### Added: methodology vocabulary and grounding language in tool guidance
 
@@ -127,7 +132,12 @@ withholds project data.
   whether a host shows it to the model is host behaviour.
 - Serialised tool definitions measure about 127,000 characters for the
   full toolset (roughly 32k tokens) and 49,000 for `core` (roughly 12k
-  tokens), up from 118,000 and 44,000 in 0.11.
+  tokens), up from 118,000 and 44,000 in 0.11. Measured under Python
+  3.13; Python 3.10 to 3.12 keep the docstring indentation that 3.13
+  strips at compile time, so the same definitions measure about five
+  per cent more there. Rather more of the growth comes from the palette
+  and idempotency notes on the codebook tools than from the methodology
+  guidance.
 
 ### Removed: the deprecated `session_id` duplicate in session-tool responses
 
@@ -157,13 +167,17 @@ withholds project data.
   stop it, then waits for a host as before. Hosts never present a TTY,
   so the notice never appears in normal use; standard output stays the
   MCP transport.
+- The server now parses its command line, so an argument it does not
+  recognise stops it with a usage message and exit code 2 where 0.11
+  ignored the argument and started. The documented host configurations
+  pass no arguments; if yours passes one, remove it.
 
 ### CI
 
 - GitHub Actions bumped by Dependabot (SHA-pinned, version comments
   kept): actions/checkout v7.0.1, actions/setup-python v7.0.0,
   actions/upload-artifact v7.0.1, actions/download-artifact v8.0.1,
-  pypa/gh-action-pypi-publish v1.14.1 (release/v1).
+  pypa/gh-action-pypi-publish v1.14.2 (release/v1).
 
 ### Upgrading from 0.11.x
 
