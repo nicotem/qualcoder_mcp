@@ -139,6 +139,12 @@ withholds project data.
   and pre-existing sessions load without migration. No tool has an
   argument named `session_id` (or `request_id`, `conversation_id`,
   `user_id`, `context`, `metadata`); a test pins it.
+- The rename happens where the session summary is built, so the
+  `available_sessions` list a session tool returns when it is given an
+  unknown or stale id carries `coding_session_id` in every entry as
+  well. A test walks the whole tool registry, calls each tool
+  (including the not-found paths) and refuses any JSON response that
+  carries `session_id` at any depth.
 
 ### Added: `--version` and a notice when the server is started by hand
 

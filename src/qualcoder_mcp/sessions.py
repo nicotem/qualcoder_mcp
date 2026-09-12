@@ -619,7 +619,10 @@ class SessionManager:
             days_old: Only show sessions from last N days (default: 30)
 
         Returns:
-            List of session metadata dictionaries
+            List of session metadata dictionaries. Each entry carries the
+            API-facing key ``coding_session_id``; the on-disk files keep
+            their own ``session_id`` key, which ``load_session`` and
+            ``cleanup_old_sessions`` continue to read.
         """
         sessions = []
         cutoff_date = datetime.now() - timedelta(days=days_old)
@@ -643,7 +646,9 @@ class SessionManager:
                     project_name = Path(data['project_path']).stem
 
                     sessions.append({
-                        'session_id': data['session_id'],
+                        # API-facing key only. The on-disk file keeps
+                        # 'session_id'; see the docstring above.
+                        'coding_session_id': data['session_id'],
                         'created_at': data['created_at'],
                         'last_modified': data['last_modified'],
                         'description': data.get('description', ''),

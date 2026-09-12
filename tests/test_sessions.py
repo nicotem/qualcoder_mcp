@@ -449,8 +449,8 @@ class TestSessionManager:
         sessions = manager.list_sessions()
 
         assert len(sessions) == 2
-        assert any(s["session_id"] == session1.session_id for s in sessions)
-        assert any(s["session_id"] == session2.session_id for s in sessions)
+        assert any(s["coding_session_id"] == session1.session_id for s in sessions)
+        assert any(s["coding_session_id"] == session2.session_id for s in sessions)
 
     def test_list_sessions_filtered_by_project(self, temp_session_dir):
         """Test listing sessions filtered by project path."""
@@ -465,7 +465,7 @@ class TestSessionManager:
         filtered = manager.list_sessions(project_path="/project1.qda")
 
         assert len(filtered) == 1
-        assert filtered[0]["session_id"] == session1.session_id
+        assert filtered[0]["coding_session_id"] == session1.session_id
 
     def test_list_sessions_filtered_by_age(self, temp_session_dir, sample_session_data):
         """Test listing sessions filtered by age."""
@@ -485,7 +485,7 @@ class TestSessionManager:
         sessions = manager.list_sessions(days_old=30)
 
         assert len(sessions) == 1
-        assert sessions[0]["session_id"] == recent_session.session_id
+        assert sessions[0]["coding_session_id"] == recent_session.session_id
 
     def test_list_sessions_includes_statistics(self, temp_session_dir, sample_session_data, sample_suggestion_data):
         """Test that list_sessions includes suggestion counts."""
@@ -519,8 +519,8 @@ class TestSessionManager:
         sessions = manager.list_sessions()
 
         assert len(sessions) == 2
-        assert sessions[0]["session_id"] == recent_session.session_id  # Most recent first
-        assert sessions[1]["session_id"] == old_session.session_id
+        assert sessions[0]["coding_session_id"] == recent_session.session_id  # Most recent first
+        assert sessions[1]["coding_session_id"] == old_session.session_id
 
     def test_delete_session(self, temp_session_dir, sample_session_data):
         """Test deleting a session."""

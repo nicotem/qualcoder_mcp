@@ -5350,10 +5350,9 @@ def list_coding_sessions(
                 }
             }, indent=2)
 
-        for entry in sessions:
-            if isinstance(entry, dict) and "session_id" in entry:
-                # API-facing key only; the on-disk key is unchanged
-                entry["coding_session_id"] = entry.pop("session_id")
+        # No rename needed here: SessionManager.list_sessions already
+        # builds every entry with the API-facing coding_session_id key,
+        # so the not-found envelopes below get it by construction too.
         return json.dumps({
             "session_count": len(sessions),
             "sessions": sessions
