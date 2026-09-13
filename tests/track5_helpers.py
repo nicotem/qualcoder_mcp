@@ -13,6 +13,7 @@ caller.
 """
 
 import os
+import stat as stat_module
 import sys
 import uuid
 import shutil
@@ -67,6 +68,73 @@ def real_workspace_entries(workspace=None):
         return None
     except OSError:
         return WORKSPACE_UNREADABLE
+
+
+# ---------------------------------------------------------------------------
+# Windows sharing semantics, emulated on POSIX
+# ---------------------------------------------------------------------------
+# Windows refuses to rename or remove a directory that still contains an
+# OPEN file, and refuses to rename or replace an open file, because
+# SQLite (like most writers) opens without FILE_SHARE_DELETE. POSIX
+# allows all three, so a test that moves or deletes a project while the
+# server still holds its connection passes here and fails there with
+# WinError 32, on both Windows jobs and on no other job. That is a whole
+# class of defect that only a Windows runner can see, and a runner is
+# the slowest place to find it, so the suite emulates the rule on POSIX
+# instead (conftest's `_windows_sharing_semantics`).
+SHARING_VIOLATION = (
+    "the process cannot access the file because it is being used by "
+    "another process (WinError 32, emulated): ")
+
+
+def _open_regular_file_keys():
+    """(st_dev, st_ino) of every regular file this process has open.
+
+    Read through `fstat` on the descriptor numbers the kernel lists, so
+    it does not depend on what `stat` of a `/dev/fd` entry means on a
+    given POSIX; Linux and macOS spell the directory differently and
+    both are handled.
+    """
+    fd_dir = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
+    keys = set()
+    try:
+        names = os.listdir(fd_dir)
+    except OSError:
+        return keys
+    for name in names:
+        try:
+            st = os.fstat(int(name))
+        except (OSError, ValueError):
+            continue
+        if stat_module.S_ISREG(st.st_mode):
+            keys.add((st.st_dev, st.st_ino))
+    return keys
+
+
+def open_paths_under(target) -> List[str]:
+    """Paths at or under `target` that this process still holds open.
+
+    Empty when nothing is open, which is the only state in which Windows
+    would allow the caller's rename, replace or removal.
+    """
+    keys = _open_regular_file_keys()
+    if not keys:
+        return []
+    target = Path(target)
+    found: List[str] = []
+    try:
+        is_dir = target.is_dir()
+    except OSError:
+        return found
+    candidates = target.rglob("*") if is_dir else iter((target,))
+    for path in candidates:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if stat_module.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) in keys:
+            found.append(str(path))
+    return sorted(found)
 
 # ---------------------------------------------------------------------------
 # v14 schema (identical column layout to tests/conftest.py's fixture)

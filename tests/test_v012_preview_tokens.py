@@ -440,8 +440,14 @@ class TestTwoStepFlow:
                                                    tmp_path):
         out = _preview(server.delete_code, 1)
         moved = Path(qualcoder_db_path).parent / "moved_project.qda"
-        Path(qualcoder_db_path).rename(moved)
+        # Close BEFORE the move. A live connection is an open handle on
+        # data.qda, and Windows refuses to rename a directory that holds
+        # one, so the old order was green here and failed on both Windows
+        # jobs. It is also the order a researcher uses: close the
+        # project, then move it.
         server.db.close()
+        server.db = None
+        Path(qualcoder_db_path).rename(moved)
         server.db = QualcoderDatabase(str(moved))
         server.current_project_path = str(moved)
         refused = _preview(server.delete_code, 1,

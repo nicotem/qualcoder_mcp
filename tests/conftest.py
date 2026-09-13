@@ -1,12 +1,13 @@
 """Pytest configuration and shared fixtures."""
 
+import os
 import pytest
 import sqlite3
+import sys
 import tempfile
 import shutil
 from pathlib import Path
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # The tests directory itself, so conftest can share one helper module
 # with the test files that import it by name (track5_helpers).
@@ -17,7 +18,8 @@ from qualcoder_mcp import database as _database
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.project_settings import DEFAULT_AI_CODER_NAME, SIDECAR_NAME
 from track5_helpers import (write_fixture_sidecar, REAL_WORKSPACE,
-                            WORKSPACE_UNREADABLE, real_workspace_entries)
+                            WORKSPACE_UNREADABLE, real_workspace_entries,
+                            SHARING_VIOLATION, open_paths_under)
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
 
 
@@ -98,6 +100,85 @@ def _nothing_is_written_to_the_real_workspace():
             f"the suite created {len(added)} {noun} in the real workspace "
             f"{REAL_WORKSPACE}: {added[:10]}; tests must stay inside "
             f"tmp_path")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _windows_sharing_semantics():
+    """Make POSIX refuse what Windows refuses, so the suite can see it.
+
+    Windows will not rename or remove a directory that still holds an
+    OPEN file, and will not rename or replace an open file: SQLite, like
+    most writers, opens without FILE_SHARE_DELETE. POSIX allows all
+    three, so a test that moves or deletes a project while the server
+    still holds its connection is green on ubuntu and macOS and fails on
+    BOTH Windows jobs with WinError 32, version-independently. A CI
+    runner is the slowest possible place to learn that, and the whole
+    class is invisible on the machine the code is written on, so this
+    guard reproduces the rule here instead.
+
+    It is emulation, not policy: on Windows the operating system already
+    enforces it and the fixture stands aside. `ignore_errors=True`
+    likewise stands aside, because Windows does not raise there either.
+    """
+    if sys.platform == "win32":
+        yield
+        return
+
+    real = {
+        "rmtree": shutil.rmtree,
+        "os_rename": os.rename,
+        "os_replace": os.replace,
+        # Path.rename resolves os.rename through a class-level accessor
+        # on 3.10 and 3.11 and calls it directly from 3.12, so both
+        # spellings are patched rather than relying on either.
+        "path_rename": Path.rename,
+        "path_replace": Path.replace,
+    }
+
+    def _refuse(operation, *targets):
+        for target in targets:
+            if target is None:
+                continue
+            held = open_paths_under(target)
+            if held:
+                raise PermissionError(
+                    f"{operation} {target}: {SHARING_VIOLATION}"
+                    f"{held[:5]}")
+
+    def rmtree(path, ignore_errors=False, *args, **kwargs):
+        if not ignore_errors:
+            _refuse("rmtree", path)
+        return real["rmtree"](path, ignore_errors, *args, **kwargs)
+
+    def os_rename(src, dst, **kwargs):
+        _refuse("rename", src, dst)
+        return real["os_rename"](src, dst, **kwargs)
+
+    def os_replace(src, dst, **kwargs):
+        _refuse("replace", src, dst)
+        return real["os_replace"](src, dst, **kwargs)
+
+    def path_rename(self, target):
+        _refuse("rename", self, target)
+        return real["path_rename"](self, target)
+
+    def path_replace(self, target):
+        _refuse("replace", self, target)
+        return real["path_replace"](self, target)
+
+    shutil.rmtree = rmtree
+    os.rename = os_rename
+    os.replace = os_replace
+    Path.rename = path_rename
+    Path.replace = path_replace
+    try:
+        yield
+    finally:
+        shutil.rmtree = real["rmtree"]
+        os.rename = real["os_rename"]
+        os.replace = real["os_replace"]
+        Path.rename = real["path_rename"]
+        Path.replace = real["path_replace"]
 
 
 @pytest.fixture(autouse=True)

@@ -8,9 +8,12 @@ appears on the first import of a fresh checkout. Both get a pin here.
 
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import warnings
+
+import pytest
 
 import track5_helpers as H
 from qualcoder_mcp import database
@@ -148,3 +151,85 @@ class TestTheSourceCompilesWithoutWarnings:
                               capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
         assert done.stderr == "", done.stderr
+
+
+NOT_ON_WINDOWS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the emulation stands aside on Windows, where the operating "
+           "system enforces the rule itself")
+
+
+@NOT_ON_WINDOWS
+class TestWindowsSharingSemanticsAreEmulated:
+    """The `_windows_sharing_semantics` guard, driven against itself.
+
+    The guard exists because a whole class of defect is invisible on the
+    machines this suite is written on: Windows refuses to rename or
+    remove a directory holding an OPEN file and POSIX allows it, so a
+    test that moves a project while the server still has its connection
+    is green on ubuntu and macOS and fails on BOTH Windows jobs. That is
+    exactly the failure this round diagnosed. A guard nobody drives can
+    stop reporting without anyone noticing, so these pin both answers:
+    it fires when a handle is open, and it stands aside when none is.
+    """
+
+    def test_a_directory_holding_an_open_file_cannot_be_renamed(
+            self, tmp_path):
+        folder = tmp_path / "project.qda"
+        folder.mkdir()
+        handle = open(folder / "data.qda", "wb")
+        try:
+            with pytest.raises(PermissionError) as caught:
+                folder.rename(tmp_path / "moved.qda")
+            assert H.SHARING_VIOLATION in str(caught.value)
+            assert "data.qda" in str(caught.value)
+        finally:
+            handle.close()
+
+    def test_the_same_rename_succeeds_once_the_handle_is_closed(
+            self, tmp_path):
+        """The other half: the guard must not refuse everything."""
+        folder = tmp_path / "project.qda"
+        folder.mkdir()
+        with open(folder / "data.qda", "wb") as handle:
+            handle.write(b"x")
+        moved = tmp_path / "moved.qda"
+        folder.rename(moved)
+        assert moved.is_dir()
+        assert (moved / "data.qda").exists()
+
+    def test_an_open_file_cannot_be_replaced_in_place(self, tmp_path):
+        target = tmp_path / "settings.json"
+        target.write_text("{}", encoding="utf-8")
+        source = tmp_path / "settings.json.tmp"
+        source.write_text("{}", encoding="utf-8")
+        handle = open(target, "rb")
+        try:
+            with pytest.raises(PermissionError):
+                os.replace(str(source), str(target))
+        finally:
+            handle.close()
+
+    def test_rmtree_refuses_but_ignore_errors_still_does_not(self, tmp_path):
+        """`ignore_errors=True` does not raise on Windows either, so the
+        emulation must not raise where Windows would stay silent."""
+        folder = tmp_path / "tree"
+        folder.mkdir()
+        handle = open(folder / "held.bin", "wb")
+        try:
+            with pytest.raises(PermissionError):
+                shutil.rmtree(folder)
+            shutil.rmtree(folder, ignore_errors=True)
+        finally:
+            handle.close()
+
+    def test_the_detector_reports_nothing_when_nothing_is_open(
+            self, tmp_path):
+        """Otherwise every assertion above could pass for the wrong
+        reason, with the detector simply answering "held" always."""
+        folder = tmp_path / "quiet"
+        folder.mkdir()
+        (folder / "a.bin").write_bytes(b"a")
+        assert H.open_paths_under(folder) == []
+        with open(folder / "a.bin", "rb"):
+            assert H.open_paths_under(folder) == [str(folder / "a.bin")]
