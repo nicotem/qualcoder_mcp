@@ -13,7 +13,7 @@ import functools
 import unicodedata
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Sequence, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
@@ -29,6 +29,7 @@ from .database import (
     validate_coder_note,
     validate_id,
     validate_limit,
+    MAX_LIMIT,
     hidden_coder_refusal,
     private_note_refusal,
     MAX_CODER_NAME_LENGTH,
@@ -60,6 +61,11 @@ from .cursors import (
     encode_cursor,
     fingerprint_arguments,
     page_block,
+)
+from .coder_comparison import (
+    SAME_CODER_OVERLAP_NOTE,
+    qualcoder_report_values,
+    statistics as comparison_statistics,
 )
 from .memo_privacy import extract_ai_memo, strip_private_memos
 from .preview_tokens import (
@@ -4086,6 +4092,460 @@ def query_by_attribute(
         the matched attribute value
     """
     result = get_db().query_by_attribute(attr_name, attr_value, attr_type, operator)
+    return _ai_json(result, indent=2)
+
+
+# The exact literal QualCoder writes as the owner of speaker-segmentation
+# rows (speakers.py:47 at 9bddf17): a pushpin pictograph and the words.
+# Compared as that literal, never as a pattern, because a researcher may
+# legitimately call themselves something similar.
+SPEAKER_SYSTEM_CODER = "\U0001F4CC Speaker coding"
+
+UNIT_OF_ANALYSIS = (
+    "Each character (Unicode code point) of each text file's fulltext in "
+    "scope is one item; for each code, each coder's decision per "
+    "character is binary (coded with that code or not). Overlapping "
+    "segments of the same code by the same coder count a character once. "
+    "Statistics are pooled over the files in scope per code, as "
+    "QualCoder's Coder comparison report does, and per file with "
+    "per_file=true, as QualCoder's Coder comparison by file report does. "
+    "Text codings only.")
+
+COMPARISON_METHOD = {
+    "kappa_qualcoder": (
+        "QualCoder's 'Kappa' column reproduced from the same counts "
+        "(reports.py:1140-1151 at QualCoder master 9bddf17): computed "
+        "over the characters at least one coder coded, with chance "
+        "agreement taken as the product of the two coders' "
+        "yes-proportions and no-proportions. It is not Cohen's kappa; it "
+        "lies within 0.07 below the Jaccard index "
+        "(agree_coded_only_pct / 100) and equals it when one coder's "
+        "characters are a subset of the other's."),
+    "kappa_cohen": (
+        "Cohen's kappa on the 2x2 table over all characters in scope: "
+        "Po = (both + neither) / N; Pe = (coded_a/N)(coded_b/N) + "
+        "((N - coded_a)/N)((N - coded_b)/N). Sensitive to the amount of "
+        "uncoded text (prevalence)."),
+    "agreement_pct": (
+        "QualCoder's Agree %: (both + neither) / N, the observed "
+        "agreement Po."),
+    "agree_coded_only_pct": (
+        "QualCoder's Agree coded only %: both / (both + a_only + "
+        "b_only), the Jaccard index of the two coders' character sets."),
+    "overall": (
+        "Not shown by QualCoder. pooled treats every (code, character) "
+        "pair as one item over codes with at least one coding in scope; "
+        "mean_of_codes is the unweighted mean over codes where the kappa "
+        "is defined."),
+    "rounding": (
+        "Percentages to 2 decimals and kappas to 4, with QualCoder's "
+        "expressions, so values match its report exactly where the "
+        "counts match."),
+}
+
+HIDDEN_COMPARISON_REFUSAL = (
+    "Comparison refused: a named coder is currently hidden in QualCoder; "
+    "nothing was computed. Pass allow_hidden_coder=true to compare "
+    "anyway, or ask the user to unhide the coder in QualCoder.")
+
+
+def _eligible_coders(db_, include_hidden: bool = False) -> List[str]:
+    """Coders with text codings that a comparison may name (D2 3.12).
+
+    A coder with rows but no `coder_names` row counts as visible, exactly
+    as the views treat it (app.py:1530-1540). The speaker-segmentation
+    coder is never eligible: its rows are speaker turns, not analysis.
+    """
+    names = [n for n in db_.coders_with_text_codings()
+             if n != SPEAKER_SYSTEM_CODER]
+    if include_hidden:
+        return names
+    return [n for n in names if db_.coder_name_visibility(n) != 0]
+
+
+def _hidden_eligible_count(db_) -> int:
+    """How many coders with text codings the project hides (a count)."""
+    return len([n for n in db_.coders_with_text_codings()
+                if n != SPEAKER_SYSTEM_CODER
+                and db_.coder_name_visibility(n) == 0])
+
+
+def _coder_listing(names: List[str]) -> str:
+    return "[" + ", ".join(f"'{n}'" for n in sorted(names)[:50]) + "]"
+
+
+def _hidden_clause(count: int) -> str:
+    if not count:
+        return ""
+    noun = "coder" if count == 1 else "coders"
+    return (f" (and {count} more {noun} hidden in QualCoder; pass "
+            f"allow_hidden_coder=true to include hidden coders)")
+
+
+def _coder_role(name: str, ai_names: Sequence[str]) -> str:
+    """A LABEL, not a fact about who typed (Appendix A, R3)."""
+    if name in ai_names:
+        return "ai_this_server"
+    if name == KNOWN_AI_ASSISTANT_OWNER:
+        return "known_ai_assistant"
+    if name == SPEAKER_SYSTEM_CODER:
+        return "speaker_system"
+    return "human_or_unknown"
+
+
+@mcp.tool()
+@_tool_guard
+def compare_coders(coder_a: Optional[str] = None,
+                   coder_b: Optional[str] = None,
+                   code_ids: Optional[List[int]] = None,
+                   file_ids: Optional[List[int]] = None,
+                   case_ids: Optional[List[int]] = None,
+                   include_subcodes: bool = False,
+                   per_file: bool = False,
+                   allow_hidden_coder: bool = False) -> str:
+    """Compare two coders' text coding, code by code (read-only).
+
+    The statistics QualCoder's Coder comparison dialogs show, as one
+    tool: how much of each file each coder coded with a code, how much
+    they agreed, and two agreement coefficients.
+
+    UNIT OF ANALYSIS: one character of one text file. For each code, each
+    coder either coded that character or did not, and a character coded
+    twice by the same coder with the same code counts once. Text codings
+    only; image and audio/video comparison is not covered.
+
+    TWO KAPPAS, both always present, because they answer different
+    questions and QualCoder's own column is not the textbook statistic.
+    kappa_qualcoder reproduces QualCoder's 'Kappa' from the same counts:
+    it looks only at the characters somebody coded, and its chance
+    correction is small, so it sits just below the proportion of coded
+    characters both coders agreed on. kappa_cohen is Cohen's kappa over
+    every character in scope, which is the familiar statistic and is
+    sensitive to how much of the text is uncoded. Report both, and say
+    which you are quoting.
+
+    A value that is undefined is null with a kappa_note saying why,
+    never a string in a number's place.
+
+    Args:
+        coder_a: First coder's name (exact, after trimming spaces)
+        coder_b: Second coder's name; give both or neither
+        code_ids: Restrict to these codes (at most 200)
+        file_ids: Restrict to these text files (at most 500)
+        case_ids: Restrict to the files linked to these cases
+        include_subcodes: Add each code's descendants as separate rows
+                (never merged into the parent)
+        per_file: Add per-file rows inside each code
+        allow_hidden_coder: Compare a coder that QualCoder currently
+                hides (the result then says the filter was bypassed)
+
+    Returns:
+        JSON with per_code rows, an overall block, the scope, and the
+        method texts that say exactly what each number means
+
+    Example:
+        "Compare my coding with the AI's for the Stress code"
+    """
+    db_ = get_db()
+    ai_names = _ai_names_for_project()
+
+    # --- the two coders -------------------------------------------------
+    if (coder_a is None) != (coder_b is None):
+        return json.dumps({"error": (
+            "coder_a and coder_b must both be given, or both omitted to "
+            "compare the project's two coders automatically.")})
+    if coder_a is not None:
+        for value, label in ((coder_a, "coder_a"), (coder_b, "coder_b")):
+            if not isinstance(value, str):
+                return json.dumps({"error": f"{label} must be a string"})
+            if not value.strip():
+                return json.dumps({
+                    "error": f"{label} must be a non-empty coder name."})
+        coder_a = coder_a.strip()
+        coder_b = coder_b.strip()
+        if coder_a == coder_b:
+            return json.dumps({"error": (
+                "coder_a and coder_b must be two different coder names.")})
+
+    hidden_count = _hidden_eligible_count(db_)
+    eligible = _eligible_coders(db_, include_hidden=allow_hidden_coder)
+    if coder_a is None:
+        # Auto-selection: upstream pre-selects when a project has exactly
+        # two coders (reports.py:862-864), narrowed to text codings and
+        # to coders the caller may name.
+        if len(eligible) != 2:
+            count = len(eligible)
+            noun = "coder" if count == 1 else "coders"
+            tail = ("; a comparison needs two." if count < 2
+                    else ". Name two of them.")
+            return json.dumps({"error": (
+                f"coder_a and coder_b are required: this project has "
+                f"{count} {noun} with text codings visible in QualCoder: "
+                f"{_coder_listing(eligible)}"
+                f"{_hidden_clause(hidden_count)}{tail}")})
+        coder_a, coder_b = eligible[0], eligible[1]
+
+    for value, label in ((coder_a, "coder_a"), (coder_b, "coder_b")):
+        if value == SPEAKER_SYSTEM_CODER:
+            return json.dumps({"error": (
+                f"'{value}' is QualCoder's speaker segmentation coder, not "
+                f"an analyst; its rows are speaker turns and cannot be "
+                f"compared as codings.")})
+
+    # The hidden rule for this tool: the coder names are its SUBJECT, so
+    # naming a hidden coder needs the explicit boolean, and with it the
+    # tool behaves exactly as the v0.11 read override does (B3.4).
+    caps = getattr(db_, "capabilities", None)
+    has_visibility = caps is not None and caps.has_coder_visibility
+    if has_visibility and not allow_hidden_coder:
+        if db_.coder_name_visibility(coder_a) == 0 or \
+                db_.coder_name_visibility(coder_b) == 0:
+            return json.dumps({"error": HIDDEN_COMPARISON_REFUSAL})
+
+    known_coders = set(db_.coders_with_text_codings())
+    for value, label in ((coder_a, "coder_a"), (coder_b, "coder_b")):
+        if value not in known_coders:
+            return json.dumps({"error": (
+                f"{label} '{value}' has no text codings in this project. "
+                f"Coders with text codings visible in QualCoder: "
+                f"{_coder_listing(_eligible_coders(db_))}"
+                f"{_hidden_clause(hidden_count)}.")})
+
+    # --- the scope ------------------------------------------------------
+    try:
+        codes_requested = _validate_id_list(
+            code_ids, "code_ids", 200,
+            f"code_ids has {len(code_ids or [])} entries; the maximum is 200.")
+        files_requested = _validate_id_list(
+            file_ids, "file_ids", 500,
+            f"file_ids has {len(file_ids or [])} entries; the maximum is "
+            f"500.")
+        cases_requested = _validate_id_list(
+            case_ids, "case_ids", 200,
+            f"case_ids has {len(case_ids or [])} entries; the maximum is "
+            f"200.")
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    known_codes = {c["id"] for c in db_.list_codes()}
+    for cid in codes_requested:
+        if cid not in known_codes:
+            return json.dumps({"error": f"Code ID {cid} does not exist"})
+    known_cases = {c["id"] for c in db_.list_cases()}
+    for caseid in cases_requested:
+        if caseid not in known_cases:
+            return json.dumps({"error": f"Case ID {caseid} does not exist"})
+    for fid in files_requested:
+        info = db_.get_file_content(fid)
+        if info is None:
+            return json.dumps({"error": f"File ID {fid} does not exist"})
+        if info.get("content") is None:
+            return json.dumps({"error": (
+                f"File ID {fid} is not a text file; compare_coders covers "
+                f"text codings only. QualCoder's Coder comparison by file "
+                f"report compares image and audio/video codings; this tool "
+                f"does not reproduce those.")})
+
+    if include_subcodes and codes_requested:
+        expanded: List[int] = []
+        for cid in codes_requested:
+            expanded.extend(db_.get_branch_cids(cid))
+        codes_requested = sorted(set(expanded))
+
+    scope = db_.comparison_scope(codes_requested or None,
+                                 files_requested or None,
+                                 cases_requested or None)
+    files = scope["files"]
+    codes = scope["codes"]
+    file_ids_in_scope = [f["file_id"] for f in files]
+    total_characters = sum(f["characters"] for f in files)
+
+    if per_file and len(codes) * len(files) > MAX_LIMIT:
+        return json.dumps({"error": (
+            f"per_file=true would return {len(codes) * len(files)} per-file "
+            f"rows; the maximum is {MAX_LIMIT}. Narrow the request with "
+            f"code_ids, file_ids or case_ids.")})
+
+    spans = db_.comparison_spans(coder_a, coder_b,
+                                 [c["code_id"] for c in codes],
+                                 file_ids_in_scope)
+
+    per_code: List[Dict[str, Any]] = []
+    pooled_totals = {"characters": 0, "coded_a": 0, "coded_b": 0, "both": 0}
+    codes_pooled = 0
+    kappa_q_values: List[float] = []
+    kappa_c_values: List[float] = []
+    clipped_total = 0
+
+    for code in codes:
+        cid = code["code_id"]
+        totals = {"coded_a": 0, "coded_b": 0, "both": 0}
+        file_rows: List[Dict[str, Any]] = []
+        overlap_a: List[int] = []
+        overlap_b: List[int] = []
+        overlap_pairs: List[Dict[str, Any]] = []
+        files_with_codings = 0
+        for file_info in files:
+            fid = file_info["file_id"]
+            length = file_info["characters"]
+            raw = spans.get((cid, fid), {"a": [], "b": []})
+            clipped = []
+            for side in ("a", "b"):
+                for pair in raw[side]:
+                    if pair[1] > length or pair[0] < 0:
+                        clipped.append(1)
+                    pair[0] = max(0, min(pair[0], length))
+                    pair[1] = max(0, min(pair[1], length))
+            clipped_total += len(clipped)
+            if db_._has_same_coder_overlap(raw["a"]):
+                overlap_a.append(fid)
+            if db_._has_same_coder_overlap(raw["b"]):
+                overlap_b.append(fid)
+            merged_a = db_._merge_spans(raw["a"])
+            merged_b = db_._merge_spans(raw["b"])
+            coded_a = db_._span_length(merged_a)
+            coded_b = db_._span_length(merged_b)
+            both = db_._intersection_length(merged_a, merged_b)
+            if coded_a or coded_b:
+                files_with_codings += 1
+                if fid in overlap_a or fid in overlap_b:
+                    overlap_pairs.append({
+                        "file_id": fid,
+                        "values": qualcoder_report_values(length, raw["a"],
+                                                          raw["b"])})
+            totals["coded_a"] += coded_a
+            totals["coded_b"] += coded_b
+            totals["both"] += both
+            if per_file and (coded_a or coded_b):
+                row = {"file_id": fid, "file_name": file_info["file_name"]}
+                row.update(comparison_statistics(length, coded_a, coded_b,
+                                                 both))
+                file_rows.append(row)
+
+        entry: Dict[str, Any] = {
+            "code_id": cid,
+            "code_name": code["code_name"],
+            "category": _category_name(db_, code["catid"]),
+        }
+        entry.update(comparison_statistics(total_characters,
+                                           totals["coded_a"],
+                                           totals["coded_b"], totals["both"]))
+        entry["files_in_scope"] = len(files)
+        entry["files_with_codings"] = files_with_codings
+        if per_file:
+            entry["files"] = file_rows
+            entry["files_without_codings"] = len(files) - files_with_codings
+        if overlap_a or overlap_b:
+            # QualCoder's dialog would show different numbers here, and
+            # the researcher is entitled to know why (D2 3.8).
+            entry["same_coder_overlap"] = {
+                "coder_a_files": sorted(overlap_a)[:50],
+                "coder_b_files": sorted(overlap_b)[:50],
+            }
+            if len(overlap_a) > 50 or len(overlap_b) > 50:
+                entry["same_coder_overlap"]["truncated"] = True
+            if overlap_pairs:
+                combined = {"agreement_pct": None,
+                            "agree_coded_only_pct": None, "kappa": None}
+                if len(overlap_pairs) == 1:
+                    values = overlap_pairs[0]["values"]
+                    combined = {k: values.get(k) for k in combined}
+                entry["qualcoder_report_values"] = combined
+                entry["qualcoder_report_values"]["per_file"] = overlap_pairs
+                entry["qualcoder_report_values"]["note"] = \
+                    SAME_CODER_OVERLAP_NOTE
+        per_code.append(entry)
+
+        if totals["coded_a"] or totals["coded_b"]:
+            codes_pooled += 1
+            pooled_totals["characters"] += total_characters
+            pooled_totals["coded_a"] += totals["coded_a"]
+            pooled_totals["coded_b"] += totals["coded_b"]
+            pooled_totals["both"] += totals["both"]
+        if entry.get("kappa_qualcoder") is not None:
+            kappa_q_values.append(entry["kappa_qualcoder"])
+        if entry.get("kappa_cohen") is not None:
+            kappa_c_values.append(entry["kappa_cohen"])
+
+    pooled = comparison_statistics(pooled_totals["characters"],
+                                   pooled_totals["coded_a"],
+                                   pooled_totals["coded_b"],
+                                   pooled_totals["both"])
+    overall = {
+        "pooled": {
+            "codes_pooled": codes_pooled,
+            "items": pooled_totals["characters"],
+            "agreement_pct": pooled.get("agreement_pct"),
+            "agree_coded_only_pct": pooled.get("agree_coded_only_pct"),
+            "kappa_qualcoder": pooled.get("kappa_qualcoder"),
+            "kappa_cohen": pooled.get("kappa_cohen"),
+        },
+        "mean_of_codes": {
+            "codes_included": len(kappa_q_values),
+            "kappa_qualcoder": (round(sum(kappa_q_values)
+                                      / len(kappa_q_values), 4)
+                                if kappa_q_values else None),
+            "kappa_cohen": (round(sum(kappa_c_values)
+                                  / len(kappa_c_values), 4)
+                            if kappa_c_values else None),
+        },
+    }
+
+    sidecar = read_sidecar(_current_project_folder())
+    result: Dict[str, Any] = {
+        "coder_a": coder_a,
+        "coder_b": coder_b,
+        "coder_roles": {coder_a: _coder_role(coder_a, ai_names),
+                        coder_b: _coder_role(coder_b, ai_names)},
+        "coder_roles_note": (
+            "Labels, not facts about who typed: ai_this_server means the "
+            "name is one this project's AI writes use or have used, "
+            "known_ai_assistant is QualCoder 4.0's own assistant string, "
+            "and human_or_unknown is everything else."),
+        "ai_coder_name": sidecar.name,
+        "ai_coder_name_source": ("project" if sidecar.is_set else "unset"),
+        "unit_of_analysis": UNIT_OF_ANALYSIS,
+        "method": COMPARISON_METHOD,
+        "scope": {
+            "files": len(files),
+            "characters": total_characters,
+            "codes": len(codes),
+            "file_ids": files_requested or None,
+            "case_ids": cases_requested or None,
+            "code_ids": codes_requested or None,
+            "include_subcodes": include_subcodes,
+            "empty_text_files": sum(1 for f in files
+                                    if f["characters"] == 0),
+        },
+        "per_code": per_code,
+        "overall": overall,
+        "notes": [],
+    }
+    if clipped_total:
+        result["notes"].append(
+            f"{clipped_total} coding(s) reach beyond the end of their "
+            f"file's text and were clipped to it; QualCoder's own report "
+            f"drops the overflow characters in the same way.")
+    if include_subcodes and caps is not None and not caps.has_supercid:
+        result["notes"].append(
+            "include_subcodes had no effect: this project's schema has no "
+            "sub-codes.")
+    note = _coder_visibility_note(coder_a if allow_hidden_coder else None)
+    if note is not None:
+        if allow_hidden_coder and (
+                db_.coder_name_visibility(coder_a) == 0
+                or db_.coder_name_visibility(coder_b) == 0):
+            result["coder_visibility"] = note
+        else:
+            result["coder_visibility"] = {
+                "hidden_coder_filter": "not_applicable",
+                "hidden_coders": db_.hidden_coder_count(),
+                "note": ("This project hides some coders in QualCoder, but "
+                         "neither named coder is hidden, so nothing was "
+                         "filtered."),
+            }
+    logger.info("compare_coders over %d code(s) and %d file(s)",
+                len(codes), len(files))
     return _ai_json(result, indent=2)
 
 

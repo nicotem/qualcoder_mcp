@@ -30,7 +30,7 @@ from mcp.client.stdio import stdio_client
 REPO = Path(__file__).resolve().parent.parent
 VENV_PY = Path(sys.executable)
 
-EXPECTED_FULL = 68
+EXPECTED_FULL = 69
 EXPECTED_CORE = 21
 
 SCHEMA = """

@@ -2947,6 +2947,177 @@ class QualcoderDatabase:
                                "Failed to count coded text matches")
         return int(row[0]) if row else 0
 
+    # ------------------------------------------------------------------
+    # Coder comparison (v0.12 B3, D2): QualCoder's two dialogs as one read
+    # ------------------------------------------------------------------
+    # The unit of analysis is one CHARACTER of one text file: for a given
+    # code, each coder either coded that character or did not. QualCoder's
+    # own report counts a character once per SEGMENT (reports.py:1061-1095
+    # at 9bddf17), so two overlapping segments of the same code by the same
+    # coder count that stretch twice and inflate its numbers; we count each
+    # character once per coder and DISCLOSE the difference rather than
+    # absorbing it, because a researcher comparing coders is entitled to
+    # know why our number differs from the dialog's.
+
+    @staticmethod
+    def _merge_spans(spans: Sequence[Sequence[int]]) -> List[List[int]]:
+        """Merge a coder's spans into a sorted disjoint list.
+
+        Set semantics: the same character coded twice with the same code
+        by the same coder is one decision, not two.
+        """
+        ordered = sorted((int(a), int(b)) for a, b in spans if b > a)
+        merged: List[List[int]] = []
+        for start, end in ordered:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return merged
+
+    @staticmethod
+    def _span_length(spans: Sequence[Sequence[int]]) -> int:
+        return sum(b - a for a, b in spans)
+
+    @staticmethod
+    def _intersection_length(a_spans: Sequence[Sequence[int]],
+                             b_spans: Sequence[Sequence[int]]) -> int:
+        """Characters in both sets, by a two-pointer sweep over merged
+        disjoint lists (both are sorted, so this is linear)."""
+        total = 0
+        i = j = 0
+        while i < len(a_spans) and j < len(b_spans):
+            start = max(a_spans[i][0], b_spans[j][0])
+            end = min(a_spans[i][1], b_spans[j][1])
+            if end > start:
+                total += end - start
+            if a_spans[i][1] <= b_spans[j][1]:
+                i += 1
+            else:
+                j += 1
+        return total
+
+    @staticmethod
+    def _has_same_coder_overlap(spans: Sequence[Sequence[int]]) -> bool:
+        """Whether a coder's own spans of one code overlap in one file.
+
+        Adjacency is not overlap: `[0,10)` and `[10,20)` share no
+        character, and QualCoder's own counting agrees there.
+        """
+        ordered = sorted((int(a), int(b)) for a, b in spans if b > a)
+        for k in range(1, len(ordered)):
+            if ordered[k][0] < ordered[k - 1][1]:
+                return True
+        return False
+
+    def comparison_scope(self, code_ids: Optional[List[int]] = None,
+                         file_ids: Optional[List[int]] = None,
+                         case_ids: Optional[List[int]] = None
+                         ) -> Dict[str, Any]:
+        """The files and codes a comparison covers.
+
+        Files with `fulltext IS NOT NULL` (`reports.py:877`), which
+        includes imported documents and PDFs and excludes image and A/V
+        sources; empty texts are in scope and contribute zero characters.
+        Codes ordered by `lower(name)` then cid, as QualCoder orders its
+        own report.
+        """
+        where = ["fulltext IS NOT NULL"]
+        params: List[Any] = []
+        if file_ids:
+            where.append("id IN (" + ",".join("?" for _ in file_ids) + ")")
+            params.extend(file_ids)
+        if case_ids:
+            # Whole files linked to a case through case_text, QualCoder's
+            # own "Show case files" scoping
+            # (report_compare_coder_file.py:212-215)
+            where.append("id IN (SELECT fid FROM case_text WHERE caseid IN ("
+                         + ",".join("?" for _ in case_ids) + "))")
+            params.extend(case_ids)
+        try:
+            files = self.conn.execute(
+                f"SELECT id, name, LENGTH(fulltext) AS n FROM source "
+                f"WHERE {' AND '.join(where)} ORDER BY COALESCE(name,''), id",
+                tuple(params)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "comparison_scope",
+                               "Failed to read the files in scope")
+        code_where = ""
+        code_params: tuple = ()
+        if code_ids:
+            code_where = (" WHERE cid IN ("
+                          + ",".join("?" for _ in code_ids) + ")")
+            code_params = tuple(code_ids)
+        try:
+            codes = self.conn.execute(
+                f"SELECT cid, name, catid FROM code_name{code_where} "
+                f"ORDER BY lower(name), cid", code_params).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "comparison_scope",
+                               "Failed to read the codes in scope")
+        return {
+            "files": [{"file_id": int(r["id"]), "file_name": r["name"] or "",
+                       "characters": int(r["n"] or 0)} for r in files],
+            "codes": [{"code_id": int(r["cid"]), "code_name": r["name"],
+                       "catid": r["catid"]} for r in codes],
+        }
+
+    def comparison_spans(self, coder_a: str, coder_b: str,
+                         code_ids: List[int], file_ids: List[int],
+                         honor_visibility: bool = False
+                         ) -> Dict[Any, Dict[str, List[List[int]]]]:
+        """Raw spans per (code, file) per coder, clipped to the text.
+
+        Read from the BASE table for the two NAMED owners: both coders are
+        explicit, which is the read override v0.11 already defines, and
+        the server layer decides whether naming a hidden coder was
+        allowed before we get here.
+        """
+        if not code_ids or not file_ids:
+            return {}
+        out: Dict[Any, Dict[str, List[List[int]]]] = {}
+        source = self.code_text_source(honor_visibility)
+        for start in range(0, len(code_ids), 500):
+            chunk = code_ids[start:start + 500]
+            marks = ",".join("?" for _ in chunk)
+            for fstart in range(0, len(file_ids), 500):
+                fchunk = file_ids[fstart:fstart + 500]
+                fmarks = ",".join("?" for _ in fchunk)
+                try:
+                    rows = self.conn.execute(
+                        f"SELECT cid, fid, pos0, pos1, owner FROM {source} "
+                        f"WHERE cid IN ({marks}) AND fid IN ({fmarks}) "
+                        f"AND owner IN (?, ?)",
+                        tuple(chunk) + tuple(fchunk) + (coder_a, coder_b)
+                    ).fetchall()
+                except sqlite3.Error as e:
+                    _raise_query_error(
+                        e, "comparison_spans",
+                        "Failed to read the codings to compare")
+                for row in rows:
+                    key = (int(row["cid"]), int(row["fid"]))
+                    entry = out.setdefault(key, {"a": [], "b": []})
+                    side = "a" if row["owner"] == coder_a else "b"
+                    entry[side].append([int(row["pos0"]), int(row["pos1"])])
+        return out
+
+    def coders_with_text_codings(self) -> List[str]:
+        """Every owner with at least one text coding, sorted.
+
+        Used for auto-selection and for the eligible-coder listings in
+        error texts; the SERVER layer filters this by visibility before
+        anything reaches the conversation, so this method stays plain.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT DISTINCT owner FROM code_text "
+                "WHERE owner IS NOT NULL AND owner != '' "
+                "ORDER BY owner").fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "coders_with_text_codings",
+                               "Failed to read the project's coders")
+        return [r["owner"] for r in rows]
+
     def get_coding_frequencies(self, coder: Optional[str] = None,
                                honor_visibility: bool = True
                                ) -> Dict[str, Any]:
