@@ -31,11 +31,20 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
+    # >=1.17.0 floor: QUALCODER_MCP_TOOLSET=core calls FastMCP.remove_tool,
+    # which does not exist before mcp 1.17.0. The floor used to read
+    # >=1.2.0, so a user installing at or near it got a server that could
+    # not honour its own documented setting: core mode raised
+    # AttributeError: 'FastMCP' object has no attribute 'remove_tool'.
+    # Measured rather than read, on Python 3.10.16 in throwaway venvs
+    # against this tree: 1.2.0 and 1.16.0 fail that way, 1.17.0 registers
+    # the 21 core tools and starts.
+    #
     # <2 cap: mcp 2.0.0 (July 2026) removed mcp.server.fastmcp, so an
     # uncapped install resolves to 2.x and the server cannot import
     # (verified empirically in a fresh venv). Lifting the cap is an
     # explicit migration project, not a routine bump.
-    "mcp>=1.2.0,<2",
+    "mcp>=1.17.0,<2",
 ]
 
 [project.urls]

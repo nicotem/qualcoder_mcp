@@ -99,6 +99,16 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   ones included. It now lists the visible coders and reports the rest as
   a count. The exported FILE is unchanged and still carries every
   coder's column, which is QualCoder's own report's behaviour.
+- If the project's coder-visibility table cannot be read at all on a
+  project that has the capability, no coder is named and the `coders`
+  key is omitted altogether, leaving a `coder_visibility` block whose
+  `hidden_coder_filter` reads "unknown" and whose note says why. This
+  is the one response-shape change of the three: `coders` was emitted
+  unconditionally in 0.11, so a script reading `result["coders"]`
+  raises `KeyError` on a project whose coder-visibility table is
+  damaged while the rest of the file reads fine. The exported FILE is
+  unaffected: it carries every coder's counts, as QualCoder's own
+  report does.
 
 ### Changed: destructive tools need a preview token, not a confirm flag
 
@@ -518,6 +528,16 @@ withholds project data.
 
 ### Fixed
 
+- **Dependency floor raised to `mcp>=1.17.0,<2`.** The declared floor was
+  `>=1.2.0`, which does not support the experimental core toolset:
+  `QUALCODER_MCP_TOOLSET=core` calls `FastMCP.remove_tool`, added in mcp
+  1.17.0, so an install at or near the old floor started with the full
+  tool surface refused and `AttributeError: 'FastMCP' object has no
+  attribute 'remove_tool'` instead. Established by testing rather than by
+  reading the release notes, on Python 3.10.16: mcp 1.2.0 and 1.16.0 fail
+  that way, and 1.17.0 registers the 21 core tools and starts. Pre-dates
+  0.12 (the call arrives with the core toolset in 0.10.0-alpha). The
+  upper cap is unchanged.
 - An id larger than SQLite's 64-bit integer (2**63, say) now answers with
   the tool's own refusal, `code_id must be at most 9223372036854775807`,
   instead of leaving the tool as a protocol error with no result. The

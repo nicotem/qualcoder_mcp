@@ -1152,6 +1152,26 @@ class TestNoSiteDecidesVisibilityPermissively:
         assert out["codes"] == 2 and out["categories"] == 1
         assert HIDDEN in (tmp_path / "freq.csv").read_text(encoding="utf-8-sig")
 
+    def test_the_release_entry_records_the_dropped_key(self):
+        """The entry has to carry this one, and did not.
+
+        `export_frequencies_csv` shipped before 0.12 with `coders`
+        emitted unconditionally (verified at v0.11.0-alpha), so the
+        branch above is a response-SHAPE change to a released tool: a
+        script reading result["coders"] raises KeyError on a project
+        whose coder-visibility table is damaged while the rest of the
+        file reads fine. The CHANGELOG recorded the other two outcomes
+        and not this one.
+        """
+        text = (Path(__file__).resolve().parents[1] / "CHANGELOG.md"
+                ).read_text(encoding="utf-8")
+        entry = " ".join(text.split("## [0.11")[0].split())
+        heading = "### Changed: `export_frequencies_csv` no longer names"
+        assert heading in entry
+        section = entry.split(heading)[1].split("### ")[0]
+        assert "`coders` key is omitted altogether" in section
+        assert "KeyError" in section
+
     # -- the AI coder name setter (D7 4.1) --------------------------------
 
     def test_the_setter_refuses_a_hidden_name_and_takes_the_override(

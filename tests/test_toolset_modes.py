@@ -320,16 +320,22 @@ class TestThePublishedSchemaBudget:
     # pydantic, which perturbs field descriptions and key ordering by a
     # few hundred characters: 0.1 to 0.5 per cent across the versions
     # measured. Two per cent is four times that, so a dependency bump
-    # inside `mcp>=1.2.0,<2` does not fail a green suite for a reason no
+    # inside `mcp>=1.17.0,<2` does not fail a green suite for a reason no
     # reader of the figure would care about.
     #
-    # It is still tight enough to catch what a reader WOULD care about:
-    # the average tool contributes 2,081 characters, about 1.5 per cent,
-    # so a tool added or removed without re-measuring is reported. And
-    # nothing smaller escapes either, because away from the reference
-    # environment is the loose half: on the environment the documents
-    # name the comparison is exact, and CI runs 3.13 on all three
-    # platforms, so a single added docstring turns those jobs red.
+    # What the loose half does NOT do, stated plainly because the
+    # previous version of this comment claimed the opposite: away from
+    # the reference interpreter it does not report a single tool added
+    # or removed. The average tool contributes 2,081 characters, about
+    # 1.5 per cent, which is INSIDE two per cent; two tools, about 2.9
+    # per cent, are outside it. So away from 3.13 this is an alarm for
+    # large drift and not a gate on the figure.
+    #
+    # The gate is the exact half. It runs on the interpreter the
+    # documents name, where a single added docstring paragraph is
+    # enough to turn it red, and CI runs 3.13 on all three platforms,
+    # so every change to the tool surface meets it there. The pin below
+    # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
     FULL_CHARS = "143,793"
@@ -423,8 +429,19 @@ class TestThePublishedSchemaBudget:
             <= self.TOLERANCE
         assert abs(outside - self.FULL_MEASURED) / self.FULL_MEASURED \
             > self.TOLERANCE
-        # ... and one average tool is inside the band it must report
-        assert 2000 / self.FULL_MEASURED < self.TOLERANCE
+
+    def test_one_average_tool_is_inside_the_loose_band(self):
+        """The limit of the loose half, asserted rather than described.
+
+        The comment above used to say a tool added or removed without
+        re-measuring is reported. It is not, away from the reference
+        interpreter: one average tool is about 1.5 per cent and the band
+        is two. Two tools are outside it. What catches one tool is the
+        exact half, on 3.13, which CI runs on all three platforms.
+        """
+        average_tool = self.FULL_MEASURED / 69
+        assert average_tool / self.FULL_MEASURED < self.TOLERANCE
+        assert 2 * average_tool / self.FULL_MEASURED > self.TOLERANCE
 
     def test_the_changelog_entry_carries_the_measurement(self):
         entry = self._read("CHANGELOG.md").split("## [0.11")[0]
@@ -478,3 +495,53 @@ class TestThePublishedSchemaBudget:
         assert full_after > core_after
         assert full_before > core_before
         assert full_after - full_before > core_after - core_before
+
+
+class TestTheDeclaredMcpFloorSupportsCoreMode:
+    """The floor has to support the mode the same package documents.
+
+    Pre-existing rather than a Batch B defect: `mcp.remove_tool` arrives
+    with the core toolset in 0.10.0-alpha and the floor has read
+    `mcp>=1.2.0` since. `FastMCP.remove_tool` does not exist before mcp
+    1.17.0, so a user installing at or near the declared floor and
+    setting QUALCODER_MCP_TOOLSET=core got
+    `AttributeError: 'FastMCP' object has no attribute 'remove_tool'`
+    rather than a 21-tool server.
+
+    Established by testing, not by reading release notes: throwaway venvs
+    on Python 3.10.16 with this tree on PYTHONPATH, calling
+    `_apply_toolset("core")` exactly as the startup path does. 1.2.0
+    fails, 1.16.0 fails, 1.17.0 registers 21 tools. The floor is 1.17.0
+    for that reason and this pin is what keeps the two together.
+    """
+
+    FIRST_MCP_WITH_REMOVE_TOOL = (1, 17, 0)
+
+    @staticmethod
+    def _declared_floor():
+        """The lower bound of the mcp requirement, from pyproject."""
+        text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+        found = re.search(r'"mcp>=(\d+)\.(\d+)\.(\d+),<2"', text)
+        assert found, "the mcp requirement is not in the shape this reads"
+        return tuple(int(part) for part in found.groups())
+
+    def test_the_declared_floor_is_not_below_the_measured_one(self):
+        assert self._declared_floor() >= self.FIRST_MCP_WITH_REMOVE_TOOL, (
+            "the declared mcp floor does not support "
+            "QUALCODER_MCP_TOOLSET=core, which calls FastMCP.remove_tool "
+            f"(first present in mcp "
+            f"{'.'.join(str(n) for n in self.FIRST_MCP_WITH_REMOVE_TOOL)})")
+
+    def test_the_call_core_mode_makes_exists_here(self):
+        """The other half: the floor is only right while this is the call
+        the gate makes. If `_apply_toolset` stops using the public
+        helper, this pin says so and the floor can be revisited."""
+        assert hasattr(server.mcp, "remove_tool")
+        source = (REPO / "src" / "qualcoder_mcp" / "server.py").read_text(
+            encoding="utf-8")
+        assert "mcp.remove_tool(name)" in source
+
+    def test_the_changelog_records_the_raised_floor(self):
+        entry = " ".join((REPO / "CHANGELOG.md").read_text(
+            encoding="utf-8").split("## [0.11")[0].split())
+        assert "`mcp>=1.17.0,<2`" in entry
