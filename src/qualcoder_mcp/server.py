@@ -81,6 +81,7 @@ from .preview_tokens import (
     TOKEN_VALID_FOR_MINUTES,
     PreviewSecretUnavailable,
     canonical_args,
+    ensure_state_dir,
     fingerprint_rows,
     issue,
     state_home as preview_tokens_state_home,
@@ -302,7 +303,12 @@ def _remember_mru_project(project_path: str) -> None:
     """
     tmp = None
     try:
-        _MRU_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Same folder as the token secret, same rule: owner-only, and a
+        # wider one is narrowed rather than left (fix round 4). The
+        # helper reads preview_tokens.STATE_HOME, which is the real
+        # folder in production and the sandbox's in the suite, while
+        # _MRU_FILE.parent is whichever of the two this process uses.
+        ensure_state_dir(_MRU_FILE.parent)
         payload = {
             "project_path": str(project_path),
             "updated": datetime.now().isoformat(timespec="seconds"),

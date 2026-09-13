@@ -575,6 +575,31 @@ withholds project data.
   trailing comment, a YAML anchor) fails the suite instead of escaping
   the check, and the jobs it found are compared with the jobs recorded.
 
+### Fixed: the preview-token secret, and what counts as a token
+
+- The secret's first creation was atomic in EXISTENCE but not in
+  CONTENT: the file was created empty and written afterwards, so a
+  second server starting inside that window read a zero-length file,
+  judged it malformed and rotated over the first one's secret. Both
+  creation and rotation now write a complete file and then publish it,
+  creation with a link (so first-writer-wins still holds and no
+  outstanding token is orphaned) and rotation with a replace.
+- The secret's mode was set at creation and never checked again. A
+  secret that other local users can read is rotated, with a warning,
+  rather than used. `~/.qualcoder_mcp` itself is created owner-only and
+  an existing wider one is narrowed; it used to be created with the
+  umask, which on a default account leaves it world-readable.
+- A token now has exactly one spelling. `verify` gated the timestamp
+  with `str.isdigit()`, which is True for superscripts and circled
+  digits that `int()` rejects (the six gated tools then returned a raw
+  Python message instead of the fixed refusal, with no `reason` and no
+  `nothing_changed`) and also True for fullwidth and Arabic-Indic
+  digits that `int()` decodes to the same integer (a live token
+  re-spelled in another digit script verified OK). Every field is
+  matched against an ASCII grammar, leading zeros and upper-case hex
+  are refused as second spellings, and non-ASCII is refused before it
+  can reach `hmac.compare_digest`, which raises on it.
+
 ### Fixed: the AI coder name file can no longer outgrow its own reader
 
 - Writes were capped at 200 history entries and reads at 64 KiB, two

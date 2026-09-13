@@ -237,17 +237,87 @@ class TestSecretFile:
 
     def test_the_loser_of_a_race_reads_the_winners_secret(self, tmp_path,
                                                           monkeypatch):
-        """O_EXCL on the final path: the second creator gets EEXIST and
-        reads rather than overwriting, so no token is orphaned."""
-        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        """First-writer-wins is unchanged by the atomicity fix: the
+        publish step is os.link, which raises FileExistsError exactly
+        where O_EXCL used to, so the loser reads rather than
+        overwriting and no outstanding token is orphaned."""
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
         winner = pt.load_secret()
-        real_open = pt.os.open
+        path = state / "preview_secret"
+        # The create branch, entered because the file did not exist a
+        # moment earlier, refuses rather than replacing.
+        with pytest.raises(FileExistsError):
+            pt._write_new_secret(path, exclusive=True)
+        assert path.read_text(encoding="ascii").strip() == winner
+        assert sorted(p.name for p in state.glob("*")) == ["preview_secret"]
+        # ... and load_secret's own fallback then reads the winner's
+        # value, which is the whole point: no outstanding token dies.
+        real_lexists = os.path.lexists
+        seen = []
 
-        def racing_open(path, flags, mode=0o777):
-            raise FileExistsError("another server won")
+        def lexists_false_once(target):
+            seen.append(target)
+            return False if len(seen) == 1 else real_lexists(target)
 
-        monkeypatch.setattr(pt.os, "open", racing_open)
+        monkeypatch.setattr(pt.os.path, "lexists", lexists_false_once)
         assert pt.load_secret() == winner
+
+    def test_the_final_path_is_never_created_before_its_content(
+            self, tmp_path, monkeypatch):
+        """The window the race went through: os.open created the final
+        path at length zero and the content was written afterwards, so a
+        second server starting inside that window read an empty file,
+        judged it malformed and rotated over the winner's secret, whose
+        own write then landed on an unlinked inode. Measured at 24
+        simultaneous starts: three distinct secrets in one run.
+
+        Faulted deterministically here, between creation and content:
+        whatever fails, nothing is published at the final name."""
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        path = state / "preview_secret"
+
+        def exploding_fdopen(*a, **k):
+            raise OSError("disk went away mid-write")
+
+        monkeypatch.setattr(pt.os, "fdopen", exploding_fdopen)
+        with pytest.raises(OSError):
+            pt._write_new_secret(path, exclusive=True)
+        assert not path.exists()
+        assert list(state.glob("*")) == [], list(state.glob("*"))
+
+    @POSIX_ONLY
+    def test_a_secret_widened_since_creation_is_rotated(self, tmp_path,
+                                                        monkeypatch):
+        """The mode was set at creation and never checked again, so a
+        secret widened by a restore, a sync tool or another account was
+        used as though it were still private. A secret others can read
+        is a secret others can mint tokens with."""
+        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        first = pt.load_secret()
+        path = tmp_path / "state" / "preview_secret"
+        os.chmod(path, 0o644)
+        rotated = pt.load_secret()
+        assert len(rotated) == 64
+        assert rotated != first
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert pt.load_secret() == rotated          # and it settles
+
+    @POSIX_ONLY
+    def test_the_state_folder_is_owner_only(self, tmp_path, monkeypatch):
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        pt.load_secret()
+        assert stat.S_IMODE(os.stat(state).st_mode) == 0o700
+
+    @POSIX_ONLY
+    def test_a_wider_state_folder_is_narrowed(self, tmp_path, monkeypatch):
+        state = tmp_path / "state"
+        state.mkdir(mode=0o755)
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        pt.load_secret()
+        assert stat.S_IMODE(os.stat(state).st_mode) & 0o077 == 0
 
     @pytest.mark.parametrize("content", ["", "not hex at all", "abc",
                                          "z" * 64, "a" * 63])
@@ -1025,3 +1095,109 @@ class TestHouseRulesOnTheNewTexts:
             server.prune_backups.__doc__ or "",
         ]
         _house_rules(texts)
+
+
+# =============================================================================
+# A TOKEN HAS EXACTLY ONE SPELLING (fix round 4, S9 and S10)
+# =============================================================================
+
+class TestTokenGrammar:
+    """verify() gated the timestamp with str.isdigit() and then called
+    int() on it. isdigit() is True for superscripts and circled digits
+    that int() REJECTS, so a crafted token left verify() by raising
+    instead of being refused, and the caller lost the fixed refusal
+    envelope for a raw Python message. In the other direction isdigit()
+    accepts fullwidth and Arabic-Indic digits that int() DECODES to the
+    same integer, so a live token re-spelled in another script verified
+    OK, because the MAC is computed over the decoded integer."""
+
+    ARGS = {"code_id": 1}
+    PROJECT = "/p/data.qda"
+    STATE = "state-fingerprint"
+
+    @pytest.fixture
+    def token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        return pt.issue("delete_code", self.ARGS, self.PROJECT, self.STATE)
+
+    def _verify(self, token):
+        return pt.verify(token, "delete_code", self.ARGS, self.PROJECT,
+                         self.STATE)
+
+    def test_the_token_it_issued_verifies(self, token):
+        assert self._verify(token) == pt.OK
+
+    @pytest.mark.parametrize("digits", [
+        "０１２３４５６７８９",
+        "٠١٢٣٤٥٦٧٨٩",
+        "०१२३४५६७८९",
+    ], ids=["fullwidth", "arabic-indic", "devanagari"])
+    def test_a_respelled_timestamp_is_refused_not_accepted(self, token,
+                                                           digits):
+        prefix, issued, bind, mac = token.split(".")
+        respelled = "".join(digits[int(c)] for c in issued)
+        assert respelled != issued
+        assert int(respelled) == int(issued)     # the codec's own reading
+        other = ".".join((prefix, respelled, bind, mac))
+        assert self._verify(other) == pt.MALFORMED
+
+    @pytest.mark.parametrize("odd", ["²", "³", "①",
+                                     "₂", "۱"])
+    def test_a_digit_int_would_reject_is_refused_not_raised(self, token,
+                                                            odd):
+        prefix, issued, bind, mac = token.split(".")
+        assert odd.isdigit() or odd.isdecimal()
+        other = ".".join((prefix, odd * len(issued), bind, mac))
+        assert self._verify(other) == pt.MALFORMED
+
+    def test_a_non_ascii_field_is_refused_not_raised(self, token):
+        """hmac.compare_digest REFUSES a non-ASCII str and raises
+        TypeError; the gate has to come before it."""
+        prefix, issued, bind, mac = token.split(".")
+        for other in (".".join((prefix, issued, "٠" * 8, mac)),
+                      ".".join((prefix, issued, bind, "٠" * 32)),
+                      ".".join((prefix, issued, bind, "ａ" * 32))):
+            assert self._verify(other) == pt.MALFORMED
+
+    def test_leading_zeros_are_a_second_spelling_and_are_refused(self,
+                                                                 token):
+        prefix, issued, bind, mac = token.split(".")
+        other = ".".join((prefix, "0" * 4 + issued, bind, mac))
+        assert int(other.split(".")[1]) == int(issued)
+        assert self._verify(other) == pt.MALFORMED
+
+    def test_upper_case_hex_is_a_second_spelling_and_is_refused(self,
+                                                                token):
+        prefix, issued, bind, mac = token.split(".")
+        assert self._verify(
+            ".".join((prefix, issued, bind.upper(), mac))) == pt.MALFORMED
+        assert self._verify(
+            ".".join((prefix, issued, bind, mac.upper()))) == pt.MALFORMED
+
+    def test_an_underscore_separator_is_refused(self, token):
+        """int(x, 16) accepts '1_2'; the grammar does not."""
+        prefix, issued, bind, mac = token.split(".")
+        assert self._verify(
+            ".".join((prefix, issued, "1_2ab3cd", mac))) == pt.MALFORMED
+
+    def test_an_overlong_timestamp_cannot_reach_int(self, token):
+        prefix, issued, bind, mac = token.split(".")
+        assert self._verify(
+            ".".join((prefix, "9" * 5000, bind, mac))) == pt.MALFORMED
+
+    def test_the_six_gated_tools_keep_the_fixed_refusal_envelope(
+            self, setup_server, qualcoder_db_path):
+        """The consequence that mattered: a raised ValueError reached
+        _tool_guard's generic branch and the caller got a raw Python
+        message with no reason and no nothing_changed."""
+        crafted = "qcp1.²²²².abcdef12." + "a" * 32
+        for out in (_preview(server.delete_code, 1, preview_token=crafted),
+                    _preview(server.merge_codes, 1, 2,
+                             preview_token=crafted),
+                    _preview(server.delete_category, 1,
+                             preview_token=crafted),
+                    _preview(server.merge_category, 1,
+                             preview_token=crafted)):
+            assert out["reason"] == "token_malformed", out
+            assert out["nothing_changed"] is True, out
+            assert "invalid literal" not in json.dumps(out)

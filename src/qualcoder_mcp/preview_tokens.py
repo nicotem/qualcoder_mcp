@@ -29,6 +29,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -39,6 +40,18 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "qcp1"
+# The grammar of a token this server issues, so exactly ONE spelling of
+# a given token verifies. `[0-9]`, never `\d`: in a str pattern `\d`
+# matches every Unicode Nd digit and `int()` decodes fullwidth,
+# Arabic-Indic, Devanagari and the rest to the same integer, so a live
+# token re-spelled in another digit script used to verify OK, because
+# the MAC is computed over the DECODED integer. The 12-digit bound also
+# makes `int()` below total (CPython refuses an int-str conversion past
+# 4300 digits), and the hex runs are lower-case because that is what
+# `hexdigest()` produces (fix round 4).
+_ISSUED_RE = re.compile(r"[0-9]{1,12}")
+_BIND_RE = re.compile(r"[0-9a-f]{8}")
+_MAC_RE = re.compile(r"[0-9a-f]{32}")
 TOKEN_VERSION = 1
 # Sixty minutes back, five forward: enough for a researcher to read a
 # preview and decide, and enough tolerance for a host whose clock is a
@@ -109,37 +122,94 @@ def _valid_secret(raw: str) -> Optional[str]:
     return text.lower()
 
 
-def _write_new_secret(path: Path, exclusive: bool) -> str:
-    """Create the secret. `exclusive` uses O_EXCL on the final path.
+def ensure_state_dir(path: Path) -> None:
+    """Create one of this server's state folders, owner-only, and
+    tighten a wider one.
 
-    First creation is exclusive on the final path, so two servers
-    starting at once cannot both write: the loser gets EEXIST and reads
-    the winner's secret. A ROTATION (an existing file we cannot read)
-    goes through mkstemp plus an atomic replace instead, because the
-    final path is already taken.
+    It holds the token secret and the MRU pointer, so the group and
+    other bits have no business being set. `mkdir` alone applies the
+    umask, which on a default macOS or Linux account leaves 0755: every
+    local account could list the folder and stat the secret. Creating at
+    0700 and narrowing an existing folder costs nothing and is not
+    undone by the next start (fix round 4).
+
+    Mode bits are meaningless on Windows, where this is a no-op beyond
+    the mkdir.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt":
+        return
+    try:
+        mode = stat.S_IMODE(os.stat(str(path)).st_mode)
+    except OSError:
+        return
+    if mode & 0o077:
+        try:
+            os.chmod(str(path), mode & ~0o077)
+        except OSError:
+            logger.warning("The qualcoder-mcp state folder is readable by "
+                           "other users on this machine and could not be "
+                           "narrowed.")
+
+
+def ensure_state_home() -> None:
+    """`ensure_state_dir` for the token secret's own folder."""
+    ensure_state_dir(STATE_HOME)
+
+
+def _write_new_secret(path: Path, exclusive: bool) -> str:
+    """Create the secret. `exclusive` refuses to replace an existing one.
+
+    BOTH paths publish a COMPLETE file: the bytes are written to a
+    private temp file, fsynced, and only then given the final name.
+    First creation used to `os.open` the final path with O_CREAT|O_EXCL
+    and write afterwards, which is atomic in EXISTENCE but not in
+    CONTENT: a second server starting inside that window saw a
+    zero-length file, judged it malformed and ROTATED over the winner's
+    secret, whose own write then landed on an unlinked inode. Measured
+    at 24 simultaneous starts on a fresh state home: three distinct
+    secrets in one run.
+
+    The publish step is what differs. First creation uses `os.link`,
+    which creates the final name only if it does not exist and raises
+    FileExistsError otherwise, so first-writer-wins still holds and the
+    loser reads the winner's secret. A ROTATION (an existing file we
+    cannot read) uses `os.replace`, because the final path is already
+    taken. D3 3.3 rejects replace-on-create for a real reason: last
+    writer wins, and the first server's outstanding tokens are orphaned.
     """
     value = secrets.token_hex(32)
-    STATE_HOME.mkdir(parents=True, exist_ok=True)
-    if exclusive:
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        fd = os.open(str(path), flags, 0o600)
-        with os.fdopen(fd, "w", encoding="ascii") as f:
-            f.write(value + "\n")
-        return value
+    ensure_state_home()
     fd, tmp_name = tempfile.mkstemp(dir=str(STATE_HOME),
                                     prefix=f"{SECRET_FILENAME}.",
                                     suffix=".tmp")
-    tmp = Path(tmp_name)
+    tmp: Optional[Path] = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="ascii") as f:
             f.write(value + "\n")
-        os.replace(str(tmp), str(path))
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+            f.flush()
+            os.fsync(f.fileno())
+        if os.name != "nt":
+            os.chmod(tmp_name, 0o600)      # mkstemp already does; be sure
+        if exclusive:
+            os.link(tmp_name, str(path))   # raises FileExistsError
+        else:
+            os.replace(tmp_name, str(path))
+            tmp = None                     # the replace consumed it
+    except BaseException:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            tmp = None
         raise
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()               # the link left the temp behind
+            except OSError:
+                pass
     return value
 
 
@@ -168,6 +238,21 @@ def load_secret() -> str:
         st = os.lstat(path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
             raise PreviewSecretUnavailable(SECRET_UNAVAILABLE_MESSAGE)
+        # The mode was set at creation and never looked at again, so a
+        # secret that had been widened since (by a restore, a copy, a
+        # sync tool, or another local account) was used as though it
+        # were still private. A secret any local user can read is a
+        # secret any local user can mint tokens with, so it is treated
+        # like any other unusable one and ROTATED, which writes a fresh
+        # 0600 file; tightening the old one in place would leave a value
+        # that may already have been read (fix round 4).
+        widened = os.name != "nt" and bool(stat.S_IMODE(st.st_mode) & 0o077)
+        if widened:
+            logger.warning(
+                "The preview-token secret was readable by other users on "
+                "this machine and has been rotated; outstanding preview "
+                "tokens will be refused.")
+            return _write_new_secret(path, exclusive=False)
         with open(path, "r", encoding="ascii", errors="replace") as f:
             raw = f.read(SECRET_READ_MAX_BYTES + 1)
         value = _valid_secret(raw)
@@ -322,18 +407,32 @@ def verify(token: Any, tool: str, args: Dict[str, Any], project: str,
     """
     if not isinstance(token, str):
         return MALFORMED
-    parts = token.strip().split(".")
+    token = token.strip()
+    # Every field of a token this server issues is ASCII: the prefix, a
+    # decimal timestamp and two lower-case hex runs. Gate on that once,
+    # here, rather than per field: hmac.compare_digest REFUSES to
+    # compare strings with non-ASCII characters and raises TypeError,
+    # which would leave verify() by raising instead of returning
+    # MALFORMED, and the caller would lose the fixed refusal envelope
+    # for a raw Python message (fix round 4).
+    if not token.isascii():
+        return MALFORMED
+    parts = token.split(".")
     if len(parts) != 4 or parts[0] != TOKEN_PREFIX:
         return MALFORMED
     _, issued_text, bind, mac = parts
-    if not issued_text.isdigit() or len(bind) != 8 or len(mac) != 32:
-        return MALFORMED
-    try:
-        int(bind, 16)
-        int(mac, 16)
-    except ValueError:
+    # A grammar, not a predicate: str.isdigit() is True for superscripts
+    # and circled digits that int() then REJECTS, raising ValueError
+    # past every caller, and int(x, 16) accepts spellings that are not
+    # what this server writes.
+    if not (_ISSUED_RE.fullmatch(issued_text) and _BIND_RE.fullmatch(bind)
+            and _MAC_RE.fullmatch(mac)):
         return MALFORMED
     issued = int(issued_text)
+    # One spelling only: "0000001700000000" decodes to the same integer
+    # and would verify under the same MAC.
+    if str(issued) != issued_text:
+        return MALFORMED
     current = _now() if now is None else int(now)
     if issued > current + TOKEN_MAX_SKEW_SECONDS:
         return EXPIRED
