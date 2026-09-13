@@ -588,3 +588,87 @@ TestQualcoderWriteMachine.settings = settings(
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large,
                            HealthCheck.filter_too_much],
 )
+
+
+# ===========================================================================
+# Test N (v0.12 B4) - the novelty filter never lets an excluded span through,
+#                     and never excludes a span it should not (D4 6, point 23)
+# ===========================================================================
+@settings(max_examples=_ex(60), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+@given(spec=project_spec(), pick=st.integers(0, 4))
+def test_novelty_filter_agrees_with_the_overlap_definition(spec, pick):
+    """Ours equals upstream's rule computed the slow way.
+
+    The reference is `ai_mcp_server.py:5245-5257` at 9bddf17 written out
+    literally: a candidate is excluded iff SOME excluded span (a, b)
+    satisfies `s < b and e > a`. The implementation merges the spans and
+    binary-searches them, which is the part worth checking against a
+    linear scan over random projects.
+    """
+    run = _new_run_dir()
+    saved = H.save_server_state()
+    try:
+        path = H.build_project(spec, parent=run)
+        H.set_server_project(path, str(Path(run) / "sessions"))
+        codes = [c["id"] for c in server.db.list_codes()]
+        assume(codes)
+        chosen = sorted({codes[pick % len(codes)]})
+        rows = H.query(path,
+                       "SELECT fid, pos0, pos1 FROM code_text WHERE cid = ?",
+                       (chosen[0],))
+        spans = [(r[1], r[2]) for r in rows if r[2] > r[1]]
+        by_file = {}
+        for r in rows:
+            if r[2] > r[1]:
+                by_file.setdefault(r[0], []).append((r[1], r[2]))
+        mask = server.db.excluded_span_mask(chosen)
+        for fid, file_spans in by_file.items():
+            entry = mask.get(fid)
+            for start, end in [(0, 1), (0, 5), (3, 4), (10, 40), (50, 51)]:
+                reference = any(start < b and end > a
+                                for (a, b) in file_spans)
+                assert server.db.span_is_excluded(entry, start, end) is \
+                    reference, (fid, start, end, file_spans)
+        # a file with no excluded coding excludes nothing at all
+        for fid in {r["id"] for r in H.query(path, "SELECT id FROM source")}:
+            if fid not in by_file:
+                assert not server.db.span_is_excluded(mask.get(fid), 0, 10 ** 6)
+    finally:
+        H.teardown_server(saved)
+        shutil.rmtree(run, ignore_errors=True)
+
+
+# ===========================================================================
+# Test O (v0.12 B4) - a cursor walk enumerates the unpaged result exactly
+#                     once, in order, for any page size (D4 6, point 24)
+# ===========================================================================
+@settings(max_examples=_ex(40), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+@given(spec=project_spec(), page_size=st.integers(1, 7))
+def test_cursor_walk_is_gap_free_and_duplicate_free(spec, page_size):
+    run = _new_run_dir()
+    saved = H.save_server_state()
+    try:
+        path = H.build_project(spec, parent=run)
+        H.set_server_project(path, str(Path(run) / "sessions"))
+        codes = [c["id"] for c in server.db.list_codes()]
+        assume(codes)
+        code_id = codes[0]
+        full = json.loads(server.get_coded_segments(code_id, limit=5000))
+        expected = [s["id"] for s in full["segments"]]
+        walked = []
+        cursor = None
+        for _ in range(200):
+            page = json.loads(server.get_coded_segments(
+                code_id, limit=page_size, cursor=cursor))
+            walked.extend(s["id"] for s in page["segments"])
+            if not page["page"]["has_more"]:
+                break
+            cursor = page["page"]["next_cursor"]
+            assert cursor, page["page"]
+        assert walked == expected
+        assert len(walked) == len(set(walked))
+    finally:
+        H.teardown_server(saved)
+        shutil.rmtree(run, ignore_errors=True)

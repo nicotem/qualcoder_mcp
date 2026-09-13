@@ -217,6 +217,19 @@ def _ro_conn(project_path: str) -> sqlite3.Connection:
     return conn
 
 
+def query(project_path: str, sql: str, args=()) -> List[sqlite3.Row]:
+    """Read rows out of band, on a fresh read-only connection.
+
+    Used by the property tests to compute a reference answer without
+    going through the server's own connection state (v0.12 B4).
+    """
+    conn = _ro_conn(project_path)
+    try:
+        return conn.execute(sql, args).fetchall()
+    finally:
+        conn.close()
+
+
 def core_invariant_problems(project_path: str) -> List[str]:
     """Return a list of invariant-violation descriptions (empty == all good).
 
