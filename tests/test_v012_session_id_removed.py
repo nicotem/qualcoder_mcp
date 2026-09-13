@@ -7,6 +7,7 @@ is unchanged, and no registered tool has an argument named `session_id`
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -130,6 +131,25 @@ def _available_session_lists(value):
     return found
 
 
+def _package_modules():
+    """Every module of the package sys.modules already holds, by leaf name."""
+    return {name.rpartition(".")[2]: module
+            for name, module in sorted(sys.modules.items())
+            if name == "qualcoder_mcp" or name.startswith("qualcoder_mcp.")}
+
+
+def _home_with_nested_sandbox(tmp_path):
+    r"""A home directory with the test's sandbox nested inside it.
+
+    Mirrors the CI runner layout: home C:\Users\runneradmin, sandbox
+    C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runner.
+    """
+    home = tmp_path / "home"
+    sandbox = home / "AppData" / "Local" / "Temp" / "pytest-of-runner"
+    sandbox.mkdir(parents=True)
+    return home, sandbox
+
+
 def _module_paths_under(root, sandbox):
     """Module-level paths in the package that still lie inside `root`.
 
@@ -161,20 +181,36 @@ def _module_paths_under(root, sandbox):
     All three directories are resolved before comparing, so a short 8.3
     `%TEMP%`, a `/tmp` symlinked to `/private/tmp`, or a `..` inside a
     constant cannot make the comparison answer by accident.
+
+    What is walked (fix round 4, T9). Every module of the package that
+    sys.modules already holds, not a hand-written list of three: the
+    round-3 version named server, database and sessions, so a constant
+    added to memo_privacy was invisible to a guard whose own comment
+    said "nothing else". Values are taken as Path OR as an absolute
+    string, because `str(Path.home() / ".qualcoder_mcp")` is as easy to
+    write as the Path and rotted the pin just as silently. A module NOT
+    yet imported is deliberately out of scope: refi_export is imported
+    inside export_refi_qda, long after the caller's setenv has moved
+    Path.home(), so the setenv is its guard and importing it here would
+    only hide that. database and sessions are asserted present, so an
+    import change that shrinks the walk fails loudly rather than
+    quietly.
     """
     repo_root = Path(server.__file__).resolve().parent.parent.parent
     sandbox = Path(sandbox).expanduser().resolve()
     root = Path(root).expanduser().resolve()
     found = []
-    modules = {"server": server}
-    for label in ("database", "sessions"):
-        module = sys.modules.get(f"qualcoder_mcp.{label}")
-        assert module is not None, f"qualcoder_mcp.{label} is not imported"
-        modules[label] = module
+    modules = _package_modules()
+    for label in ("server", "database", "sessions"):
+        assert modules.get(label) is not None, (
+            f"qualcoder_mcp.{label} is not imported, so this sweep is "
+            f"walking less of the package than it claims to")
     candidates = [(f"{label}.{name}", value)
                   for label, module in modules.items()
                   for name, value in sorted(vars(module).items())
-                  if isinstance(value, Path)]
+                  if not name.startswith("__")
+                  and (isinstance(value, Path)
+                       or (isinstance(value, str) and os.path.isabs(value)))]
     candidates.append(("server.session_manager.storage_dir",
                        Path(server.session_manager.storage_dir)))
     for where, value in candidates:
@@ -283,9 +319,12 @@ class TestNoResponseCarriesSessionId:
         assert Path(database.DEFAULT_WORKSPACE).is_relative_to(tmp_path)
         assert Path(server._MRU_FILE).is_relative_to(tmp_path)
         assert Path(server.session_manager.storage_dir).is_relative_to(tmp_path)
-        # And nothing else still points into the real home: a constant
-        # added later would rot this pin in silence, which is exactly how
-        # the environment-only version of it came to protect nothing.
+        # And nothing else in any imported module of the package still
+        # points into the real home, whether it is typed as a Path or as
+        # an absolute string: a constant added later would rot this pin
+        # in silence, which is exactly how the environment-only version
+        # of it came to protect nothing (fix round 4, T9 widened the walk
+        # from three hand-listed modules and Path alone).
         # tmp_path is handed over as the sandbox because on a machine
         # whose temporary root lives under the home directory (every
         # Windows CI runner) the redirections above are inside BOTH, and
@@ -399,23 +438,11 @@ class TestNoResponseCarriesSessionId:
 
 class TestTheRotGuardSurvivesATempRootInsideHome:
 
-    @staticmethod
-    def _windows_shaped_layout(tmp_path):
-        r"""A home directory with the sandbox nested inside it.
-
-        Mirrors the runner layout: home C:\Users\runneradmin, sandbox
-        C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runner.
-        """
-        home = tmp_path / "home"
-        sandbox = home / "AppData" / "Local" / "Temp" / "pytest-of-runner"
-        sandbox.mkdir(parents=True)
-        return home, sandbox
-
     def test_constants_redirected_into_the_sandbox_are_not_reported(
         self, tmp_path, monkeypatch
     ):
         """The Windows failure itself: redirected, inside the home, silent."""
-        home, sandbox = self._windows_shaped_layout(tmp_path)
+        home, sandbox = _home_with_nested_sandbox(tmp_path)
         from qualcoder_mcp import database
         monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
                             sandbox / "workspace")
@@ -432,7 +459,7 @@ class TestTheRotGuardSurvivesATempRootInsideHome:
 
         Without this the fix above could have been `return []`.
         """
-        home, sandbox = self._windows_shaped_layout(tmp_path)
+        home, sandbox = _home_with_nested_sandbox(tmp_path)
         from qualcoder_mcp import database
         monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
                             sandbox / "workspace")
@@ -444,3 +471,70 @@ class TestTheRotGuardSurvivesATempRootInsideHome:
         reported = _module_paths_under(home, sandbox)
         assert len(reported) == 1, reported
         assert reported[0].startswith("server._MRU_FILE = "), reported
+
+
+class TestTheRotGuardWalksThePackageItClaims:
+    """Fix round 4, T9: the guard's prose said the package, its code said
+    three hand-listed modules and the Path type.
+
+    qualcoder_mcp also ships memo_privacy and refi_export, and a constant
+    written as `str(Path.home() / "...")` is as easy to write as the Path
+    version. Both were invisible to a guard whose whole purpose is that
+    it cannot rot in silence, and whose own comment read "and nothing
+    else still points into the real home". Today's tree is clean, so this
+    was never a live exposure; it was a guard that would not have seen
+    the two most natural ways of creating one.
+    """
+
+    @staticmethod
+    def _redirect_the_three_known_constants(monkeypatch, sandbox):
+        from qualcoder_mcp import database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
+                            sandbox / "workspace")
+        monkeypatch.setattr(server, "_MRU_FILE", sandbox / "mru_project.json")
+        monkeypatch.setattr(server.session_manager, "storage_dir",
+                            sandbox / "sessions")
+
+    def test_the_walk_covers_every_imported_module_of_the_package(self):
+        """Non-vacuity for the walk itself, not only for what it found."""
+        walked = set(_package_modules())
+        assert {"qualcoder_mcp", "server", "database", "sessions",
+                "memo_privacy"} <= walked, walked
+
+    def test_a_path_in_a_module_the_old_walk_missed_is_reported(
+        self, tmp_path, monkeypatch
+    ):
+        from qualcoder_mcp import memo_privacy
+
+        home, sandbox = _home_with_nested_sandbox(tmp_path)
+        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        monkeypatch.setattr(memo_privacy, "_PLANTED_CACHE",
+                            home / ".qualcoder_mcp" / "memo_cache",
+                            raising=False)
+        reported = _module_paths_under(home, sandbox)
+        assert len(reported) == 1, reported
+        assert reported[0].startswith("memo_privacy._PLANTED_CACHE = "), \
+            reported
+
+    def test_an_absolute_string_constant_is_reported_too(
+        self, tmp_path, monkeypatch
+    ):
+        home, sandbox = _home_with_nested_sandbox(tmp_path)
+        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        monkeypatch.setattr(server, "_PLANTED_DIR",
+                            str(home / ".qualcoder_mcp" / "cache"),
+                            raising=False)
+        reported = _module_paths_under(home, sandbox)
+        assert len(reported) == 1, reported
+        assert reported[0].startswith("server._PLANTED_DIR = "), reported
+
+    def test_a_relative_string_is_not_mistaken_for_a_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Most module-level strings are not paths at all, and none of
+        them may make this guard shout: QUALCODER_LOCK_FILENAME is one."""
+        home, sandbox = _home_with_nested_sandbox(tmp_path)
+        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        monkeypatch.setattr(server, "_PLANTED_NAME", ".qualcoder.lock",
+                            raising=False)
+        assert _module_paths_under(home, sandbox) == []
