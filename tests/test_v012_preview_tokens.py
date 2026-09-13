@@ -287,6 +287,37 @@ class TestSecretFile:
         assert not path.exists()
         assert list(state.glob("*")) == [], list(state.glob("*"))
 
+    def test_the_windows_publish_also_refuses_to_replace(self, tmp_path,
+                                                         monkeypatch):
+        """os.link needs NTFS and the privilege to make hard links, so
+        Windows publishes with os.rename, which on that platform raises
+        when the destination exists (on POSIX it would silently replace,
+        which is what D3 3.3 refuses on create). Driven here by taking
+        the nt branch and faulting the call it makes, because the
+        platform difference cannot be observed on this one."""
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        pt.load_secret()
+        path = state / "preview_secret"
+        before = path.read_text(encoding="ascii")
+        calls = []
+
+        def windows_rename(src, dst):
+            calls.append((src, dst))
+            raise FileExistsError("another server won")
+
+        monkeypatch.setattr(pt.os, "name", "nt")
+        monkeypatch.setattr(pt.os, "rename", windows_rename)
+        with pytest.raises(FileExistsError):
+            pt._write_new_secret(path, exclusive=True)
+        assert calls, "the nt branch was not taken"
+        assert path.read_text(encoding="ascii") == before
+        # The temp file's own cleanup is asserted in the POSIX test
+        # above, not here: with os.name patched, pathlib builds
+        # WindowsPath objects whose string form this filesystem cannot
+        # resolve, which is an artefact of the patch rather than
+        # anything the code does on Windows.
+
     @POSIX_ONLY
     def test_a_secret_widened_since_creation_is_rotated(self, tmp_path,
                                                         monkeypatch):

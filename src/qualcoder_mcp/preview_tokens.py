@@ -157,6 +157,30 @@ def ensure_state_home() -> None:
     ensure_state_dir(STATE_HOME)
 
 
+def _publish_exclusive(tmp_name: str, path: Path) -> None:
+    """Give a complete temp file the final name, or raise FileExistsError.
+
+    Two spellings of one rule, because the platforms differ on what
+    "create only if absent" costs:
+
+    - POSIX: `os.link`, which never replaces and raises FileExistsError.
+      `os.rename` would silently replace, and replacing is exactly what
+      D3 3.3 refuses on create.
+    - Windows: `os.rename`, which ALREADY raises when the destination
+      exists, and which works on every filesystem. `os.link` there needs
+      NTFS and the privilege to make hard links, so a user on a FAT or
+      exFAT profile would get "the preview-token secret could not be
+      created" on a machine where nothing is wrong (fix round 4).
+
+    The caller unlinks the temp either way; on Windows the rename has
+    already consumed it, which its own unlink tolerates.
+    """
+    if os.name == "nt":
+        os.rename(tmp_name, str(path))
+    else:
+        os.link(tmp_name, str(path))
+
+
 def _write_new_secret(path: Path, exclusive: bool) -> str:
     """Create the secret. `exclusive` refuses to replace an existing one.
 
@@ -192,7 +216,8 @@ def _write_new_secret(path: Path, exclusive: bool) -> str:
         if os.name != "nt":
             os.chmod(tmp_name, 0o600)      # mkstemp already does; be sure
         if exclusive:
-            os.link(tmp_name, str(path))   # raises FileExistsError
+            _publish_exclusive(tmp_name, path)
+            # the link left the temp behind; the finally clause takes it
         else:
             os.replace(tmp_name, str(path))
             tmp = None                     # the replace consumed it
