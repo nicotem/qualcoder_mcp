@@ -130,6 +130,38 @@ def _available_session_lists(value):
     return found
 
 
+def _module_paths_under(root):
+    """Module-level paths in the package that lie inside `root`.
+
+    The sweep calls every registered tool for real with production
+    defaults, so a path constant frozen at import time is the sweep's
+    blast radius. `root` is the real home directory; paths inside the
+    checkout are skipped, because constants derived from `__file__`
+    legitimately live there and the checkout is itself under the home
+    directory on a developer machine and on the Linux CI images.
+    """
+    repo_root = Path(server.__file__).resolve().parent.parent.parent
+    found = []
+    modules = {"server": server,
+               "database": sys.modules["qualcoder_mcp.database"],
+               "sessions": sys.modules["qualcoder_mcp.sessions"]}
+    candidates = [(f"{label}.{name}", value)
+                  for label, module in modules.items()
+                  for name, value in sorted(vars(module).items())
+                  if isinstance(value, Path)]
+    candidates.append(("server.session_manager.storage_dir",
+                       Path(server.session_manager.storage_dir)))
+    for where, value in candidates:
+        resolved = Path(value).expanduser()
+        if not resolved.is_absolute():
+            continue
+        if resolved.is_relative_to(repo_root):
+            continue
+        if resolved.is_relative_to(root):
+            found.append(f"{where} = {resolved}")
+    return found
+
+
 def _probe_arguments(tool, tmp_path):
     """Synthesise a call for `tool` from its own input schema.
 
@@ -190,15 +222,42 @@ class TestNoResponseCarriesSessionId:
     ):
         # Every tool is called for real with its required arguments only,
         # so every OPTIONAL argument takes its production default. Pin the
-        # home directory to a temporary one first, the way
-        # tests/test_v012_cli.py pins it for its subprocesses: a tool added
-        # later whose omitted argument defaults to the user's own home, or
-        # to a real project under it, then reaches this directory instead
-        # of the developer's files (fix round 2, R2).
+        # OBJECTS, not just the environment (fix round 3, S5). Every
+        # home-derived path in the server is computed once, at IMPORT:
+        # database.DEFAULT_WORKSPACE, server._MRU_FILE and the
+        # SessionManager built at server module scope. This test body runs
+        # long after the import at the top of this file, so the setenv
+        # below moves Path.home() for code that resolves it at CALL time
+        # (discover_projects is the one such caller) and for nothing else.
+        # Keep it for that class and redirect the constants as well: the
+        # sweep calls copy_project_to_workspace, whose `workspace` is not
+        # a tool argument and so falls through to DEFAULT_WORKSPACE, and
+        # cleanup_old_sessions, which takes its production default
+        # (days_old=30) and unlinks session files (fix round 2, R2, which
+        # pinned the environment alone and therefore pinned nothing).
+        real_home = Path.home()
         home = tmp_path / "probe_home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))   # Path.home() on Windows
+        monkeypatch.setenv("HOME", str(home))          # call-time Path.home()
+        monkeypatch.setenv("USERPROFILE", str(home))   # ... and on Windows
+
+        from qualcoder_mcp import database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", home / "workspace")
+        monkeypatch.setattr(server, "_MRU_FILE",
+                            home / ".qualcoder_mcp" / "mru_project.json")
+
+        # A guard is only a guard if it moved what it claims to move.
+        # setup_server already points session_manager at tmp_path; assert
+        # that rather than relying on the fixture staying as it is,
+        # because cleanup_old_sessions is called below and deletes session
+        # files wherever the manager is pointing.
+        assert Path(database.DEFAULT_WORKSPACE).is_relative_to(tmp_path)
+        assert Path(server._MRU_FILE).is_relative_to(tmp_path)
+        assert Path(server.session_manager.storage_dir).is_relative_to(tmp_path)
+        # And nothing else still points into the real home: a constant
+        # added later would rot this pin in silence, which is exactly how
+        # the environment-only version of it came to protect nothing.
+        assert _module_paths_under(real_home) == []
 
         tools = server.mcp._tool_manager._tools
         assert len(tools) == TOOL_COUNT
