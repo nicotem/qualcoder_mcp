@@ -1157,12 +1157,19 @@ class TestTravel:
         assert copy.read_bytes() == original
 
     def test_a_workspace_copy_carries_it_and_stays_separate(
-            self, setup_server, qualcoder_db_path, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+            self, setup_server, qualcoder_db_path, tmp_path):
+        # `workspace` is not a tool argument, so the copy goes wherever
+        # database.DEFAULT_WORKSPACE points; the autouse _isolate_workspace
+        # fixture in conftest points it inside tmp_path. Moving HOME, which
+        # this test used to do, redirects nothing: the constant is computed
+        # from Path.home() at IMPORT time (database.py:583), so the copy
+        # and the "Copy Only" sidecar below landed in the researcher's own
+        # workspace on every suite run (QA round 1, F1). Assert the sandbox
+        # holds, because a guard that moved nothing is worse than none.
         out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
         assert out.get("success") is True, out
         copy_path = out["workspace_copy"]
+        assert Path(copy_path).is_relative_to(tmp_path), copy_path
         assert read_sidecar(copy_path).name == DEFAULT_AI_CODER_NAME
         # Setting a name on the copy leaves the original alone
         write_ai_coder_name(copy_path, "Copy Only")

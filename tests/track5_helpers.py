@@ -27,6 +27,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 import qualcoder_mcp.server as server  # noqa: E402
+from qualcoder_mcp import database as _database  # noqa: E402
 from qualcoder_mcp.database import QualcoderDatabase  # noqa: E402
 from qualcoder_mcp.project_settings import (  # noqa: E402
     DEFAULT_AI_CODER_NAME,
@@ -40,6 +41,32 @@ from qualcoder_mcp.sessions import (  # noqa: E402
 )
 
 TMP_ROOT = Path(__file__).resolve().parent / "tmp"
+
+# The researcher's own workspace folder, read at IMPORT time, before any
+# fixture has moved HOME or rebound the constant: this is the folder the
+# shipped server would really copy projects into, and nothing in the
+# suite may write there (QA round 1, F1). conftest's session-wide guard
+# and tests/test_suite_hygiene.py both work from these two names.
+REAL_WORKSPACE = Path(_database.DEFAULT_WORKSPACE)
+WORKSPACE_UNREADABLE = "unreadable"
+
+
+def real_workspace_entries(workspace=None):
+    """The names in the real workspace.
+
+    None when the folder does not exist (a folder that is not there is
+    not an empty folder: creating it is itself a write into the
+    researcher's Documents); the `WORKSPACE_UNREADABLE` marker when it
+    cannot be listed (permissions, a network volume), since inventing an
+    empty set there would make the guard pass vacuously.
+    """
+    folder = Path(workspace) if workspace is not None else REAL_WORKSPACE
+    try:
+        return {p.name for p in folder.iterdir()}
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return WORKSPACE_UNREADABLE
 
 # ---------------------------------------------------------------------------
 # v14 schema (identical column layout to tests/conftest.py's fixture)

@@ -13,9 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import qualcoder_mcp.server as server
+from qualcoder_mcp import database as _database
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.project_settings import DEFAULT_AI_CODER_NAME, SIDECAR_NAME
-from track5_helpers import write_fixture_sidecar
+from track5_helpers import (write_fixture_sidecar, REAL_WORKSPACE,
+                            WORKSPACE_UNREADABLE, real_workspace_entries)
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
 
 
@@ -43,6 +45,59 @@ def _isolate_preview_secret(tmp_path, monkeypatch):
     from qualcoder_mcp import preview_tokens
     monkeypatch.setattr(preview_tokens, "STATE_HOME",
                         tmp_path / "token_state")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace(tmp_path, monkeypatch):
+    """Keep copy_project_to_workspace out of the real ~/Documents workspace.
+
+    `copy_project_to_workspace`'s `workspace` is not a tool argument, so a
+    tool call falls through to database.DEFAULT_WORKSPACE, which is
+    computed from Path.home() at IMPORT time (database.py:583). A test
+    that moves HOME therefore redirects nothing and the copy lands in the
+    researcher's own workspace folder, one project tree per suite run.
+    Patch the OBJECT, the way fix round 3 (S5) pinned the other
+    home-derived constants.
+    """
+    monkeypatch.setattr(_database, "DEFAULT_WORKSPACE",
+                        tmp_path / "workspace")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _nothing_is_written_to_the_real_workspace():
+    """Fail the run if any test creates anything in the real workspace.
+
+    The companion guard to `_isolate_workspace` above: the isolation
+    fixture redirects the constant, and this one proves that no route
+    into the researcher's own `~/Documents/Qualcoder MCP Projects`
+    survived it. In the spirit of the test-rot guard, it pins the
+    ABSENCE, so a future test that reaches the real folder by another
+    route (a hard-coded path, a `workspace=` argument built from
+    Path.home(), a re-import that rebinds the constant) is reported
+    instead of quietly leaving project copies behind.
+
+    The path is read at IMPORT time (track5_helpers.REAL_WORKSPACE),
+    before any fixture has moved HOME or the constant, so it is the
+    folder the shipped server would really use. A missing folder is
+    recorded as missing: creating it is itself a write into the
+    researcher's Documents.
+    """
+    before = real_workspace_entries()
+    yield
+    after = real_workspace_entries()
+    if WORKSPACE_UNREADABLE in (before, after):
+        return
+    if before is None and after is not None:
+        raise AssertionError(
+            f"the suite created the real workspace folder "
+            f"{REAL_WORKSPACE}; tests must stay inside tmp_path")
+    added = sorted((after or set()) - (before or set()))
+    if added:
+        noun = "entry" if len(added) == 1 else "entries"
+        raise AssertionError(
+            f"the suite created {len(added)} {noun} in the real workspace "
+            f"{REAL_WORKSPACE}: {added[:10]}; tests must stay inside "
+            f"tmp_path")
 
 
 @pytest.fixture(autouse=True)
