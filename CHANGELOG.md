@@ -34,6 +34,12 @@ cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   reported as snapped. Greys can land on a pale hue (`#FFFFFF` becomes
   `#F8E0F7`): the metric ignores saturation; that is upstream's rule and
   is kept as parity, not improved.
+- `create_proposed_codes` reports the colour it stored for each created
+  code, and `review_proposals` names the colour the write will store.
+  Proposal colours were not snapped before 0.12, so a session file
+  written by an earlier release can hold an off-palette one; the
+  researcher used to approve that colour and see nothing about the
+  different value actually written.
 - Invalid colours are still refused with the existing message (QualCoder
   4.0 silently substitutes a random colour; a refused argument is more
   honest). There is no opt-out argument.

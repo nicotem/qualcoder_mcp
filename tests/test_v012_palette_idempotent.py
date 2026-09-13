@@ -954,6 +954,92 @@ class TestProposalNameNormalisation:
             .get_proposal_by_guid(guid).name == "Home strain"
 
 
+class TestProposalColourDisclosure:
+    """Fix round 3, S1. create_proposed_codes snapped the approved
+    proposal's colour through add_code and then reported no colour at all,
+    the one colour-carrying path that never told the researcher what was
+    stored (D5 section 3.1 asks for it in every result that stores one).
+    """
+
+    def test_fresh_proposal_reports_the_stored_colour(self, setup_server,
+                                                      qualcoder_db_path):
+        """A v0.12 proposal is snapped when it is made, so the echo repeats
+        what review_proposals showed and color_snapped is false."""
+        sid = _sid()
+        out = json.loads(server.propose_codes(
+            sid, [{"name": "Palette proposal", "color": "#FF0000"}]))
+        guid = out["recorded"][0]["guid"]
+        snapped = snap_to_palette("#FF0000")
+        assert snapped != "#FF0000"
+
+        review = server.review_proposals(sid)
+        assert f"Colour: {snapped}" in review
+        assert "#FF0000" not in review       # the snap happened at propose time
+
+        json.loads(server.update_proposal_status(sid, approve=[guid]))
+        created = json.loads(server.create_proposed_codes(
+            sid, create_backup=False))["created_codes"][0]
+        assert created["color"] == snapped
+        assert created["color_requested"] == snapped
+        assert created["color_snapped"] is False
+        stored = _row(qualcoder_db_path,
+                      "SELECT color FROM code_name WHERE cid = ?",
+                      (created["code_id"],))["color"]
+        assert stored == created["color"]
+
+    def test_legacy_session_colour_is_disclosed_as_snapped(self, setup_server,
+                                                           qualcoder_db_path):
+        """propose_codes did not snap before v0.12, so a session file
+        written by v0.11 (or edited by hand) carries an off-palette colour.
+        The researcher approved that colour and a different one was written
+        with nothing in the result saying so."""
+        from qualcoder_mcp.sessions import ProposedCode
+
+        sid = _sid()
+        session = server.session_manager.load_session(sid)
+        proposal = ProposedCode(name="Legacy hue")
+        proposal.color = "#FF0000"          # as an older release recorded it
+        proposal.status = "approved"
+        session.add_proposal(proposal)
+        server.session_manager.save_session(session)
+
+        snapped = snap_to_palette("#FF0000")
+        # The approval screen names the colour the write will store.
+        review = server.review_proposals(sid)
+        assert f"Colour: {snapped}" in review and "#FF0000" in review
+
+        created = json.loads(server.create_proposed_codes(
+            sid, create_backup=False))["created_codes"][0]
+        assert created["color"] == snapped
+        assert created["color_requested"] == "#FF0000"
+        assert created["color_snapped"] is True
+        stored = _row(qualcoder_db_path,
+                      "SELECT color FROM code_name WHERE cid = ?",
+                      (created["code_id"],))["color"]
+        assert stored == snapped
+
+    def test_proposal_without_a_colour_still_names_the_one_stored(
+        self, setup_server, qualcoder_db_path
+    ):
+        """add_code picks a random palette colour when none is given, and
+        create_code reports it; this path now does too. No colour was
+        requested, so the disclosure pair is absent, as everywhere else."""
+        sid = _sid()
+        out = json.loads(server.propose_codes(sid, [{"name": "Random hue"}]))
+        json.loads(server.update_proposal_status(
+            sid, approve=[out["recorded"][0]["guid"]]))
+
+        created = json.loads(server.create_proposed_codes(
+            sid, create_backup=False))["created_codes"][0]
+        assert created["color"] in QUALCODER_COLORS
+        assert "color_requested" not in created
+        assert "color_snapped" not in created
+        stored = _row(qualcoder_db_path,
+                      "SELECT color FROM code_name WHERE cid = ?",
+                      (created["code_id"],))["color"]
+        assert stored == created["color"]
+
+
 class TestSubcodeMoves:
     """v16+ compares both parent pointers (4.0, ai_mcp_server.py:2046)."""
 

@@ -6014,7 +6014,18 @@ def review_proposals(coding_session_id: str,
         lines.append(f"**Proposal {i}** (GUID: `{p.guid}`)")
         lines.append(f"Status: {p.status.upper()}")
         lines.append(f"🏷️  **Name:** {p.name}")
-        lines.append(f"🎨 Colour: {p.color or '(palette pick at creation)'}")
+        # The colour that WILL be stored, not the one the proposal happens
+        # to carry: fresh proposals are snapped when they are made, but a
+        # session file written by v0.11 or earlier (or edited by hand)
+        # holds an unsnapped colour, and this is the screen the researcher
+        # approves from (fix round 3, S1).
+        stored_color = snap_to_palette(p.color) if p.color else None
+        if stored_color and stored_color != p.color.upper():
+            lines.append(f"🎨 Colour: {stored_color} (the nearest palette "
+                         f"colour to {p.color}, which is what will be "
+                         f"stored)")
+        else:
+            lines.append(f"🎨 Colour: {p.color or '(palette pick at creation)'}")
         lines.append(f"📁 Category: {p.category or '(uncategorised)'}")
         if p.memo:
             lines.append(f"**Definition:** {p.memo}")
@@ -6304,9 +6315,11 @@ def create_proposed_codes(coding_session_id: str,
         create_backup: Create a timestamped backup before writing (default True)
 
     Returns:
-        JSON with the created codes (proposal guid -> real code id),
-        codings applied (if any), and per-proposal failures. If it
-        contains `position_safety_warning`, relay it to the user.
+        JSON with the created codes (proposal guid -> real code id, plus
+        the name and the colour as stored, and color_requested /
+        color_snapped when the proposal carried a colour), codings applied
+        (if any), and per-proposal failures. If it contains
+        `position_safety_warning`, relay it to the user.
     """
     # Bridge fix: some MCP middleware strips arguments named
     # 'session_id' (reserved for its own routing); the tool
@@ -6409,9 +6422,24 @@ def create_proposed_codes(coding_session_id: str,
                 auto_commit=False,
             )
             p.created_code_id = cid
-            created.append({"proposal_guid": p.guid, "code_id": cid,
-                            "name": stored_name,      # the name as stored
-                            "category": p.category})
+            # D5 section 3.1 asks for the stored colour in every result
+            # that stores one, and this was the only colour-carrying path
+            # that reported none (fix round 3, S1). add_code snaps a
+            # supplied colour and picks a random palette colour when none
+            # was given, so read the row back the way create_code does
+            # rather than recomputing it. A v0.12 proposal is snapped at
+            # propose/update time, so this normally repeats what
+            # review_proposals showed; a session file written by v0.11 or
+            # earlier carries an UNSNAPPED proposal colour, and without
+            # this the researcher approved one colour and a different one
+            # was written with nothing saying so.
+            stored_color = (wdb.get_code_details(cid) or {}).get("color")
+            entry = {"proposal_guid": p.guid, "code_id": cid,
+                     "name": stored_name,      # the name as stored
+                     "category": p.category,
+                     "color": stored_color}    # the colour as stored
+            entry.update(_color_disclosure(p.color, stored_color))
+            created.append(entry)
             if apply_coded_segments:
                 for seg in p.example_segments:
                     memo = (f"{p.rationale}\n\n[AI proposed code]"
