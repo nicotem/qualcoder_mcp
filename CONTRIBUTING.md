@@ -69,7 +69,12 @@ is looked at first.
    that module's docstring carries the two API calls that resolve it.
    The tests fail on an unrecorded SHA on purpose: Dependabot has left a
    version comment stale beside a bumped SHA before, and nothing else
-   checks the comment against upstream.
+   checks the comment against upstream. A new job declares the least
+   `permissions:` it needs beside itself, and a checkout passes
+   `persist-credentials: false` unless the job really uses git
+   credentials; both are pinned, and a workflow added as `.yaml`, or a
+   composite action under `.github/actions`, is scanned by the same
+   ledger.
 6. **Document the change.** Add an entry under `Unreleased` in
    `CHANGELOG.md` (Keep a Changelog format). Update the docstring of
    every tool whose arguments or behaviour changed: the docstrings are

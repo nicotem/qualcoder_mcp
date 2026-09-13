@@ -145,6 +145,119 @@ def _pins():
     return found
 
 
+# A workflow's jobs and steps, read as text. PyYAML is not a declared dev
+# dependency (pyproject's [dev] set is pytest, pytest-asyncio, xmlschema,
+# hypothesis, build and twine), so a test that imported it would pass in
+# the maintainer's venv and error in CI. These two regexes read the two
+# indentation levels the workflow files actually use.
+TOP_KEY_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+):")
+JOB_KEY_RE = re.compile(r"^  (?P<name>[A-Za-z0-9_.-]+):\s*$")
+JOB_PERMISSIONS_RE = re.compile(r"^    permissions:")
+
+
+def _jobs(path):
+    """[{name, where, lines}] for each job in a workflow file."""
+    jobs = []
+    in_jobs = False
+    current = None
+    for line_no, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if TOP_KEY_RE.match(line):
+            in_jobs = line.startswith("jobs:")
+            current = None
+            continue
+        if not in_jobs:
+            continue
+        match = JOB_KEY_RE.match(line)
+        if match:
+            current = {
+                "name": match.group("name"),
+                "where": f"{path.relative_to(REPO_ROOT).as_posix()}:{line_no}",
+                "lines": [],
+            }
+            jobs.append(current)
+        elif current is not None:
+            current["lines"].append(line)
+    return jobs
+
+
+def _workflow_jobs():
+    return [(path, job) for path in _scanned_files()
+            if path.parent == WORKFLOWS for job in _jobs(path)]
+
+
+def test_every_job_constrains_the_github_token():
+    """Fix round 3, S3: no permissions block means the repository default.
+
+    publish.yml has always declared one per job (contents: read on build,
+    id-token: write confined to the two publish jobs). ci.yml declared
+    none, so its job took the repository default, which is read/write
+    unless the owner has changed it, while installing and executing
+    unpinned third-party packages on every branch push.
+    """
+    jobs = _workflow_jobs()
+    assert len(jobs) >= 4, jobs
+    by_file = {}
+    for path, job in jobs:
+        by_file.setdefault(path.name, set()).add(job["name"])
+    # Every workflow contributes at least one job, so a file whose jobs
+    # this parser stops recognising fails here rather than dropping out.
+    assert set(by_file) == {path.name for path in _scanned_files()
+                            if path.parent == WORKFLOWS}
+    assert all(names for names in by_file.values()), by_file
+    assert {"test"} <= by_file["ci.yml"]
+    assert {"build", "publish-to-testpypi",
+            "publish-to-pypi"} <= by_file["publish.yml"]
+
+    for path, job in jobs:
+        workflow_level = any(
+            TOP_KEY_RE.match(line) and line.startswith("permissions:")
+            for line in path.read_text(encoding="utf-8").splitlines())
+        job_level = any(JOB_PERMISSIONS_RE.match(line)
+                        for line in job["lines"])
+        assert job_level or workflow_level, (
+            f"{job['where']}: job '{job['name']}' declares no permissions "
+            f"block, so its GITHUB_TOKEN takes the repository default "
+            f"scopes. Give it the least privilege it needs, beside the "
+            f"job, the way publish.yml does.")
+
+
+def test_no_checkout_persists_the_credential_it_does_not_need():
+    """Fix round 3, S3: `persist-credentials: false` on every checkout.
+
+    actions/checkout writes the job's token into .git/config by default.
+    No job here pushes, fetches a submodule or uses git credentials, and
+    every job installs and runs third-party code after checking out.
+    """
+    checkouts = []
+    for path in _scanned_files():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        for index, line in enumerate(lines):
+            if "uses:" not in line or "actions/checkout@" not in line:
+                continue
+            where = f"{rel}:{index + 1}"
+            step = []
+            for following in lines[index + 1:]:
+                stripped = following.strip()
+                if stripped.startswith("- ") or (
+                    stripped and len(following) - len(following.lstrip()) <= 2
+                ):
+                    break
+                step.append(stripped)
+            checkouts.append((where, step))
+
+    # Anti-vacuity: the scan has to have found the checkouts that exist.
+    assert len(checkouts) >= 2, checkouts
+    for where, step in checkouts:
+        assert "persist-credentials: false" in step, (
+            f"{where}: this checkout keeps the job's GITHUB_TOKEN in "
+            f".git/config for the rest of the job. Pass "
+            f"persist-credentials: false unless the job really needs to "
+            f"use git credentials.")
+
+
 def test_every_pin_carries_the_version_its_sha_really_is():
     """The check the F5 incident needed: SHA against the tag upstream.
 

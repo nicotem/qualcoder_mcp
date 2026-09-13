@@ -11,6 +11,13 @@ jobs:
   test:
     name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    # Least privilege for the job's GITHUB_TOKEN: the job reads the
+    # checkout and uploads an artefact, and needs nothing else. Without a
+    # permissions block the token takes the repository default, which is
+    # read/write unless the owner has changed it, in a job that runs
+    # `pip install -e ".[dev]"` on every branch push.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +29,11 @@ jobs:
       # comment is the human-readable version Dependabot bumps against.
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Keep the token out of .git/config: nothing here pushes,
+          # fetches a submodule or uses git credentials, and the steps
+          # below install and run third-party code.
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0

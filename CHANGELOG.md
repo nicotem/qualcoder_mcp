@@ -188,7 +188,17 @@ withholds project data.
   dereferences to upstream, recorded in `tests/test_v012_workflow_pins.py`
   and resolved through the GitHub API at bump time, because a version
   comment left stale beside a bumped SHA is consistent with itself and
-  passes every internal check. An unrecorded SHA fails the suite.
+  passes every internal check. An unrecorded SHA fails the suite, and so
+  does a workflow added as `.yaml` or a composite action whose steps are
+  not pinned: the ledger reads both spellings and refuses a file in
+  `.github/workflows` it cannot scan.
+- The test job declares `permissions: contents: read` and its checkout
+  passes `persist-credentials: false`, which is what `publish.yml`
+  already did. The job installs the dev dependency set from PyPI and
+  runs it on every branch push, so it should hold neither a
+  write-capable token nor a credential left in `.git/config`. Pinned:
+  every job in every workflow declares a permissions block and every
+  checkout refuses the credential.
 
 ### Upgrading from 0.11.x
 
