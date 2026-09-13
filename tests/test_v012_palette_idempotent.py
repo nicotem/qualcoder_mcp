@@ -1360,13 +1360,23 @@ class TestReviewScreenSurvivesACorruptedProposalColour:
         assert (f"Colour: {snap_to_palette('#FF0000')} (the nearest palette "
                 f"colour to #FF0000, which is what will be stored)") in review
 
-        # And the screen's claim about the write is the write's behaviour.
-        created = json.loads(server.create_proposed_codes(
-            sid, create_backup=False))
-        assert created["error"] == ("color must be hex format #RRGGBB, "
-                                    "got not a colour")
+        # And the screen's claim about the write is the write's behaviour:
+        # the batch is refused, named per proposal, with create_backup left
+        # at its default True and no backup taken (fix round 4, T7: the
+        # colour used to be refused by add_code INSIDE the write, after the
+        # backup, which broke the tool's own promise that every approved
+        # proposal is validated before the backup and the write).
+        backups_before = _backups(qualcoder_db_path)
+        created = json.loads(server.create_proposed_codes(sid))
+        assert "1 approved proposal(s) failed validation" in created["error"]
+        assert "nothing was written and no backup was created" in created["error"]
+        failure = created["failures"][0]
+        assert failure["name"] == "Corrupted"
+        assert failure["reason"].startswith("color 'not a colour' is not")
+        assert "update_proposal" in failure["reason"]
+        assert _backups(qualcoder_db_path) == backups_before
         # Nothing written: the batch refuses as a batch, so the sound
-        # proposal beside the corrupted one is rolled back with it.
+        # proposal beside the corrupted one goes unwritten with it.
         assert _count(qualcoder_db_path, "code_name") == before
         assert _rows(qualcoder_db_path,
                      "SELECT cid FROM code_name WHERE name = ?",

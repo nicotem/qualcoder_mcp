@@ -6421,6 +6421,20 @@ def create_proposed_codes(coding_session_id: str,
             problem = (f"name collides with existing code '{collision}'; "
                        f"rename the proposal (update_proposal) or apply the "
                        f"existing code instead")
+        elif p.color is not None and not (
+                isinstance(p.color, str)
+                and re.fullmatch(r"#[0-9A-Fa-f]{6}", p.color)):
+            # Same promise as the comment above, for the colour. propose_codes
+            # and update_proposal both enforce #RRGGBB, so this is only
+            # reachable from a session file written by an earlier release,
+            # edited by hand or corrupted, and before fix round 4 it was
+            # add_code that refused it: inside the write, AFTER the backup
+            # had been taken. Measured, not assumed (one backup created for
+            # nothing). Checking it here keeps D5 section 3.3's promise and
+            # makes review_proposals' "create_proposed_codes refuses the
+            # batch on it" exact (fix round 4, T7).
+            problem = (f"color {p.color!r} is not #RRGGBB; set a valid "
+                       f"colour with update_proposal, or re-propose the code")
         elif key in batch_names:
             problem = "another approved proposal in this batch has the same name"
         elif p.category is not None:

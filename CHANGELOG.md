@@ -44,7 +44,10 @@ cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   value as it stands on its own row of the review screen, named with the
   refusal it will meet on create, rather than being snapped: the rest of
   the screen renders as usual, and a value the create path will refuse is
-  never announced as the one that will be stored.
+  never announced as the one that will be stored. `create_proposed_codes`
+  refuses such a proposal in its pre-validation, so the refusal is named
+  per proposal and costs no backup, where previously the write itself
+  raised after the backup had been taken.
 - Invalid colours are still refused with the existing message (QualCoder
   4.0 silently substitutes a random colour; a refused argument is more
   honest). There is no opt-out argument.
