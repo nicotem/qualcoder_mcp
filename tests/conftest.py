@@ -1,5 +1,6 @@
 """Pytest configuration and shared fixtures."""
 
+import gc
 import os
 import pytest
 import sqlite3
@@ -159,6 +160,55 @@ def _nothing_is_written_to_the_real_workspace():
     if problems:
         raise AssertionError(
             "; ".join(problems) + "; tests must stay inside tmp_path")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_database_connection_outlives_the_run():
+    """Close the server's global connection, and pin that nothing else
+    is left open.
+
+    Measured rather than assumed: sampled every 300 tests, this suite
+    holds between nought and two open sqlite3 connections at any point
+    and one at the end, so it does not ACCUMULATE them, and the reported
+    leak of the flake hunt is not reproducible on this tree. What is
+    real is that one: `server.db` is a module-level global, the last
+    test to select a project leaves it set, and it is an open handle on
+    a file inside tmp_path. On Windows that blocks the removal of the
+    directory holding it, which is the same rule the sharing guard below
+    emulates.
+
+    The assertion is the point rather than the close: it pins the
+    ABSENCE, so a future fixture that stops closing its own connection
+    is reported here by name instead of being found by a runner.
+    """
+    yield
+    if server.db is not None:
+        try:
+            server.db.close()
+        except Exception:
+            pass
+        server.db = None
+    gc.collect()
+    still_open = []
+    for obj in gc.get_objects():
+        if not isinstance(obj, sqlite3.Connection):
+            continue
+        try:
+            obj.execute("SELECT 1")
+        except Exception:
+            continue                      # already closed
+        holders = []
+        for referrer in gc.get_referrers(obj):
+            if isinstance(referrer, dict):
+                holders += [k for k, v in referrer.items() if v is obj]
+            else:
+                holders.append(type(referrer).__name__)
+        still_open.append(holders[:6] or ["<no named holder>"])
+    assert not still_open, (
+        f"{len(still_open)} database connection(s) are still open at the "
+        f"end of the run, held by {still_open[:5]}; a test or fixture is "
+        f"not closing what it opened, and on Windows an open handle stops "
+        f"its directory being removed")
 
 
 @pytest.fixture(autouse=True, scope="session")

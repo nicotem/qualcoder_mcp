@@ -38,8 +38,29 @@ from track5_helpers import write_fixture_sidecar
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "src"))
+import atexit
 import tempfile
-_GEN = Path(tempfile.mkdtemp(prefix="qc_scale_"))   # generated projects/exports
+
+_GEN_DIR = None
+
+
+def _gen_dir():
+    """Where generated projects and exports go: made late, removed after.
+
+    This was a `tempfile.mkdtemp` evaluated at module IMPORT with no
+    cleanup, so every run of the suite left one behind whether or not a
+    single test in this module ran, and 402 of them had accumulated on
+    the machine this was found on. Pre-existing rather than a defect of
+    this batch, closed here because the round was already in the file.
+    Created on first use, so a run that never reaches these tests
+    creates nothing at all, and removed at interpreter exit.
+    """
+    global _GEN_DIR
+    if _GEN_DIR is None:
+        _GEN_DIR = Path(tempfile.mkdtemp(prefix="qc_scale_"))
+        atexit.register(shutil.rmtree, _GEN_DIR, True)
+    return _GEN_DIR
+
 import track6_build as tb  # noqa: E402
 
 import qualcoder_mcp.server as server  # noqa: E402
@@ -375,7 +396,7 @@ class TestMedia:
         proj, stats = media_proj
         connect(proj, scratch / "sess_media")
         before = db_counts(proj)
-        out = _GEN / "media_export.qdpx"
+        out = _gen_dir() / "media_export.qdpx"
         out.parent.mkdir(exist_ok=True)
         if out.exists():
             out.unlink()
@@ -603,7 +624,7 @@ def _bench_reads(proj, stats, sess):
 
 def _bench_refi(proj, stats, sess, tag):
     connect(proj, sess)
-    out = _GEN / f"scale_{tag}.qdpx"
+    out = _gen_dir() / f"scale_{tag}.qdpx"
     out.parent.mkdir(exist_ok=True)
     if out.exists():
         out.unlink()
@@ -682,7 +703,7 @@ def _media_report(scratch):
     types = {f["name"]: f["type"] for f in filelist}
     content = json.loads(server.search_files("the", search_content=True, limit=50))
 
-    out = _GEN / "media_bench.qdpx"
+    out = _gen_dir() / "media_bench.qdpx"
     if out.exists():
         out.unlink()
     refi = json.loads(server.export_refi_qda(str(out), overwrite=True))

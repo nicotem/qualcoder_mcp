@@ -373,3 +373,45 @@ class TestWindowsSharingSemanticsAreEmulated:
         assert H.open_paths_under(folder) == []
         with open(folder / "a.bin", "rb"):
             assert H.open_paths_under(folder) == [str(folder / "a.bin")]
+
+
+class TestTheSuiteLeavesNoTemporaryDirectoryBehind:
+    """What a run leaves in the system temporary directory.
+
+    `tests/test_scale_media.py` evaluated `tempfile.mkdtemp` at module
+    IMPORT and never removed the result, so every run of the suite left
+    one directory behind whether or not a test in that module ran; 402
+    of them had accumulated on the machine this was found on. It is
+    pre-existing rather than a defect of this batch, and it is also the
+    import-time filesystem work that made the guard's baseline move to
+    `pytest_sessionstart`.
+    """
+
+    SCRIPT = (
+        "import sys\n"
+        "sys.path.insert(0, {tests!r})\n"
+        "sys.path.insert(0, {src!r})\n"
+        "import test_scale_media as module\n"
+        "print('AFTER_IMPORT', module._GEN_DIR)\n"
+        "print('IN_USE', module._gen_dir())\n"
+    )
+
+    def _run(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        script = self.SCRIPT.format(tests=str(root / "tests"),
+                                    src=str(root / "src"))
+        done = subprocess.run([sys.executable, "-c", script],
+                              capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        lines = dict(line.split(" ", 1) for line in
+                     done.stdout.strip().splitlines() if " " in line)
+        return lines
+
+    def test_importing_the_module_creates_nothing(self):
+        assert self._run()["AFTER_IMPORT"] == "None"
+
+    def test_what_it_does_create_does_not_outlive_the_interpreter(self):
+        created = pathlib.Path(self._run()["IN_USE"])
+        assert created.name.startswith("qc_scale_")
+        assert not created.exists(), (
+            f"{created} survived the interpreter that made it")
