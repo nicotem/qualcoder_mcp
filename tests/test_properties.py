@@ -21,6 +21,7 @@ Run with the worktree venv:
 """
 
 import json
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -699,12 +700,17 @@ def test_no_returned_match_overlaps_an_excluded_span(spec, pick, start,
                 if match["location"] != "content":
                     continue
                 s, e = match["match_start"], match["match_end"]
-                # the anchors are positions in the FILE, not in a
-                # lower-cased copy of it
-                assert fulltexts[entry["file_id"]][s:e].lower() == \
-                    pattern.lower(), (s, e, pattern)
-                assert match["match_text"] == \
-                    fulltexts[entry["file_id"]][s:e]
+                # The anchors are positions in the FILE, not in a
+                # lower-cased copy of it: the slice they name is
+                # something the pattern actually matches. Compared with
+                # the same engine the search uses, never by lower-casing
+                # both sides, because case folding is not one-to-one:
+                # under IGNORECASE the pattern U+0130 matches a plain
+                # "i", while "\u0130".lower() is two code points.
+                slice_ = fulltexts[entry["file_id"]][s:e]
+                assert re.fullmatch(re.escape(pattern), slice_,
+                                    re.IGNORECASE), (s, e, pattern, slice_)
+                assert match["match_text"] == slice_
                 assert not any(s < b and e > a for (a, b) in spans), \
                     (entry["file_id"], s, e, spans)
 
