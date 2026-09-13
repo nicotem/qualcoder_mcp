@@ -79,13 +79,16 @@ filterwarnings = [
 #
 #     python -m pytest tests/ -W error::pytest.PytestUnraisableExceptionWarning
 #
-# It is not shipped as a gate because its ATTRIBUTION is not
-# deterministic: the warning lands on whichever test is running when the
-# collector next runs, so it turned about half of a series of runs red,
-# each at a different test, and a gate that fails at random is worse
-# than the leak it guards. The deterministic half of the same guard IS
-# shipped, in tests/conftest.py: nothing may be left OPEN at the end of
-# the run.
+# It is not shipped as a gate for two measured reasons. Its ATTRIBUTION
+# is not deterministic: the warning lands on whichever test is running
+# when the collector next runs, so it names a different test each time.
+# And the class is not empty yet: with the four connections fix round 2
+# closed still open, about half of a series of full runs went red; with
+# them closed, about one run in five does, so at least one more leak
+# remains and it does not surface every run. A gate that fails at random
+# is worse than the leak it guards. The deterministic half of the same
+# guard IS shipped, in tests/conftest.py: nothing may be left OPEN at
+# the end of the run.
 
 [build-system]
 requires = ["setuptools>=77"]

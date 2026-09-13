@@ -8,6 +8,7 @@ unicode/hostile names, and session/loop interaction after merge/delete.
 
 import json
 import shutil
+from contextlib import closing
 import sqlite3
 import time
 from pathlib import Path
@@ -265,8 +266,11 @@ class TestCycleGuardAttack:
             assert "error" in out, (catid, parent_name)
             assert "cycle" in out["error"] or "ancestor" in out["error"], out
         # tree unchanged after all attacks
-        rows = {r[0]: r[1] for r in sqlite3.connect(str(_db(qualcoder_db_path)))
-                .execute("SELECT catid, supercatid FROM code_cat")}
+        # closing(), not a bare connect(): an unclosed connection is a
+        # ResourceWarning on 3.13 and an open handle on Windows.
+        with closing(sqlite3.connect(str(_db(qualcoder_db_path)))) as conn:
+            rows = {r[0]: r[1] for r in
+                    conn.execute("SELECT catid, supercatid FROM code_cat")}
         assert rows == {1: None, 2: 1, 3: 2, 4: 3, 5: None}
 
     def test_qualcoder_legal_moves_still_work(self, setup_server,
@@ -279,8 +283,11 @@ class TestCycleGuardAttack:
         # re-attach the now-top-level C under D (D is no longer C's descendant
         # after the move above — must be allowed)
         assert json.loads(server.move_category(3, "D"))["success"] is True
-        rows = {r[0]: r[1] for r in sqlite3.connect(str(_db(qualcoder_db_path)))
-                .execute("SELECT catid, supercatid FROM code_cat")}
+        # closing(), not a bare connect(): an unclosed connection is a
+        # ResourceWarning on 3.13 and an open handle on Windows.
+        with closing(sqlite3.connect(str(_db(qualcoder_db_path)))) as conn:
+            rows = {r[0]: r[1] for r in
+                    conn.execute("SELECT catid, supercatid FROM code_cat")}
         assert rows[4] == 5 and rows[3] == 4
 
     def test_pre_existing_cycle_treated_unsafe_not_hang(
