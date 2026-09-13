@@ -44,6 +44,18 @@ SIDECAR_READ_MAX_BYTES = 64 * 1024
 # dropped. Twenty entries are echoed into the conversation (ruling 11).
 HISTORY_CAP = 200
 HISTORY_ECHO = 20
+# The write cap, in the SAME UNIT as the read cap. The two used to
+# disagree: writes were capped at 200 ENTRIES and reads at 64 KiB, and
+# two things inflate the file between them, the indent=2 formatting and
+# the unknown top-level keys a write deliberately preserves. Ninety-two
+# ordinary name changes were enough to produce a file this server had
+# just written and would then refuse to read, after which every
+# owner-bearing write was refused. A cap in entries cannot bound a file
+# measured in bytes, so the byte budget is what holds and HISTORY_CAP is
+# kept only as the cheap upper bound. The margin leaves room for the
+# next write's own growth, so the file does not sit on the boundary
+# (fix round 4).
+SIDECAR_WRITE_MAX_BYTES = SIDECAR_READ_MAX_BYTES - 4096
 
 # The host declaration (v0.11's machine-wide setting, re-purposed by D7)
 # and this server's built-in default.
@@ -77,6 +89,14 @@ NEWER_FORMAT_MESSAGE = (
     "this one cannot write it safely. Upgrade qualcoder-mcp, or ask the "
     "user to move the file aside; the next write will then ask for the "
     "name again. Nothing was written.")
+
+OVERSIZED_MESSAGE = (
+    "The AI coder name file for this project (qualcoder_mcp.json in the "
+    "project folder) is too large to write: even with one history entry "
+    "it would be bigger than this server can read back. Ask the user to "
+    "remove the extra top-level keys in it, or to move the file aside; "
+    "the next write will then ask for the name again. Nothing was "
+    "written.")
 
 READ_ONLY_FOLDER_MESSAGE = (
     "The project folder is not writable, so the AI coder name cannot be "
@@ -286,6 +306,18 @@ def read_sidecar(project_folder: Any) -> SidecarState:
     return SidecarState(SIDECAR_SET, entry, history, path)
 
 
+def _encoded_payload(payload: Dict[str, Any]) -> bytes:
+    """The exact bytes a write would put on disk.
+
+    The trim below measures THIS, not an entry count, because it is what
+    the reader measures: `_read_raw` caps at SIDECAR_READ_MAX_BYTES of
+    file, and `indent=2` plus preserved unknown keys are what grow the
+    file between the two caps.
+    """
+    return json.dumps(payload, ensure_ascii=False,
+                      indent=2).encode("utf-8")
+
+
 def _inherit_mode_bits(tmp_path: Path, project_folder: Path) -> None:
     """Give the sidecar `data.qda`'s permission bits when we can read them.
 
@@ -373,14 +405,30 @@ def write_ai_coder_name(project_folder: Any, name: str, note: str = "",
     payload["ai_coder_name"] = entry
     payload["ai_coder_name_history"] = history
 
+    # Trim in the unit the READER measures, on the bytes that will
+    # actually be written. Oldest first, and never the entry being
+    # written: a name change must not be refused because the project has
+    # a long past.
+    encoded = _encoded_payload(payload)
+    while (len(encoded) > SIDECAR_WRITE_MAX_BYTES
+           and len(payload["ai_coder_name_history"]) > 1):
+        payload["ai_coder_name_history"] = \
+            payload["ai_coder_name_history"][1:]
+        encoded = _encoded_payload(payload)
+    if len(encoded) > SIDECAR_WRITE_MAX_BYTES:
+        # A one-entry history still does not fit, so the bulk is in the
+        # unknown top-level keys this write preserves. Refuse rather than
+        # write a file the reader will reject, and say where the size is.
+        raise SidecarWriteError(OVERSIZED_MESSAGE)
+
     tmp: Optional[Path] = None
     try:
         fd, tmp_name = tempfile.mkstemp(dir=str(folder),
                                         prefix=f"{SIDECAR_NAME}.",
                                         suffix=".tmp")
         tmp = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
             f.flush()
             os.fsync(f.fileno())
         _inherit_mode_bits(tmp, folder)

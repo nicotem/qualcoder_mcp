@@ -833,14 +833,22 @@ class TestSidecarReader:
         assert read_sidecar(qualcoder_db_path).status == "unreadable"
         out = json.loads(server.create_code("Blocked", create_backup=False))
         assert out["error"] == ps.UNREADABLE_MESSAGE
-        out = json.loads(server.set_project_ai_coder_name("Anything"))
-        assert out["error"] == ps.UNREADABLE_MESSAGE
         report = json.loads(server.get_current_project())
         assert report["ai_coder_name"] == {
             "name": None, "source": "unreadable",
             "hint": ps.UNREADABLE_MESSAGE}
-        # never repaired silently
+        # Never repaired by a WRITE: an ordinary owner-bearing write
+        # leaves the file exactly as it found it.
         assert _sidecar(qualcoder_db_path).read_bytes() == before
+        # The setter is the researcher's route back (fix round 4). It is
+        # not silent and it destroys nothing: the old bytes are renamed,
+        # and the result names the file they are in.
+        out = json.loads(server.set_project_ai_coder_name("Anything"))
+        assert out.get("success") is True, out
+        kept = Path(out["replaced_unreadable_file"])
+        assert kept.read_bytes() == before
+        assert any("could not be read" in w for w in out["warnings"]), out
+        assert read_sidecar(qualcoder_db_path).name == "Anything"
 
     def test_an_oversized_file_is_unreadable(self, setup_server,
                                              qualcoder_db_path):
@@ -1002,13 +1010,22 @@ class TestSidecarWriter:
         state = read_sidecar(qualcoder_db_path)
         assert state.status == "unreadable"
         assert state.name is None
-        out = json.loads(server.set_project_ai_coder_name("Through The Link"))
-        assert out["error"] == ps.UNREADABLE_MESSAGE
-        assert outside.read_bytes() == original_bytes
-        # and the write tools refuse rather than writing under a name
-        # that came from outside the project
+        # The write tools refuse rather than writing under a name that
+        # came from outside the project.
         out = json.loads(server.create_code("Linked", create_backup=False))
         assert out["error"] == ps.UNREADABLE_MESSAGE
+        assert outside.read_bytes() == original_bytes
+        # The setter clears it (fix round 4). The LINK is what moves
+        # aside, so the file it pointed at is neither followed nor
+        # touched, and the new sidecar is a real file of ours.
+        out = json.loads(server.set_project_ai_coder_name("Through The Link"))
+        assert out.get("success") is True, out
+        assert outside.read_bytes() == original_bytes
+        kept = Path(out["replaced_unreadable_file"])
+        assert kept.is_symlink()
+        assert Path(os.readlink(kept)) == outside
+        assert not path.is_symlink()
+        assert read_sidecar(qualcoder_db_path).name == "Through The Link"
 
     @POSIX_ONLY
     def test_mode_bits_follow_data_qda(self, setup_server_unset,
@@ -1303,6 +1320,98 @@ class TestTravel:
         out = json.loads(server.create_code("AfterRestore",
                                             create_backup=False))
         assert out["error"] == EXPECTED_ASK
+
+
+def _sidecar_bytes(folder) -> int:
+    return len((Path(folder) / SIDECAR_NAME).read_bytes())
+
+# =============================================================================
+# THE SIDECAR SIZE SPIRAL: ONE UNIT FOR BOTH CAPS (fix round 4, S5)
+# =============================================================================
+
+class TestTheWriteCapMatchesTheReadCap:
+    """Writes were capped at 200 ENTRIES and reads at 64 KiB. The
+    formatting and the preserved unknown keys inflate the file between
+    the two, so ordinary use produced a file the server had just written
+    and would then refuse to read, after which every owner-bearing write
+    was refused. No attacker needed."""
+
+    def test_ninety_two_name_changes_stay_readable(self, tmp_path):
+        """The measured number, at the documented maxima: an 80-character
+        name and a 500-character note, both of which the validator
+        accepts, cross 64 KiB on the 92nd write."""
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        note = "n" * 500
+        for i in range(92):
+            name = f"Model {i}".ljust(80, "M")
+            assert len(name) == 80
+            write_ai_coder_name(folder, name, note=note)
+            assert read_sidecar(folder).status == "project", i
+        size = _sidecar_bytes(folder)
+        assert size <= ps.SIDECAR_WRITE_MAX_BYTES, size
+        assert read_sidecar(folder).name == f"Model {91}".ljust(80, "M")
+
+    def test_a_long_life_never_writes_a_file_it_cannot_read(self,
+                                                            tmp_path):
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        for i in range(400):
+            write_ai_coder_name(folder, f"Model {i}", note="x" * 400)
+            assert read_sidecar(folder).status == "project", i
+            assert _sidecar_bytes(folder) <= ps.SIDECAR_WRITE_MAX_BYTES, i
+        state = read_sidecar(folder)
+        assert state.name == "Model 399"
+        # The history is trimmed oldest first and the current entry is
+        # never the one dropped.
+        assert state.history, "the history was emptied"
+        assert state.history[-1]["name"] == "Model 399"
+
+    def test_the_caps_are_in_the_same_unit(self):
+        assert ps.SIDECAR_WRITE_MAX_BYTES < ps.SIDECAR_READ_MAX_BYTES
+
+    def test_preserved_unknown_keys_are_refused_rather_than_written(
+            self, tmp_path):
+        """When the bulk is not the history, trimming cannot help, so the
+        write refuses and the file on disk is left byte-identical."""
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        write_ai_coder_name(folder, "First")
+        path = folder / SIDECAR_NAME
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["someone_elses_key"] = "x" * (ps.SIDECAR_WRITE_MAX_BYTES)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        before = path.read_bytes()
+        with pytest.raises(ps.SidecarWriteError) as e:
+            write_ai_coder_name(folder, "Second")
+        assert SIDECAR_NAME in str(e.value)
+        assert path.read_bytes() == before
+
+    def test_unknown_keys_that_fit_are_still_preserved(self, tmp_path):
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        write_ai_coder_name(folder, "First")
+        path = folder / SIDECAR_NAME
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["a_later_feature"] = {"keep": "me"}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        write_ai_coder_name(folder, "Second")
+        after = json.loads(path.read_text(encoding="utf-8"))
+        assert after["a_later_feature"] == {"keep": "me"}
+
+    def test_an_unreadable_sidecar_has_a_route_back(self, setup_server,
+                                                    qualcoder_db_path):
+        """The recovery half: whatever made the file unreadable, the
+        setter gets the project working again without deleting anything
+        and without asking the researcher to open a file manager."""
+        _sidecar(qualcoder_db_path).write_bytes(b"{" * 30000)
+        assert json.loads(server.create_code(
+            "Blocked", create_backup=False))["error"] == ps.UNREADABLE_MESSAGE
+        out = json.loads(server.set_project_ai_coder_name("Qwen 3.8 6bit"))
+        assert out.get("success") is True, out
+        assert Path(out["replaced_unreadable_file"]).exists()
+        out = json.loads(server.create_code("Now Fine", create_backup=False))
+        assert out.get("error") is None, out
 
 
 # =============================================================================

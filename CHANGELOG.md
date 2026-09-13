@@ -575,6 +575,26 @@ withholds project data.
   trailing comment, a YAML anchor) fails the suite instead of escaping
   the check, and the jobs it found are compared with the jobs recorded.
 
+### Fixed: the AI coder name file can no longer outgrow its own reader
+
+- Writes were capped at 200 history entries and reads at 64 KiB, two
+  different units, and the formatting plus the unknown top-level keys a
+  write preserves inflate the file between them. Ninety-two name
+  changes at the documented maxima (an 80-character name, a
+  500-character note) were enough to produce a file this server had
+  just written and would then refuse to read, after which every write
+  that carries an owner was refused. The write is now bounded in bytes,
+  the history is trimmed oldest first and the entry being written is
+  never the one dropped.
+- If the file still does not fit with a one-entry history, the bulk is
+  in preserved unknown keys: the write refuses and says so, rather than
+  leaving a file the reader rejects.
+- `set_project_ai_coder_name` is now the way back from an unreadable
+  file: it renames the old one to `qualcoder_mcp.json.unreadable-<time>`
+  and writes a fresh one, reporting both in `replaced_unreadable_file`
+  and a warning. Nothing is deleted, and ordinary writes still refuse
+  and still leave the file exactly as they found it.
+
 ### Changed: coder names may not carry an invisible character
 
 - A coder name is refused when it contains any Unicode format character

@@ -2509,8 +2509,15 @@ def set_project_ai_coder_name(name: str, note: str = "",
 
     folder = _current_project_folder()
     state = read_sidecar(folder)
-    if state.status == SIDECAR_UNREADABLE:
-        return json.dumps({"error": UNREADABLE_MESSAGE})
+    # An unreadable sidecar used to stop this tool as well, which left
+    # the researcher with no route back from inside the conversation:
+    # every owner-bearing write was refused, and so was the one tool
+    # that could have fixed it. This tool now REPLACES such a file, and
+    # never silently (B1.3's rule is about silence, not about refusing):
+    # the old bytes are renamed, never deleted, and the result says
+    # where they went. The setter is the only caller that does this;
+    # write_ai_coder_name itself still refuses (fix round 4).
+    replaced_unreadable = state.status == SIDECAR_UNREADABLE
     if state.status == SIDECAR_NEWER_FORMAT:
         return json.dumps({"error": NEWER_FORMAT_MESSAGE})
 
@@ -2556,6 +2563,11 @@ def set_project_ai_coder_name(name: str, note: str = "",
     declared = host_declaration()
     warnings = _set_name_warnings(ro, state, name, declared, visibility)
 
+    kept_aside = None
+    if replaced_unreadable:
+        kept_aside, error = _keep_unreadable_sidecar_aside(folder)
+        if error is not None:
+            return json.dumps({"error": error})
     try:
         entry = write_ai_coder_name(folder, name, note=note,
                                     host_declaration=declared)
@@ -2576,7 +2588,39 @@ def set_project_ai_coder_name(name: str, note: str = "",
         "next": (f"Retry the write that was refused; it will now be "
                  f"attributed to \"{name}\"."),
     }
+    if kept_aside is not None:
+        result["replaced_unreadable_file"] = str(kept_aside)
+        result["warnings"] = list(result["warnings"]) + [
+            f"The previous qualcoder_mcp.json could not be read, so it was "
+            f"renamed to {kept_aside.name} and a new one written. Nothing "
+            f"was deleted: tell the user, in case that file held a history "
+            f"they want back."]
     return json.dumps(result, indent=2)
+
+
+def _keep_unreadable_sidecar_aside(folder: Path) -> Tuple[Optional[Path],
+                                                          Optional[str]]:
+    """Rename an unreadable sidecar out of the way; never delete it.
+
+    Returns (path it was moved to, None) or (None, error text). A file
+    that vanished between the read and here is not an error: there is
+    then nothing to preserve and the write proceeds.
+    """
+    path = sidecar_path(folder)
+    if not os.path.lexists(path):
+        return None, None
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = path.with_name(f"{path.name}.unreadable-{stamp}")
+    suffix = 1
+    while os.path.lexists(target):
+        suffix += 1
+        target = path.with_name(f"{path.name}.unreadable-{stamp}-{suffix}")
+    try:
+        os.replace(str(path), str(target))
+    except OSError as e:
+        logger.error(f"Could not move the unreadable sidecar aside: {e}")
+        return None, UNREADABLE_MESSAGE
+    return target, None
 
 
 def _set_name_warnings(ro, state, name: str,
