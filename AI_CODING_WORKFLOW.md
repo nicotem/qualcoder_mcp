@@ -67,8 +67,9 @@ your_project_backup_20251029_143045.qda
 
 Use `list_backups` to see them (QualCoder's own `_BKUP_` snapshots are
 listed too) and `restore_backup` to roll the project back; it previews
-first, requires explicit confirmation, and saves a safety backup of the
-current state so even a restore can be undone. A single wrong coding can
+first and executes only when called again with the `preview_token` that
+preview returned, and it saves a safety backup of the current state so
+even a restore can be undone. A single wrong coding can
 be removed with `delete_coding(ctid)` instead.
 
 ## Workflow Steps
@@ -578,7 +579,8 @@ Backups are in the same folder as your workspace projects:
 ```
 Show me the backups for this project        (list_backups)
 Restore the project from <backup name>      (restore_backup; previews
-                                             first, then confirm=true)
+                                             first, then again with the
+                                             preview_token it returns)
 ```
 The restore keeps a safety backup of the pre-restore state, so it can
 itself be undone.

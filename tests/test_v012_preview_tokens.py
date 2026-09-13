@@ -524,6 +524,60 @@ class TestLegacyConfirm:
             assert "without confirm" not in doc, name
             assert "Deprecated, ignored; use preview_token" in doc, name
 
+    # Every document this project ships to a researcher who will paste
+    # it at a model. The docstrings are swept above; these are the texts
+    # a human hands over, and they are where the instruction survived a
+    # round that had already corrected the docstrings and the README.
+    SHIPPED_GUIDES = ("AI_CODING_GUIDE.md", "AI_CODING_WORKFLOW.md",
+                      "README.md", "QUICKSTART.md", "INSTALL.md")
+
+    @staticmethod
+    def _asks_for_the_flag(text):
+        """Whether a passage TELLS the reader to pass the flag.
+
+        Saying that `confirm` no longer executes is the opposite of
+        asking for it, and README.md's deprecation paragraph must stay,
+        so a passage that carries the deprecation is not an offender.
+        """
+        flat = " ".join(text.split())
+        if "no longer executes" in flat or "Deprecated, ignored" in flat:
+            return False
+        return ("confirm=true" in flat.lower()
+                or ", confirm)" in flat
+                or "(confirm)" in flat)
+
+    def test_no_shipped_guide_still_asks_for_the_flag(self):
+        root = Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in self.SHIPPED_GUIDES:
+            path = root / name
+            if not path.exists():
+                continue
+            for block in path.read_text(encoding="utf-8").split("\n\n"):
+                if self._asks_for_the_flag(block):
+                    offenders.append((name, " ".join(block.split())[:140]))
+        assert offenders == [], offenders
+
+    def test_that_sweep_would_notice(self):
+        """Driven both ways, so it cannot pass by never firing."""
+        assert self._asks_for_the_flag(
+            "Restore the project from <backup name> (restore_backup; "
+            "previews first, then confirm=true)")
+        assert self._asks_for_the_flag(
+            "| `list_backups()` / `restore_backup(backup_path, confirm)` |")
+        # ... and an ordinary English "confirm" is not an instruction to
+        # pass the flag, which INSTALL.md's relaunch step depends on.
+        assert not self._asks_for_the_flag(
+            "Fully quit and relaunch the client, then confirm the "
+            "installed version with qualcoder-mcp --version.")
+        assert not self._asks_for_the_flag(
+            "`confirm=true` no longer executes; it returns the preview "
+            "with a note and is removed in v0.13.")
+        assert not self._asks_for_the_flag(
+            "Restore the project from <backup name> (restore_backup; "
+            "previews first, then again with the preview_token it "
+            "returns)")
+
     def test_the_readme_lists_the_token_not_the_flag(self):
         readme = (Path(__file__).resolve().parents[1]
                   / "README.md").read_text(encoding="utf-8")

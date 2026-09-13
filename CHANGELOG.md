@@ -238,6 +238,29 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   `total_files_searched` and `total_matches` are described honestly as
   per-page numbers and marked deprecated in favour of `page.*`.
 
+### Changed: content searches report true file positions
+
+- `search_files` and `search_file_content` scanned a lower-cased copy of
+  each file and then reported the index in that copy as a position in
+  the file. Exactly one code point in Unicode lengthens under
+  `str.lower()` (U+0130, the Turkish dotted capital I), so on a file
+  containing one, every later match was reported one character late:
+  `position` and the preview window in earlier releases, and in 0.12 the
+  `match_start`, `match_end`, `match_text` and `preview_start` anchors
+  and the novelty filter's overlap test as well. Matching now runs on
+  the file's own text with a compiled `re.IGNORECASE` pattern, so both
+  ends of a match come from the match itself and the positions are the
+  file's.
+- The consequence, recorded because `search_files` has shipped since
+  0.4.0: case-insensitive CONTENT matching now uses the regex engine's
+  case folding instead of `str.lower()` on both sides, which is what
+  QualCoder's own search does. The two disagree only in exotic cases. A
+  query spelled with U+0130 now matches a plain "i" and a query spelled
+  "i" followed by U+0307 no longer matches U+0130; Greek capital sigma
+  matches a final sigma; U+212A, the Kelvin sign, matches "k". File-name
+  and memo matching is unchanged: neither derives a position, so neither
+  had anything to correct.
+
 ### Changed: `QUALCODER_MCP_AI_CODER_NAME` declares, it no longer attributes
 
 - The variable is now this HOST's declaration of the name it would like

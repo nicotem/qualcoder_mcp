@@ -1093,3 +1093,54 @@ class TestHouseRulesOnTheNewTexts:
             server._novelty_block.__doc__ or "",
         ]
         _house_rules(texts)
+
+
+class TestTheFoldingChangeIsRecorded:
+    """G1 and G4: a released tool's matching semantics changed, so the
+    CHANGELOG has to say so.
+
+    The F5 fix is a position fix, and it is right on the merits, but
+    `search_files(search_content=True)` has shipped since 0.4.0 and the
+    fix moves from `str.lower()` on both sides to the regex engine's
+    case folding. The two disagree in exotic cases, which is a change to
+    released behaviour and belongs in the entry beside the smaller
+    tied-rows change that is already there.
+    """
+
+    @staticmethod
+    def _entry():
+        text = (Path(__file__).resolve().parents[1]
+                / "CHANGELOG.md").read_text(encoding="utf-8")
+        return " ".join(text.split("## [0.11")[0].split())
+
+    def test_the_entry_records_the_position_fix(self):
+        entry = self._entry()
+        assert "### Changed: content searches report true file positions" \
+            in entry
+        assert "U+0130" in entry
+        assert "one character late" in entry
+
+    def test_the_entry_records_the_folding_as_a_behaviour_change(self):
+        """The half that is easy to leave out: the fix is a bug fix, the
+        folding is a change a caller can see."""
+        entry = self._entry()
+        assert "regex engine's case folding" in entry
+        assert "shipped since 0.4.0" in entry
+        assert "File-name and memo matching is unchanged" in entry
+
+    def test_the_recorded_cases_are_the_ones_the_engine_actually_gives(self):
+        """A CHANGELOG claim about matching, checked against matching.
+
+        Otherwise the entry could describe folding the code does not do,
+        which is worse than saying nothing.
+        """
+        import re as _re
+
+        def matches(pattern, text):
+            return bool(_re.search(_re.escape(pattern), text,
+                                   _re.IGNORECASE))
+
+        assert matches("İ", "i")              # dotted capital I
+        assert not matches("i̇", "İ")    # i + combining dot
+        assert matches("Σ", "ς")         # sigma, final sigma
+        assert matches("K", "k")              # Kelvin sign
