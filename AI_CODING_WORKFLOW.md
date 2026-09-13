@@ -666,9 +666,10 @@ this server until the project is closed and reopened there.
 
 **Solution:**
 - One wrong coding: `Delete coding 42` (`delete_coding`; the ctid is in
-  the apply output and in get_coded_segments; on QualCoder 4.0 projects
-  a hidden coder's row, or a row whose memo carries a `#####` private
-  note, is refused unless you pass the override)
+  the apply output and in get_coded_segments; on projects with the
+  coder-visibility capability, QualCoder 3.8.2 and 4.0, schema v14 and
+  later, a hidden coder's row, or a row whose memo carries a `#####`
+  private note, is refused unless you pass the override)
 - Whole batch: `restore_backup` with the backup created by the apply
   (see `list_backups`); it previews first and keeps a safety backup
 

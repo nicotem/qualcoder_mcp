@@ -24,7 +24,7 @@ This MCP server lets an AI assistant directly access and analyse your Qualcoder 
 - 📥 **Import transcripts** and link files to cases
 - 🔄 **REFI-QDA export** (.qdpx) for interchange with NVivo, ATLAS.ti, and MAXQDA
 - 📤 **Report exports**: codebook, coded segments, code frequencies and case-code matrix as CSV, txt or Markdown files
-- 🤝 **QualCoder 4.0 conventions**: `#####` private memo sections are never shown to the AI, reads follow QualCoder's per-coder visibility, and AI work is written under one configurable coder name (see "Working alongside QualCoder 4.0" below)
+- 🤝 **QualCoder 4.0 conventions**: `#####` private memo sections are never shown to the AI, reads follow QualCoder's per-coder visibility (on projects with that capability: QualCoder 3.8.2 and 4.0, schema v14 and later), and AI work is written under one coder name that you choose per project (see "Working alongside QualCoder 4.0" below)
 
 You can work with read-only analysis OR use write-enabled tools. The database is opened read-only by default; every write is preceded by an automatic backup, verified against QualCoder's format, and refused while a released QualCoder version (3.x) has the project open, which its lock file signals. QualCoder 4.0 (the 4.0-Beta pre-release) writes no lock file, so for it the server can only warn on best-effort heuristics; never write while any QualCoder window has the same project open (see "Supported QualCoder versions" below).
 
@@ -335,36 +335,74 @@ client.
 ### Choosing the AI coder name (attribution)
 
 Every row this server writes (codings, annotations, journal entries,
-imports, cases, codes, categories, attributes) is
-attributed to one coder name so AI work stays distinguishable from
-yours in QualCoder. The default is `AI Coding Assistant`. To change
-it, set `QUALCODER_MCP_AI_CODER_NAME` in the server's `env` block:
+imports, cases, codes, categories, attributes) is attributed to one
+coder name, so AI work stays distinguishable from yours in QualCoder.
+From v0.12 that name belongs to the PROJECT and it is yours to choose.
+The first write that needs it stops and asks: the model relays the
+question, you answer, and it calls
+
+```
+set_project_ai_coder_name("Qwen 3.8 6bit", note="LM Studio 0.4.22")
+```
+
+The answer is stored in `qualcoder_mcp.json` in the project folder,
+beside `data.qda`, so it travels with backups, copies and a synced
+folder, and two hosts talking to one project agree on it. Reads never
+ask. You can change the name at any time with the same tool; earlier
+rows keep the name they were written under, and the project remembers
+the names it has used, which is what makes a later comparison between
+two models possible. A model name is a good answer for exactly that
+reason.
+
+Quick picks if you have no preference: `AI Coding Assistant` (this
+server's built-in default, and what every project coded with v0.11 and
+earlier already holds) and `AI Agent`, the exact name QualCoder 4.0's
+built-in assistant writes under, which groups this server's work and
+the built-in assistant's under one coder in QualCoder's per-coder
+visibility toggle, undo and reports.
+
+`QUALCODER_MCP_AI_CODER_NAME` in the server's `env` block is now a
+DECLARATION by this host, not an attribution:
 
 ```json
 "env": {
-  "QUALCODER_MCP_AI_CODER_NAME": "AI Agent"
+  "QUALCODER_MCP_AI_CODER_NAME": "Qwen 3.8 6bit"
 }
 ```
 
-`AI Agent` is the exact name QualCoder 4.0's built-in assistant writes
-under. Opting into it groups this server's work and the built-in
-assistant's under one coder in 4.0's per-coder visibility toggle,
-undo, and reports, which is the coherent choice for projects worked on
-by both. The default stays distinct so existing projects keep one
-consistent history. Invalid values (empty, longer than 80 characters,
-containing control, line-separator or bidirectional formatting
-characters, or containing the `#####` memo-privacy marker) stop the
-server at startup with a clear error. The same rules apply to the
-`owner` argument of `apply_codings` and `import_text_file`.
+It offers that name as the first quick pick, which is the convenient
+way to say "this host runs this model". It never writes a row by
+itself: if it differs from the project's current name, the next write
+asks which of the two to use rather than re-attributing anything, and
+answering either way settles it for that host. Invalid values (empty,
+longer than 80 characters, containing control, line-separator or
+bidirectional formatting characters, or containing the `#####`
+memo-privacy marker) stop the server at startup with a clear error.
 
-Do not set it to your own QualCoder coder name (the project's
-codername). AI codings would then be indistinguishable from yours in
-QualCoder's coder lists, per-coder visibility toggle, undo and
-reports, which defeats the purpose of attribution, and mixed rows
-cannot be told apart again later. If you are tempted to do that to
-restore the earlier attribution of memos, journal entries, annotations
-and attributes to the project codername, keep a distinct name (the
-default is fine) instead.
+The name cannot be your own QualCoder coder name (the project's
+codername) or QualCoder's literal `default`: AI rows would then be
+indistinguishable from a person's in QualCoder's coder lists,
+visibility toggle, undo and reports, and mixed rows cannot be told
+apart again later. Both are refused. A name that a QualCoder
+visibility setting hides is refused too, unless you pass
+`allow_hidden_coder=true`, because rows written under it would be
+invisible in QualCoder and in this server's default reads.
+
+Coder names are compared exactly, after trimming spaces, and never
+case-insensitively: QualCoder stores them in a column with a binary
+unique index, so `AI Agent` and `AI agent` really are two coders
+there. (Code, category and case NAMES follow the opposite rule, which
+is QualCoder 4.0 parity for those.)
+
+**The `owner` argument is deprecated.** `apply_codings` and
+`import_text_file` still accept `owner`, but it no longer chooses the
+name: passing exactly the project's AI coder name is a no-op and any
+other value is refused before any backup or write. A human coder's
+name is never used for rows this server writes. It is kept in the
+signature for one release cycle and planned for removal at v1.0. If
+you want a file under your own name in QualCoder, import it in
+QualCoder rather than through this server.
+
 
 ## Working alongside QualCoder 4.0
 
@@ -393,8 +431,10 @@ chosen for parity with QualCoder's own exports: exported files
 carry full memos, marker and private section included, and those tools
 say so. `export_code_report` returns into the conversation and strips.
 
-**Coder visibility.** When a 4.0 project hides some coders' work (a
-setting stored in the project database), coded-segment reads and
+**Coder visibility.** When a project with the coder-visibility
+capability (QualCoder 3.8.2 and 4.0, schema v14 and later) hides some
+coders' work, a setting stored in the project database, coded-segment
+reads and
 analytics (`get_coded_segments`, `search_coded_text`,
 `get_coding_frequencies`, `find_cooccurring_codes`,
 `get_case_code_matrix`, `get_codes_by_case`, `get_cases_by_code`, the
@@ -1055,7 +1095,7 @@ Contributions are welcome! Some ideas for enhancements:
 **Completed in v0.11.0 (this release): QualCoder 4.0 interop conventions, Phase 1**
 - ✅ `#####` private memo sections are never shown to the AI, survive every memo write, and stay in exported files for parity with QualCoder's own exports
 - ✅ Configurable AI coder name (`QUALCODER_MCP_AI_CODER_NAME`), with `AI Agent` as the QualCoder 4.0 opt-in
-- ✅ Reads follow QualCoder 4.0's per-coder visibility, with a `coder` override; by-id writes on a hidden coder's row need `allow_hidden_coder`
+- ✅ Reads follow QualCoder's per-coder visibility wherever the project has that capability (QualCoder 3.8.2 and 4.0, schema v14 and later), with a `coder` override; by-id writes on a hidden coder's row need `allow_hidden_coder`
 - ✅ Backups and workspace copies include `ai_data/` minus QualCoder's own ignore set; symlinks pointing outside the project are not followed
 - ✅ Best-effort detection of an open QualCoder 4.0 window (`qualcoder_gui_signals`), and the last-used project named in "no project selected" errors
 

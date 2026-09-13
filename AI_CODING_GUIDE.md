@@ -99,7 +99,7 @@ approval of each suggestion.
 | `edit_suggestion(coding_session_id, suggestion_guid, start_pos, end_pos, segment_text, use_alternative, code_id, code_name)` | Adjust a pending suggestion's span or code before approval (session-only) |
 | `update_suggestion_status(coding_session_id, approve, reject)` | Approve/reject by GUID |
 | `apply_codings(coding_session_id, create_backup, owner)` | **Write** approved suggestions (project-bound, validated, all-or-nothing). An approved suggestion whose identical coding already exists is left alone and reported by id; that check reads the base table, so on a project that hides the AI coder it discloses that one such row exists (PRIVACY.md) |
-| `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` | **Write**: remove one coded segment (on QualCoder 4.0 projects a hidden coder's row, or a row whose memo carries a `#####` private note, is refused without the override) |
+| `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` | **Write**: remove one coded segment (on projects with the coder-visibility capability, QualCoder 3.8.2 and 4.0, schema v14 and later, a hidden coder's row, or a row whose memo carries a `#####` private note, is refused without the override) |
 | `list_backups()` / `restore_backup(backup_path, confirm)` | List snapshots / guarded project restore |
 | `import_text_file(filename, content, memo, owner, create_backup, case_name)` | **Write**: add a new transcript, optionally linked to a case |
 | `link_file_to_case(file_id, case_id, case_name, create_backup)` | **Write**: make a file visible to case-based analyses |
@@ -154,7 +154,8 @@ approval of each suggestion.
   the server only warns on heuristics (`qualcoder_gui_signals`)
 - Memo text from the first `#####` marker onward (QualCoder 4.0's
   private-note convention) is never shown to the AI and survives AI
-  memo writes; on 4.0 projects reads follow the per-coder visibility
+  memo writes; where the project has the coder-visibility capability
+  reads follow the per-coder visibility
   setting (see "Working alongside QualCoder 4.0" in the README)
 - Every write creates a timestamped backup first (`list_backups` shows
   them, including QualCoder's own `_BKUP_` snapshots)

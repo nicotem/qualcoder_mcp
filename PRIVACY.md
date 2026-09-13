@@ -40,7 +40,8 @@ What stays local, always:
   `~/Documents/Qualcoder MCP Projects/` by default (each carries the
   same content as a backup, so the `ai_data/` and symlink rules below
   apply to it)
-- AI-coding session files (`~/.qualcoder_mcp/sessions/`)
+- AI-coding session files (`~/.qualcoder_mcp/sessions/`), written
+  atomically and created owner-only on POSIX systems (mode 0600)
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
@@ -52,6 +53,18 @@ What stays local, always:
   Nothing is ever selected automatically from it; only a path with the
   shape select_project itself records is ever echoed, and deleting the
   file clears it.
+- the project's AI coder name setting (`qualcoder_mcp.json` inside the
+  `.qda` project folder): the coder name or names you have chosen for
+  this project's AI writes, when each was set, an optional note you
+  typed (for example the host and model version), and the name declared
+  in the host's server configuration at the time. It travels with the
+  project folder, its backups and its workspace copies, and a restore
+  rolls it back with the rest of the folder. It is returned into the
+  conversation by get_current_project, select_project and
+  set_project_ai_coder_name, and the current name appears on every write
+  result; treat the note like any other project text the model can read.
+  QualCoder never reads or writes this file. Deleting it makes the next
+  AI write ask for the name again.
 
 What leaves your machine: **only what tools return into the
 conversation**, but for qualitative research, that can be the most
@@ -113,13 +126,34 @@ The private zone stays in your project database on disk; this
 convention controls only what enters the AI conversation. The QualCoder
 4.0 behaviour described in this section and the next two was verified
 against QualCoder master at commit 9bddf17 (pulled 2026-08-25, when 4.0
-was in beta); README.md and CHANGELOG.md carry the same pin.
+was in beta); README.md and CHANGELOG.md carry the same pin. The coder
+visibility section was also verified against the 3.8.2 tag, which
+already creates the `coder_names` table, its `visibility` column and
+the four views (schema v14).
+
+## Attribution: the AI coder name is yours to choose
+
+Every row this server writes carries one coder name, so AI work stays
+distinguishable from yours in QualCoder. AI rows are never written under
+a name the model chose by itself: the name is set per project by you,
+and the model can only ask. The first write that needs a name stops and
+asks; your answer is stored with the project and reported back by the
+project reads. The host's `QUALCODER_MCP_AI_CODER_NAME` setting declares
+a name, which is offered as a quick pick and checked for conflicts; it
+never attributes a row on its own. A name that belongs to a person (the
+project's own coder name) is refused, and the `owner` argument of
+`apply_codings` and `import_text_file` can no longer be used to write
+rows under someone else's name.
 
 ## Coder visibility: reading and writing what the user sees
 
-QualCoder 4.0 lets a project hide individual coders' work (a per-coder
-visibility setting stored in the project database). When that setting
-is present in a project:
+QualCoder lets a project hide individual coders' work (a per-coder
+visibility setting stored in the project database). It is not a 4.0
+feature: QualCoder 3.8.2 and 4.0, schema v14 and later, create the
+table, the column and the views, and this server detects them by
+probing the project database rather than by any version string, so the
+behaviour below follows the capability wherever it is present. When a
+project has the coder-visibility capability:
 
 - **Reads** go through QualCoder's own visibility views by default, so
   coded segments, coded-text searches, the annotation matches of memo
@@ -162,7 +196,8 @@ is present in a project:
   per-coder visibility in QualCoder; their owner columns are read as
   before.
 
-Projects without the setting (every pre-4.0 project) are unaffected.
+Projects without the coder-visibility capability (schemas older than
+v14) are unaffected.
 
 ## Backups, project copies, and the `ai_data/` folder
 

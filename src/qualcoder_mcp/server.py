@@ -579,7 +579,7 @@ def _snippet(text: Optional[str], max_len: int = 80) -> str:
 
 
 def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Disclosure block for reads shaped by QC 4.0 coder visibility (P1-3).
+    """Disclosure block for reads shaped by coder visibility (P1-3).
 
     Returned only when the project actually hides coders. Reports the
     COUNT of hidden coders, never their names. With an explicit coder
@@ -1146,12 +1146,17 @@ def _color_disclosure(requested: Optional[str], stored: Optional[str]) -> Dict[s
 
 
 
-# P1-2 attribution config: one configurable coder name for every row this
-# server writes. Distinct-by-default (owner verdict b): the default stays
-# "AI Coding Assistant" for continuity with existing projects; setting the
-# env var to "AI Agent" (QualCoder 4.0's own AI owner string,
-# ai_mcp_server.py:85) groups this server's writes with the built-in
-# assistant's under 4.0's per-coder visibility, undo and report tooling.
+# P1-2 attribution config, re-purposed by v0.12 (D7): the environment
+# variable is this HOST's declaration of the name it would like to write
+# under, not the attribution itself. The attribution is the PROJECT's
+# setting (project_settings.py), chosen by the researcher, and a
+# declaration that differs from it makes the next write ask rather than
+# re-attribute. The declaration is still validated at start-up, because a
+# name we would refuse to store is a configuration error worth reporting
+# early. "AI Agent" is QualCoder 4.0's own AI owner string
+# (ai_mcp_server.py:85 at 9bddf17); choosing it for a project groups this
+# server's writes with the built-in assistant's under one coder in
+# QualCoder's per-coder visibility, undo and report tooling.
 # AI_CODER_NAME_ENV and DEFAULT_AI_CODER_NAME now live in
 # project_settings.py beside the sidecar reader and are imported above, so
 # one module defines what this server calls its own AI work (H3).
@@ -2698,7 +2703,8 @@ def search_coded_text(query: str, code_name: Optional[str] = None,
     This tool searches through all coded text segments for matching content.
     Useful for finding specific themes, quotes, or concepts in your data.
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, results reflect only visible coders by default
     (what the user sees in QualCoder); the result then carries a
     coder_visibility block. Pass coder to read one specific coder's
@@ -2737,7 +2743,8 @@ def get_coded_segments(code_id: int, limit: int = 100,
     This tool retrieves all the text excerpts that have been assigned
     to a particular code, useful for reviewing themes or categories.
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, results reflect only visible coders by default
     (what the user sees in QualCoder); the result then carries a
     coder_visibility block with the suppressed count. Pass coder to
@@ -2894,7 +2901,8 @@ def get_coding_frequencies(coder: Optional[str] = None) -> str:
     This tool provides an overview of how often each code has been used,
     helping identify prominent themes and patterns in the data.
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, counts reflect only visible coders by default
     (what the user sees in QualCoder); the result then carries a
     coder_visibility block. Pass coder to count one specific coder's
@@ -2930,7 +2938,8 @@ def search_memos(query: str, limit: int = 50) -> str:
     '#####' marker onward is private to the researcher. The search
     matches and returns only the public part of each memo.
 
-    Coder visibility (QualCoder 4.0 projects): annotation matches
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): annotation matches
     honour the project's per-coder visibility by default (hidden
     coders' annotations are not returned, matching what the user sees
     in QualCoder), and the result then carries a coder_visibility
@@ -2971,7 +2980,8 @@ def export_code_report(code_name: str) -> str:
     marker). Unlike the file exports (export_refi_qda, export_codebook,
     export_coded_segments_report) it never carries the private zone.
 
-    Coder visibility (QualCoder 4.0 projects): segments reflect visible
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): segments reflect visible
     coders by default and the result then carries a coder_visibility
     block. There is no coder override on this tool; use
     get_coded_segments(coder=...) for that.
@@ -3335,7 +3345,8 @@ def analyze_file_with_coding(file_id: int) -> str:
     the user before coding or applying anything on this file: codings on
     such files can render shifted or unhighlighted in QualCoder's editor.
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides some
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides some
     coders' work, coded_segments and annotations reflect only visible
     coders (what the user sees in QualCoder) and the result carries a
     coder_visibility block. This tool has no coder override; use
@@ -3499,7 +3510,8 @@ def find_cooccurring_codes(code_id: int, window_size: int = 0,
     for a comparison.
 
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
@@ -3545,7 +3557,8 @@ def get_case_code_matrix(coder: Optional[str] = None) -> str:
     Only codings fully CONTAINED in a case's text interval are counted,
     matching QualCoder's own report semantics.
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, counts reflect only visible coders by default
     (what the user sees in QualCoder); the result then carries a
     coder_visibility block. Pass coder to count one specific coder's
@@ -3555,7 +3568,7 @@ def get_case_code_matrix(coder: Optional[str] = None) -> str:
     Args:
         coder: Optional coder name. When given, counts only that coder's
                codings, read from the full data regardless of QualCoder
-               4.0 visibility settings; when omitted, counts all visible
+               visibility settings; when omitted, counts all visible
                coders' codings.
 
     Returns:
@@ -3587,7 +3600,8 @@ def get_codes_by_case(case_id: int, coder: Optional[str] = None) -> str:
     case's text segments, with frequency counts.
 
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
@@ -3624,7 +3638,8 @@ def get_cases_by_code(code_id: int, coder: Optional[str] = None) -> str:
     a particular theme or code.
 
 
-    Coder visibility (QualCoder 4.0 projects): when the project hides
+    Coder visibility (projects with the coder-visibility capability,
+    QualCoder 3.8.2 and 4.0 onwards): when the project hides
     some coders' work, counts reflect only visible coders by
     default (what the user sees in QualCoder). The result is then
     wrapped in an object carrying a coder_visibility block
@@ -5320,7 +5335,8 @@ def delete_coding(coding_id: int, create_backup: bool = True,
     restore_backup if needed. Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Two guards, each with an explicit override the user must ask for:
-    - Hidden coder (QualCoder 4.0 projects that hide coders): a coding
+    - Hidden coder (projects with the coder-visibility capability that hide
+      coders): a coding
       owned by a hidden coder is REFUSED unless allow_hidden_coder=true.
       The refusal names neither the coder nor how many are hidden; it
       does tell you that the row is a hidden coder's, which the owner
@@ -5374,7 +5390,7 @@ def delete_coding(coding_id: int, create_backup: bool = True,
             allow_hidden_coder=allow_hidden_coder,
             confirm_private_note_deletion=confirm_private_note_deletion)
         if deleted.get("hidden_coder_row"):
-            # Hidden coder's row (QC 4.0 visibility): ids only, never the
+            # Hidden coder's row (coder visibility): ids only, never the
             # code or file name (S-MAJ; upstream echoes ids only too)
             return {
                 "success": True,
@@ -7117,7 +7133,8 @@ def set_memo(target_type: str, target_id: int, memo: str,
     the user to close the project in QualCoder, re-check with
     get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
-    Coder visibility (QualCoder 4.0 projects that hide coders): a memo
+    Coder visibility (projects with the coder-visibility capability that
+    hide coders): a memo
     on a CODING owned by a hidden coder is REFUSED unless the user asks
     for allow_hidden_coder=true; the refusal names neither the coder nor
     how many are hidden (it does tell you that the row is a hidden
@@ -8104,7 +8121,8 @@ def update_annotation(annotation_id: int, memo: str,
     marker survives, and clearing the note keeps the row when such a
     section exists (the response then reports cleared, not deleted).
 
-    Coder visibility (QualCoder 4.0 projects that hide coders): an
+    Coder visibility (projects with the coder-visibility capability that
+    hide coders): an
     annotation belonging to a hidden coder is REFUSED unless the user
     asks for allow_hidden_coder=true; the refusal names neither the
     coder nor how many are hidden (it does tell you that the row is a
@@ -8153,7 +8171,8 @@ def delete_annotation(annotation_id: int, create_backup: bool = True,
     created first by default.
 
     Two guards, each with an explicit override the user must ask for:
-    - Hidden coder (QualCoder 4.0 projects that hide coders): an
+    - Hidden coder (projects with the coder-visibility capability that hide
+      coders): an
       annotation owned by a hidden coder is REFUSED unless
       allow_hidden_coder=true. The refusal names neither the coder nor
       how many are hidden; it does tell you that the row is a hidden
@@ -8774,7 +8793,7 @@ def export_coded_segments_report(
     file.
 
     Coder visibility: this file export reads all coders' rows regardless
-    of QualCoder 4.0's per-coder visibility setting, as QualCoder's own
+    of QualCoder's per-coder visibility setting, as QualCoder's own
     report export does; the coder argument is a plain owner filter.
 
     Args:
@@ -9106,7 +9125,7 @@ def export_case_code_matrix_csv(output_path: str,
 
     No totals row/column (parity with QualCoder's matrix exports).
     UTF-8 with BOM, CRLF rows. Coder visibility: this export counts all
-    coders' codings regardless of QualCoder 4.0's per-coder visibility
+    coders' codings regardless of QualCoder's per-coder visibility
     setting, matching QualCoder's own report exports; the conversational
     get_case_code_matrix honours visibility by default.
 

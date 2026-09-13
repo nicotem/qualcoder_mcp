@@ -69,7 +69,7 @@ class SchemaCapabilities:
         self.has_supercid = has_supercid                # v16 SUB-CODES switch
         self.has_graph_labels = has_graph_labels        # v17 (informational)
         self.has_gr_memo_item = has_gr_memo_item        # v17 (informational)
-        # QC 4.0 per-coder visibility (P1-3): coder_names.visibility
+        # Per-coder visibility (P1-3): coder_names.visibility
         # column AND the code_text_visible view, both created in the
         # project database on 4.0 project open (app.py:1499-1562 at pin
         # 9bddf17), so the setting travels with the project. Partial
@@ -1708,8 +1708,8 @@ class QualcoderDatabase:
                           + list(reversed(code_names)))
 
     # ------------------------------------------------------------------
-    # P1-3: coder-visibility reads (QC 4.0). When the project carries
-    # 4.0's per-coder visibility state (probe: coder_names.visibility
+    # P1-3: coder-visibility reads. When the project carries
+    # QualCoder's per-coder visibility state (probe: coder_names.visibility
     # column plus the code_text_visible view, created in the project DB
     # at app.py:1499-1562), coded-segment reads and analytics go through
     # the *_visible views by default so this server reads what the user
@@ -1860,12 +1860,12 @@ class QualcoderDatabase:
         return row is not None
 
     def coding_is_visible(self, coding_id: int) -> bool:
-        """True unless a 4.0 visibility setting hides this coding's coder."""
+        """True unless a visibility setting hides this coding's coder."""
         return self._row_is_visible("code_text", "code_text_visible",
                                     "ctid", coding_id)
 
     def annotation_is_visible(self, annotation_id: int) -> bool:
-        """True unless a 4.0 visibility setting hides this annotation's coder."""
+        """True unless a visibility setting hides this annotation's coder."""
         return self._row_is_visible("annotation", "annotation_visible",
                                     "anid", annotation_id)
 
@@ -2131,7 +2131,8 @@ class QualcoderDatabase:
             coder: Explicit coder filter; reads the BASE table filtered
                    to this owner (P1-3 override, as upstream)
             honor_visibility: Read through code_text_visible when the
-                   project has QC 4.0 coder visibility (default True;
+                   project has the coder-visibility capability
+                   (default True;
                    file exports pass False for export parity)
 
         Returns:
@@ -2553,7 +2554,8 @@ class QualcoderDatabase:
             limit: Maximum results to return (max 5000)
             coder: Explicit coder filter; reads the BASE table filtered
                    to this owner (P1-3 override). Default reads through
-                   code_text_visible when the project has QC 4.0 coder
+                   code_text_visible when the project has the
+                   coder-visibility capability
                    visibility.
 
         Returns:
@@ -2644,7 +2646,8 @@ class QualcoderDatabase:
             coder: Explicit coder filter; counts the BASE table rows of
                    this owner only (P1-3 override)
             honor_visibility: Count through code_text_visible when the
-                   project has QC 4.0 coder visibility (default True;
+                   project has the coder-visibility capability
+                   (default True;
                    exports pass False for parity)
 
         Returns:
@@ -2803,7 +2806,7 @@ class QualcoderDatabase:
 
             # Search annotations (only while budget remains)
             if len(results) < limit:
-                # P1-3: annotations honor QC 4.0 coder visibility here
+                # P1-3: annotations honor coder visibility here
                 # too (annotation_visible when present, base table
                 # otherwise; QA round 1, F13)
                 annotation_source = self._visible_source(
@@ -3611,7 +3614,7 @@ class QualcoderDatabase:
             coder: Explicit coder filter; analyses the BASE table rows
                    of this owner only (P1-3 override). Default reads
                    through code_text_visible when the project has QC
-                   4.0 coder visibility.
+                   the project's coder visibility.
 
         Returns:
             List of codes that co-occur with counts
@@ -3708,7 +3711,8 @@ class QualcoderDatabase:
             coder: Explicit coder filter; counts the BASE table rows of
                    this owner only (P1-3 override)
             honor_visibility: Count through code_text_visible when the
-                   project has QC 4.0 coder visibility (default True;
+                   project has the coder-visibility capability
+                   (default True;
                    the CSV export passes False for parity)
 
         Returns:
@@ -3781,7 +3785,7 @@ class QualcoderDatabase:
             coder: Explicit coder filter; counts the BASE table rows of
                    this owner only (P1-3 override). Default counts
                    through code_text_visible when the project has QC
-                   4.0 coder visibility.
+                   the project's coder visibility.
 
         Returns:
             List of codes with occurrence counts
@@ -3840,7 +3844,7 @@ class QualcoderDatabase:
             coder: Explicit coder filter; counts the BASE table rows of
                    this owner only (P1-3 override). Default counts
                    through code_text_visible when the project has QC
-                   4.0 coder visibility.
+                   the project's coder visibility.
 
         Returns:
             List of cases with occurrence counts
@@ -4125,7 +4129,7 @@ class QualcoderDatabase:
         Reads the BASE table on purpose: code_text's unique constraint
         (cid, fid, pos0, pos1, owner) lives there (__main__.py:1819-1821
         at 9bddf17, 3.8.2 __main__.py:2379-2381), so a row that QualCoder
-        4.0's coder visibility hides would still make an insert fail.
+        a coder visibility setting hides would still make an insert fail.
         Mirrors the per-coding already_exists check of 4.0's own MCP
         server (ai_mcp_server.py:1602-1619).
         """
@@ -4373,7 +4377,7 @@ class QualcoderDatabase:
 
         Returns:
             The details of the deleted coding. When the row belongs to a
-            coder the project hides (QC 4.0 visibility, P1-3), only its
+            coder the project hides (coder visibility, P1-3), only its
             ids come back, matching upstream's ids-only echo
             (ai_mcp_server.py:2243-2280): owner, code name, span, text
             and memo of a hidden coder never enter the conversation.
@@ -5537,8 +5541,9 @@ class QualcoderDatabase:
         preview["private_notes_affected"] = sum(
             self._count_private_notes(t, where, branch)
             for t in ("code_name", "code_text", "code_av", "code_image"))
-        # Tier 2: how many of the codings belong to hidden coders (4.0
-        # projects only), count only, never names
+        # Tier 2: how many of the codings belong to hidden coders (on
+        # projects with the coder-visibility capability), count only,
+        # never names
         hidden = self._hidden_codings_affected(where, branch)
         if hidden is not None:
             preview["hidden_coder_codings_affected"] = hidden
@@ -5894,7 +5899,7 @@ class QualcoderDatabase:
             _raise_query_error(e, "update_annotation",
                                "Failed to update annotation")
         if not visible:
-            # Hidden coder's row (QC 4.0 visibility): echo ids plus the
+            # Hidden coder's row (coder visibility): echo ids plus the
             # public text the AI itself just supplied, never the row's
             # owner, span or file name (S-MAJ; upstream echoes ids only)
             result = {"annotation_id": existing["annotation_id"],
@@ -5917,7 +5922,7 @@ class QualcoderDatabase:
                           ) -> Dict[str, Any]:
         """Delete an annotation by anid (never by pos0; see §4.3 gotcha).
 
-        A hidden coder's row (QC 4.0 visibility) echoes ids only (S-MAJ)
+        A hidden coder's row (coder visibility) echoes ids only (S-MAJ)
         and is refused without allow_hidden_coder (Tier 2); a row whose
         note carries a '#####' private section is refused without
         confirm_private_note_deletion (S-P2). Both refusals are reported

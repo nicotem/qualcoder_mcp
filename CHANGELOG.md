@@ -9,9 +9,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 v0.12 Batch A: small, high-confidence items from the QualCoder 4.0
 ground-truth study (dossiers D5 and D6; owner rulings of 2026-09-10,
-including X2 on duplicate names). No tool was added or removed (67 in
-the full toolset, 20 in `core`); one resource was added. Parity claims
-cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
+including X2 on duplicate names). One resource was added. Batch B
+follows it with the careful items (dossiers D7, D3, D2, D4). Parity
+claims cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
+
+### Added: the AI coder name is the project's, and you choose it
+
+- `set_project_ai_coder_name(name, note, allow_hidden_coder)` records
+  the coder name this project's AI writes are stored under. The first
+  write that needs a name no longer guesses: it stops, asks which name
+  to use, and writes nothing until you answer. The answer is stored in
+  `qualcoder_mcp.json` in the project folder, beside `data.qda`, so it
+  travels with backups, workspace copies and a synced folder, and two
+  hosts talking to one project agree on it. Reads never ask.
+- The name can be changed at any time, and the project keeps the list of
+  names it has used. Rows written under an earlier name keep it: a name
+  change never re-attributes anything, which is what makes a later
+  comparison between two models possible. A model name is a good answer
+  for that reason.
+- Refused names: the project's own coder name and QualCoder's literal
+  `default` (AI rows would be indistinguishable from a person's), and a
+  name that a QualCoder visibility setting hides, unless you pass
+  `allow_hidden_coder=true`. Warnings, never refusals: rows already
+  exist under the name, or it differs from an existing name by letter
+  case alone. Coder names are compared exactly, never case-insensitively
+  (`coder_names.name` is `TEXT UNIQUE` under SQLite's binary collation,
+  `app.py:1470-1475` at 9bddf17), which is the opposite of the rule
+  Batch A adopted for code, category and case names.
+- `get_current_project` and `select_project` report the setting, the
+  host declaration, whether the two conflict, and the names the project
+  has used (the last 20, with the total); `get_project_summary` carries
+  the current name as one string. `export_refi_qda` never asks: it names
+  its single AI User after the project's setting, else the host's
+  declaration, else the built-in default, and says which in
+  `ai_user_name_source`.
+- This server still never inserts into `coder_names`. QualCoder harvests
+  every owner column into that table when it next opens the project
+  (`app.py:1480-1494` at 9bddf17, byte-identical in the 3.8.2 tag at
+  `__main__.py:1230-1244`), with visibility 1, so a new name appears in
+  its coder list by itself.
+
+### Changed: `QUALCODER_MCP_AI_CODER_NAME` declares, it no longer attributes
+
+- The variable is now this HOST's declaration of the name it would like
+  to write under. It is the first quick pick when a project is asked for
+  its name, and it is still validated at start-up, but it never writes a
+  row by itself. If it differs from the project's current name, the next
+  write asks which of the two to use, and answering either way settles
+  it for that host until the declaration changes.
+
+### Changed: the `owner` argument no longer chooses the coder name
+
+- `apply_codings` and `import_text_file` still accept `owner`, but
+  passing exactly the project's AI coder name is a no-op and any other
+  value is refused before any backup or write. A human coder's name is
+  never used for rows this server writes. The parameter stays in both
+  signatures for one release cycle; removal is planned for v1.0.
+
+### Changed: coder visibility is not a 4.0 feature
+
+- Documentation and tool descriptions called per-coder visibility a
+  QualCoder 4.0 feature. The 3.8.2 tag already creates the `coder_names`
+  table, its `visibility` column and the four views (schema v14,
+  `3.8.2:__main__.py:1220-1223`), so the prose now says "projects with
+  the coder-visibility capability (QualCoder 3.8.2 and 4.0, schema v14
+  and later)". Behaviour is unchanged: it was always a capability probe,
+  never a version check.
+
+### Changed: session files are written atomically
+
+- `save_session` writes through an exclusively created temporary file
+  and an atomic replace, owner-only on POSIX (mode 0600), so an
+  interrupted save can no longer truncate a session holding your
+  approvals. A session also records the project's AI coder name at the
+  moment it was created; applying it after a name change writes under
+  the current name and says which name the suggestions were recorded
+  under.
+
+### Upgrading from 0.11.x (AI coder name)
+
+- The first write to each project after upgrading will ask for the
+  project's AI coder name instead of writing. Answer with
+  `set_project_ai_coder_name`. Choosing `AI Coding Assistant` keeps
+  continuity with everything v0.11 wrote; the ask says so when the
+  project already holds rows under a name this server knows.
+- If you set `QUALCODER_MCP_AI_CODER_NAME` to attribute your writes,
+  that value is now a declaration rather than an attribution. Nothing is
+  re-attributed, and the first write on each project offers the declared
+  name as the first quick pick.
+- If you passed `owner=` to `apply_codings` or `import_text_file` to
+  write under a different name, that no longer works. Change the
+  project's AI coder name instead. A researcher who wants a file under
+  their own name should import it in QualCoder, which attributes it to
+  them.
 
 ### Changed: colours are snapped onto QualCoder's palette
 

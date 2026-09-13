@@ -285,27 +285,37 @@ variable is optional.
   (see the LM Studio recipe). Any other value stops the server at
   start-up with an error naming the valid values. Resources and prompts
   are not affected.
-- `QUALCODER_MCP_AI_CODER_NAME`: the coder name written on every row
-  this server creates (codings, annotations, journal entries, imports,
-  cases, codes, categories, attributes, and the Users entry of a REFI-QDA
-  export). Default `AI Coding Assistant`. Set it to `AI Agent` to use the
-  exact name QualCoder 4.0's built-in assistant writes under; that
-  groups this server's work with the assistant's in 4.0's per-coder
-  visibility toggle, undo and reports, which is the coherent choice for
-  a project worked on by both tools. The value is trimmed and must be
-  non-empty, at most 80 characters, single-line plain text (no control
-  characters, no line or paragraph separators, no bidirectional
-  formatting characters) and must not contain `#####`, the QualCoder 4.0
-  private-memo marker. An invalid value stops the server at start-up
-  with "Error: QUALCODER_MCP_AI_CODER_NAME ..." on stderr. Do not set it
-  to your own QualCoder coder name: AI rows would then be
-  indistinguishable from yours in QualCoder.
+- `QUALCODER_MCP_AI_CODER_NAME`: this HOST's DECLARATION of the AI
+  coder name it would like to write under. Since v0.12 the name that
+  rows actually carry is the PROJECT's setting, which the researcher
+  chooses through `set_project_ai_coder_name` the first time a write
+  needs it (see the attribution section of README.md); the declaration
+  is offered as the first quick pick in that question, and if it differs
+  from a name the project already has, the next write asks which to use
+  rather than re-attributing anything. Declare the model this host runs
+  (`"Qwen 3.8 6bit"`), or `AI Agent` to propose the exact name
+  QualCoder 4.0's built-in assistant writes under, which groups this
+  server's work with the assistant's under one coder in QualCoder's
+  per-coder visibility toggle, undo and reports. The value is trimmed
+  and must be non-empty, at most 80 characters, single-line plain text
+  (no control characters, no line or paragraph separators, no
+  bidirectional formatting characters) and must not contain `#####`,
+  the QualCoder 4.0 private-memo marker. An invalid value stops the
+  server at start-up with "Error: QUALCODER_MCP_AI_CODER_NAME ..." on
+  stderr. Do not declare your own QualCoder coder name: AI rows would
+  then be indistinguishable from yours in QualCoder, and the setter
+  refuses that name anyway.
 
   ```json
   "env": {
-    "QUALCODER_MCP_AI_CODER_NAME": "AI Agent"
+    "QUALCODER_MCP_AI_CODER_NAME": "Qwen 3.8 6bit"
   }
   ```
+
+  A local-model host (LM Studio, for example) is the case this is for:
+  declare the model the host runs, and every project coded from that
+  host proposes that name first, so codings by different models can be
+  told apart and compared later.
 
 - `QUALCODER_MCP_ALLOW_UNKNOWN_SCHEMA`: expert override. Writes to a
   project whose database schema is newer than the schemas this release
