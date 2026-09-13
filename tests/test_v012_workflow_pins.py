@@ -39,10 +39,22 @@ the ten pins the anti-vacuity guard asks for. The scan is now
 `_scanned_files()`, which reads both spellings plus any composite action
 under .github/actions, refuses a file in .github/workflows it cannot
 read, and is itself pinned against the directory listing.
+
+Fix round 4, T4: the permissions pin S3 added had the same shape. Its
+job-key pattern missed two legal YAML spellings, a trailing comment and
+a quoted key, and an unmatched line was SKIPPED rather than refused, so
+jobs written either way escaped the permissions check while every test
+here stayed green. The pattern now covers those spellings, a line that
+sits where a job key sits and is not one this ledger can read is a
+failure, and the jobs found are checked against a recorded ledger rather
+than a floor. Same rule as the SHA ledger: assert what was scanned, and
+fail on what could not be.
 """
 
 import re
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -75,6 +87,19 @@ PIN_RE = re.compile(
     r"uses:\s*(?P<action>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{40})"
     r"\s*#\s*(?P<version>v[\w.]+)(?P<suffix>\s*\([^)]*\))?"
 )
+
+
+def _rel(path):
+    """Repo-relative posix label, or the bare name off the repository.
+
+    The parser below is exercised against synthetic workflows under
+    tmp_path (fix round 4, T4), which `relative_to` refuses, and on
+    Windows tmp_path can even be on another drive.
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _scanned_files():
@@ -124,7 +149,7 @@ def test_the_ledger_scans_every_workflow_file_on_disk():
 def _pins():
     found = []
     for path in _scanned_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = _rel(path)
         for line_no, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1
         ):
@@ -151,12 +176,42 @@ def _pins():
 # the maintainer's venv and error in CI. These two regexes read the two
 # indentation levels the workflow files actually use.
 TOP_KEY_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+):")
-JOB_KEY_RE = re.compile(r"^  (?P<name>[A-Za-z0-9_.-]+):\s*$")
+# Fix round 4, T4: the round-3 spelling was r"^  ([A-Za-z0-9_.-]+):\s*$",
+# which recognised a job only when the key ended immediately after the
+# colon and carried no quotes. `  deploy:   # staging only` and
+# `  "deploy":` are both legal YAML and both were SKIPPED rather than
+# refused, so a workflow with one compliant job and two non-compliant
+# ones passed every test in this file: the anti-vacuity guard asked only
+# that each FILE contribute a job, not each job in it. The optional
+# backreferenced quote group covers single and double quotes and still
+# rejects a mismatched one; the optional trailing comment is the other
+# legal spelling. Anything else at this indent is refused in _jobs()
+# rather than skipped, which is the half that makes this a ledger.
+JOB_KEY_RE = re.compile(
+    r"""^  (?P<q>["']?)(?P<name>[A-Za-z0-9_.-]+)(?P=q):\s*(\#.*)?$""")
 JOB_PERMISSIONS_RE = re.compile(r"^    permissions:")
+
+# Every job in every workflow, recorded rather than counted (fix round 4,
+# T4). `len(jobs) >= 4` and "each file contributes a job" are both
+# satisfied while a job goes missing from the scan; an exact ledger is
+# not. Adding, renaming or removing a job means recording it here, the
+# same step VERIFIED_TAGS asks for when an action pin moves.
+WORKFLOW_JOBS = {
+    "ci.yml": {"test"},
+    "publish.yml": {"build", "publish-to-testpypi", "publish-to-pypi"},
+}
 
 
 def _jobs(path):
-    """[{name, where, lines}] for each job in a workflow file."""
+    """[{name, where, lines}] for each job in a workflow file.
+
+    Fix round 4, T4: a line at exactly two spaces of indent inside the
+    `jobs:` block that is neither blank nor a comment is a job key this
+    parser does not understand, and it is refused here. Skipping it was
+    the defect: the job dropped out of the permissions check, and its
+    body was absorbed into the PRECEDING job, so the permissions block of
+    one job vouched for another.
+    """
     jobs = []
     in_jobs = False
     current = None
@@ -169,17 +224,45 @@ def _jobs(path):
             continue
         if not in_jobs:
             continue
+        two_space_key = (line.startswith("  ")
+                         and not line.startswith("   ")
+                         and line.strip()
+                         and not line.lstrip().startswith("#"))
         match = JOB_KEY_RE.match(line)
+        assert match is not None or not two_space_key, (
+            f"{_rel(path)}:{line_no} "
+            f"{line.strip()!r} sits where a job key sits but is not one "
+            f"this ledger can read. Teach JOB_KEY_RE the spelling rather "
+            f"than letting the job escape the permissions check.")
         if match:
             current = {
                 "name": match.group("name"),
-                "where": f"{path.relative_to(REPO_ROOT).as_posix()}:{line_no}",
+                "where": f"{_rel(path)}:{line_no}",
                 "lines": [],
             }
             jobs.append(current)
         elif current is not None:
             current["lines"].append(line)
     return jobs
+
+
+def _workflow_level_permissions(path):
+    """True when the workflow declares permissions above its jobs."""
+    return any(TOP_KEY_RE.match(line) and line.startswith("permissions:")
+               for line in path.read_text(encoding="utf-8").splitlines())
+
+
+def _jobs_without_permissions(path):
+    """Jobs in `path` whose GITHUB_TOKEN takes the repository default.
+
+    Shared by the pin over the real workflows and by the synthetic pins
+    in TestTheJobParserRefusesWhatItCannotRead, so those exercise this
+    check rather than a second copy of it (fix round 4, T4).
+    """
+    if _workflow_level_permissions(path):
+        return []
+    return [job for job in _jobs(path)
+            if not any(JOB_PERMISSIONS_RE.match(line) for line in job["lines"])]
 
 
 def _workflow_jobs():
@@ -197,30 +280,28 @@ def test_every_job_constrains_the_github_token():
     unpinned third-party packages on every branch push.
     """
     jobs = _workflow_jobs()
-    assert len(jobs) >= 4, jobs
     by_file = {}
     for path, job in jobs:
         by_file.setdefault(path.name, set()).add(job["name"])
-    # Every workflow contributes at least one job, so a file whose jobs
-    # this parser stops recognising fails here rather than dropping out.
+    # What was actually scanned, against the ledger, not against a floor
+    # (fix round 4, T4). Every workflow on disk is in the ledger and the
+    # ledger's job names are the ones the parser found, so a job the
+    # parser stops recognising fails here as well as in _jobs().
     assert set(by_file) == {path.name for path in _scanned_files()
                             if path.parent == WORKFLOWS}
-    assert all(names for names in by_file.values()), by_file
-    assert {"test"} <= by_file["ci.yml"]
-    assert {"build", "publish-to-testpypi",
-            "publish-to-pypi"} <= by_file["publish.yml"]
+    assert by_file == WORKFLOW_JOBS, (
+        f"the jobs this ledger scanned are {by_file}, the ledger says "
+        f"{WORKFLOW_JOBS}. Record the change, or find out why a job is "
+        f"not being read.")
+    assert len(jobs) == sum(len(names) for names in WORKFLOW_JOBS.values())
 
-    for path, job in jobs:
-        workflow_level = any(
-            TOP_KEY_RE.match(line) and line.startswith("permissions:")
-            for line in path.read_text(encoding="utf-8").splitlines())
-        job_level = any(JOB_PERMISSIONS_RE.match(line)
-                        for line in job["lines"])
-        assert job_level or workflow_level, (
-            f"{job['where']}: job '{job['name']}' declares no permissions "
-            f"block, so its GITHUB_TOKEN takes the repository default "
-            f"scopes. Give it the least privilege it needs, beside the "
-            f"job, the way publish.yml does.")
+    for path in {path for path, _ in jobs}:
+        for job in _jobs_without_permissions(path):
+            raise AssertionError(
+                f"{job['where']}: job '{job['name']}' declares no "
+                f"permissions block, so its GITHUB_TOKEN takes the "
+                f"repository default scopes. Give it the least privilege "
+                f"it needs, beside the job, the way publish.yml does.")
 
 
 def test_no_checkout_persists_the_credential_it_does_not_need():
@@ -233,7 +314,7 @@ def test_no_checkout_persists_the_credential_it_does_not_need():
     checkouts = []
     for path in _scanned_files():
         lines = path.read_text(encoding="utf-8").splitlines()
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = _rel(path)
         for index, line in enumerate(lines):
             if "uses:" not in line or "actions/checkout@" not in line:
                 continue
@@ -313,3 +394,125 @@ def test_changelog_ci_entry_names_the_pinned_versions():
         short = pin["action"].split("/")[-1]
         claim = f"{short} {pin['version']}"
         assert claim in entry, (pin["where"], claim)
+
+
+class TestTheJobParserRefusesWhatItCannotRead:
+    """Fix round 4, T4: the S3 permissions pin was permeable.
+
+    `  deploy:   # staging only` and `  "deploy":` are legal YAML job
+    keys that the round-3 pattern did not match, and _jobs() SKIPPED an
+    unmatched line rather than refusing it. Three jobs written that way,
+    two of them with no permissions block at all, passed all seven tests
+    in this file: `len(jobs) >= 4` was satisfied by the jobs that did
+    parse, and the per-file guard asked only that each FILE contribute a
+    job. Worse, a skipped key's body was appended to the PRECEDING job,
+    so one job's permissions block vouched for the next one's steps.
+
+    These pins run the real parser over synthetic workflows, so they
+    cover the spellings the repository does not happen to use.
+    """
+
+    HEADER = "name: Synthetic\non:\n  push:\njobs:\n"
+    COMPLIANT = ("  test:\n"
+                 "    runs-on: ubuntu-latest\n"
+                 "    permissions:\n"
+                 "      contents: read\n"
+                 "    steps:\n"
+                 "      - run: echo ok\n")
+
+    def _write(self, tmp_path, body):
+        path = tmp_path / "synthetic.yml"
+        path.write_text(self.HEADER + self.COMPLIANT + body, encoding="utf-8")
+        return path
+
+    @pytest.mark.parametrize("job_key", [
+        "  lint:",
+        "  lint:   # style only",
+        '  "lint":',
+        "  'lint':",
+        "  lint:  ",
+    ])
+    def test_a_job_spelled_any_legal_way_is_still_checked(self, tmp_path,
+                                                          job_key):
+        path = self._write(tmp_path,
+                           f"{job_key}\n"
+                           f"    runs-on: ubuntu-latest\n"
+                           f"    steps:\n"
+                           f"      - run: echo hi\n")
+        assert [job["name"] for job in _jobs(path)] == ["test", "lint"]
+        assert [job["name"] for job in _jobs_without_permissions(path)] \
+            == ["lint"]
+
+    def test_a_spelling_the_parser_cannot_read_is_refused_not_skipped(
+        self, tmp_path
+    ):
+        """The long tail: an anchor, a flow mapping, tomorrow's surprise.
+
+        The ledger does not have to understand every legal YAML; it has
+        to fail rather than pass when it does not.
+        """
+        path = self._write(tmp_path,
+                           "  lint: &anchor\n"
+                           "    runs-on: ubuntu-latest\n"
+                           "    steps:\n"
+                           "      - run: echo hi\n")
+        with pytest.raises(AssertionError,
+                           match="is not one this ledger can read"):
+            _jobs(path)
+
+    def test_a_later_job_does_not_inherit_the_lines_of_the_one_above(
+        self, tmp_path
+    ):
+        """The mis-attribution half: skipping the key was worse than
+        missing the job, because its steps landed under the job before
+        it and that job's permissions block spoke for them."""
+        path = self._write(tmp_path,
+                           "  lint:   # style only\n"
+                           "    runs-on: ubuntu-latest\n"
+                           "    steps:\n"
+                           "      - run: echo hi\n")
+        lines_by_job = {job["name"]: job["lines"] for job in _jobs(path)}
+        assert any(JOB_PERMISSIONS_RE.match(line)
+                   for line in lines_by_job["test"])
+        assert not any(JOB_PERMISSIONS_RE.match(line)
+                       for line in lines_by_job["lint"])
+        assert any("echo hi" in line for line in lines_by_job["lint"])
+        assert not any("echo hi" in line for line in lines_by_job["test"])
+
+    def test_comments_and_blank_lines_at_job_indent_are_not_refused(
+        self, tmp_path
+    ):
+        """The refusal must not fire on the two things that legally sit
+        there and are not job keys."""
+        path = self._write(tmp_path,
+                           "\n"
+                           "  # the style job, kept separate on purpose\n"
+                           "\n"
+                           "  lint:\n"
+                           "    runs-on: ubuntu-latest\n"
+                           "    permissions:\n"
+                           "      contents: read\n"
+                           "    steps:\n"
+                           "      - run: echo hi\n")
+        assert [job["name"] for job in _jobs(path)] == ["test", "lint"]
+        assert _jobs_without_permissions(path) == []
+
+    def test_a_workflow_level_permissions_block_still_covers_every_job(
+        self, tmp_path
+    ):
+        """publish.yml declares per job; a workflow-level block is the
+        other legal way, and the check has always accepted it."""
+        path = tmp_path / "top_level.yml"
+        path.write_text(
+            "name: Synthetic\n"
+            "on:\n"
+            "  push:\n"
+            "permissions:\n"
+            "  contents: read\n"
+            "jobs:\n"
+            "  lint:   # no block of its own\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo hi\n", encoding="utf-8")
+        assert [job["name"] for job in _jobs(path)] == ["lint"]
+        assert _jobs_without_permissions(path) == []

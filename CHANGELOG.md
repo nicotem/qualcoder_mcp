@@ -227,7 +227,10 @@ withholds project data.
   runs it on every branch push, so it should hold neither a
   write-capable token nor a credential left in `.git/config`. Pinned:
   every job in every workflow declares a permissions block and every
-  checkout refuses the credential.
+  checkout refuses the credential. The job scan is a ledger like the SHA
+  one: a job key spelled in a way it cannot read (a quoted key, a
+  trailing comment, a YAML anchor) fails the suite instead of escaping
+  the check, and the jobs it found are compared with the jobs recorded.
 
 ### Upgrading from 0.11.x
 
