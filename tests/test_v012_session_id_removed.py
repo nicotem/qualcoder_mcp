@@ -130,8 +130,8 @@ def _available_session_lists(value):
     return found
 
 
-def _module_paths_under(root):
-    """Module-level paths in the package that lie inside `root`.
+def _module_paths_under(root, sandbox):
+    """Module-level paths in the package that still lie inside `root`.
 
     The sweep calls every registered tool for real with production
     defaults, so a path constant frozen at import time is the sweep's
@@ -139,8 +139,32 @@ def _module_paths_under(root):
     checkout are skipped, because constants derived from `__file__`
     legitimately live there and the checkout is itself under the home
     directory on a developer machine and on the Linux CI images.
+
+    `sandbox` is the directory the caller has already redirected
+    everything into, normally `tmp_path`, and paths inside it are skipped
+    BEFORE the `root` question is asked. That ordering is the whole point
+    (fix round 4, W1). pytest's temporary root is not always outside the
+    home directory: on GitHub's windows-latest runners the job's `%TEMP%`
+    is `C:\\Users\\runneradmin\\AppData\\Local\\Temp`, so `tmp_path`
+    is itself inside `Path.home()` and every redirected constant satisfies
+    both tests at once. Without the skip the guard reported the
+    redirection it had just been handed and failed for doing its job,
+    which is what broke both windows-latest jobs at 1fc70a1 while the four
+    Linux and macOS jobs passed. It is a TMPDIR property rather than a
+    Windows one: `pytest --basetemp="$HOME/somewhere"` reproduces it on
+    any platform, and that is how it was found.
+
+    The skip costs the guard nothing it was built for. A constant still
+    pointing at the real `~/.qualcoder_mcp` or `~/Documents` is not inside
+    the sandbox, so it is still reported, and the two pins in
+    TestTheRotGuardSurvivesATempRootInsideHome hold both halves down.
+    All three directories are resolved before comparing, so a short 8.3
+    `%TEMP%`, a `/tmp` symlinked to `/private/tmp`, or a `..` inside a
+    constant cannot make the comparison answer by accident.
     """
     repo_root = Path(server.__file__).resolve().parent.parent.parent
+    sandbox = Path(sandbox).expanduser().resolve()
+    root = Path(root).expanduser().resolve()
     found = []
     modules = {"server": server}
     for label in ("database", "sessions"):
@@ -156,6 +180,9 @@ def _module_paths_under(root):
     for where, value in candidates:
         resolved = Path(value).expanduser()
         if not resolved.is_absolute():
+            continue
+        resolved = resolved.resolve()
+        if resolved.is_relative_to(sandbox):
             continue
         if resolved.is_relative_to(repo_root):
             continue
@@ -259,7 +286,11 @@ class TestNoResponseCarriesSessionId:
         # And nothing else still points into the real home: a constant
         # added later would rot this pin in silence, which is exactly how
         # the environment-only version of it came to protect nothing.
-        assert _module_paths_under(real_home) == []
+        # tmp_path is handed over as the sandbox because on a machine
+        # whose temporary root lives under the home directory (every
+        # Windows CI runner) the redirections above are inside BOTH, and
+        # the question is what was NOT redirected (fix round 4, W1).
+        assert _module_paths_under(real_home, tmp_path) == []
 
         tools = server.mcp._tool_manager._tools
         assert len(tools) == TOOL_COUNT
@@ -353,3 +384,63 @@ class TestNoResponseCarriesSessionId:
         listing = json.loads(server.list_coding_sessions())
         assert listing["sessions"][0]["coding_session_id"] == real
         assert _forbidden_key_paths(listing) == []
+
+
+# ===========================================================================
+# Fix round 4 (W1): the rot guard above has to survive a temporary root that
+# lives INSIDE the home directory, which is the layout of every Windows CI
+# runner (%TEMP% sits under C:\Users\<user>) and of any machine with TMPDIR
+# set below $HOME. At 1fc70a1 it did not: both windows-latest jobs failed on
+# it, 3.10 and 3.13 alike, while all four Linux and macOS jobs passed. These
+# two pins force that layout on any platform, so the regression cannot come
+# back unnoticed on a platform this suite is not routinely run on.
+# ===========================================================================
+
+
+class TestTheRotGuardSurvivesATempRootInsideHome:
+
+    @staticmethod
+    def _windows_shaped_layout(tmp_path):
+        r"""A home directory with the sandbox nested inside it.
+
+        Mirrors the runner layout: home C:\Users\runneradmin, sandbox
+        C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runner.
+        """
+        home = tmp_path / "home"
+        sandbox = home / "AppData" / "Local" / "Temp" / "pytest-of-runner"
+        sandbox.mkdir(parents=True)
+        return home, sandbox
+
+    def test_constants_redirected_into_the_sandbox_are_not_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """The Windows failure itself: redirected, inside the home, silent."""
+        home, sandbox = self._windows_shaped_layout(tmp_path)
+        from qualcoder_mcp import database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
+                            sandbox / "workspace")
+        monkeypatch.setattr(server, "_MRU_FILE",
+                            sandbox / ".qualcoder_mcp" / "mru_project.json")
+        monkeypatch.setattr(server.session_manager, "storage_dir",
+                            sandbox / "sessions")
+        assert _module_paths_under(home, sandbox) == []
+
+    def test_a_constant_left_in_the_home_is_still_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """And the guard still guards: one unredirected constant, named.
+
+        Without this the fix above could have been `return []`.
+        """
+        home, sandbox = self._windows_shaped_layout(tmp_path)
+        from qualcoder_mcp import database
+        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
+                            sandbox / "workspace")
+        monkeypatch.setattr(server.session_manager, "storage_dir",
+                            sandbox / "sessions")
+        # The one a careless redirection would leave behind.
+        monkeypatch.setattr(server, "_MRU_FILE",
+                            home / ".qualcoder_mcp" / "mru_project.json")
+        reported = _module_paths_under(home, sandbox)
+        assert len(reported) == 1, reported
+        assert reported[0].startswith("server._MRU_FILE = "), reported
