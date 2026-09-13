@@ -78,7 +78,7 @@ class TestSessionIdDuplicateRemoved:
 # the live registry so a tool added later is covered without an edit here.
 # ===========================================================================
 
-TOOL_COUNT = 67          # pinned in tests/test_v012_cli.py too
+TOOL_COUNT = 68          # pinned in tests/test_v012_cli.py too
 
 UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
 
@@ -364,7 +364,7 @@ class TestNoResponseCarriesSessionId:
         assert offenders == []
         # Anti-vacuity (fix round 2, R8). Today every registered tool
         # answers these arguments with a parseable JSON string, so the
-        # sweep covers 67 of 67; the old guard, `json_responses >= 40`,
+        # sweep covers 68 of 68; the old guard, `json_responses >= 40`,
         # would have stayed green while 27 tools, including all five
         # envelopes, dropped out of it. Asserting the SET makes a tool
         # that starts raising, or starts answering in prose, something to

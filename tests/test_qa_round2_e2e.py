@@ -32,9 +32,12 @@ from qualcoder_mcp.database import (
 
 FULLTEXT = "This is interview text. I feel stressed about deadlines. I cope by exercising."
 EXPECTED_TOOLS = {
-    # project management (4)
+    # project management (5)
     "list_available_projects", "select_project", "get_current_project",
     "copy_project_to_workspace",
+    # v0.12 B1: the project's AI coder name, asked for once and stored
+    # beside data.qda
+    "set_project_ai_coder_name",
     # read/analysis (15)
     "search_coded_text", "get_coded_segments", "search_files",
     "get_coding_frequencies", "search_memos", "export_code_report",
@@ -97,7 +100,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 67
+        assert len(names) == 68
 
 
 class TestEndToEndLoop:

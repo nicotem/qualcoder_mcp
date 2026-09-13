@@ -861,6 +861,61 @@ def validate_coder_name(value: Any, param_name: str = "owner") -> str:
     return name
 
 
+# The tables QualCoder harvests coder names from when it opens a project
+# and fills `coder_names` (app.py:1480-1494 at 9bddf17, byte-identical in
+# the 3.8.2 tag at __main__.py:1230-1244). Kept in upstream's own order so
+# the two lists can be compared by eye. Every use is guarded by
+# SchemaCapabilities.table_exists, because older schemas lack some of them.
+HARVEST_OWNER_TABLES = (
+    "code_image", "code_text", "code_av", "code_name", "code_cat", "cases",
+    "case_text", "attribute", "attribute_type", "source", "annotation",
+    "journal", "manage_files_display", "files_filter",
+)
+
+# A note recorded beside a project's AI coder name (v0.12, D7 1.2): the
+# host and model version a researcher wants to remember about a choice.
+# Longer than a coder name because it is prose, short enough to keep the
+# sidecar small and the conversation readable.
+MAX_CODER_NOTE_LENGTH = 500
+
+
+def validate_coder_note(value: Any, param_name: str = "note") -> str:
+    """The rule set for the note stored beside an AI coder name.
+
+    A sibling of validate_coder_name with the same character rules and a
+    longer limit: the note is echoed into the conversation and written
+    into a file that travels with the project, so it must be plain
+    single-line text and must not carry the '#####' private-memo marker,
+    which would make a note look like a private zone it is not. Empty is
+    allowed; the note is optional.
+
+    Returns:
+        The stripped note.
+
+    Raises:
+        ValueError: With param_name in the message, on any violation.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{param_name} must be a string")
+    note = value.strip()
+    if len(note) > MAX_CODER_NOTE_LENGTH:
+        raise ValueError(
+            f"{param_name} is {len(note)} characters long; the maximum is "
+            f"{MAX_CODER_NOTE_LENGTH}. Keep it to a short reminder, such "
+            f"as the host and model version.")
+    forbidden = _forbidden_coder_name_char(note)
+    if forbidden is not None:
+        raise ValueError(
+            f"{param_name} contains {forbidden}; it must be plain "
+            f"single-line text.")
+    if PERSONAL_NOTE_MARK in note:
+        raise ValueError(
+            f"{param_name} contains '{PERSONAL_NOTE_MARK}', which QualCoder "
+            f"4.0 reserves as the private-memo marker. The note is echoed "
+            f"back into the conversation, so the marker is refused.")
+    return note
+
+
 # The largest value sqlite3 will bind to an INTEGER column. Above it the
 # driver raises OverflowError, which is an ArithmeticError and therefore
 # not in the server's _tool_guard except list, so an id one step too large
@@ -1694,6 +1749,85 @@ class QualcoderDatabase:
             return int(row[0]) if row else 0
         except sqlite3.Error:
             return 0
+
+    def known_owner_presence(self, names: List[str]) -> Dict[str, bool]:
+        """Whether each named owner already appears in this project.
+
+        A restricted EXISTS probe, one name at a time, over the fourteen
+        tables QualCoder itself harvests coder names from (app.py:1480-1494
+        at 9bddf17), guarded by table existence so an older schema without
+        `files_filter` or `manage_files_display` answers rather than
+        raising. It never selects DISTINCT owner: the caller learns
+        yes/no about names it already knows (the project's AI names, or a
+        name the user just typed) and can never enumerate a human or a
+        hidden coder (D7 9.2). Rows hidden by a visibility setting count,
+        because the question is whether the NAME is in use.
+        """
+        caps = getattr(self, "capabilities", None)
+        answer: Dict[str, bool] = {}
+        for name in names:
+            found = False
+            for table in HARVEST_OWNER_TABLES:
+                if caps is not None and not caps.table_exists(table):
+                    continue
+                try:
+                    row = self.conn.execute(
+                        f"SELECT 1 FROM {table} WHERE owner = ? LIMIT 1",
+                        (name,)).fetchone()
+                except sqlite3.Error:
+                    continue
+                if row is not None:
+                    found = True
+                    break
+            answer[name] = found
+        return answer
+
+    def owner_case_variant(self, name: str) -> Optional[str]:
+        """An existing owner that differs from `name` by letter case only.
+
+        A heuristic for the setter's warning, nothing more: SQLite's
+        `lower()` folds ASCII only, so a difference in a non-ASCII script
+        may go unmentioned. Decisions are never taken on this; coder
+        names are compared exactly everywhere (X2). Returns the stored
+        spelling of the first such owner found, or None.
+        """
+        caps = getattr(self, "capabilities", None)
+        for table in HARVEST_OWNER_TABLES:
+            if caps is not None and not caps.table_exists(table):
+                continue
+            try:
+                row = self.conn.execute(
+                    f"SELECT owner FROM {table} "
+                    f"WHERE owner IS NOT NULL AND lower(owner) = lower(?) "
+                    f"AND owner <> ? LIMIT 1", (name, name)).fetchone()
+            except sqlite3.Error:
+                continue
+            if row is not None and row[0]:
+                return str(row[0])
+        return None
+
+    def coder_name_visibility(self, name: str) -> Optional[int]:
+        """The `coder_names.visibility` of one named coder.
+
+        None when the project has no visibility capability, when the
+        coder has no `coder_names` row (which the views treat as visible,
+        app.py:1530-1540), or when the lookup fails. Read-only: this
+        server never inserts into `coder_names`; QualCoder enrols names
+        through its own harvest the next time it opens the project
+        (app.py:1480-1494).
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_coder_visibility:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT visibility FROM coder_names WHERE name = ?",
+                (name,)).fetchone()
+        except sqlite3.Error:
+            return None
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
 
     def _row_is_visible(self, base: str, view: str, id_col: str,
                         row_id: int) -> bool:

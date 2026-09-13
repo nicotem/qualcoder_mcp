@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import qualcoder_mcp.server as server
+from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.sessions import SessionManager
 
@@ -59,6 +60,7 @@ def _attach(p, tmp):
             server.db.close()
         except Exception:
             pass
+    write_fixture_sidecar(p)
     server.db = QualcoderDatabase(str(p))
     server.current_project_path = str(p)
     server.session_manager = SessionManager(str(Path(tmp) / "sessions"))

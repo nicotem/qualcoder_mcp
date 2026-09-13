@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from track5_helpers import write_fixture_sidecar
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
@@ -28,8 +30,8 @@ from mcp.client.stdio import stdio_client
 REPO = Path(__file__).resolve().parent.parent
 VENV_PY = Path(sys.executable)
 
-EXPECTED_FULL = 67
-EXPECTED_CORE = 20
+EXPECTED_FULL = 68
+EXPECTED_CORE = 21
 
 SCHEMA = """
 CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, bookmarkfile INTEGER, bookmarkpos INTEGER, codername TEXT, recently_used_codes TEXT);
@@ -66,6 +68,7 @@ def _build_project(parent: Path) -> Path:
                  (FULLTEXT,))
     conn.commit()
     conn.close()
+    write_fixture_sidecar(folder)          # a project that has been asked
     return folder
 
 

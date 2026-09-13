@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from track5_helpers import write_fixture_sidecar
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -57,7 +59,7 @@ RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))  # generated artefacts
 PROJECTS_DIR = RUN_DIR / "projects"
 HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
 
-EXPECTED_TOOLS = 67
+EXPECTED_TOOLS = 68
 EXPECTED_CONCRETE_RESOURCES = 7   # six data resources + qualcoder://guidance/methods (0.12)
 EXPECTED_RESOURCE_TEMPLATES = 3
 EXPECTED_RESOURCES_TOTAL = 10
@@ -215,6 +217,10 @@ def build_write_project(folder: Path) -> str:
               ("I feel stressed about deadlines", a, b))
     conn.commit()
     conn.close()
+    # A project in use has been asked for its AI coder name once (B1.18);
+    # without the sidecar the write flow below would get the ask refusal
+    # instead of writing.
+    write_fixture_sidecar(folder)
     return str(folder)
 
 

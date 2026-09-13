@@ -53,6 +53,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import (
     QualcoderDatabase,
     QUALCODER_LOCK_FILENAME,
@@ -277,6 +278,7 @@ def fi_env(tmp_path, monkeypatch):
     folder = build_project(work, "fi_project")
 
     saved = (server.db, server.current_project_path, server.session_manager)
+    write_fixture_sidecar(folder)
     server.db = QualcoderDatabase(str(folder), read_only=True)
     server.current_project_path = str(folder)
     server.session_manager = SessionManager(str(tmp_path / "sessions"))

@@ -110,15 +110,26 @@ class TestAiCoderNameConfig:
         monkeypatch.setenv(AI_CODER_NAME_ENV, "AI #### Agent")
         assert _ai_coder_name() == "AI #### Agent"
 
-    def test_tool_call_with_broken_config_returns_clean_error(
-            self, setup_server, monkeypatch):
-        # Runtime defense in depth: if the env turns invalid after start,
-        # the tool guard converts the ValueError into error JSON instead
-        # of writing rows under a broken name
+    def test_broken_declaration_after_start_cannot_reach_an_owner_column(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """v0.12: the variable declares, it no longer attributes.
+
+        main() still refuses to start on an invalid value (the unit tests
+        above), so this is the case where the environment turns invalid
+        after start-up. The declaration is then treated as absent: the
+        write proceeds under the PROJECT's AI coder name, no row can
+        carry the broken string, and no mismatch is raised over a name we
+        would refuse to store anyway.
+        """
         monkeypatch.setenv(AI_CODER_NAME_ENV, "bad\nname")
-        out = json.loads(server.create_code("Doomed", create_backup=False))
-        assert "error" in out
-        assert AI_CODER_NAME_ENV in out["error"]
+        out = json.loads(server.create_code("Declared", create_backup=False))
+        assert out.get("success") is True, out
+        assert _row(qualcoder_db_path,
+                    "SELECT owner FROM code_name WHERE name='Declared'"
+                    )["owner"] == DEFAULT_AI_CODER_NAME
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_name "
+                    "WHERE owner LIKE '%bad%'")["n"] == 0
 
 
 # =============================================================================
@@ -193,10 +204,23 @@ class TestDefaultAttribution:
 
 class TestConfiguredAttribution:
 
-    def test_env_override_applies_across_writes(self, setup_server,
-                                                qualcoder_db_path,
-                                                monkeypatch):
+    def test_a_host_declaration_asks_before_it_changes_attribution(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """Rule c2: a declaration that differs from the project's name is
+        a question for the user, never a silent re-attribution."""
         monkeypatch.setenv(AI_CODER_NAME_ENV, "AI Agent")
+        out = json.loads(server.create_code("AgentCode", create_backup=False))
+        assert out["host_declared_ai_coder_name"] == "AI Agent"
+        assert out["ai_coder_name"] == DEFAULT_AI_CODER_NAME
+        assert out["quick_picks"] == ["AI Agent", DEFAULT_AI_CODER_NAME]
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_name "
+                    "WHERE name='AgentCode'")["n"] == 0
+
+        # Answering the question either way unblocks the write, and the
+        # answer decides the attribution.
+        out = json.loads(server.set_project_ai_coder_name("AI Agent"))
+        assert out["success"] is True
         server.create_code("AgentCode", create_backup=False)
         server.add_journal_entry("AgentJournal", "text", create_backup=False)
         assert _row(qualcoder_db_path,
@@ -206,40 +230,103 @@ class TestConfiguredAttribution:
                     "SELECT owner FROM journal WHERE name='AgentJournal'"
                     )["owner"] == "AI Agent"
 
-    def test_explicit_owner_argument_beats_config(
-            self, session_with_suggestions, qualcoder_db_path, monkeypatch):
+    def test_keeping_the_project_name_acknowledges_the_declaration(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """The other answer: keep the project's name. The host does not
+        ask again while its declaration stays the same."""
         monkeypatch.setenv(AI_CODER_NAME_ENV, "AI Agent")
+        out = json.loads(server.set_project_ai_coder_name(
+            DEFAULT_AI_CODER_NAME))
+        assert out["success"] is True
+        assert out["ai_coder_name"]["host_declaration"] == "AI Agent"
+        assert "Unchanged; the choice was recorded again (acknowledging " \
+            "this host's declaration)." in out["warnings"]
+        out = json.loads(server.create_code("KeptCode", create_backup=False))
+        assert out.get("success") is True, out
+        assert _row(qualcoder_db_path,
+                    "SELECT owner FROM code_name WHERE name='KeptCode'"
+                    )["owner"] == DEFAULT_AI_CODER_NAME
+
+    def test_explicit_owner_argument_is_refused_and_costs_nothing(
+            self, session_with_suggestions, qualcoder_db_path):
+        """D7 6.3 inverted: the owner argument no longer beats anything.
+
+        The refusal comes before the backup and before the write, and the
+        approved suggestions stay approved, so the caller can set the
+        name and retry without re-approving anything.
+        """
         session = session_with_suggestions
         server.update_suggestion_status(
             session.session_id,
             approve=[session.suggestions[0].guid])
-        out = server.apply_codings(session.session_id, create_backup=False,
-                                   owner="Handpicked Coder")
-        assert "CODINGS APPLIED" in out
-        row = _row(qualcoder_db_path,
-                   "SELECT owner FROM code_text WHERE pos0=0 AND pos1=10")
-        assert row["owner"] == "Handpicked Coder"
+        before = _row(qualcoder_db_path,
+                      "SELECT COUNT(*) AS n FROM code_text")["n"]
+        out = json.loads(server.apply_codings(
+            session.session_id, create_backup=False,
+            owner="Handpicked Coder"))
+        assert out["action_required"] == \
+            "omit_owner_or_set_project_ai_coder_name"
+        assert out["ai_coder_name"] == DEFAULT_AI_CODER_NAME
+        assert "Handpicked Coder" not in json.dumps(out)
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM code_text")["n"] == before
+        reloaded = server.session_manager.load_session(session.session_id)
+        assert len(reloaded.filter_by_status("approved")) == 1
 
-    def test_explicit_owner_in_import(self, setup_server, qualcoder_db_path,
-                                      monkeypatch):
-        monkeypatch.setenv(AI_CODER_NAME_ENV, "AI Agent")
+        # Retrying without the argument writes under the project's name.
+        out = server.apply_codings(session.session_id, create_backup=False)
+        assert "CODINGS APPLIED" in out
+        assert _row(qualcoder_db_path,
+                    "SELECT owner FROM code_text WHERE pos0=0 AND pos1=10"
+                    )["owner"] == DEFAULT_AI_CODER_NAME
+
+    def test_explicit_owner_in_import_is_refused(self, setup_server,
+                                                 qualcoder_db_path):
         out = json.loads(server.import_text_file(
             "explicit_owner.txt", "Body.", owner="Legacy Import",
             create_backup=False))
-        assert out["success"] is True
+        assert "error" in out
+        assert "Legacy Import" not in json.dumps(out)
         assert _row(qualcoder_db_path,
-                    "SELECT owner FROM source WHERE name='explicit_owner.txt'"
-                    )["owner"] == "Legacy Import"
+                    "SELECT COUNT(*) AS n FROM source "
+                    "WHERE name='explicit_owner.txt'")["n"] == 0
 
-    def test_refi_export_user_name_follows_config(self, setup_server,
-                                                  tmp_path, monkeypatch):
+    def test_refi_export_user_name_follows_the_project(self, setup_server,
+                                                       tmp_path, monkeypatch):
+        """The export names the project's AI coder, not this host's
+        declaration, and it never asks (ruling 6)."""
         monkeypatch.setenv(AI_CODER_NAME_ENV, "AI Agent")
         out_file = tmp_path / "attributed.qdpx"
         out = json.loads(server.export_refi_qda(output_path=str(out_file)))
         assert out.get("success") is True, out
+        assert out["ai_user_name_source"] == "project"
         with zipfile.ZipFile(out_file) as zf:
             qde = zf.read("project.qde").decode("utf-8")
-        assert 'name="AI Agent"' in qde
+        assert f'name="{DEFAULT_AI_CODER_NAME}"' in qde
+
+        server.set_project_ai_coder_name("Qwen 3.8 6bit")
+        out_file2 = tmp_path / "renamed.qdpx"
+        out = json.loads(server.export_refi_qda(output_path=str(out_file2)))
+        assert out["ai_user_name_source"] == "project"
+        with zipfile.ZipFile(out_file2) as zf:
+            assert 'name="Qwen 3.8 6bit"' in \
+                zf.read("project.qde").decode("utf-8")
+
+    def test_refi_export_on_an_unset_project_uses_the_declaration(
+            self, setup_server_unset, tmp_path, monkeypatch):
+        """An unset project is asked by WRITES, never by the export."""
+        monkeypatch.setenv(AI_CODER_NAME_ENV, "AI Agent")
+        out = json.loads(server.export_refi_qda(
+            output_path=str(tmp_path / "unset.qdpx")))
+        assert out.get("success") is True, out
+        assert out["ai_user_name_source"] == "host_declaration"
+        with zipfile.ZipFile(tmp_path / "unset.qdpx") as zf:
+            assert 'name="AI Agent"' in zf.read("project.qde").decode("utf-8")
+
+        monkeypatch.delenv(AI_CODER_NAME_ENV, raising=False)
+        out = json.loads(server.export_refi_qda(
+            output_path=str(tmp_path / "unset2.qdpx")))
+        assert out["ai_user_name_source"] == "built_in_default"
 
     def test_refi_user_guid_stable_across_coder_name_change(
             self, setup_server, tmp_path, monkeypatch):
@@ -251,7 +338,7 @@ class TestConfiguredAttribution:
         seen = []
         for name, fname in ((DEFAULT_AI_CODER_NAME, "a.qdpx"),
                             ("AI Agent", "b.qdpx")):
-            monkeypatch.setenv(AI_CODER_NAME_ENV, name)
+            server.set_project_ai_coder_name(name)
             out = json.loads(server.export_refi_qda(
                 output_path=str(tmp_path / fname)))
             assert out.get("success") is True, out
@@ -318,13 +405,29 @@ class TestToolSuppliedOwnerValidated:
             validate_coder_name("y" * 81, "owner")
         assert validate_coder_name("  Fine Name ", "owner") == "Fine Name"
 
-    def test_sane_explicit_owner_still_accepted(self, setup_server,
-                                                qualcoder_db_path):
+    def test_a_well_formed_owner_is_now_refused_by_the_rule_not_the_rules(
+            self, setup_server, qualcoder_db_path):
+        """"Researcher B" is a perfectly valid coder name, and that is the
+        point: it passes validation and is then refused because a human
+        coder's name is never used for rows this server writes."""
         out = json.loads(server.import_text_file(
             "fine_owner.txt", "Body.", owner="Researcher B",
             create_backup=False))
+        assert "error" in out
+        assert "owner argument no longer chooses" in out["error"]
+        assert _row(qualcoder_db_path,
+                    "SELECT COUNT(*) AS n FROM source "
+                    "WHERE name='fine_owner.txt'")["n"] == 0
+
+    def test_the_project_name_itself_is_accepted_as_owner(
+            self, setup_server, qualcoder_db_path):
+        out = json.loads(server.import_text_file(
+            "same_name.txt", "Body.", owner=DEFAULT_AI_CODER_NAME,
+            create_backup=False))
         assert out["success"] is True
-        assert out["owner"] == "Researcher B"
+        assert _row(qualcoder_db_path,
+                    "SELECT owner FROM source WHERE name='same_name.txt'"
+                    )["owner"] == DEFAULT_AI_CODER_NAME
 
 
 class TestSuiteIsolation:

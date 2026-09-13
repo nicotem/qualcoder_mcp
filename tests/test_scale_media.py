@@ -32,6 +32,7 @@ import tracemalloc
 from pathlib import Path
 
 import pytest
+from track5_helpers import write_fixture_sidecar
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -58,6 +59,7 @@ def connect(project_folder: Path, sessions_dir: Path, read_only: bool = True):
             server.db.close()
         except Exception:
             pass
+    write_fixture_sidecar(project_folder)
     server.db = QualcoderDatabase(str(project_folder), read_only=read_only)
     server.current_project_path = str(project_folder)
     sessions_dir.mkdir(parents=True, exist_ok=True)

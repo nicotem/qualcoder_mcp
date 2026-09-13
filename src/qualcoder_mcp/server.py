@@ -13,7 +13,7 @@ import functools
 import unicodedata
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
@@ -26,6 +26,7 @@ from .database import (
     DB_LOCKED_MESSAGE,
     validate_qda_path,
     validate_coder_name,
+    validate_coder_note,
     validate_id,
     hidden_coder_refusal,
     private_note_refusal,
@@ -45,6 +46,33 @@ from .database import (
     position_safe as db_position_safe,
 )
 from .memo_privacy import extract_ai_memo, strip_private_memos
+from .project_settings import (
+    AI_CODER_NAME_ENV,
+    DEFAULT_AI_CODER_NAME,
+    HISTORY_ECHO,
+    KNOWN_AI_ASSISTANT_OWNER,
+    LEGACY_IMPORT_OWNER,
+    NEWER_FORMAT_MESSAGE,
+    READ_ONLY_FOLDER_MESSAGE,
+    SIDECAR_NAME,
+    SIDECAR_NEWER_FORMAT,
+    SIDECAR_SET,
+    SIDECAR_UNREADABLE,
+    SIDECAR_UNSET,
+    SidecarWriteError,
+    UNREADABLE_MESSAGE,
+    UNSET_HINT,
+    ai_coder_names_for_project,
+    echoed_history,
+    folder_is_writable,
+    host_declaration,
+    known_ai_set,
+    mismatch as ai_coder_name_mismatch,
+    normalise_for_case_compare,
+    read_sidecar,
+    sidecar_path,
+    write_ai_coder_name,
+)
 from .sessions import (SessionManager, AICodingSession, CodingSuggestion,
                        ProposedCode)
 
@@ -1124,8 +1152,9 @@ def _color_disclosure(requested: Optional[str], stored: Optional[str]) -> Dict[s
 # env var to "AI Agent" (QualCoder 4.0's own AI owner string,
 # ai_mcp_server.py:85) groups this server's writes with the built-in
 # assistant's under 4.0's per-coder visibility, undo and report tooling.
-AI_CODER_NAME_ENV = "QUALCODER_MCP_AI_CODER_NAME"
-DEFAULT_AI_CODER_NAME = "AI Coding Assistant"
+# AI_CODER_NAME_ENV and DEFAULT_AI_CODER_NAME now live in
+# project_settings.py beside the sidecar reader and are imported above, so
+# one module defines what this server calls its own AI work (H3).
 MAX_AI_CODER_NAME_LENGTH = MAX_CODER_NAME_LENGTH
 
 
@@ -1154,17 +1183,270 @@ def _ai_coder_name() -> str:
     return validate_coder_name(raw, AI_CODER_NAME_ENV)
 
 
-def _default_owner() -> str:
-    """Attribution owner for MCP-authored rows.
+def _export_owner_and_source() -> Tuple[str, str]:
+    """The AI User name for an EXPORT, and where it came from.
 
-    Every row this server writes (codings, memos with provenance,
-    annotations, journal entries, imports, cases, attributes) carries
-    the configured AI coder name, so AI work is distinguishable from
-    the researcher's and manageable as one coder in QualCoder (verdict
-    b; 4.0 attributes all its AI writes the same way). Configure via
-    QUALCODER_MCP_AI_CODER_NAME; default "AI Coding Assistant".
+    Exports never ask (ruling 6): a REFI-QDA package names one AI User
+    and a researcher exporting a project they have not coded through this
+    server should not be stopped to choose a name. Precedence: the
+    project's setting, else this host's declaration, else the built-in
+    default. Database WRITES do not use this: they go through
+    _resolve_write_owner, which asks.
     """
-    return _ai_coder_name()
+    try:
+        state = read_sidecar(_current_project_folder())
+    except Exception:
+        state = None
+    if state is not None and state.is_set:
+        return state.name, "project"
+    declared = host_declaration()
+    if declared:
+        return declared, "host_declaration"
+    return DEFAULT_AI_CODER_NAME, "built_in_default"
+
+
+def _default_owner() -> str:
+    """The AI User name used by the REFI-QDA export, and nothing else.
+
+    Until v0.12 this was the attribution owner of every row this server
+    wrote. Rows are now attributed to the PROJECT's AI coder name, which
+    the researcher chooses once per project and which _resolve_write_owner
+    resolves (asking when it is unset), so this function has one caller
+    left: export_refi_qda, which must never ask (B1.11).
+    """
+    return _export_owner_and_source()[0]
+
+
+def _ai_user_name_source() -> str:
+    """Where the export's AI User name came from ("project",
+    "host_declaration" or "built_in_default")."""
+    return _export_owner_and_source()[1]
+
+
+# ---------------------------------------------------------------------------
+# The project's AI coder name: ask once, never guess (v0.12, D7)
+# ---------------------------------------------------------------------------
+# Until v0.12 every row this server wrote carried a MACHINE-wide name, the
+# built-in default or whatever QUALCODER_MCP_AI_CODER_NAME said. That name
+# is a research artefact: it is what the researcher will later compare
+# models by, and what tells their own coding from the AI's in QualCoder's
+# coder lists, visibility toggle and reports. So it is the PROJECT's
+# setting and the human's choice: the first write that needs an owner
+# refuses and asks, the answer is stored beside data.qda, and the
+# environment variable becomes this HOST's declaration, a quick pick and a
+# conflict check, never a silent attribution. Reads never ask. A name
+# change never re-attributes rows written under the old name.
+
+_ASK_ACTION = "set_project_ai_coder_name"
+
+
+def _existing_known_ai_names() -> List[str]:
+    """Which of the known AI names already own rows in this project.
+
+    Restricted EXISTS probes for a fixed set of names we may already have
+    written under (D7 9.2), never a DISTINCT owner scan, so the ask can
+    propose continuity without ever enumerating a human or a hidden
+    coder. A database that will not answer costs the optional clause,
+    never the ask itself.
+    """
+    try:
+        names = list(known_ai_set(_current_project_folder()))
+        presence = get_db().known_owner_presence(names)
+    except Exception:
+        return []
+    return [n for n in names if presence.get(n)]
+
+
+def _ask_quick_picks(existing: List[str], declared: Optional[str]) -> List[str]:
+    """The ranking a small model should follow (D7 3.3, 9.3).
+
+    Continuity first (a name this project already holds rows under), then
+    this host's declaration, then the two built-in picks. The PROSE names
+    the picks in D7 3.3's fixed order; this array carries the priority.
+    """
+    picks: List[str] = []
+    for name in list(existing) + ([declared] if declared else []) + \
+            [DEFAULT_AI_CODER_NAME, KNOWN_AI_ASSISTANT_OWNER]:
+        if name and name not in picks:
+            picks.append(name)
+    return picks
+
+
+def _ask_refusal(owner_supplied: bool = False) -> Dict[str, Any]:
+    """The ASK: no name is set, so nothing was written (D7 3.3).
+
+    A pure function of the sidecar, the environment and the arguments:
+    repeating the refused call returns byte-identical JSON, and nothing
+    is written, backed up, upgraded or consumed on the way here.
+    """
+    declared = host_declaration()
+    existing = _existing_known_ai_names()
+    text = (
+        "No AI coder name is set for this project yet, so nothing was "
+        "written. Ask the user which coder name this project's AI codings "
+        "and other AI writes should be stored under, then call "
+        "set_project_ai_coder_name with their answer and retry. The name "
+        "is free text; a model name such as \"Qwen 3.8 6bit\" is a good "
+        "choice, because codings by different models can then be compared "
+        "later. Quick picks: \"AI Coding Assistant\" (this server's "
+        "built-in default), \"AI Agent\" (the name QualCoder 4.0's "
+        "built-in assistant uses)")
+    if declared and declared not in (DEFAULT_AI_CODER_NAME,
+                                     KNOWN_AI_ASSISTANT_OWNER):
+        text += (f", \"{declared}\" (declared in this host's server "
+                 f"configuration)")
+    text += "."
+    if existing:
+        text += (f" This project already holds rows under "
+                 f"\"{existing[0]}\"; choosing that name keeps them "
+                 f"together.")
+    text += (" The name can be changed at any time with the same tool; "
+             "earlier rows keep the name they were written under.")
+    if owner_supplied:
+        text += (" The owner argument you passed was not applied; the name "
+                 "is the user's to choose.")
+    return {
+        "error": text,
+        "action_required": _ASK_ACTION,
+        "ai_coder_name": None,
+        "quick_picks": _ask_quick_picks(existing, declared),
+        "existing_ai_coder_names_in_project": existing,
+        "free_text_allowed": True,
+    }
+
+
+def _mismatch_refusal(current: str, declared: str) -> Dict[str, Any]:
+    """The MISMATCH: this host declares a different name (D7 3.4, rule c2).
+
+    Only a host that DECLARES a name can conflict, and only until the
+    conflict is answered: setting either name records the declaration, so
+    the question is asked once per host, not once per call.
+    """
+    return {
+        "error": (
+            f"This host declares the AI coder name \"{declared}\" "
+            f"({AI_CODER_NAME_ENV}), but this project's current AI coder "
+            f"name is \"{current}\". Nothing was written. Ask the user "
+            f"which name to use here, then call set_project_ai_coder_name "
+            f"with \"{declared}\" to switch the project to it, or with "
+            f"\"{current}\" to keep it (that records the choice, and this "
+            f"host will not ask again while its declaration stays the "
+            f"same). Earlier rows keep the name they were written under."),
+        "action_required": _ASK_ACTION,
+        "ai_coder_name": current,
+        "host_declared_ai_coder_name": declared,
+        "quick_picks": [declared, current],
+    }
+
+
+def _owner_argument_refusal(current: str) -> Dict[str, Any]:
+    """The OWNER refusal: the argument no longer chooses the name (B1.10).
+
+    The supplied value is not echoed back (D6 3.9): only shapes we
+    ourselves wrote are reflected into the conversation, and the model
+    already knows what it passed.
+    """
+    return {
+        "error": (
+            f"The owner argument no longer chooses the coder name: this "
+            f"project's AI coder name is \"{current}\" and every row this "
+            f"server writes is stored under it, so that AI work stays "
+            f"distinguishable from the researcher's and from other "
+            f"coders'. Omit owner, or, if the user wants a different "
+            f"attribution, ask them and change the project's AI coder "
+            f"name with set_project_ai_coder_name, then call this tool "
+            f"again without owner. A human coder's name is never used for "
+            f"rows this server writes. Nothing was written and no backup "
+            f"was made."),
+        "action_required": "omit_owner_or_set_project_ai_coder_name",
+        "ai_coder_name": current,
+    }
+
+
+def _resolve_write_owner(
+        tool_owner: Optional[str] = None
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """The owner a database write may use, or the refusal that stops it.
+
+    Returns (owner, None) when the write may proceed and (None, error)
+    otherwise, the _resolve_category_by_name shape, so each tool returns
+    the dict exactly as it returns its other early errors. Pure with
+    respect to disk: it reads the sidecar and the environment and writes
+    nothing, so the same call gives the same answer until the setter
+    changes the project.
+
+    Called at the last point before _perform_write at which a tool knows
+    a row carrying an owner will be written: after its own argument
+    validation (a malformed call is reported as malformed, not as "set
+    the coder name first") and after any pre-check that answers
+    created: false / unchanged without writing (such a call writes no
+    owner, so it never asks, Appendix A R4).
+
+    Order of checks (D7 3.2): an unreadable or newer-format sidecar, then
+    unset, then this host's declaration conflicting with the project's
+    name, then a tool-supplied owner that is not the project's name.
+    """
+    if current_project_path is None:
+        return None, {"error": _no_project_message()}
+    state = read_sidecar(_current_project_folder())
+    if state.status == SIDECAR_UNREADABLE:
+        return None, {"error": UNREADABLE_MESSAGE}
+    if state.status == SIDECAR_NEWER_FORMAT:
+        return None, {"error": NEWER_FORMAT_MESSAGE}
+    if not state.is_set:
+        return None, _ask_refusal(owner_supplied=tool_owner is not None)
+    current = state.name
+    declared = host_declaration()
+    if ai_coder_name_mismatch(declared, state.entry):
+        return None, _mismatch_refusal(current, declared)
+    if tool_owner is not None and tool_owner != current:
+        return None, _owner_argument_refusal(current)
+    return current, None
+
+
+def _ai_coder_name_report() -> Dict[str, Any]:
+    """The AI coder name fields a project READ carries (D7 4.2).
+
+    Reads never ask and never refuse: an unset project reports
+    `source: "unset"` with a hint, an unreadable one reports
+    `source: "unreadable"` with the repair guidance, and a project
+    written by a newer qualcoder-mcp reports `source: "newer_format"`
+    with the name when the name itself validates.
+    """
+    state = read_sidecar(_current_project_folder())
+    declared = host_declaration()
+    block: Dict[str, Any] = {}
+    if state.status == SIDECAR_UNREADABLE:
+        block["ai_coder_name"] = {"name": None, "source": SIDECAR_UNREADABLE,
+                                  "hint": UNREADABLE_MESSAGE}
+    elif state.status == SIDECAR_UNSET:
+        block["ai_coder_name"] = {"name": None, "source": SIDECAR_UNSET,
+                                  "hint": UNSET_HINT}
+    else:
+        entry = dict(state.entry or {})
+        entry["source"] = ("project" if state.status == SIDECAR_SET
+                           else SIDECAR_NEWER_FORMAT)
+        block["ai_coder_name"] = entry
+    block["host_declared_ai_coder_name"] = declared
+    block["ai_coder_name_mismatch"] = ai_coder_name_mismatch(declared,
+                                                             state.entry)
+    block["ai_coder_names_used"] = echoed_history(state)
+    block["ai_coder_names_used_total"] = len(state.history)
+    # A restricted EXISTS for the CURRENT name only (D7 9.5): whether the
+    # project already holds rows under it, never which coders exist.
+    rows_present = None
+    legacy_present = None
+    try:
+        probe = [n for n in (state.name, LEGACY_IMPORT_OWNER) if n]
+        presence = get_db().known_owner_presence(probe)
+        if state.name:
+            rows_present = presence.get(state.name)
+        legacy_present = presence.get(LEGACY_IMPORT_OWNER)
+    except Exception:
+        pass
+    block["ai_coder_name_rows_present"] = rows_present
+    block["legacy_import_owner_present"] = legacy_present
+    return block
 
 
 _SKIPPED_SYMLINKS_NOTE = (
@@ -1967,6 +2249,9 @@ def select_project(project_path: str) -> str:
             "project_name": Path(project_path).stem,
             "project_info": project_info
         }
+        # A session that starts with a selection learns the AI coder name
+        # state at once, rather than discovering it at the first write.
+        result.update(_ai_coder_name_report())
 
         # P1-6: remember the selection for the MRU recovery hint (the
         # canonical data.qda path, which select_project accepts back)
@@ -2072,6 +2357,169 @@ def select_project(project_path: str) -> str:
 
 @mcp.tool()
 @_tool_guard
+def set_project_ai_coder_name(name: str, note: str = "",
+                              allow_hidden_coder: bool = False) -> str:
+    """Set the coder name this project's AI writes are stored under.
+
+    Covers codings, annotations, journal entries, imports, cases, codes,
+    categories and attributes. Ask the user before calling it: the name is
+    theirs to choose. Free text, up to 80 characters, plain single-line
+    text; a model name such as "Qwen 3.8 6bit" lets codings by different
+    models be compared later. Quick picks: "AI Coding Assistant" (this
+    server's built-in default), "AI Agent" (QualCoder 4.0's own
+    assistant). The setting is stored with the project (qualcoder_mcp.json
+    in the project folder), so it travels with backups and copies; it can
+    be changed at any time, and earlier rows keep the name they were
+    written under. Names are compared exactly, after trimming spaces, and
+    never case-insensitively: QualCoder stores coder names in a column
+    with a binary unique index, so "AI Agent" and "ai agent" are two
+    coders there (code, category and case NAMES follow the opposite rule,
+    which is QualCoder 4.0 parity for those). Refused if the name is the
+    project's own coder name or QualCoder's literal default coder name
+    "default"; refused without allow_hidden_coder=true if the name belongs
+    to a coder currently hidden in QualCoder. Does not require QualCoder
+    to be closed, because it writes no database row.
+
+    Args:
+        name: The coder name to store AI rows under
+        note: Optional short note recorded with this choice (host, model
+              version), up to 500 characters, single line
+        allow_hidden_coder: Store a name that a QualCoder visibility
+              setting hides (rows would be invisible in QualCoder and in
+              this server's default reads until unhidden)
+
+    Returns:
+        JSON with the stored name, when it was set, the previous name, how
+        many names this project has used, and any warnings
+
+    Example:
+        "Store this project's AI codings under the name Qwen 3.8 6bit"
+    """
+    if current_project_path is None:
+        return json.dumps({"error": _no_project_message()})
+
+    try:
+        name = validate_coder_name(name, "name")
+        note = validate_coder_note(note)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    folder = _current_project_folder()
+    state = read_sidecar(folder)
+    if state.status == SIDECAR_UNREADABLE:
+        return json.dumps({"error": UNREADABLE_MESSAGE})
+    if state.status == SIDECAR_NEWER_FORMAT:
+        return json.dumps({"error": NEWER_FORMAT_MESSAGE})
+
+    # Read-only database checks. None of them writes a row, so the tool
+    # works while QualCoder has the project open.
+    ro = get_db()
+    codername = (ro.get_project_info() or {}).get("coder_name")
+    if codername and name == codername:
+        return json.dumps({"error": (
+            f"\"{name}\" is this project's own coder name, so AI rows "
+            f"would be indistinguishable from the user's in QualCoder's "
+            f"coder lists, visibility toggle, undo and reports. Choose a "
+            f"different name. Nothing was changed.")})
+    if name == "default":
+        return json.dumps({"error": (
+            "\"default\" is QualCoder's own default coder name for any "
+            "user who has not set one (it would collide with them); "
+            "choose a different name. Nothing was changed.")})
+    if ro.coder_name_visibility(name) == 0 and not allow_hidden_coder:
+        return json.dumps({"error": (
+            f"\"{name}\" is a coder currently hidden in QualCoder; rows "
+            f"written under it would not be shown in QualCoder or in this "
+            f"server's default reads. Pass allow_hidden_coder=true to "
+            f"store it anyway, or ask the user to unhide the coder in "
+            f"QualCoder. Nothing was changed.")})
+
+    if not folder_is_writable(folder):
+        return json.dumps({"error": READ_ONLY_FOLDER_MESSAGE})
+
+    declared = host_declaration()
+    warnings = _set_name_warnings(ro, state, name, declared)
+
+    try:
+        entry = write_ai_coder_name(folder, name, note=note,
+                                    host_declaration=declared)
+    except SidecarWriteError as e:
+        return json.dumps({"error": str(e)})
+
+    logger.info("Project AI coder name set")
+    if note:
+        logger.debug("AI coder name note recorded (%d characters)", len(note))
+    after = read_sidecar(folder)
+    result = {
+        "success": True,
+        "ai_coder_name": entry,
+        "previous_name": state.name,
+        "names_used_count": len({e["name"] for e in after.history}),
+        "stored_in": str(sidecar_path(folder)),
+        "warnings": warnings,
+        "next": (f"Retry the write that was refused; it will now be "
+                 f"attributed to \"{name}\"."),
+    }
+    return json.dumps(result, indent=2)
+
+
+def _set_name_warnings(ro, state, name: str,
+                       declared: Optional[str]) -> List[str]:
+    """Warnings the setter returns, never refusals (D7 4.1 step 4).
+
+    Three things are worth saying and none is worth refusing over,
+    because the human chose the name: rows already exist under it and it
+    is neither a name this project has used nor one of ours (it may be a
+    person's); it differs from an existing name by letter case alone,
+    which QualCoder reads as two coders; and it is the name already set,
+    which is a no-op except that it records the choice again. The first
+    warning never says whether the rows belong to a hidden coder.
+    """
+    warnings: List[str] = []
+    history_names = {e["name"] for e in state.history}
+    ours = set(ai_coder_names_for_project(_current_project_folder()))
+    try:
+        present = ro.known_owner_presence([name]).get(name, False)
+    except Exception:
+        present = False
+    if present and name not in history_names and name not in ours:
+        warnings.append(
+            "Rows already exist under this name in this project; if it is "
+            "a person's coder name, choose another.")
+    variant = None
+    try:
+        variant = ro.owner_case_variant(name)
+    except Exception:
+        variant = None
+    if variant is None:
+        folded = normalise_for_case_compare(name)
+        for other in history_names:
+            if other != name and normalise_for_case_compare(other) == folded:
+                variant = other
+                break
+    if variant is not None:
+        # A hidden coder is disclosed as a count, never a name (7.1), so
+        # the warning names the other spelling only when the coder it
+        # belongs to is one the user can see. The advice is the same
+        # either way.
+        if ro.coder_name_visibility(variant) == 0:
+            warnings.append(
+                f"\"{name}\" differs only by letter case from a coder name "
+                f"already used in this project; QualCoder treats them as "
+                f"two coders.")
+        else:
+            warnings.append(
+                f"\"{name}\" differs only by letter case from "
+                f"\"{variant}\"; QualCoder treats them as two coders.")
+    if state.name == name:
+        warnings.append(
+            "Unchanged; the choice was recorded again (acknowledging this "
+            "host's declaration)." if declared else
+            "Unchanged; recorded again.")
+    return warnings
+
+@mcp.tool()
+@_tool_guard
 def get_current_project() -> str:
     """Get information about the currently open project.
 
@@ -2119,6 +2567,8 @@ def get_current_project() -> str:
             "project_info": project_info,
             "schema": _schema_block(),
         }
+        # The project's AI coder name, reported and never asked for (D7 4.4)
+        result.update(_ai_coder_name_report())
 
         # QualCoder-open state, cheap to re-check after the user says
         # they have closed it (heartbeat refreshes every 5 s, stale > 30 s)
@@ -2744,6 +3194,10 @@ def export_refi_qda(
         "codings_exported": len(suggestions),
         "codes_exported": len({s.code_id for s in suggestions}),
         "files_exported": len({s.file_id for s in suggestions}),
+        # Where the single AI User's name came from: the project's own AI
+        # coder name, this host's declaration, or the built-in default.
+        # The export never asks for one (B1.11).
+        "ai_user_name_source": _ai_user_name_source(),
         "note": "Export includes codes, text sources and coded selections. "
                 "Categories, cases, annotations and journals are not included."
     }
@@ -2787,6 +3241,10 @@ def get_project_summary() -> str:
         JSON object with project-wide statistics and metadata
     """
     project_info = get_db().get_project_info()
+    # One string, not the whole block: this payload is the one a small
+    # model reads first and it stays small (D7 4.2).
+    project_info["ai_coder_name"] = read_sidecar(
+        _current_project_folder()).name
     files = get_db().list_files()
     codes = get_db().list_codes()
     categories = get_db().list_categories()
@@ -4286,14 +4744,18 @@ def apply_codings(
             "statistics": session.get_statistics()
         }, indent=2)
 
-    if owner is None:
-        owner = _default_owner()
-    # A tool-supplied owner obeys the same rules as the configured name,
-    # so a hostile owner string is never stored (S-H3)
-    try:
-        owner = validate_coder_name(owner, "owner")
-    except ValueError as e:
-        return json.dumps({"error": str(e)})
+    # A tool-supplied owner is VALIDATED first and RESTRICTED second
+    # (Appendix A, R1): a hostile string still gets the validation text it
+    # got in v0.11 (S-H3 step 1), and a well-formed one that is not the
+    # project's AI coder name is refused before any backup or write.
+    if owner is not None:
+        try:
+            owner = validate_coder_name(owner, "owner")
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+    owner, owner_error = _resolve_write_owner(owner)
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     # Pre-validate EVERY approved suggestion on the read-only connection,
     # BEFORE upgrading and BEFORE creating a backup (SEC D-2). This catches
@@ -4590,15 +5052,18 @@ def import_text_file(
         return json.dumps({"error": "filename must not be empty"})
     if not content or not content.strip():
         return json.dumps({"error": "content must not be empty"})
-    if owner is None:
-        owner = _default_owner()
-    # A tool-supplied owner obeys the same rules as the configured name
-    # (S-H3); validate_text_file_import repeats the check as defense in
-    # depth
-    try:
-        owner = validate_coder_name(owner, "owner")
-    except ValueError as e:
-        return json.dumps({"error": str(e)})
+    # Validated first, restricted second (Appendix A, R1); the rows this
+    # import writes carry the project's AI coder name.
+    # validate_text_file_import repeats the character check as defence in
+    # depth.
+    if owner is not None:
+        try:
+            owner = validate_coder_name(owner, "owner")
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+    owner, owner_error = _resolve_write_owner(owner)
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     # Full validation on the read-only connection BEFORE upgrading and
     # before any backup, so rejected imports never copy the whole project
@@ -4777,6 +5242,10 @@ def link_file_to_case(
     if ro_db.get_file_content(file_id) is None:
         return json.dumps({"error": f"File ID {file_id} does not exist"})
 
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
+
     # SEC C-1: route through _perform_write for the same finally-block
     # rollback+downgrade guarantee as the newer tools (covers a commit-time
     # sqlite3.Error, the M-1 class this tool previously missed). Its inner
@@ -4785,7 +5254,7 @@ def link_file_to_case(
         link = write_db.link_file_to_case(
             case_id=case["id"],
             file_id=file_id,
-            owner=_default_owner(),
+            owner=owner,
             auto_commit=False
         )
         return {
@@ -6484,7 +6953,9 @@ def create_proposed_codes(coding_session_id: str,
             "failures": failures,
         }, indent=2)
 
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     def _op(wdb):
         created = []
@@ -6668,7 +7139,9 @@ def add_journal_entry(name: str, entry: str,
         "Add a journal entry titled 'Week 1 reflections' about the emerging
          boundary-setting theme"
     """
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
     result = _perform_write(
         lambda wdb: {
             "success": True,
@@ -6782,7 +7255,9 @@ def create_code(name: str, category: Optional[str] = None,
     if dup is not None:
         return _ai_json(dup, indent=2)
 
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     def _op(wdb):
         # In-transaction re-check: a row that appeared while we prepared
@@ -7107,7 +7582,9 @@ def create_category(name: str, parent_category: Optional[str] = None,
     if dup is not None:
         return _ai_json(dup, indent=2)
 
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     def _op(wdb):
         dup = _existing(wdb.list_categories())
@@ -7531,7 +8008,9 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
         `position_safety_warning`, you MUST relay it to the user: spans
         on such files can render shifted in QualCoder's editor.
     """
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     def _op(wdb):
         created = wdb.add_annotation(file_id, start_pos, end_pos, memo,
@@ -7724,7 +8203,9 @@ def create_case(name: str, memo: Optional[str] = None,
     if dup is not None:
         return _ai_json(dup, indent=2)
 
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
 
     def _op(wdb):
         dup = _existing(wdb.list_cases())
@@ -7778,7 +8259,9 @@ def create_attribute_type(name: str, applies_to: str,
     Example:
         "Add a numeric Age attribute for cases"
     """
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
     result = _perform_write(
         lambda wdb: {"success": True,
                      "message": f"Created {applies_to} attribute "
@@ -7830,7 +8313,9 @@ def set_attribute(target_type: str, target_id: int, attribute_name: str,
     Example:
         "Set Age to 34 for case 2"
     """
-    owner = _default_owner()
+    owner, owner_error = _resolve_write_owner()
+    if owner_error is not None:
+        return json.dumps(owner_error, indent=2)
     result = _perform_write(
         lambda wdb: {"success": True,
                      "message": f"Set '{attribute_name}' on {target_type} "
@@ -8744,6 +9229,10 @@ CORE_TOOLSET = frozenset({
     "edit_suggestion", "update_suggestion_status", "apply_codings",
     # minimal codebook/memo writes a coding session needs
     "create_code", "set_memo",
+    # the one settings tool a write depends on: the first write that
+    # needs an owner refuses until the project's AI coder name is set,
+    # so a core-mode host must be able to answer that (ruling 10)
+    "set_project_ai_coder_name",
     # the safety pair: workspace isolation and undo
     "copy_project_to_workspace", "delete_coding", "list_backups",
 })

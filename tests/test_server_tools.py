@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+from qualcoder_mcp.project_settings import DEFAULT_AI_CODER_NAME
 
 
 # =============================================================================
@@ -644,7 +645,14 @@ class TestImportTextFile:
         data = json.loads(result)
         assert data["success"] is True
 
-    def test_import_custom_owner(self, setup_server):
+    def test_import_custom_owner_is_refused(self, setup_server):
+        """v0.12: the owner argument no longer chooses the coder name.
+
+        Every row this server writes carries the PROJECT's AI coder name,
+        which the user chose; a human coder's name is never used for rows
+        the server writes (D7 section 6). The value passed is not echoed
+        back (D6 3.9).
+        """
         result = server.import_text_file(
             filename="custom_owner.txt",
             content="Content.",
@@ -652,8 +660,26 @@ class TestImportTextFile:
             create_backup=False
         )
         data = json.loads(result)
+        assert "error" in data
+        assert data["action_required"] == \
+            "omit_owner_or_set_project_ai_coder_name"
+        assert data["ai_coder_name"] == DEFAULT_AI_CODER_NAME
+        assert "Researcher A" not in json.dumps(data)
+        assert "no backup was made" in data["error"]
+
+    def test_import_owner_equal_to_the_project_name_is_a_no_op(
+            self, setup_server):
+        """Passing exactly the project's AI coder name still works, so a
+        caller that spells out the default is not punished for it."""
+        result = server.import_text_file(
+            filename="same_owner.txt",
+            content="Content.",
+            owner=DEFAULT_AI_CODER_NAME,
+            create_backup=False
+        )
+        data = json.loads(result)
         assert data["success"] is True
-        assert data["owner"] == "Researcher A"
+        assert data["owner"] == DEFAULT_AI_CODER_NAME
 
     def test_import_with_backup(self, setup_server):
         result = server.import_text_file(

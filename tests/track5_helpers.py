@@ -28,6 +28,11 @@ if str(_SRC) not in sys.path:
 
 import qualcoder_mcp.server as server  # noqa: E402
 from qualcoder_mcp.database import QualcoderDatabase  # noqa: E402
+from qualcoder_mcp.project_settings import (  # noqa: E402
+    DEFAULT_AI_CODER_NAME,
+    SIDECAR_NAME,
+    write_ai_coder_name,
+)
 from qualcoder_mcp.sessions import (  # noqa: E402
     SessionManager,
     AICodingSession,
@@ -155,6 +160,26 @@ def build_project(spec: Dict[str, Any], parent: Optional[Path] = None) -> str:
 # ---------------------------------------------------------------------------
 # server wiring
 # ---------------------------------------------------------------------------
+def write_fixture_sidecar(project_path, name: str = DEFAULT_AI_CODER_NAME,
+                          note: str = "test fixture") -> None:
+    """Make a fixture project one that has been asked for its AI coder name.
+
+    v0.12 refuses every database write on a project whose AI coder name is
+    unset and asks the user to choose one (D7), so a fixture project
+    without the sidecar models a project on its FIRST contact with this
+    release, not a project in use. Every fixture that writes through the
+    eleven write tools therefore records the built-in default here, which
+    is the owner string those tests already assert, and the ask, mismatch
+    and owner-argument tests use a project with no sidecar instead
+    (B1.18). The real writer is used deliberately: it then runs on every
+    platform, thousands of times, for free.
+    """
+    folder = Path(project_path)
+    if folder.suffix != ".qda" and folder.name == "data.qda":
+        folder = folder.parent
+    write_ai_coder_name(folder, name, note=note, host_declaration=None)
+
+
 def set_server_project(project_path: str, sessions_dir: str) -> None:
     """Point the server's globals at `project_path` (read-only), fresh session mgr."""
     if server.db is not None:
@@ -162,6 +187,7 @@ def set_server_project(project_path: str, sessions_dir: str) -> None:
             server.db.close()
         except Exception:
             pass
+    write_fixture_sidecar(project_path)
     server.db = QualcoderDatabase(project_path, read_only=True)
     server.current_project_path = project_path
     server.session_manager = SessionManager(sessions_dir)

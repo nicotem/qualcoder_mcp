@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import (QualcoderDatabase, UnsupportedSchemaError,
                                     VERIFIED_MASTER_COMMIT)
 from qualcoder_mcp.sessions import SessionManager
@@ -113,6 +114,7 @@ def make_project(parent: Path, version: str) -> Path:
         conn.execute("UPDATE project SET databaseversion='v18'")
     conn.commit()
     conn.close()
+    write_fixture_sidecar(folder)
     return folder
 
 

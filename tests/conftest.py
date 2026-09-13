@@ -8,9 +8,14 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# The tests directory itself, so conftest can share one helper module
+# with the test files that import it by name (track5_helpers).
+sys.path.insert(0, str(Path(__file__).parent))
 
 import qualcoder_mcp.server as server
 from qualcoder_mcp.database import QualcoderDatabase
+from qualcoder_mcp.project_settings import DEFAULT_AI_CODER_NAME, SIDECAR_NAME
+from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
 
 
@@ -229,6 +234,13 @@ def qualcoder_db_path(tmp_path):
     conn.commit()
     conn.close()
 
+    # A freshly built fixture project has NO AI coder name sidecar: it is
+    # a project that has never been asked. The server fixtures below write
+    # one deliberately; this assertion is the leak guard that keeps a
+    # stray sidecar (from a test that wrote one into a shared folder)
+    # from making an ask-flow test pass for the wrong reason (D7 10.1).
+    assert not (project_folder / SIDECAR_NAME).exists()
+
     yield str(project_folder)
 
 
@@ -264,6 +276,8 @@ def empty_db_path(tmp_path):
     conn.commit()
     conn.close()
 
+    assert not (project_folder / SIDECAR_NAME).exists()   # D7 10.1
+
     yield str(project_folder)
 
 
@@ -282,6 +296,7 @@ def setup_server(qualcoder_db_path, tmp_path):
     original_path = server.current_project_path
     original_sm = server.session_manager
 
+    write_fixture_sidecar(qualcoder_db_path)
     server.db = QualcoderDatabase(qualcoder_db_path)
     server.current_project_path = qualcoder_db_path
     server.session_manager = SessionManager(str(tmp_path / "sessions"))
@@ -308,8 +323,38 @@ def setup_empty_server(empty_db_path, tmp_path):
     original_path = server.current_project_path
     original_sm = server.session_manager
 
+    write_fixture_sidecar(empty_db_path)
     server.db = QualcoderDatabase(empty_db_path)
     server.current_project_path = empty_db_path
+    server.session_manager = SessionManager(str(tmp_path / "sessions"))
+
+    yield server
+
+    if server.db is not None:
+        try:
+            server.db.close()
+        except Exception:
+            pass
+    server.db = original_db
+    server.current_project_path = original_path
+    server.session_manager = original_sm
+
+
+@pytest.fixture
+def setup_server_unset(qualcoder_db_path, tmp_path):
+    """The same server on a project that has NEVER been asked.
+
+    No sidecar is written, so the first write tool that needs an owner
+    returns the ASK refusal. Used by the ask-flow, migration and getter
+    tests (B1.18 point 2).
+    """
+    original_db = server.db
+    original_path = server.current_project_path
+    original_sm = server.session_manager
+
+    assert not (Path(qualcoder_db_path) / SIDECAR_NAME).exists()
+    server.db = QualcoderDatabase(qualcoder_db_path)
+    server.current_project_path = qualcoder_db_path
     server.session_manager = SessionManager(str(tmp_path / "sessions"))
 
     yield server

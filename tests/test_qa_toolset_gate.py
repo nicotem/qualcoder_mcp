@@ -107,7 +107,7 @@ class TestSubprocessBehavior:
         through the real transport, not just the unit resolver."""
         names, _, _ = _session_lists(tmp_path, " CoRe ")
         assert names == sorted(server.CORE_TOOLSET)
-        assert len(names) == 20
+        assert len(names) == 21
 
     def test_resources_and_prompts_byte_identical_across_modes(self, tmp_path):
         """The mode must not touch resources or prompts AT ALL — byte-equal
@@ -128,7 +128,7 @@ class TestSubprocessBehavior:
         full_dir.mkdir()
         names_full, _, _ = _session_lists(full_dir, "full")
         assert names_unset == names_full
-        assert len(names_full) == 67
+        assert len(names_full) == 68
 
 
 class TestRegistryIsolation:
@@ -138,12 +138,12 @@ class TestRegistryIsolation:
         and confirm the registry returns to the identical 67-tool state
         (same objects, not lookalikes)."""
         before = dict(server.mcp._tool_manager._tools)
-        assert len(before) == 67
+        assert len(before) == 68
 
         for _ in range(2):
             removed = server._apply_toolset("core")
             try:
-                assert len(server.mcp._tool_manager._tools) == 20
+                assert len(server.mcp._tool_manager._tools) == 21
                 assert set(server.mcp._tool_manager._tools) \
                     == set(server.CORE_TOOLSET)
             finally:
@@ -159,6 +159,6 @@ class TestRegistryIsolation:
         """Importing the module must never shrink the surface — the filter
         runs only in main(). (A regression here would contaminate every
         in-process consumer, including the whole test suite.)"""
-        assert len(server.mcp._tool_manager._tools) == 67
+        assert len(server.mcp._tool_manager._tools) == 68
         # and CORE_TOOLSET stays a strict subset of the live surface
         assert server.CORE_TOOLSET < set(server.mcp._tool_manager._tools)
