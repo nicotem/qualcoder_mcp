@@ -889,8 +889,22 @@ def _find_existing_by_name(rows, name: str, kind: str, plural: str):
                  for r in candidates]
         twins = max(forms.count(form) for form in forms)
         if twins == 1:
-            remedy = ("differ only by letter case; use the exact spelling "
-                      "of the one you mean (their ids are listed)")
+            # Describe the comparison that MATCHED them, not a difference
+            # they may not have (fix round 4, T3). name_key folds spacing
+            # and Unicode form as well as letter case, and this branch is
+            # reached by every group whose normalised forms are distinct:
+            # 'Work  Stress' beside 'work stress' differs by a run of
+            # whitespace too, and 'Strasse' beside 'Strasse' with an
+            # eszett, or 'file' beside its fi-ligature spelling, do not
+            # differ by letter case at all. They collide because casefold
+            # maps the eszett to ss and the ligature to fi. The
+            # exact-spelling remedy still works here, because each
+            # candidate has a normalised form of its own, so it stays.
+            remedy = ("match it once letter case, spacing and Unicode form "
+                      "are ignored, while no two of them are the same name "
+                      "once spacing and Unicode form are normalised, so the "
+                      "exact spelling of the one you mean selects it (their "
+                      "ids are listed)")
         else:
             hint = _AMBIGUITY_ID_TOOLS.get(kind, "their ids are listed")
             remedy = (f"differ only by letter case, spacing or Unicode "

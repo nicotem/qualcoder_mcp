@@ -639,8 +639,10 @@ class TestAmbiguityGuidance:
             self, setup_server, qualcoder_db_path):
         self._seed_codes(qualcoder_db_path, ("Theme", "theme"))
         out = json.loads(server.create_code("THEME"))
-        assert "differ only by letter case" in out["error"]
-        assert "use the exact spelling of the one you mean" in out["error"]
+        assert ("match it once letter case, spacing and Unicode form are "
+                "ignored") in out["error"]
+        assert ("the exact spelling of the one you mean selects it"
+                in out["error"])
         assert "no spelling" not in out["error"]
 
         # Followed, it resolves: tier 1 finds one row and the create is
@@ -648,6 +650,38 @@ class TestAmbiguityGuidance:
         resolved = json.loads(server.create_code("theme"))
         assert resolved["created"] is False and resolved["match"] == "exact"
         assert resolved["code"]["id"] == 10
+        assert _backups(qualcoder_db_path) == []
+
+    @pytest.mark.parametrize("seeded, requested, selects", [
+        # Differ by letter case AND by a run of whitespace.
+        (("Work  Stress", "work stress"), "WORK STRESS", "work stress"),
+        # Do not differ by letter case at all: str.casefold maps the
+        # eszett to "ss", so name_key folds these two together.
+        (("Stra\u00dfe", "Strasse"), "stra\u00dfe", "Stra\u00dfe"),
+        # Nor these: casefold maps the fi ligature to "fi".
+        (("\ufb01le", "file"), "FILE", "file"),
+    ])
+    def test_the_refusal_describes_the_match_not_a_difference_they_lack(
+            self, setup_server, qualcoder_db_path, seeded, requested, selects):
+        """Fix round 4, T3. The twins == 1 branch is reached by every
+        group whose normalised forms are distinct, which is wider than
+        "case twins": the old wording told three kinds of caller that
+        their candidates "differ only by letter case" when two of them
+        do not differ by letter case at all.
+        """
+        self._seed_codes(qualcoder_db_path, seeded)
+        out = json.loads(server.create_code(requested))
+        assert "differ only by letter case" not in out["error"]
+        assert ("match it once letter case, spacing and Unicode form are "
+                "ignored") in out["error"]
+        assert sorted(c["id"] for c in out["candidates"]) == [9, 10]
+
+        # And the remedy it offers is followable in every one of them:
+        # each candidate has its own normalised form, so its own spelling
+        # resolves in tier 1.
+        resolved = json.loads(server.create_code(selects))
+        assert resolved["created"] is False and resolved["match"] == "exact"
+        assert resolved["code"]["name"] == selects
         assert _backups(qualcoder_db_path) == []
 
     def test_case_twin_cases_name_no_tool_this_server_does_not_have(
