@@ -688,6 +688,89 @@ class TestAmbiguityGuidance:
         assert moved["new_category_id"] == target["id"]
 
 
+class TestResolvedCategoryNameIsReported:
+    """Fix round 3, S4. _resolve_category_by_name's tier 2 widened in this
+    batch from `lower()` to `name_key` (whitespace collapse, NFC,
+    casefold), and the write paths that consume it reported the id alone.
+    For move_code_to_category the write lands, so nothing in the result
+    revealed that the code had been filed under a row spelled differently
+    from the name the caller gave. create_code already echoed `category`;
+    these three now say the same thing."""
+
+    def _seed(self, db_path, name):
+        _exec(db_path,
+              "INSERT INTO code_cat (name, memo, owner, date) "
+              "VALUES (?, '', 'gui_user', '2024-01-15')", (name,))
+        _reload()
+        return _row(db_path, "SELECT catid FROM code_cat WHERE name = ?",
+                    (name,))["catid"]
+
+    def test_move_code_names_the_category_it_resolved_to(
+            self, setup_server, qualcoder_db_path):
+        catid = self._seed(qualcoder_db_path, "Wellbeing  Themes")
+        # Differs by letter case AND spacing, so tier 2 resolves it.
+        out = json.loads(server.move_code_to_category(
+            1, "wellbeing themes", create_backup=False))
+        assert out["changed"] is True
+        assert out["new_category_id"] == catid
+        assert out["new_category"] == "Wellbeing  Themes"
+        assert "into category 'Wellbeing  Themes'" in out["message"]
+        stored = _row(qualcoder_db_path,
+                      "SELECT name FROM code_cat WHERE catid = ?",
+                      (catid,))["name"]
+        assert stored == out["new_category"]
+
+    def test_move_code_out_of_any_category_says_so(
+            self, setup_server, qualcoder_db_path):
+        self._seed(qualcoder_db_path, "Wellbeing  Themes")
+        json.loads(server.move_code_to_category(1, "wellbeing themes",
+                                                create_backup=False))
+        out = json.loads(server.move_code_to_category(1, None,
+                                                      create_backup=False))
+        assert out["changed"] is True
+        assert out["new_category"] is None
+        assert "out of any category" in out["message"]
+
+    def test_move_category_names_its_new_parent(
+            self, setup_server, qualcoder_db_path):
+        parent = self._seed(qualcoder_db_path, "Parent  Cat")
+        child = self._seed(qualcoder_db_path, "Child Cat")
+        out = json.loads(server.move_category(child, "parent cat",
+                                              create_backup=False))
+        assert out["changed"] is True
+        assert out["new_supercatid"] == parent
+        assert out["new_parent"] == "Parent  Cat"
+        assert "under category 'Parent  Cat'" in out["message"]
+
+        back = json.loads(server.move_category(child, None,
+                                               create_backup=False))
+        assert back["new_parent"] is None
+        assert "to the top level" in back["message"]
+
+    def test_create_category_names_the_parent_it_resolved_to(
+            self, setup_server, qualcoder_db_path):
+        parent = self._seed(qualcoder_db_path, "Parent  Cat")
+        out = json.loads(server.create_category(
+            "Nested", parent_category="parent cat", create_backup=False))
+        assert out["created"] is True
+        assert out["category"]["supercatid"] == parent
+        assert out["category"]["parent_name"] == "Parent  Cat"
+        assert "under 'Parent  Cat'" in out["message"]
+
+        # The already_exists echo beside it has always reported
+        # parent_name (D5 section 3.3); the two now agree.
+        again = json.loads(server.create_category(
+            "nested", parent_category="parent cat", create_backup=False))
+        assert again["created"] is False
+        assert again["category"]["parent_name"] == "Parent  Cat"
+
+    def test_a_top_level_create_names_no_parent(
+            self, setup_server, qualcoder_db_path):
+        out = json.loads(server.create_category("Loose", create_backup=False))
+        assert out["category"]["parent_name"] is None
+        assert "under" not in out["message"]
+
+
 # ===========================================================================
 # A2: no-op moves and renames
 # ===========================================================================

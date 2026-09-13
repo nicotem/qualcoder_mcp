@@ -77,6 +77,13 @@ Owner ruling X2 (QualCoder 4.0 parity, `ai_mcp_server.py:1409-1427`,
   support, moving a sub-code to "no category" is a real change: it
   detaches the code from its parent). Successful writes carry
   `changed: true`. A no-op costs no backup.
+- A category named on a write is resolved the same way, so the result
+  says which row it hit: `move_code_to_category` returns `new_category`,
+  `move_category` returns `new_parent`, and `create_category` reports the
+  parent's stored name beside the new row (the `already_exists` echo
+  always did). `create_code` already echoed `category`. Without it a code
+  could be filed under a row spelled differently from the name the caller
+  gave, with only an id in the result to say so.
 - `apply_codings`: an approved suggestion whose identical coding (same
   code, file, span and coder) is already in the project is no longer an
   error that rolls the whole batch back; it is left as it is, marked

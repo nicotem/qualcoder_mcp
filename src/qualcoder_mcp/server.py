@@ -798,6 +798,23 @@ def _resolve_category_by_name(name: str):
     }
 
 
+def _category_name(db_, category_id: Optional[int]) -> Optional[str]:
+    """The stored name of `category_id`, or None for 'no category'.
+
+    _resolve_category_by_name turns a caller's spelling into an id, and
+    its tier 2 ignores letter case, spacing and Unicode form, so the row
+    it picks can be spelled differently from the argument. Write results
+    report the name as STORED, so the caller can see which row the write
+    landed in (fix round 3, S4). Read from the connection that did the
+    write, inside the same transaction.
+    """
+    if category_id is None:
+        return None
+    row = next((c for c in db_.list_categories()
+                if c["id"] == category_id), None)
+    return row["name"] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Duplicate-name rule and no-op vocabulary (v0.12, D5; owner ruling X2)
 # ---------------------------------------------------------------------------
@@ -6648,8 +6665,9 @@ def create_code(name: str, category: Optional[str] = None,
 
     Args:
         name: The code name (unique among codes, case-insensitively)
-        category: Optional category name to place the code in (matched
-                  case-insensitively; must already exist)
+        category: Optional category name to place the code in (must
+                  already exist; the exact spelling wins, otherwise
+                  letter case, spacing and Unicode form are ignored)
         color: Optional #RRGGBB hex colour (default: random palette
                colour; a supplied colour is snapped onto the palette)
         memo: Optional code definition/memo
@@ -6883,7 +6901,11 @@ def move_code_to_category(code_id: int,
                           create_backup: bool = True) -> str:
     """Move a code into a category (or out of any category).
 
-    THIS WRITES TO THE DATABASE. When the code is already where the call
+    THIS WRITES TO THE DATABASE. The result names the category the code
+    was filed under (`new_category`, null when it was moved out of any
+    category), because a name is resolved ignoring letter case, spacing
+    and Unicode form and the stored spelling can differ from the one you
+    gave. When the code is already where the call
     would put it, the result is `changed: false, reason: unchanged` with
     nothing written and no backup made. On projects with sub-code support
     (schema v16+) moving a sub-code to "no category" is a real change: it
@@ -6896,8 +6918,11 @@ def move_code_to_category(code_id: int,
 
     Args:
         code_id: The code's cid
-        category: Category name to move the code into (case-insensitive),
-                  or null/omitted to make the code uncategorised
+        category: Category name to move the code into (the exact
+                  spelling wins, otherwise letter case, spacing and
+                  Unicode form are ignored; the result names the row it
+                  resolved to), or null/omitted to make the code
+                  uncategorised
         create_backup: Create a timestamped backup before writing (default True)
     """
     category_id = None
@@ -6943,9 +6968,21 @@ def move_code_to_category(code_id: int,
             if "error" in answer:
                 raise ValueError(answer["error"])
             return answer
-        return {"success": True, "changed": True, "message": "Moved code",
-                **wdb.move_code_to_category(code_id, category_id,
-                                            auto_commit=False)}
+        moved = wdb.move_code_to_category(code_id, category_id,
+                                         auto_commit=False)
+        # Name the category the write landed in, not only its id (fix
+        # round 3, S4). `category` is resolved by name, and tier 2 of that
+        # resolution ignores letter case, spacing and Unicode form, so the
+        # stored spelling can differ from the one the caller gave; the
+        # result used to carry new_category_id alone, and nothing revealed
+        # which row the code had been filed under. The unchanged answer
+        # already echoes `category`, so this makes the two agree.
+        new_name = _category_name(wdb, category_id)
+        where = (f"into category '{new_name}'" if new_name is not None
+                 else "out of any category")
+        return {"success": True, "changed": True,
+                "message": f"Moved code '{moved['name']}' {where}",
+                "new_category": new_name, **moved}
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the code was not moved")
@@ -6979,8 +7016,11 @@ def create_category(name: str, parent_category: Optional[str] = None,
 
     Args:
         name: The category name (unique among categories, case-insensitively)
-        parent_category: Optional parent category name (case-insensitive) to
-                         nest under; omit for a top-level category
+        parent_category: Optional parent category name to nest under
+                         (the exact spelling wins, otherwise letter case,
+                         spacing and Unicode form are ignored; the result
+                         names the row it resolved to); omit for a
+                         top-level category
         memo: Optional category memo
         create_backup: Create a timestamped backup before writing (default True)
     """
@@ -7013,9 +7053,16 @@ def create_category(name: str, parent_category: Optional[str] = None,
             return dup
         created = wdb.add_category(norm_name, owner, supercatid=supercatid,
                                    memo=memo, auto_commit=False)
+        # parent_category is resolved by name, so say which row it hit,
+        # the way the already_exists echo beside it reports parent_name
+        # (D5 section 3.3; fix round 3, S4).
+        parent_name = _category_name(wdb, supercatid)
+        message = f"Created category '{created['name']}'"
+        if parent_name is not None:
+            message += f" under '{parent_name}'"
         return {"success": True, "created": True,
-                "message": f"Created category '{created['name']}'",
-                "category": created}
+                "message": message,
+                "category": {**created, "parent_name": parent_name}}
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the category was not created")
@@ -7089,7 +7136,9 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
                   create_backup: bool = True) -> str:
     """Reparent a category under another category (or to the top level).
 
-    THIS WRITES TO THE DATABASE. Refuses any move that would create a cycle
+    THIS WRITES TO THE DATABASE. The result names the parent the category
+    was filed under (`new_parent`, null at the top level). Refuses any
+    move that would create a cycle
     (make a category its own ancestor); such a cycle would silently hide
     the category and all its codes from QualCoder's tree. When the
     category is already under the requested parent (or already at the top
@@ -7102,8 +7151,11 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
 
     Args:
         category_id: The category to move (its catid)
-        parent_category: Name of the new parent category (case-insensitive),
-                         or null/omitted to move to the top level
+        parent_category: Name of the new parent category (the exact
+                         spelling wins, otherwise letter case, spacing and
+                         Unicode form are ignored; the result names the
+                         row it resolved to), or null/omitted to move to
+                         the top level
         create_backup: Create a timestamped backup before writing (default True)
     """
     new_supercatid = None
@@ -7149,9 +7201,15 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
             if "error" in answer:
                 raise ValueError(answer["error"])
             return answer
-        return {"success": True, "changed": True, "message": "Moved category",
-                **wdb.move_category(category_id, new_supercatid,
-                                    auto_commit=False)}
+        moved = wdb.move_category(category_id, new_supercatid,
+                                  auto_commit=False)
+        # The parent is resolved by name too (fix round 3, S4).
+        parent_name = _category_name(wdb, new_supercatid)
+        where = (f"under category '{parent_name}'" if parent_name is not None
+                 else "to the top level")
+        return {"success": True, "changed": True,
+                "message": f"Moved category '{moved['name']}' {where}",
+                "new_parent": parent_name, **moved}
 
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the category was not moved")
@@ -7346,9 +7404,10 @@ def merge_category(from_category_id: int,
 
     Args:
         from_category_id: The category to merge away (deleted afterwards)
-        into_category: Target category name (case-insensitive, ambiguous
-                       case-variants refused), or null/omitted to move
-                       everything to the top level
+        into_category: Target category name (the exact spelling wins,
+                       otherwise letter case, spacing and Unicode form are
+                       ignored; ambiguous variants refused), or
+                       null/omitted to move everything to the top level
         confirm: Must be true to actually merge (default: preview only)
     """
     into_category_id = None

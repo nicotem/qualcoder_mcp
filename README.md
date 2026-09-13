@@ -825,10 +825,10 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `create_code(name, category, color, memo, parent_code_id, create_backup)` - **WRITES TO DATABASE** - Create a new code (a supplied colour is snapped onto QualCoder's 120-colour palette and the result says so; `parent_code_id` nests it as a sub-code on v16+ schemas). Idempotent: a name that already exists, ignoring letter case, spacing and Unicode form, answers `created: false, reason: already_exists` with the existing code and makes no backup
 - `rename_code(code_id, new_name)` - **WRITES TO DATABASE** - Rename a code (a name another code already uses, case-insensitively, is refused; the identical name answers `changed: false`)
 - `recolor_code(code_id, color)` - **WRITES TO DATABASE** - Change a code's colour (snapped onto QualCoder's palette; `changed: false` when the code already has that colour)
-- `move_code_to_category(code_id, category)` - **WRITES TO DATABASE** - Move a code into a category (omit `category` for top level; `changed: false` when it is already there)
+- `move_code_to_category(code_id, category)` - **WRITES TO DATABASE** - Move a code into a category (omit `category` for top level; `changed: false` when it is already there). The result names the category it resolved to (`new_category`), since a name matches ignoring letter case, spacing and Unicode form
 - `create_category(name, parent_category, memo)` - **WRITES TO DATABASE** - Create a category (idempotent like `create_code`: an existing name, case-insensitively, answers `created: false` with the existing category)
 - `rename_category(category_id, new_name)` - **WRITES TO DATABASE** - Rename a category (same collision and no-op rules as `rename_code`)
-- `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent)
+- `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
 **Codebook, Destructive (preview, then confirm, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, confirm)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder; previews before confirming)
