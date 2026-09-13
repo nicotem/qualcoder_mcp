@@ -31,6 +31,14 @@ tag, as pypa/gh-action-pypi-publish uses) the commit is one hop further:
 
 No test here reaches the network: CI cannot assume it, and a suite that
 silently skipped the check offline would be the same hole again.
+
+Fix round 3, S2: the ledger read `*.yml` only. A workflow added as
+`*.yaml` is equally valid to GitHub Actions and was scanned by nobody,
+while every test here kept passing because the two existing files supply
+the ten pins the anti-vacuity guard asks for. The scan is now
+`_scanned_files()`, which reads both spellings plus any composite action
+under .github/actions, refuses a file in .github/workflows it cannot
+read, and is itself pinned against the directory listing.
 """
 
 import re
@@ -38,6 +46,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+ACTIONS = REPO_ROOT / ".github" / "actions"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 # (action, commit SHA) -> the tag whose tip that commit is, each pair
@@ -68,18 +77,66 @@ PIN_RE = re.compile(
 )
 
 
+def _scanned_files():
+    """Every file the ledger reads, and a refusal to leave one unread.
+
+    Fix round 3, S2: the glob was `*.yml`, and GitHub Actions treats
+    `.yaml` as equally valid, so a workflow added under that spelling was
+    scanned by nobody while all four tests here still passed (the
+    anti-vacuity guard is satisfied by the two existing files on its
+    own). Composite actions under .github/actions are read for the same
+    reason; rglob over a directory that does not exist yields nothing, so
+    this is safe while the repository has none.
+
+    The `stray` refusal is what stops the next spelling surprise rather
+    than only the one known spelling: a workflow committed as .yamlx, or
+    with no suffix at all, fails here instead of escaping the ledger.
+    Names beginning with a dot are not workflows and are skipped, so a
+    Finder-planted .DS_Store does not fail the suite.
+    """
+    stray = sorted(path.name for path in WORKFLOWS.iterdir()
+                   if path.is_file() and not path.name.startswith(".")
+                   and path.suffix not in {".yml", ".yaml"})
+    assert not stray, (
+        f"files in .github/workflows that this ledger cannot scan: {stray}. "
+        f"GitHub Actions reads .yml and .yaml; anything else here is either "
+        f"a mistake or a change this test has to learn about.")
+    return sorted([*WORKFLOWS.glob("*.y*ml"), *ACTIONS.rglob("action.y*ml")])
+
+
+def test_the_ledger_scans_every_workflow_file_on_disk():
+    """Non-vacuity for the scan itself, not only for the pins it found.
+
+    A glob that matches nothing, or matches less than the directory
+    holds, makes every other test in this file pass by default.
+    """
+    scanned = _scanned_files()
+    assert scanned, f"nothing scanned under {WORKFLOWS}"
+    on_disk = sorted(path for path in WORKFLOWS.iterdir()
+                     if path.is_file() and not path.name.startswith("."))
+    assert [path.name for path in scanned if path.parent == WORKFLOWS] == \
+        [path.name for path in on_disk]
+    # And the two that carry the pins are among them, so a rename cannot
+    # empty the scan quietly.
+    assert {"ci.yml", "publish.yml"} <= {path.name for path in scanned}
+
+
 def _pins():
     found = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in _scanned_files():
+        rel = path.relative_to(REPO_ROOT).as_posix()
         for line_no, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1
         ):
             if "uses:" not in line:
                 continue
             match = PIN_RE.search(line)
-            assert match is not None, f"{path.name}:{line_no} {line.strip()}"
+            # The path is relative to the repository root, not the bare
+            # file name: two composite actions are both `action.yml`
+            # (fix round 3, S2).
+            assert match is not None, f"{rel}:{line_no} {line.strip()}"
             found.append({
-                "where": f"{path.name}:{line_no}",
+                "where": f"{rel}:{line_no}",
                 "action": match.group("action"),
                 "sha": match.group("sha"),
                 "version": match.group("version"),
