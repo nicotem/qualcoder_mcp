@@ -142,9 +142,11 @@ def _module_paths_under(root):
     """
     repo_root = Path(server.__file__).resolve().parent.parent.parent
     found = []
-    modules = {"server": server,
-               "database": sys.modules["qualcoder_mcp.database"],
-               "sessions": sys.modules["qualcoder_mcp.sessions"]}
+    modules = {"server": server}
+    for label in ("database", "sessions"):
+        module = sys.modules.get(f"qualcoder_mcp.{label}")
+        assert module is not None, f"qualcoder_mcp.{label} is not imported"
+        modules[label] = module
     candidates = [(f"{label}.{name}", value)
                   for label, module in modules.items()
                   for name, value in sorted(vars(module).items())
