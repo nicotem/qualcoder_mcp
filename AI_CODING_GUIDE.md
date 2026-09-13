@@ -98,7 +98,7 @@ approval of each suggestion.
 | `review_suggestions(coding_session_id, suggestion_guids, show_context)` | Inspect suggestions in detail |
 | `edit_suggestion(coding_session_id, suggestion_guid, start_pos, end_pos, segment_text, use_alternative, code_id, code_name)` | Adjust a pending suggestion's span or code before approval (session-only) |
 | `update_suggestion_status(coding_session_id, approve, reject)` | Approve/reject by GUID |
-| `apply_codings(coding_session_id, create_backup, owner)` | **Write** approved suggestions (project-bound, validated, all-or-nothing) |
+| `apply_codings(coding_session_id, create_backup, owner)` | **Write** approved suggestions (project-bound, validated, all-or-nothing). An approved suggestion whose identical coding already exists is left alone and reported by id; that check reads the base table, so on a project that hides the AI coder it discloses that one such row exists (PRIVACY.md) |
 | `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` | **Write**: remove one coded segment (on QualCoder 4.0 projects a hidden coder's row, or a row whose memo carries a `#####` private note, is refused without the override) |
 | `list_backups()` / `restore_backup(backup_path, confirm)` | List snapshots / guarded project restore |
 | `import_text_file(filename, content, memo, owner, create_backup, case_name)` | **Write**: add a new transcript, optionally linked to a case |

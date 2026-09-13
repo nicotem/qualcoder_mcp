@@ -95,7 +95,10 @@ Owner ruling X2 (QualCoder 4.0 parity, `ai_mcp_server.py:1409-1427`,
   applied in the session and listed in the result with its `ctid`
   (`already_existing_count`), and the rest are written as one batch.
   When every approved suggestion already exists nothing is written and
-  no backup is made.
+  no backup is made. The check reads the base `code_text` table, because
+  the unique constraint lives there, so on a QualCoder 4.0 project that
+  hides the AI coder it discloses that one such row exists, by id only;
+  an accepted trade stated in PRIVACY.md.
 - `create_proposed_codes` keeps refusing a batch on a collision (exact,
   or a variant differing only by letter case, spacing or Unicode form):
   a proposal asserts a new code. `create_category`
@@ -189,7 +192,11 @@ withholds project data.
   --version` print the installed package version (from the package
   metadata, the same value the MCP handshake advertises) and exit 0.
   Nothing else is written: no log line on standard error, and no state
-  directory created before the command line has been read.
+  directory created before the command line has been read. Two
+  consequences reach every start, not only `--version`:
+  `~/.qualcoder_mcp/sessions` is created on the first session save
+  rather than at startup, and a normal start emits one INFO line fewer
+  on standard error.
 - Started with standard input on a terminal rather than a host's pipe,
   the server prints one paragraph to standard error explaining that an
   MCP host normally starts it, how to check the installation and how to
@@ -208,9 +215,11 @@ withholds project data.
   instead of leaving the tool as a protocol error with no result. The
   driver raised `OverflowError`, which is an `ArithmeticError` and so not
   in the error-envelope handler's list; `validate_id` carries SQLite's own
-  upper bound now. Eight tools answered that way, `recolor_code`,
-  `rename_code`, `move_code_to_category`, `rename_category`,
-  `move_category`, `delete_code`, `set_memo` and `get_coded_segments`.
+  upper bound now, so every tool that takes an id answers that way.
+  Twenty-two lost their envelope to this before the fix; the suite pins
+  eight of them, `recolor_code`, `rename_code`, `move_code_to_category`,
+  `rename_category`, `move_category`, `delete_code`, `set_memo` and
+  `get_coded_segments`.
 
 ### CI
 
