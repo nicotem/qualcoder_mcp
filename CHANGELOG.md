@@ -184,6 +184,11 @@ withholds project data.
   kept): actions/checkout v7.0.1, actions/setup-python v7.0.0,
   actions/upload-artifact v7.0.1, actions/download-artifact v8.0.1,
   pypa/gh-action-pypi-publish v1.14.2 (release/v1).
+- Each pinned SHA is now checked against the tag it actually
+  dereferences to upstream, recorded in `tests/test_v012_workflow_pins.py`
+  and resolved through the GitHub API at bump time, because a version
+  comment left stale beside a bumped SHA is consistent with itself and
+  passes every internal check. An unrecorded SHA fails the suite.
 
 ### Upgrading from 0.11.x
 

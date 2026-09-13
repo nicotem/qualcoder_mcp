@@ -64,7 +64,12 @@ is looked at first.
    Python 3.10 and 3.13. All six must be green. The workflow actions are
    pinned by commit SHA with a version comment beside each pin; if you
    add or bump an action, keep that shape (Dependabot maintains the
-   pins).
+   pins). A bump also means recording the new SHA against the tag it
+   really is, in `VERIFIED_TAGS` in `tests/test_v012_workflow_pins.py`;
+   that module's docstring carries the two API calls that resolve it.
+   The tests fail on an unrecorded SHA on purpose: Dependabot has left a
+   version comment stale beside a bumped SHA before, and nothing else
+   checks the comment against upstream.
 6. **Document the change.** Add an entry under `Unreleased` in
    `CHANGELOG.md` (Keep a Changelog format). Update the docstring of
    every tool whose arguments or behaviour changed: the docstrings are
