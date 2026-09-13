@@ -84,7 +84,11 @@ Owner ruling X2 (QualCoder 4.0 parity, `ai_mcp_server.py:1409-1427`,
 - This reverses the v0.10 decision that "Stress" and "stress" are two
   codes through this server. The database constraint is still BINARY,
   so QualCoder's GUI can create such pairs; when it has, a create or
-  lookup that matches both is refused with the candidates listed.
+  lookup that matches both is refused with the candidates listed. The
+  refusal says which remedy applies: rows differing only by letter case
+  are told apart by the exact spelling, while rows that are one name
+  once spacing and Unicode form are normalised cannot be told apart by
+  any spelling, so those name the ids and the tools that take one.
 - The eight codebook tools still refuse while QualCoder has the project
   open, and that refusal comes before the duplicate or no-op check.
   `apply_codings` is the exception: its scan for codings that are
