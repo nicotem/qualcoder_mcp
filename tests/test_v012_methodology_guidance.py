@@ -252,26 +252,29 @@ class TestHandshakeInstructions:
         assert server.mcp._mcp_server.instructions == server.SERVER_INSTRUCTIONS
         assert "evidence discipline" in server.SERVER_INSTRUCTIONS
         assert "qualcoder://guidance/methods" in server.SERVER_INSTRUCTIONS
-        assert "Nothing is written to the project until the researcher approves" \
+        assert "Coding suggestions and code proposals are written to the " \
+            "project only after the researcher approves each item." \
             in server.SERVER_INSTRUCTIONS
 
-    def test_the_final_sentence_is_broader_than_the_resource_body(self):
-        """Fix round 1, F14, recorded rather than changed.
+    def test_the_final_sentence_is_scoped_like_the_resource_body(self):
+        """Fix round 1 F14 and Security S6, settled by the owner.
 
-        The final sentence is D6 section 3.7's ruled text (owner question
-        Q3, accepted), and it is accurate for the supervised coding loop.
-        It is not accurate for the direct write tools the same handshake
-        advertises: create_code, set_memo, add_annotation, import_text_file
-        and the rename, move, recolour, case and attribute tools write on
-        the call itself, with a backup but no per-item approval step. The
-        resource body scopes the same claim correctly. Both shapes are
-        pinned here so the difference is deliberate and a change to either
-        is a decision, not a slip. The owner has the scoped wording in the
-        fix round 1 report if they want it.
+        D6 section 3.7's ruled text said "Nothing is written to the
+        project until the researcher approves each item". That is true of
+        apply_codings and create_proposed_codes and of no other write
+        tool: create_code, set_memo, add_annotation, import_text_file and
+        the rename, move, recolour, case and attribute tools write on the
+        call itself, with a backup but no per-item approval step. The
+        owner accepted the scoped replacement, so the handshake now says
+        what the resource body has always said. Both shapes stay pinned
+        here, and the direct write tools are asserted to exist, so a
+        return to the unscoped sentence is a decision, not a slip.
         """
         assert server.SERVER_INSTRUCTIONS.endswith(
-            "Nothing is written to the project until the researcher "
-            "approves each item.")
+            "Coding suggestions and code proposals are written to the "
+            "project only after the researcher approves each item.")
+        assert "Nothing is written to the project" not in \
+            server.SERVER_INSTRUCTIONS
 
         body = server.METHODS_GUIDANCE
         assert "record_suggestions" in body and "apply_codings" in body
@@ -279,9 +282,13 @@ class TestHandshakeInstructions:
                   "approves each item and calls apply_codings or "
                   "create_proposed_codes")
         assert scoped in " ".join(body.split())
+        # The second statement of it in the resource is scoped too.
+        assert ("for coding suggestions and code proposals the researcher's "
+                "per-item approval is the safety mechanism") in \
+            " ".join(body.split())
 
         # The tools the handshake sentence does not cover really do write
-        # on the call, so the gap is real and not a reading of the text.
+        # on the call, so the scope is the accurate one.
         for name in ("create_code", "set_memo", "add_annotation",
                      "import_text_file", "rename_code", "recolor_code"):
             assert name in server.mcp._tool_manager._tools

@@ -148,8 +148,9 @@ SERVER_INSTRUCTIONS = (
     "tools, quote it verbatim, treat a null result as a valid result, and "
     "judge whether a request is methodologically sound for the study before "
     "acting (explain_ai_coding_tools('methodology_vocabulary') or the "
-    "qualcoder://guidance/methods resource). Nothing is written to the "
-    "project until the researcher approves each item."
+    "qualcoder://guidance/methods resource). Coding suggestions and code "
+    "proposals are written to the project only after the researcher "
+    "approves each item."
 )
 
 
@@ -1763,8 +1764,10 @@ the quality of the reading; that is what the rules above are for.
 
 QualCoder 4.0's built-in assistant applies the same four decisions
 inside its own chat, where they can stop a plan before any tool runs.
-Here the decision is yours to make and to explain; the researcher's
-per-item approval is the safety mechanism, and it is never bypassed.
+Here the decision is yours to make and to explain; for coding
+suggestions and code proposals the researcher's per-item approval is the
+safety mechanism and it is never bypassed. The direct write tools write
+on the call itself, with a backup.
 
 ## Where the study's framework lives
 

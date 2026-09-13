@@ -161,8 +161,10 @@ withholds project data.
   copy of upstream prompt bodies. Ten resources in total (seven
   concrete, three templates); available in `core` mode too.
 - The MCP initialize handshake now carries an `instructions` string
-  (three sentences on evidence discipline and per-item approval);
-  whether a host shows it to the model is host behaviour.
+  (three sentences on evidence discipline, and on the per-item approval
+  that governs coding suggestions and code proposals; the direct write
+  tools write on the call itself, after a backup); whether a host shows
+  it to the model is host behaviour.
 - Serialised tool definitions measure about 128,000 characters for the
   full toolset (roughly 32k tokens) and 49,000 for `core` (roughly 12k
   tokens), up from 118,000 and 44,000 in 0.11. Measured under Python
