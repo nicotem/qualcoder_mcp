@@ -863,8 +863,8 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `copy_project_to_workspace(source_path, new_name)` - Copy a project to the safe workspace for AI coding (same exclusions as backups; reports skipped symlinks)
 - `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` - **WRITES TO DATABASE** - Remove one coded segment (refuses a hidden coder's row or a row carrying a private note unless the override is passed)
 - `list_backups()` - List this project's backup snapshots (both this server's `_backup_` and QualCoder's `_BKUP_` families)
-- `prune_backups(keep_last, older_than_days, confirm)` - Delete this server's own backups by a retention policy (preview first; QualCoder's `_BKUP_` backups are never removed)
-- `restore_backup(backup_path, confirm)` - Guarded project restore (previews first, reporting `qualcoder_gui_signals`; safety backup of the current state)
+- `prune_backups(keep_last, older_than_days, preview_token)` - Delete this server's own backups by a retention policy (preview first, then the token the preview returns; QualCoder's `_BKUP_` backups are never removed)
+- `restore_backup(backup_path, preview_token)` - Guarded project restore (previews first, then the token the preview returns, reporting `qualcoder_gui_signals`; safety backup of the current state)
 
 **Interchange & Report Exports (exported files keep full memos, private sections included):**
 - `export_refi_qda(output_path, coding_session_id, overwrite)` - Export codings (or a session's suggestions) as a REFI-QDA .qdpx for QualCoder/NVivo/ATLAS.ti/MAXQDA

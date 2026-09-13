@@ -6621,9 +6621,10 @@ def prune_backups(keep_last: Optional[int] = None,
                   confirm: bool = False) -> str:
     """Delete this project's own backup snapshots to reclaim disk space.
 
-    DESTRUCTIVE to your recovery points: preview first, then confirm.
-    Every write creates a full-project backup copy and they accumulate
-    forever; this tool prunes them by a retention policy you choose:
+    DESTRUCTIVE to your recovery points: preview first, then execute with
+    the token that preview returns. Every write creates a full-project
+    backup copy and they accumulate forever; this tool prunes them by a
+    retention policy you choose:
 
     - keep_last=N: keep only the N newest MCP backups
     - older_than_days=D: remove MCP backups older than D days
@@ -6636,9 +6637,16 @@ def prune_backups(keep_last: Optional[int] = None,
       _BKUP_ backups are NEVER removed.
     - At least the newest MCP backup is always kept, unless you
       explicitly pass keep_last=0.
-    - Call once without confirm to see exactly which folders would be
-      removed and how much space is reclaimed; then call again with
-      confirm=true.
+
+    Two-step by design. Call without preview_token: nothing is removed and
+    the result is a preview of exactly which folders would go and how much
+    space is reclaimed, with a preview_token. Show the user the preview and
+    ask whether to proceed. Only if they agree, call again with the same
+    arguments and preview_token=<the token>. The token is valid for 60
+    minutes and only while the folders it covers are unchanged; if they
+    changed in between, the execute is refused and you must preview again.
+    No backup is taken here: this tool removes backup folders and never
+    touches the project database.
 
     This does not touch the live project database, so it works even while
     QualCoder has the project open. Each backup is a whole project tree,
@@ -6650,7 +6658,9 @@ def prune_backups(keep_last: Optional[int] = None,
         keep_last: Keep only this many newest MCP backups (0 allowed, but
                    must be explicit)
         older_than_days: Remove MCP backups older than this many days
-        confirm: Must be true to actually delete (default: preview only)
+        preview_token: The token from this operation's preview; omit it to
+                       get the preview
+        confirm: Deprecated, ignored; use preview_token
 
     Returns:
         JSON preview (requires_confirmation) or the removal result
@@ -6821,8 +6831,8 @@ def restore_backup(backup_path: str,
     THIS REPLACES THE CURRENT PROJECT STATE with the chosen backup snapshot.
     Everything done since that backup is removed from the project, which is
     why this tool:
-    1. does nothing until called with confirm=true (the default call returns
-       a preview of what would happen),
+    1. does nothing until called with the preview_token its own preview
+       returns (the default call returns that preview),
     2. only accepts backups of the currently open project sitting next to
        the project folder: this server's own `<project>_backup_<timestamp>`
        snapshots and QualCoder's own `<project>_BKUP_<timestamp>` copies,
@@ -6835,6 +6845,16 @@ def restore_backup(backup_path: str,
        (qualcoder_gui_signals, reported in this tool's own preview and in
        get_current_project); never restore while any QualCoder window has
        this project open.
+
+    Two-step by design. Call without preview_token: nothing is changed and
+    the result is a preview of exactly what would be restored, with a
+    preview_token. Show the user the preview and every warning it carries
+    and ask whether to proceed. Only if they agree, call again with the
+    same arguments and preview_token=<the token>. The token is valid for 60
+    minutes and only while the project and the backup it covers are
+    unchanged; if either changed in between, the restore is refused and you
+    must preview again. A safety backup of the current state is always
+    created first.
 
     Note: backups deliberately omit ai_data/search.sqlite (the
     regenerable AI search index, QualCoder-parity exclusion), so a
@@ -6850,11 +6870,12 @@ def restore_backup(backup_path: str,
 
     Args:
         backup_path: Path to the backup folder (from list_backups)
-        confirm: Must be true to actually restore. When false (default),
-                 returns a preview and makes no changes.
+        preview_token: The token from this operation's preview; omit it to
+                       get the preview
+        confirm: Deprecated, ignored; use preview_token
 
     Returns:
-        JSON describing the restore (or the preview when confirm is false)
+        JSON describing the restore (or the preview when no token is given)
 
     Example:
         "Restore the project from the backup made this morning"

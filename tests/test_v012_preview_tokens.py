@@ -480,13 +480,52 @@ class TestLegacyConfirm:
         out = _preview(getattr(server, tool), *args, confirm=True)
         assert "deprecated_argument" in out
 
+    TOKEN_GATED = ("merge_codes", "delete_code", "delete_category",
+                   "merge_category", "restore_backup", "prune_backups")
+
     def test_the_docstrings_carry_the_two_step_paragraph(self):
-        for name in ("merge_codes", "delete_code", "delete_category",
-                     "merge_category"):
+        for name in self.TOKEN_GATED:
             doc = " ".join((getattr(server, name).__doc__ or "").split())
             assert "Two-step by design." in doc, name
             assert "valid for 60 minutes" in doc, name
+            assert "preview_token=<the token>" in doc, name
+
+    def test_the_backup_sentence_is_true_of_the_tool_that_carries_it(self):
+        """B2.3 asks for the shared paragraph on all six. Its closing
+        sentence is about the four codebook tools and the restore, which
+        do take a backup first; prune_backups takes none (it removes
+        backup folders and never opens the database), so it says that
+        instead of claiming a backup nobody made (QA round 1, fix round 1
+        judgement call)."""
+        for name in ("merge_codes", "delete_code", "delete_category",
+                     "merge_category"):
+            doc = " ".join((getattr(server, name).__doc__ or "").split())
             assert "A backup is always created first." in doc, name
+        restore = " ".join((server.restore_backup.__doc__ or "").split())
+        assert ("A safety backup of the current state is always created "
+                "first." in restore)
+        prune = " ".join((server.prune_backups.__doc__ or "").split())
+        assert "No backup is taken here" in prune
+        assert "A backup is always created first." not in prune
+
+    def test_no_docstring_still_tells_the_model_to_pass_confirm(self):
+        """The flag is inert (B2.7), so a docstring that asks for it
+        sends the model down a path that writes nothing and explains
+        itself, twice, before it finds the token."""
+        for name in self.TOKEN_GATED:
+            doc = " ".join((getattr(server, name).__doc__ or "").split())
+            assert "confirm=true" not in doc, name
+            assert "without confirm" not in doc, name
+            assert "Deprecated, ignored; use preview_token" in doc, name
+
+    def test_the_readme_lists_the_token_not_the_flag(self):
+        readme = (Path(__file__).resolve().parents[1]
+                  / "README.md").read_text(encoding="utf-8")
+        for name in self.TOKEN_GATED:
+            line = next(ln for ln in readme.splitlines()
+                        if ln.startswith(f"- `{name}("))
+            assert "preview_token" in line, line
+            assert "confirm)" not in line, line
 
 
 class TestFileLevelOperations:
