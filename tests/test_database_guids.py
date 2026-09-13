@@ -1,7 +1,9 @@
 """Tests for database.py GUID generation methods."""
 
 import pytest
+import sqlite3
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 from qualcoder_mcp.database import QualcoderDatabase
@@ -26,6 +28,28 @@ def test_db(qualcoder_db_path):
     every assertion here, including the ones that require a non-empty
     codebook and more than one file.
     """
+    db = QualcoderDatabase(qualcoder_db_path)
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def two_case_db(qualcoder_db_path):
+    """`qualcoder_db_path` plus a second case, so a per-case uniqueness
+    assertion below can actually fail.
+
+    The shared fixture stays at one case on purpose: tests/test_resources.py
+    asserts `len(data) == 1` for `list_all_cases`, and dozens of modules
+    draw on `qualcoder_db_path` or on the `setup_server` built from it. A
+    second case belongs to the test that needs it, not to everyone.
+
+    `closing()` rather than a bare connect: an unbound connection is a
+    ResourceWarning on 3.13 and an open handle on Windows.
+    """
+    with closing(sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))) as con:
+        con.execute("INSERT INTO cases VALUES "
+                    "(2, 'Case B', 'Second case', 'TestCoder', '2024-01-16')")
+        con.commit()
     db = QualcoderDatabase(qualcoder_db_path)
     yield db
     db.close()
@@ -244,9 +268,15 @@ class TestGetCaseGuids:
         guids = test_db.get_case_guids()
         assert isinstance(guids, dict)
 
-    def test_get_case_guids_contains_all_cases(self, test_db):
-        """Test that all cases have GUIDs."""
+    def test_get_case_guids_contains_all_cases(self, two_case_db):
+        """Test that all cases have GUIDs.
+
+        On `two_case_db` rather than the shared one-case fixture: "every
+        case is mapped" says very little when there is one case.
+        """
+        test_db = two_case_db
         guids = test_db.get_case_guids()
+        assert len(guids) == 2
 
         # Query cases directly from database to avoid list_cases() issues
         cursor = test_db.conn.execute("SELECT caseid FROM cases")
@@ -274,10 +304,20 @@ class TestGetCaseGuids:
 
         assert guids1 == guids2
 
-    def test_get_case_guids_unique_per_case(self, test_db):
-        """Test that each case has a unique GUID."""
-        guids = test_db.get_case_guids()
+    def test_get_case_guids_unique_per_case(self, two_case_db):
+        """Test that each case has a unique GUID.
 
+        On the shared one-case fixture this assertion could not fail: a
+        set of one value is always the size of a list of one value, so
+        the test looked like coverage and was not. It runs on
+        `two_case_db` for that reason, and asserts the count first so it
+        cannot quietly go back to comparing one GUID with itself.
+        """
+        guids = two_case_db.get_case_guids()
+
+        assert len(guids) == 2, (
+            "the fixture must hold more than one case, or the uniqueness "
+            "assertion below cannot fail")
         # All GUIDs should be unique
         guid_values = list(guids.values())
         assert len(guid_values) == len(set(guid_values))

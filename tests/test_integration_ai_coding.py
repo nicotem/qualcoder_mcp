@@ -289,6 +289,50 @@ class TestCompleteAICodingWorkflow:
         assert len(warnings) > 0
         assert any("Code ID 9999" in w for w in warnings)
 
+    def test_validation_reports_a_span_past_the_end_of_the_file(self, test_db):
+        """The validator branch the shortened spans stopped exercising.
+
+        Shortening the spans in this module was right: they ran to
+        position 150 in files of 78 and 37 characters, which the
+        validator refuses. But that span was the only thing in the suite
+        reaching `refi_export.validate_suggestions`'s "beyond the file
+        text" branch, measured by running the whole suite under coverage
+        (the line was reported unexecuted afterwards). So the branch gets
+        a test of its own, which says what it is checking instead of
+        exercising it by accident, and the length is read from the
+        fixture rather than hard-coded so that resizing a source cannot
+        quietly vacate it.
+        """
+        files = test_db.list_files()
+        codes = test_db.list_codes()
+        file_id = files[0]["id"]
+        length = len((test_db.get_file_content(file_id) or {}).get(
+            "content") or "")
+        assert length > 0, "the fixture source must have text"
+
+        def suggestion(end_pos):
+            return CodingSuggestion(
+                file_id=file_id,
+                file_name=files[0]["name"],
+                code_id=codes[0]["id"],
+                code_name=codes[0]["name"],
+                start_pos=0,
+                end_pos=end_pos,
+                segment_text="Test",
+                confidence=0.8
+            )
+
+        exporter = RefiQdaExporter(test_db)
+
+        past_the_end = exporter.validate_suggestions(
+            [suggestion(length + 50)])
+        assert any(f"End position {length + 50} is beyond the file text"
+                   in w for w in past_the_end), past_the_end
+
+        # The same span, ending exactly at the last character: clean, so
+        # the warning above is the span's doing and not the fixture's.
+        assert exporter.validate_suggestions([suggestion(length)]) == []
+
     def test_guid_consistency_in_export(self, test_db, temp_dir):
         """Test that GUIDs are consistent when exporting same data multiple times."""
         # Get data
@@ -330,11 +374,18 @@ class TestCompleteAICodingWorkflow:
         codes1 = root1.findall(f".//{{{NAMESPACE}}}Code")
         codes2 = root2.findall(f".//{{{NAMESPACE}}}Code")
 
-        # Same code should have same GUID in both exports
-        if codes1 and codes2:
-            guid1 = codes1[0].attrib["guid"]
-            guid2 = codes2[0].attrib["guid"]
-            assert guid1 == guid2
+        # Same code should have same GUID in both exports.
+        #
+        # Asserted rather than guarded: `if codes1 and codes2:` put the
+        # test's ONLY claim behind a condition, so an export that wrote
+        # no Code element at all vacated the test silently and it passed
+        # green. The emptiness is now the first thing checked, and the
+        # comparison covers every code rather than the first one.
+        assert codes1, "the first export wrote no Code element"
+        assert len(codes2) == len(codes1)
+        guids1 = [c.attrib["guid"] for c in codes1]
+        guids2 = [c.attrib["guid"] for c in codes2]
+        assert guids1 == guids2
 
     def test_multiple_files_grouped_correctly(self, test_db, temp_dir):
         """Test that suggestions for multiple files are grouped correctly in export."""
