@@ -221,10 +221,11 @@ withholds project data.
   driver raised `OverflowError`, which is an `ArithmeticError` and so not
   in the error-envelope handler's list; `validate_id` carries SQLite's own
   upper bound now, so every tool that takes an id answers that way.
-  Twenty-two lost their envelope to this before the fix; the suite pins
-  eight of them, `recolor_code`, `rename_code`, `move_code_to_category`,
-  `rename_category`, `move_category`, `delete_code`, `set_memo` and
-  `get_coded_segments`.
+  Twenty-four lost their envelope to this before the fix; the suite pins
+  eleven of them, `recolor_code`, `rename_code`, `move_code_to_category`,
+  `rename_category`, `move_category`, `delete_code`, `set_memo`,
+  `get_coded_segments`, `link_file_to_case`, `set_attribute` and
+  `export_coded_segments_report`.
 
 ### CI
 

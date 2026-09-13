@@ -1058,6 +1058,37 @@ class TestNoOpMovesAndRenames:
         assert json.loads(server.recolor_code(bound, "#FF0000"))["error"] == \
             f"Code ID {bound} does not exist"
 
+    def test_the_three_tools_the_census_added_answer_in_the_envelope(
+        self, setup_server, qualcoder_db_path, tmp_path
+    ):
+        """Carried from Batch A: the shipped census was two short.
+
+        The entry said twenty-two tools lost their envelope; re-measuring
+        with validate_id's bound lifted (the pre-fix state) shows
+        link_file_to_case raising through file_id, set_attribute through
+        target_id, and export_coded_segments_report through file_ids once
+        output_path ends in .csv, which the earlier counts missed. Pinned
+        here so the corrected number in CHANGELOG.md rests on assertions
+        rather than on a count nobody can re-run.
+        """
+        too_big = 2 ** 63
+        bound = 2 ** 63 - 1
+        calls = {
+            "link_file_to_case":
+                lambda: server.link_file_to_case(too_big, 1),
+            "set_attribute":
+                lambda: server.set_attribute("file", too_big, "Site", "x"),
+            "export_coded_segments_report":
+                lambda: server.export_coded_segments_report(
+                    str(tmp_path / "segments.csv"), file_ids=[too_big]),
+        }
+        for name, call in calls.items():
+            raw = call()          # a raise here is the defect itself
+            assert isinstance(raw, str), name
+            out = json.loads(raw)
+            assert out["error"].endswith(
+                f"must be at most {bound}, got {too_big}"), (name, out)
+
 
 class TestProposalNameNormalisation:
     """Fix round 1, F10. add_code stores normalize_name, so the proposal
@@ -1281,6 +1312,14 @@ class TestReviewScreenSurvivesACorruptedProposalColour:
         assert f"Colour: {snap_to_palette('#FF0000')} (the nearest palette" \
             in review
         assert "Colour: #1B5E20\n" in review
+        # The corrupted row carries the refusal it is heading for. Without
+        # this the parameters "" and "#1234567" passed on the pre-fix code
+        # (the first took the falsy branch, the second snapped cleanly on
+        # [5:7] == '67'), so two of the eight pinned nothing (carried from
+        # Batch A).
+        assert f"Colour: {colour} (not a #RRGGBB value" in review
+        # And it is never advertised as what the create will store.
+        assert f"colour to {colour}," not in review
 
     def test_a_malformed_colour_is_named_with_the_refusal_it_earns(
         self, setup_server, qualcoder_db_path
@@ -1305,6 +1344,24 @@ class TestReviewScreenSurvivesACorruptedProposalColour:
         review = server.review_proposals(sid)
         assert "what will be stored" not in review
         assert "Colour: #12345 (not a #RRGGBB value" in review
+
+    @pytest.mark.parametrize("colour", ["", 0, False, []])
+    def test_a_falsy_colour_is_not_called_a_palette_pick(
+        self, setup_server, qualcoder_db_path, colour
+    ):
+        """Only None means "no colour given".
+
+        create_proposed_codes reads None as "pick the next palette
+        colour" and refuses every other falsy value with "color '' is not
+        #RRGGBB", so the screen must not promise a palette pick for them
+        (carried from Batch A: the falsy branch tested `if not p.color`
+        and swallowed four corrupted values).
+        """
+        sid = _sid()
+        self._seed(sid, [("Falsy", colour)])
+        review = server.review_proposals(sid)
+        assert "(palette pick at creation)" not in review
+        assert "not a #RRGGBB value" in review
 
     def test_a_non_string_colour_degrades_its_row_too(
         self, setup_server, qualcoder_db_path

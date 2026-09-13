@@ -6066,10 +6066,18 @@ def review_proposals(coding_session_id: str,
         # a colour create_proposed_codes then refuses. A value that is
         # not #RRGGBB is therefore shown as it stands, with the refusal
         # it is heading for, and the rest of the screen renders.
+        #
+        # The "palette pick at creation" line is true of None ALONE: that
+        # is the value create_proposed_codes reads as "no colour given"
+        # and answers by picking the next palette colour. Every other
+        # falsy value a session file can hold ("", 0, false, []) is a
+        # corrupted colour that the create refuses, so it belongs in the
+        # refusal branch below and not in the promise (carried from Batch
+        # A, review-screen falsy branch).
         valid_hex = (isinstance(p.color, str)
                      and re.fullmatch(r"#[0-9A-Fa-f]{6}", p.color) is not None)
         stored_color = snap_to_palette(p.color) if valid_hex else None
-        if not p.color:
+        if p.color is None:
             lines.append("🎨 Colour: (palette pick at creation)")
         elif not valid_hex:
             lines.append(f"🎨 Colour: {p.color} (not a #RRGGBB value: "
