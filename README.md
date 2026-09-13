@@ -394,6 +394,14 @@ unique index, so `AI Agent` and `AI agent` really are two coders
 there. (Code, category and case NAMES follow the opposite rule, which
 is QualCoder 4.0 parity for those.)
 
+The setting travels with the project folder: our backups and workspace
+copies carry it, QualCoder's own `_BKUP_` backups carry it, and
+`restore_backup` puts back whatever the backup held (the result says so
+when the name changed). One case does not travel: after merging another
+project into this one in QualCoder, the source's AI coder names appear as
+owners on the rows that arrived, but they are not added to this project's
+name history, because the merge copies rows and not settings.
+
 **The `owner` argument is deprecated.** `apply_codings` and
 `import_text_file` still accept `owner`, but it no longer chooses the
 name: passing exactly the project's AI coder name is a no-op and any

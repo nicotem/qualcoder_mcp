@@ -598,6 +598,44 @@ class TestExportPathsAreNotAimedAtTheState:
         assert out.get("success") is True, out
 
 
+class TestWindowsPathBinding:
+    """D3 6.8: the project identity a token binds is `os.path.normcase` of
+    the resolved data.qda path, which folds case on Windows and does
+    nothing on POSIX. Pinned as a pure function with `ntpath` on EVERY
+    operating system, so the Windows behaviour is checked on the machine
+    that writes the code as well as on the runner."""
+
+    def test_ntpath_folds_case_and_separators(self):
+        import ntpath
+        a = ntpath.normcase(r"C:\Users\Researcher\Study.qda\data.qda")
+        b = ntpath.normcase(r"c:/users/researcher/study.qda/data.qda")
+        assert a == b, (a, b)
+
+    def test_posixpath_does_not_fold_case(self):
+        import posixpath
+        assert posixpath.normcase("/Home/Study.qda/data.qda") != \
+            posixpath.normcase("/home/study.qda/data.qda")
+
+    def test_two_windows_spellings_of_one_project_share_a_token(self):
+        """The consequence that matters: a host that hands the path back
+        in a different case does not invalidate the token."""
+        import ntpath
+        args = {"code_id": 1}
+        one = ntpath.normcase(r"C:\Users\R\Study.qda\data.qda")
+        other = ntpath.normcase(r"c:\users\r\study.qda\data.qda")
+        token = pt.issue("delete_code", args, one, "s")
+        assert pt.verify(token, "delete_code", args, other, "s") == pt.OK
+
+    def test_a_different_project_never_shares_a_token(self):
+        import ntpath
+        args = {"code_id": 1}
+        token = pt.issue("delete_code", args,
+                         ntpath.normcase(r"C:\Study.qda\data.qda"), "s")
+        assert pt.verify(token, "delete_code", args,
+                         ntpath.normcase(r"C:\Other.qda\data.qda"),
+                         "s") == pt.OTHER_OPERATION
+
+
 class TestHouseRulesOnTheNewTexts:
 
     def test_every_new_text_of_this_item(self):
