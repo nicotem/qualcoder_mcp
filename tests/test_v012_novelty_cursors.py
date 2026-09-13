@@ -15,13 +15,17 @@ returned (`:5367-5372`).
 
 import base64
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp import cursors
 from qualcoder_mcp.database import QualcoderDatabase
 
@@ -620,6 +624,52 @@ class TestCursorDrift:
         assert last not in [s["id"] for s in page2["segments"]]
         assert page2["segments"], "the walk continued past the deleted row"
 
+    def test_hiding_a_coder_between_pages_drops_only_that_coders_rows(
+            self, setup_server, qualcoder_db_path):
+        """D4 6 point 10's third clause, which had no test.
+
+        The walk is over what the caller may see, so a coder hidden in
+        QualCoder between two pages disappears from the later ones. The
+        page does not error, does not repeat the rows it already
+        returned, and the other coders' rows are untouched.
+        """
+        from test_qc40_visibility import _apply_visibility_schema, HIDDEN
+        _apply_visibility_schema(qualcoder_db_path)
+        # unhide, so the walk starts with the coder's rows in it
+        con = _con(qualcoder_db_path)
+        con.execute("UPDATE coder_names SET visibility = 1 WHERE name = ?",
+                    (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+
+        page = json.loads(server.search_coded_text("e", limit=1))
+        first = [r["id"] for r in page["results"]]
+        assert page["total_results"] >= 3
+
+        con = _con(qualcoder_db_path)
+        con.execute("UPDATE coder_names SET visibility = 0 WHERE name = ?",
+                    (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+
+        rest = []
+        cursor = page["page"]["next_cursor"]
+        while cursor:
+            nxt = json.loads(server.search_coded_text("e", limit=1,
+                                                      cursor=cursor))
+            assert "error" not in nxt, nxt
+            rest.extend(r["id"] for r in nxt["results"])
+            cursor = nxt["page"]["next_cursor"]
+        hidden_ctids = {r["ctid"] for r in H.query(
+            qualcoder_db_path,
+            "SELECT ctid FROM code_text WHERE owner = ?", (HIDDEN,))}
+        assert set(rest) & hidden_ctids == set(), rest
+        assert set(rest) & set(first) == set()
+        # the visible row that was still to come is still there
+        assert 2 in first + rest
+
     def test_the_database_stamp_is_a_labelled_heuristic(self, paging_project,
                                                         monkeypatch):
         page = json.loads(server.get_coded_segments(1, limit=2))
@@ -667,6 +717,47 @@ class TestRestartResilience:
         json.loads(server.select_project(paging_project))
         b = server.search_coded_text("stress", limit=2, cursor=cursor)
         assert a == b
+
+    def test_a_cursor_crosses_a_real_process_boundary(self, paging_project,
+                                                      tmp_path):
+        """D4 6 point 9's second variant: the module is imported afresh.
+
+        The in-process variants above rebind server.db and reselect the
+        project, which is what a host recycle looks like from inside one
+        interpreter. This one takes the page in a SEPARATE interpreter,
+        which is the claim the design actually makes: a cursor is a
+        position, not a memory, so nothing in the process it was minted
+        in can be load-bearing. Re-importing the module in process is not
+        an option: it rebinds the classes the rest of the suite holds.
+        """
+        page = json.loads(server.get_coded_segments(1, limit=3,
+                                                    strategy="sequential"))
+        cursor = page["page"]["next_cursor"]
+        assert cursor
+
+        script = (
+            "import json, sys\n"
+            "import qualcoder_mcp.server as server\n"
+            "server.select_project(sys.argv[1])\n"
+            "page = json.loads(server.get_coded_segments("
+            "1, limit=3, strategy='sequential', cursor=sys.argv[2]))\n"
+            "print(json.dumps([s['id'] for s in page['segments']]))\n"
+        )
+        env = dict(os.environ)
+        env["HOME"] = str(tmp_path / "fresh_home")
+        env["USERPROFILE"] = env["HOME"]
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        (tmp_path / "fresh_home").mkdir()
+        done = subprocess.run(
+            [sys.executable, "-c", script, paging_project, cursor],
+            capture_output=True, text=True, env=env)
+        assert done.returncode == 0, done.stderr
+        elsewhere = json.loads(done.stdout.strip().splitlines()[-1])
+
+        here = json.loads(server.get_coded_segments(
+            1, limit=3, strategy="sequential", cursor=cursor))
+        assert elsewhere == [s["id"] for s in here["segments"]]
+        assert set(elsewhere) & {s["id"] for s in page["segments"]} == set()
 
     def test_nothing_is_stored_for_a_cursor(self, paging_project, tmp_path):
         """Option B by construction: no session file, no state file, no
@@ -899,6 +990,50 @@ class TestVisibilityOfTheMask:
         assert pages[0] == pages[1] == pages[2]
         assert [r["id"] for r in pages[0]["results"]] == [2]
         assert name not in json.dumps(pages[0])
+
+    def test_the_excluded_count_matches_a_project_with_nothing_hidden(
+            self, setup_server, qualcoder_db_path):
+        """D4 6 point 14's second half, which the tree asserted only as a
+        zero: the number the filter DISCLOSES must be the number a
+        project with the same visible rows and no hidden coders would
+        disclose, or the count itself becomes the oracle."""
+        plain = json.loads(server.search_files("stress", search_content=True,
+                                               exclude_code_ids=[1]))
+        from test_qc40_visibility import _apply_visibility_schema
+        _apply_visibility_schema(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        hidden_project = json.loads(server.search_files(
+            "stress", search_content=True, exclude_code_ids=[1]))
+        assert (hidden_project["novelty_filter"]["content_matches_excluded"]
+                == plain["novelty_filter"]["content_matches_excluded"])
+        assert (hidden_project["novelty_filter"]
+                ["files_with_all_matches_excluded"]
+                == plain["novelty_filter"]["files_with_all_matches_excluded"])
+        assert ([r["file_id"] for r in hidden_project["results"]]
+                == [r["file_id"] for r in plain["results"]])
+
+    def test_a_pre_capability_project_answers_like_one_hiding_nobody(
+            self, setup_server, qualcoder_db_path):
+        """D4 6 point 18: same rows, same answer, whatever the schema
+        can express. Only the disclosure differs."""
+        before = json.loads(server.search_coded_text("stress",
+                                                     exclude_code_ids=[2]))
+        assert before["novelty_filter"]["coder_visibility"] == \
+            "not_applicable"
+        from test_qc40_visibility import _apply_visibility_schema
+        _apply_visibility_schema(qualcoder_db_path)
+        con = _con(qualcoder_db_path)
+        con.execute("UPDATE coder_names SET visibility = 1")
+        con.execute("DELETE FROM code_text WHERE ctid IN (3, 4, 5)")
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        after = json.loads(server.search_coded_text("stress",
+                                                    exclude_code_ids=[2]))
+        assert after["novelty_filter"]["coder_visibility"] == "honoured"
+        assert [r["id"] for r in after["results"]] == \
+            [r["id"] for r in before["results"]]
+        assert after["result_count"] == before["result_count"]
 
     def test_no_marker_reaches_any_page(self, setup_server,
                                         qualcoder_db_path):

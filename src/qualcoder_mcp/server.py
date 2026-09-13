@@ -3022,9 +3022,19 @@ def search_coded_text(query: str, code_name: Optional[str] = None,
             break
 
     if not exhausted and position is not None:
-        # One row of lookahead, so a page that happens to end on the last
-        # match reports has_more false instead of handing the caller a
-        # cursor that returns nothing.
+        # One row of lookahead over the QUERY, so a page that fills
+        # exactly on the last matching row reports has_more false rather
+        # than minting a cursor for an empty page. The lookahead
+        # deliberately does not apply the novelty mask: masking it would
+        # mean scanning, and discarding, every remaining excluded row on
+        # every page. So with exclude_code_ids a trailing page can still
+        # come back empty, with has_more false on it. That is the safe
+        # direction (has_more is never false while rows remain), and
+        # D4 3.3.2's no-empty-page promise is about get_coded_segments
+        # under a character budget, which is guarded separately.
+        # search_files has no lookahead at all, for the same reason at a
+        # larger scale: it would have to scan the remaining files
+        # (QA round 1, F17).
         exhausted = not db_.search_coded_text(query, code_name, 1,
                                               coder=coder, after=position)
 

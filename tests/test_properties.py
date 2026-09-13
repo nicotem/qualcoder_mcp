@@ -56,6 +56,13 @@ HARD_FRAGMENTS = [
     "😀", "👨‍👩‍👧", "𠀀𠀁", "x 😀 y", "😀 note\r\nz",  # astral / CRLF drift
     "日本語のテキスト", "café", "café",                  # BMP CJK, NFC, NFD
     "  ", "\t", "mixed 日本 😀 end",
+    # str.lower() is not length preserving: U+0130 lowercases to two
+    # code points, so a scan over a lower-cased copy of the text
+    # shifts every later match. Ordinary in a Turkish transcript, and
+    # the character behind the novelty filter calling coded passages
+    # novel (QA round 1, F5), so it is injected rather than left to
+    # chance.
+    "İstanbul", "notes from İzmir", "İİİ marks",
 ]
 
 opt_memo = st.one_of(st.none(), st.text(alphabet=BASE_ALPHA, max_size=20))
@@ -634,6 +641,82 @@ def test_novelty_filter_agrees_with_the_overlap_definition(spec, pick):
         for fid in {r["id"] for r in H.query(path, "SELECT id FROM source")}:
             if fid not in by_file:
                 assert not server.db.span_is_excluded(mask.get(fid), 0, 10 ** 6)
+    finally:
+        H.teardown_server(saved)
+        shutil.rmtree(run, ignore_errors=True)
+
+
+# ===========================================================================
+# Test N2 (v0.12 B4) - the novelty filter END TO END, through the tools
+#                      (D4 6, point 23; QA round 1, F16)
+# ===========================================================================
+@settings(max_examples=_ex(60), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow,
+                                 HealthCheck.data_too_large,
+                                 HealthCheck.filter_too_much])
+@given(spec=project_spec(), pick=st.integers(0, 4), start=st.integers(0, 20),
+       length=st.integers(1, 6))
+def test_no_returned_match_overlaps_an_excluded_span(spec, pick, start,
+                                                     length):
+    """D4 point 23 as the design writes it: through the tools.
+
+    The helper-level property beside this one calls excluded_span_mask
+    and span_is_excluded directly with hard-coded candidate spans, so it
+    can only check the merge and the binary search. It could not have
+    caught the offset defect of QA round 1's F5, because it never goes
+    through search_files, where the candidate span was computed. This one
+    does, over random projects, with the pattern drawn from a file's own
+    text so matches actually occur.
+    """
+    run = _new_run_dir()
+    saved = H.save_server_state()
+    try:
+        path = H.build_project(spec, parent=run)
+        H.set_server_project(path, str(Path(run) / "sessions"))
+        codes = [c["id"] for c in server.db.list_codes()]
+        texts = H.list_text_files(path)
+        assume(codes and texts)
+        chosen = sorted({codes[pick % len(codes)]})
+        source = texts[pick % len(texts)]
+        pattern = source["fulltext"][start:start + length]
+        assume(pattern.strip())
+
+        excluded = {}
+        for row in H.query(path, "SELECT fid, pos0, pos1 FROM code_text "
+                                 "WHERE cid = ? AND pos1 > pos0",
+                           (chosen[0],)):
+            excluded.setdefault(row["fid"], []).append((row["pos0"],
+                                                        row["pos1"]))
+
+        out = json.loads(server.search_files(pattern, search_content=True,
+                                             exclude_code_ids=chosen,
+                                             limit=5000))
+        assume("error" not in out)
+        fulltexts = {f["id"]: f["fulltext"] for f in texts}
+        for entry in out["results"]:
+            spans = excluded.get(entry["file_id"], [])
+            for match in entry["matches"]:
+                if match["location"] != "content":
+                    continue
+                s, e = match["match_start"], match["match_end"]
+                # the anchors are positions in the FILE, not in a
+                # lower-cased copy of it
+                assert fulltexts[entry["file_id"]][s:e].lower() == \
+                    pattern.lower(), (s, e, pattern)
+                assert match["match_text"] == \
+                    fulltexts[entry["file_id"]][s:e]
+                assert not any(s < b and e > a for (a, b) in spans), \
+                    (entry["file_id"], s, e, spans)
+
+        coded = json.loads(server.search_coded_text(pattern,
+                                                    exclude_code_ids=chosen,
+                                                    limit=5000))
+        assume("error" not in coded)
+        for row in coded["results"]:
+            spans = excluded.get(row["file_id"], [])
+            s, e = row["position_start"], row["position_end"]
+            assert not any(s < b and e > a for (a, b) in spans), \
+                (row["file_id"], s, e, spans)
     finally:
         H.teardown_server(saved)
         shutil.rmtree(run, ignore_errors=True)
