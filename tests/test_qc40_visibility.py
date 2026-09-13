@@ -1071,3 +1071,273 @@ class TestTheCapabilityIsNotAVersion:
         assert not self._offends(
             "On projects with the coder-visibility capability (QualCoder "
             "3.8.2 and 4.0, schema v14 and later) that hide coders.")
+
+
+# =============================================================================
+# THE PERMISSIVE PER-NAME LOOKUP, AND THE SITES IT REACHED (fix round 2)
+# =============================================================================
+
+class TestNoSiteDecidesVisibilityPermissively:
+    """The class F4 fixed in `compare_coders`, closed everywhere else.
+
+    `coder_name_visibility` answered None for BOTH "this project has no
+    visibility capability" and "the capability is present and
+    `coder_names` did not answer", and `None != 0` reads as visible. Four
+    more sites this batch added made that read: the frequencies export
+    named every hidden coder and lost its disclosure block with them,
+    the AI-coder-name setter stopped refusing a hidden coder's name, its
+    case-variant warning named a hidden coder three lines under a
+    comment citing the count-only rule, and the cascade preview's row
+    owner lost its mask. All four now go through `server._visibility_map`
+    and branch on all three answers; the per-name read is gone from the
+    package.
+
+    Every test here carries its INTACT control, and every damaged-table
+    test also asserts that the tool still did its job, so a refusal
+    cannot be passing because the call fell over for an unrelated
+    reason.
+    """
+
+    @pytest.fixture
+    def intact(self, setup_server, qualcoder_db_path):
+        _apply_visibility_schema(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        return qualcoder_db_path
+
+    @staticmethod
+    def _damage(project):
+        """Drop `coder_names` AFTER the capability probe has run.
+
+        The probe happens at connection time, so capabilities still
+        report visibility while every read of the table raises. Schema
+        drift, damaged pages and a concurrent QualCoder rebuilding the
+        table all look like this.
+        """
+        con = sqlite3.connect(str(Path(project) / "data.qda"))
+        con.execute("DROP TABLE coder_names")
+        con.commit()
+        con.close()
+
+    def test_the_probe_still_says_the_capability_is_present(self, intact):
+        """Otherwise nothing below would prove anything: a project with
+        no capability hides nobody and may name everyone."""
+        self._damage(intact)
+        assert server.db.capabilities.has_coder_visibility is True
+
+    # -- the frequencies export (B3.7, ruling Q11) ------------------------
+
+    def test_the_export_names_visible_coders_and_counts_the_rest(
+            self, intact, tmp_path):
+        raw = server.export_frequencies_csv(str(tmp_path / "freq.csv"))
+        out = json.loads(raw)
+        assert out["coders"] == ["TestCoder"]
+        assert out["coder_visibility"]["hidden_coders"] == 1
+        assert HIDDEN not in raw
+        # ... and the FILE keeps QualCoder parity either way
+        assert HIDDEN in (tmp_path / "freq.csv").read_text(encoding="utf-8-sig")
+
+    def test_the_export_names_nobody_when_the_table_does_not_answer(
+            self, intact, tmp_path):
+        self._damage(intact)
+        raw = server.export_frequencies_csv(str(tmp_path / "freq.csv"))
+        out = json.loads(raw)
+        assert HIDDEN not in raw
+        assert "coders" not in out
+        assert out["coder_visibility"]["hidden_coder_filter"] == "unknown"
+        # The export still ran: the refusal is the visibility decision,
+        # not the whole tool falling over.
+        assert out["success"] is True
+        assert (tmp_path / "freq.csv").exists()
+        assert out["codes"] == 2 and out["categories"] == 1
+        assert HIDDEN in (tmp_path / "freq.csv").read_text(encoding="utf-8-sig")
+
+    # -- the AI coder name setter (D7 4.1) --------------------------------
+
+    def test_the_setter_refuses_a_hidden_name_and_takes_the_override(
+            self, intact):
+        refused = json.loads(server.set_project_ai_coder_name(HIDDEN))
+        assert "currently hidden in QualCoder" in refused["error"]
+        allowed = json.loads(
+            server.set_project_ai_coder_name(HIDDEN, allow_hidden_coder=True))
+        assert allowed["ai_coder_name"]["name"] == HIDDEN
+
+    def test_the_setter_refuses_when_the_table_does_not_answer(self, intact):
+        before = json.loads(server.get_current_project())
+        self._damage(intact)
+        raw = server.set_project_ai_coder_name(HIDDEN)
+        out = json.loads(raw)
+        assert "did not answer" in out["error"]
+        assert "cannot be decided" in out["error"]
+        assert HIDDEN not in out["error"]        # name-free
+        assert not re.search(r"\b\d+ coder", out["error"])   # count-free
+        assert "success" not in out
+        # Nothing was written: the setting is still what it was.
+        assert json.loads(server.get_current_project()).get(
+            "ai_coder_name") == before.get("ai_coder_name")
+        # And the override still works, so the refusal is the visibility
+        # decision rather than a tool that can no longer write at all.
+        allowed = json.loads(
+            server.set_project_ai_coder_name(HIDDEN, allow_hidden_coder=True))
+        assert allowed["ai_coder_name"]["name"] == HIDDEN
+
+    # -- the case-variant warning (7.1: a count, never a name) ------------
+
+    def test_the_case_warning_names_a_visible_coder_and_not_a_hidden_one(
+            self, intact):
+        visible = json.loads(server.set_project_ai_coder_name("testcoder"))
+        assert any("\"TestCoder\"" in w for w in visible["warnings"])
+
+        hidden_variant = HIDDEN.lower()
+        out = json.loads(server.set_project_ai_coder_name(
+            hidden_variant, allow_hidden_coder=True))
+        warning = [w for w in out["warnings"] if "letter case" in w]
+        assert warning and HIDDEN not in warning[0]
+
+    def test_the_case_warning_names_nobody_when_the_table_is_gone(
+            self, intact):
+        self._damage(intact)
+        raw = server.set_project_ai_coder_name("testcoder",
+                                               allow_hidden_coder=True)
+        out = json.loads(raw)
+        warning = [w for w in out["warnings"] if "letter case" in w]
+        # The warning is still RAISED (so this is not passing because it
+        # vanished) and it no longer names the other spelling.
+        assert warning, out["warnings"]
+        assert "TestCoder" not in warning[0]
+        assert out["ai_coder_name"]["name"] == "testcoder"
+
+    # -- the cascade preview's row owner (ruling Q6) ----------------------
+
+    @staticmethod
+    def _give_category_to(project, owner):
+        con = sqlite3.connect(str(Path(project) / "data.qda"))
+        con.execute("UPDATE code_cat SET owner = ? WHERE catid = 1",
+                    (owner,))
+        con.commit()
+        con.close()
+
+    def test_a_hidden_row_owner_is_masked_and_a_visible_one_is_named(
+            self, intact):
+        control = json.loads(server.delete_category(1))
+        assert control["preview"]["collateral"]["category_row_owner"] == \
+            "TestCoder"
+        assert control["preview"]["category"]["name"] == "Category A"
+
+        self._give_category_to(intact, HIDDEN)
+        _reopen(intact)
+        raw = server.delete_category(1)
+        out = json.loads(raw)
+        assert out["preview"]["collateral"]["category_row_owner"] == \
+            "(hidden coder)"
+        assert HIDDEN not in raw
+
+    def test_the_mask_goes_on_when_the_table_does_not_answer(self, intact):
+        """The category previews are where this is reachable.
+
+        `collateral_for_cids` is called with no cids there (deleting or
+        merging a category touches no coding row), so the count helper
+        that would otherwise fail closed first is never called and the
+        row owner is the only visibility decision left in the block.
+        """
+        self._give_category_to(intact, HIDDEN)
+        _reopen(intact)
+        self._damage(intact)
+        raw = server.delete_category(1)
+        out = json.loads(raw)
+        assert HIDDEN not in raw
+        assert out["preview"]["collateral"]["category_row_owner"] == \
+            "(hidden coder)"
+        # The preview still computed, so the mask is not standing in for
+        # a failed call.
+        assert out["requires_confirmation"] is True
+        assert out["preview"]["category"]["name"] == "Category A"
+
+    def test_the_code_previews_fail_closed_one_step_earlier(self, intact):
+        """Why the test above uses a category rather than a code: with
+        cids to count, the anonymous hidden-coding count runs first and
+        raises on the damaged table, so the whole preview refuses before
+        the mask is reached. Both orders end name-free; only one of them
+        is the mask's doing, and this says which."""
+        self._damage(intact)
+        out = json.loads(server.delete_code(1))
+        assert "preview" not in out
+        assert HIDDEN not in json.dumps(out)
+
+
+class TestTheClassCannotComeBack:
+    """One reader of `coder_names.visibility`, and a pin that says so.
+
+    The per-name lookup was removed rather than documented, because a
+    documented trap is still a trap and this one was reached for five
+    times. These pin that the package keeps exactly one decision-making
+    reader of the table, so a sixth arrives as a failing test rather
+    than as a review finding.
+    """
+
+    PACKAGE = Path(__file__).resolve().parents[1] / "src" / "qualcoder_mcp"
+    PATTERN = re.compile(r"FROM\s+coder_names", re.IGNORECASE)
+
+    # Every SQL read of the table in the package, with the reason each
+    # is allowed to exist. `hidden_coder_count` produces a COUNT for a
+    # disclosure note on results whose ROWS come from the *_visible
+    # views, which fail closed on their own, so its permissive zero
+    # costs a disclosure block and never a disclosure (the argument the
+    # gate upheld for the frequency, summary and cascade paths).
+    EXPECTED = {
+        "database.py": {
+            "SELECT COUNT(*) FROM coder_names WHERE visibility = 0",
+            "SELECT name, visibility FROM coder_names",
+        },
+    }
+
+    QUOTED = re.compile(r"""["']([^"']*FROM\s+coder_names[^"']*)["']""",
+                        re.IGNORECASE)
+
+    def _reads(self):
+        found = {}
+        for path in sorted(self.PACKAGE.rglob("*.py")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not self.PATTERN.search(line):
+                    continue
+                quoted = self.QUOTED.search(line)
+                found.setdefault(path.name, set()).add(
+                    quoted.group(1).strip() if quoted else line.strip())
+        return found
+
+    def test_the_table_is_read_in_exactly_the_two_known_places(self):
+        assert self._reads() == self.EXPECTED
+
+    def test_the_sweep_finds_something(self):
+        # An empty sweep would make the assertion above pass whatever
+        # the source says.
+        assert sum(len(v) for v in self._reads().values()) == 2
+
+    def test_the_sweep_would_notice_a_per_name_read(self):
+        assert self.PATTERN.search(
+            '"SELECT visibility FROM coder_names WHERE name = ?"')
+
+    def test_a_non_integer_visibility_fails_closed_rather_than_raising(
+            self, setup_server, qualcoder_db_path):
+        """The table answered, but not with the integer its own schema
+        declares. `int()` would raise ValueError straight past every
+        caller's `except CoderVisibilityUnreadable`."""
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        _apply_visibility_schema(qualcoder_db_path)
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("PRAGMA writable_schema = ON")
+        con.execute("UPDATE sqlite_master SET sql = replace(sql, "
+                    "'CHECK (visibility IN (0, 1))', '') "
+                    "WHERE name = 'coder_names'")
+        con.execute("PRAGMA writable_schema = OFF")
+        con.commit()
+        con.close()
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("UPDATE coder_names SET visibility = 'yes' "
+                    "WHERE name = ?", (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        with pytest.raises(CoderVisibilityUnreadable) as caught:
+            server.db.coder_visibility_map()
+        assert "yes" not in str(caught.value)      # value-free text
+        assert HIDDEN not in str(caught.value)

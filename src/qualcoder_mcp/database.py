@@ -1979,29 +1979,6 @@ class QualcoderDatabase:
                 return str(row[0])
         return None
 
-    def coder_name_visibility(self, name: str) -> Optional[int]:
-        """The `coder_names.visibility` of one named coder.
-
-        None when the project has no visibility capability, when the
-        coder has no `coder_names` row (which the views treat as visible,
-        app.py:1530-1540), or when the lookup fails. Read-only: this
-        server never inserts into `coder_names`; QualCoder enrols names
-        through its own harvest the next time it opens the project
-        (app.py:1480-1494).
-        """
-        caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.has_coder_visibility:
-            return None
-        try:
-            row = self.conn.execute(
-                "SELECT visibility FROM coder_names WHERE name = ?",
-                (name,)).fetchone()
-        except sqlite3.Error:
-            return None
-        if row is None or row[0] is None:
-            return None
-        return int(row[0])
-
     def coder_visibility_map(self) -> Optional[Dict[str, int]]:
         """{name: visibility} for the whole `coder_names` table.
 
@@ -2009,10 +1986,19 @@ class QualcoderDatabase:
         hidden there). Raises `CoderVisibilityUnreadable` when the
         capability is present but the table does not answer, so a caller
         whose answer depends on who is hidden fails closed the way
-        `_row_is_visible` does for writes (:2018-2021), rather than
-        reading the permissive None that `coder_name_visibility` returns
-        per name. A row with a NULL visibility counts as visible, as
-        that method and the views do (app.py:1530-1540).
+        `_row_is_visible` does for writes. A row with a NULL visibility
+        counts as visible, as the views do (app.py:1530-1540).
+
+        This is the ONLY per-project read of `coder_names.visibility`
+        that decides anything. A per-name sibling used to sit beside it
+        and answered None for BOTH "no capability" and "the table did
+        not answer"; `None != 0` reads as visible, so five call sites in
+        turn published a hidden coder when the table was damaged. It has
+        been removed rather than documented, and
+        `tests/test_qc40_visibility.py` pins that no second reader comes
+        back. Read-only either way: this server never inserts into
+        `coder_names`; QualCoder enrols names through its own harvest
+        the next time it opens the project (app.py:1480-1494).
         """
         caps = getattr(self, "capabilities", None)
         if caps is None or not caps.has_coder_visibility:
@@ -2025,8 +2011,24 @@ class QualcoderDatabase:
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility table did not answer)") from None
-        return {str(r["name"]): (1 if r["visibility"] is None
-                                 else int(r["visibility"]))
+
+        def _visibility(value):
+            if value is None:
+                return 1              # NULL counts as visible (app.py:1530-1540)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                # The table answered, but not with the integer its own
+                # schema declares. Eligibility still cannot be decided,
+                # and int() would otherwise raise ValueError past every
+                # caller's `except CoderVisibilityUnreadable`. The text
+                # is value-free: nothing read out of the project is
+                # echoed back to the model.
+                raise CoderVisibilityUnreadable(
+                    "Could not determine coder visibility for this project "
+                    "(its coder-visibility table did not answer)") from None
+
+        return {str(r["name"]): _visibility(r["visibility"])
                 for r in rows if r["name"] is not None}
 
     def _row_is_visible(self, base: str, view: str, id_col: str,
@@ -5817,11 +5819,24 @@ class QualcoderDatabase:
         still returns it. This NEW block is more careful than that: it
         reports "(hidden coder)" rather than the name (ruling Q6). A
         disclosure rule, not a gate.
+
+        Fail-closed, like every other visibility decision (F4 and the
+        class it belongs to): on a project whose capability probes true
+        but whose `coder_names` does not answer, who is hidden cannot be
+        decided, so the mask goes ON rather than off. The permissive
+        per-name read answers None there, and `None == 0` is False, so
+        the name would be published instead. Masking a visible owner
+        costs a label; publishing a hidden one breaches X1.
         """
         if owner is None:
             return None
-        return "(hidden coder)" if self.coder_name_visibility(owner) == 0 \
-            else owner
+        try:
+            visibility = self.coder_visibility_map()
+        except CoderVisibilityUnreadable:
+            return "(hidden coder)"
+        if visibility is None:
+            return owner              # no capability: nothing is hidden
+        return "(hidden coder)" if visibility.get(owner, 1) == 0 else owner
 
     def _discarded_by_owner(self, from_code_id: int,
                             into_code_id: int) -> List[Dict[str, Any]]:

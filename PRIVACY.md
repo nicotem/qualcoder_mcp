@@ -232,6 +232,18 @@ project has the coder-visibility capability:
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.
+- **When who is hidden cannot be determined at all**, no coder is
+  named. On a project whose visibility capability is present but whose
+  `coder_names` table does not answer (schema drift, damaged pages, a
+  concurrent QualCoder rebuilding it), a decision about who is hidden
+  cannot be made, and every tool that would have made one treats
+  unknown as hidden rather than as visible: the coder comparison and
+  the AI coder name setter refuse and change nothing, the frequencies
+  export names no coder in its result and says why, the case-only
+  warning drops the other spelling, and the owner of a code or
+  category row being removed is reported as "(hidden coder)". The
+  exported FILE is never affected by this: it carries every coder's
+  counts, for parity with QualCoder's own report.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.

@@ -732,10 +732,24 @@ class TestTheVisibilityTableFailsClosed:
         self._damage(project)
         with pytest.raises(CoderVisibilityUnreadable):
             server.db.coder_visibility_map()
-        # The permissive per-name reading, which is what the tool used
-        # to decide eligibility with, still answers "not hidden": that is
-        # the defect, and it is why the map exists.
-        assert server.db.coder_name_visibility(name) is None
+        # The permissive per-name reading is what the tool used to
+        # decide eligibility with. On this same damaged project it
+        # answers None, `None != 0` reads as visible, and the hidden
+        # coder is published: that is the defect, and it is why the map
+        # exists. Fix round 2 removed the method rather than documenting
+        # it, so the reading is reproduced here, against the same damage,
+        # to keep the reason for the map on the record.
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is True
+        try:
+            row = server.db.conn.execute(
+                "SELECT visibility FROM coder_names WHERE name = ?",
+                (name,)).fetchone()
+        except sqlite3.Error:
+            row = None
+        permissive = None if row is None or row[0] is None else int(row[0])
+        assert permissive is None
+        assert (permissive != 0) is True        # ... and so reads as visible
 
     def test_a_coder_with_no_row_at_all_counts_as_visible(self, intact):
         """The views drop only rows present with visibility = 0

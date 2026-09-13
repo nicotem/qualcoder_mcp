@@ -2424,6 +2424,37 @@ def select_project(project_path: str) -> str:
         })
 
 
+_VISIBILITY_UNREADABLE = object()
+
+VISIBILITY_UNREADABLE_SUFFIX = (
+    "Could not determine coder visibility for this project (its "
+    "coder-visibility table did not answer)")
+
+
+def _visibility_map(db_):
+    """The one visibility read every decision about who is hidden uses.
+
+    Three answers, and the third is the one the per-name lookup cannot
+    give: the map; None when the project has no visibility capability,
+    where nothing is hidden; and `_VISIBILITY_UNREADABLE` when the
+    capability probes true and `coder_names` does not answer, where
+    nothing is KNOWN.
+
+    The per-name read that used to sit beside the map conflated the
+    last two into None, and `None != 0` reads as visible, so a damaged
+    or drifted table silently turned every hidden coder into a named,
+    listed, eligible one. That is the defect F4 fixed in
+    `compare_coders`; it recurred at four more sites, so the per-name
+    read is gone from the package, the mechanism lives here once, and
+    every caller branches on all three answers (X1; PRIVACY.md's "a
+    COUNT of hidden coders, never their names").
+    """
+    try:
+        return db_.coder_visibility_map()
+    except CoderVisibilityUnreadable:
+        return _VISIBILITY_UNREADABLE
+
+
 @mcp.tool()
 @_tool_guard
 def set_project_ai_coder_name(name: str, note: str = "",
@@ -2495,19 +2526,32 @@ def set_project_ai_coder_name(name: str, note: str = "",
             "\"default\" is QualCoder's own default coder name for any "
             "user who has not set one (it would collide with them); "
             "choose a different name. Nothing was changed.")})
-    if ro.coder_name_visibility(name) == 0 and not allow_hidden_coder:
-        return json.dumps({"error": (
-            f"\"{name}\" is a coder currently hidden in QualCoder; rows "
-            f"written under it would not be shown in QualCoder or in this "
-            f"server's default reads. Pass allow_hidden_coder=true to "
-            f"store it anyway, or ask the user to unhide the coder in "
-            f"QualCoder. Nothing was changed.")})
+    visibility = _visibility_map(ro)
+    if not allow_hidden_coder:
+        if visibility is _VISIBILITY_UNREADABLE:
+            # Fail closed, as every other visibility decision does. The
+            # permissive read answered None here and the refusal simply
+            # stopped happening, so the project's AI coder name could be
+            # set to a hidden coder's without anyone being told.
+            return json.dumps({"error": (
+                f"{VISIBILITY_UNREADABLE_SUFFIX}, so whether this name "
+                f"belongs to a coder hidden in QualCoder cannot be "
+                f"decided. Pass allow_hidden_coder=true to store it "
+                f"anyway, or ask the user to check the coder's visibility "
+                f"in QualCoder. Nothing was changed.")})
+        if (visibility or {}).get(name, 1) == 0:
+            return json.dumps({"error": (
+                f"\"{name}\" is a coder currently hidden in QualCoder; rows "
+                f"written under it would not be shown in QualCoder or in this "
+                f"server's default reads. Pass allow_hidden_coder=true to "
+                f"store it anyway, or ask the user to unhide the coder in "
+                f"QualCoder. Nothing was changed.")})
 
     if not folder_is_writable(folder):
         return json.dumps({"error": READ_ONLY_FOLDER_MESSAGE})
 
     declared = host_declaration()
-    warnings = _set_name_warnings(ro, state, name, declared)
+    warnings = _set_name_warnings(ro, state, name, declared, visibility)
 
     try:
         entry = write_ai_coder_name(folder, name, note=note,
@@ -2533,7 +2577,7 @@ def set_project_ai_coder_name(name: str, note: str = "",
 
 
 def _set_name_warnings(ro, state, name: str,
-                       declared: Optional[str]) -> List[str]:
+                       declared: Optional[str], visibility) -> List[str]:
     """Warnings the setter returns, never refusals (D7 4.1 step 4).
 
     Three things are worth saying and none is worth refusing over,
@@ -2569,9 +2613,14 @@ def _set_name_warnings(ro, state, name: str,
     if variant is not None:
         # A hidden coder is disclosed as a count, never a name (7.1), so
         # the warning names the other spelling only when the coder it
-        # belongs to is one the user can see. The advice is the same
-        # either way.
-        if ro.coder_name_visibility(variant) == 0:
+        # belongs to is one the user can SEE. `visibility` is the
+        # setter's own `_visibility_map` read, which answers
+        # `_VISIBILITY_UNREADABLE` when the table does not answer; the
+        # per-name read used to answer None there and `None != 0` named
+        # the coder anyway, three lines under this comment. Unknown is
+        # not visible: the name-free wording carries the same advice.
+        if (visibility is _VISIBILITY_UNREADABLE
+                or (visibility or {}).get(variant, 1) == 0):
             warnings.append(
                 f"\"{name}\" differs only by letter case from a coder name "
                 f"already used in this project; QualCoder treats them as "
@@ -4318,9 +4367,8 @@ def compare_coders(coder_a: Optional[str] = None,
     # coder_names does not answer, eligibility cannot be decided, and
     # the permissive reading would publish a hidden coder's statistics
     # (B3.4, D2 5.2; the same posture the write guards take).
-    try:
-        visibility = db_.coder_visibility_map()
-    except CoderVisibilityUnreadable:
+    visibility = _visibility_map(db_)
+    if visibility is _VISIBILITY_UNREADABLE:
         return json.dumps({"error": COMPARISON_VISIBILITY_UNREADABLE})
 
     hidden_count = _hidden_eligible_count(db_, visibility)
@@ -10746,10 +10794,26 @@ def export_frequencies_csv(output_path: str,
     coders = sorted({r["owner"] for r in raw if r["owner"] is not None})
     # The JSON RESULT is a conversational surface, so it names only the
     # coders the user can see and discloses the rest as a count (B3.7,
-    # ruling Q11). The file is unchanged either way.
-    visible_coders = [c for c in coders
-                      if ro_db.coder_name_visibility(c) != 0]
-    hidden_coders_in_file = len(coders) - len(visible_coders)
+    # ruling Q11). The file is unchanged either way: this read happens
+    # before `_write_csv_file` and touches nothing the file carries.
+    #
+    # Fail-closed, through the same one mechanism as every other
+    # visibility decision (F4 and the class it belongs to). The
+    # permissive per-name read answered None when `coder_names` did not
+    # answer, and `None != 0` reads as visible, so every hidden coder
+    # was NAMED here and the disclosure block vanished with them,
+    # because the count it is keyed on came out zero. When nothing is
+    # known, name nobody.
+    visibility = _visibility_map(ro_db)
+    if visibility is _VISIBILITY_UNREADABLE:
+        visible_coders = None
+        hidden_coders_in_file = None
+    elif visibility is None:
+        visible_coders = coders               # no capability: nothing hidden
+        hidden_coders_in_file = 0
+    else:
+        visible_coders = [c for c in coders if visibility.get(c, 1) != 0]
+        hidden_coders_in_file = len(coders) - len(visible_coders)
     counts: Dict[Any, int] = {}
     for r in raw:
         counts[(r["code_id"], r["owner"])] = r["count"]
@@ -10824,20 +10888,35 @@ def export_frequencies_csv(output_path: str,
     _write_csv_file(out_file, rows, quote_all=False,
                     sanitize=sanitize_formulas)
 
-    return json.dumps({
-        "success": True,
-        "output_path": str(out_file),
-        "codes": len(codes),
-        "categories": len(cats),
-        "coders": visible_coders,
-        **({"coder_visibility": {
+    if hidden_coders_in_file is None:
+        # Nothing is known about who is hidden, so no coder is named at
+        # all and the block says why. The alternative, naming them and
+        # dropping the block, is the disclosure X1 forbids outright.
+        coder_keys: Dict[str, Any] = {"coder_visibility": {
+            "hidden_coder_filter": "unknown",
+            "note": (VISIBILITY_UNREADABLE_SUFFIX + ", so no coder is "
+                     "named here. The exported FILE is unaffected: it "
+                     "carries every coder's counts, as QualCoder's own "
+                     "frequencies report does."),
+        }}
+    elif hidden_coders_in_file:
+        coder_keys = {"coders": visible_coders, "coder_visibility": {
             "hidden_coder_filter": "not_applicable",
             "hidden_coders": hidden_coders_in_file,
             "note": ("The exported FILE carries every coder's counts, as "
                      "QualCoder's own frequencies report does; the coders "
                      "list above names only the coders visible in "
                      "QualCoder."),
-        }} if hidden_coders_in_file else {}),
+        }}
+    else:
+        coder_keys = {"coders": visible_coders}
+
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_file),
+        "codes": len(codes),
+        "categories": len(cats),
+        **coder_keys,
         "sanitization": _sanitization_note(sanitize_formulas),
         "counting_rule": "QualCoder Code Frequencies parity: one count "
                          "per coding row over code_text + code_image + "
