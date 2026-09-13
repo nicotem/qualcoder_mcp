@@ -1659,6 +1659,28 @@ class TestPartialViewSetIsNotACapability:
         assert db_module.coder_is_hidden({"X": 0}, "Y") is False
         assert db_module.coder_is_hidden(None, "X") is False
 
+    def test_the_one_unfiltered_name_read_says_so_in_its_name(self):
+        """The audit's residual, closed by construction. One read still
+        hands hidden coders' NAMES to the layer above, because
+        compare_coders must be able to confirm that a coder named under
+        the override exists. Its name is the warning, and every caller
+        filters it."""
+        from qualcoder_mcp import database as db_module
+        import qualcoder_mcp.server as server_module
+        db_source = Path(db_module.__file__).read_text(encoding="utf-8")
+        server_source = Path(
+            server_module.__file__).read_text(encoding="utf-8")
+        assert "def coders_with_text_codings(" not in db_source
+        assert "coders_with_text_codings()" not in server_source
+        calls = server_source.count(
+            "coders_with_text_codings_including_hidden()")
+        assert calls == 3, calls
+        for chunk in server_source.split(
+                "coders_with_text_codings_including_hidden()")[1:]:
+            window = chunk[:400]
+            assert ("coder_is_hidden" in window
+                    or "known_coders" in window), window[:120]
+
     def test_the_predicate_is_what_the_views_do(self, visibility_db):
         """Driven against the views themselves rather than against its
         own docstring."""

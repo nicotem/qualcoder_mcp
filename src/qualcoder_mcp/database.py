@@ -3323,12 +3323,22 @@ class QualcoderDatabase:
                     entry[side].append([int(row["pos0"]), int(row["pos1"])])
         return out
 
-    def coders_with_text_codings(self) -> List[str]:
-        """Every owner with at least one text coding, sorted.
+    def coders_with_text_codings_including_hidden(self) -> List[str]:
+        """Every owner with at least one text coding, sorted, HIDDEN
+        CODERS INCLUDED.
 
-        Used for auto-selection and for the eligible-coder listings in
-        error texts; the SERVER layer filters this by visibility before
-        anything reaches the conversation, so this method stays plain.
+        It reads the base table on purpose: compare_coders has to be
+        able to confirm that a coder named under allow_hidden_coder=true
+        exists at all, and the eligible-coder listing has to be able to
+        say how many coders it is not naming. Both of those need the
+        full set.
+
+        The name carries the warning because nothing else can: this is
+        the one read left in the package that hands a hidden coder's
+        NAME to the layer above, and every caller must filter it with
+        `coder_is_hidden` before anything reaches the conversation. It
+        used to be called `coders_with_text_codings`, which read as
+        though it were safe (fix round 4, the class audit).
         """
         try:
             rows = self.conn.execute(
@@ -3336,7 +3346,7 @@ class QualcoderDatabase:
                 "WHERE owner IS NOT NULL AND owner != '' "
                 "ORDER BY owner").fetchall()
         except sqlite3.Error as e:
-            _raise_query_error(e, "coders_with_text_codings",
+            _raise_query_error(e, "coders_with_text_codings_including_hidden",
                                "Failed to read the project's coders")
         return [r["owner"] for r in rows]
 

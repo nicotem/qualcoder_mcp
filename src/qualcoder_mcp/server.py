@@ -4289,7 +4289,7 @@ def _eligible_coders(db_, visibility: Optional[Dict[str, int]],
     speaker-segmentation coder is never eligible: its rows are speaker
     turns, not analysis.
     """
-    names = [n for n in db_.coders_with_text_codings()
+    names = [n for n in db_.coders_with_text_codings_including_hidden()
              if n != SPEAKER_SYSTEM_CODER]
     if include_hidden or visibility is None:
         return names
@@ -4300,7 +4300,7 @@ def _hidden_eligible_count(db_, visibility: Optional[Dict[str, int]]) -> int:
     """How many coders with text codings the project hides (a count)."""
     if visibility is None:
         return 0
-    return len([n for n in db_.coders_with_text_codings()
+    return len([n for n in db_.coders_with_text_codings_including_hidden()
                 if n != SPEAKER_SYSTEM_CODER
                 and coder_is_hidden(visibility, n)])
 
@@ -4463,7 +4463,7 @@ def compare_coders(coder_a: Optional[str] = None,
                 or coder_is_hidden(visibility or {}, coder_b)):
             return json.dumps({"error": HIDDEN_COMPARISON_REFUSAL})
 
-    known_coders = set(db_.coders_with_text_codings())
+    known_coders = set(db_.coders_with_text_codings_including_hidden())
     for value, label in ((coder_a, "coder_a"), (coder_b, "coder_b")):
         if value not in known_coders:
             return json.dumps({"error": (
