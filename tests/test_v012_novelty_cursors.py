@@ -224,6 +224,83 @@ class TestSearchFilesFilter:
         assert text[match["preview_start"]:
                     match["preview_start"] + len(preview)] == preview
 
+    def test_a_case_insensitive_match_keeps_the_file_s_own_offsets(
+            self, setup_server, qualcoder_db_path):
+        """QA round 1, F5: the filter must not call a coded passage novel.
+
+        str.lower() is not length preserving. U+0130, the Turkish dotted
+        capital I and an ordinary character in a Turkish transcript,
+        lowercases to two code points, so a scan over a lower-cased copy
+        of the file reported every later match one character late. The
+        novelty mask was then tested against the shifted span, and a
+        coding that ends one character inside the match no longer
+        overlapped it: the search answered "novel" for a passage the
+        researcher had already coded, which is the one answer D4 3.1.3
+        says this filter must never give. The absolute anchors were off
+        by the same amount, so a coding written from a hit would have
+        landed on the wrong characters.
+        """
+        text = ("İstanbul: the participant said STRESSED twice, "
+                "STRESSED again.")
+        _add_file(qualcoder_db_path, 12, "turkish.txt", text)
+        # [28, 32) ends one character inside the first match at [31, 39)
+        _add_coding(qualcoder_db_path, 70, 1, 12, 28, 32)
+        _reopen(qualcoder_db_path)
+
+        plain = json.loads(server.search_files("stressed",
+                                               search_content=True))
+        entry = next(r for r in plain["results"] if r["file_id"] == 12)
+        assert [m["match_start"] for m in entry["matches"]] == [31, 47]
+        for match in entry["matches"]:
+            assert text[match["match_start"]:match["match_end"]] == "STRESSED"
+            assert match["match_text"] == "STRESSED"
+            preview = match["preview"].strip(".")
+            assert text[match["preview_start"]:
+                        match["preview_start"] + len(preview)] == preview
+
+        filtered = json.loads(server.search_files("stressed",
+                                                  search_content=True,
+                                                  exclude_code_ids=[1]))
+        entry = next(r for r in filtered["results"] if r["file_id"] == 12)
+        assert entry["content_matches_found"] == 2
+        assert entry["content_matches_excluded"] == 1
+        assert [m["match_start"] for m in entry["matches"]] == [47]
+
+    def test_the_other_content_scan_reports_true_offsets_too(
+            self, setup_server, qualcoder_db_path):
+        """The same assumption, checked where it also appears.
+
+        `search_file_content` is the database's other case-insensitive
+        content scan and reports a `position` per match. No tool reaches
+        it today, so it carries no user-visible defect, but it is public
+        on the database object and the next caller would inherit the
+        shifted offsets.
+        """
+        text = "İstanbul: the participant said STRESSED twice."
+        _add_file(qualcoder_db_path, 14, "other.txt", text)
+        _reopen(qualcoder_db_path)
+        hits = server.db.search_file_content("stressed")
+        entry = next(h for h in hits if h["file_id"] == 14)
+        position = entry["matches"][0]["position"]
+        assert position == text.find("STRESSED")
+        assert text[position:position + len("STRESSED")] == "STRESSED"
+
+    def test_an_excluded_match_stays_excluded_when_only_case_differs(
+            self, setup_server, qualcoder_db_path):
+        """The same file without the lengthening character: the offsets
+        were right there before this fix too, so this is the control that
+        says the pin above is about the shift and not about case."""
+        text = "Istanbul: the participant said STRESSED twice."
+        _add_file(qualcoder_db_path, 13, "ascii.txt", text)
+        _add_coding(qualcoder_db_path, 71, 1, 13, 28, 32)
+        _reopen(qualcoder_db_path)
+        out = json.loads(server.search_files("stressed",
+                                             search_content=True,
+                                             exclude_code_ids=[1]))
+        entry = next((r for r in out["results"] if r["file_id"] == 13), None)
+        assert entry is None
+        assert out["novelty_filter"]["content_matches_excluded"] >= 1
+
     def test_max_matches_per_file(self, setup_server, qualcoder_db_path):
         _add_file(qualcoder_db_path, 10, "many.txt", "word " * 40)
         _reopen(qualcoder_db_path)

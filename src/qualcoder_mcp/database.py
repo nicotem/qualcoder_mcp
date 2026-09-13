@@ -3444,22 +3444,26 @@ class QualcoderDatabase:
                 files_checked += 1
                 file_text = row["fulltext"] or ""
 
-                # Perform search
-                search_text = file_text if case_sensitive else file_text.lower()
-                search_query = query if case_sensitive else query.lower()
+                # Search the ORIGINAL text, so the reported position is a
+                # position in the file rather than in a lower-cased copy
+                # of it, which str.lower() is free to lengthen (QA round
+                # 1, F5: the same defect as in search_files).
+                content_regex = re.compile(
+                    re.escape(query), 0 if case_sensitive else re.IGNORECASE)
 
                 # Find all matches
                 matches = []
                 start_pos = 0
 
                 while True:
-                    pos = search_text.find(search_query, start_pos)
-                    if pos == -1:
+                    found = content_regex.search(file_text, start_pos)
+                    if found is None:
                         break
+                    pos = found.start()
 
                     # Extract context around match
                     context_start = max(0, pos - context_chars)
-                    context_end = min(len(file_text), pos + len(query) + context_chars)
+                    context_end = min(len(file_text), found.end() + context_chars)
                     preview = file_text[context_start:context_end]
 
                     # Add ellipsis if truncated
@@ -3581,6 +3585,18 @@ class QualcoderDatabase:
             last_key = None
 
             search_pattern = pattern if case_sensitive else pattern.lower()
+            # Content matches are found on the ORIGINAL text, so their
+            # offsets are true by construction. Searching a lower-cased
+            # copy and using the index as a position is wrong: str.lower()
+            # is not length preserving (U+0130, the Turkish dotted capital
+            # I, lowercases to two code points), so every occurrence
+            # before a match shifted that match, the novelty mask was
+            # tested against the wrong span and the absolute anchors
+            # pointed at the wrong characters (QA round 1, F5). This is
+            # also what upstream's own regex search does, which
+            # strengthens the parity claim rather than weakening it.
+            content_regex = re.compile(
+                re.escape(pattern), 0 if case_sensitive else re.IGNORECASE)
 
             for row in all_files:
                 files_searched += 1
@@ -3617,7 +3633,6 @@ class QualcoderDatabase:
                     file_text = row["fulltext"] or ""
                     if not file_text:
                         files_skipped_no_text += 1
-                    search_text = file_text if case_sensitive else file_text.lower()
                     mask_entry = (exclude_mask or {}).get(row["id"])
 
                     # Find content matches. Every occurrence is counted
@@ -3629,11 +3644,15 @@ class QualcoderDatabase:
                     start_pos = 0
 
                     while True:
-                        pos = search_text.find(search_pattern, start_pos)
-                        if pos == -1:
+                        found = content_regex.search(file_text, start_pos)
+                        if found is None:
                             break
+                        pos = found.start()
+                        # Both ends from the match, never from
+                        # len(pattern): under IGNORECASE a match can be a
+                        # different length from the pattern it matched.
+                        match_end = found.end()
                         content_found += 1
-                        match_end = pos + len(pattern)
                         if mask_entry is not None and self.span_is_excluded(
                                 mask_entry, pos, match_end):
                             content_excluded += 1
