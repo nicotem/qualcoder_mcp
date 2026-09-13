@@ -193,6 +193,36 @@ class TestPaletteParity:
         assert snap_to_palette(given) == expected
         assert upstream_color_matcher(given.upper()) == expected
 
+    @pytest.mark.parametrize("value", ["#FFF", "red", "#12345", "#1234567"])
+    def test_the_one_place_the_port_deviates_is_recorded(self, value):
+        """Measured against the restored 9bddf17 clone (fix round 4).
+
+        color_matcher opens with `if len(hex_color) != 7: return
+        "#D8D8D8"`, so upstream substitutes light grey for every value of
+        the wrong length. This port carries no length guard, which is the
+        refuse-rather-than-substitute stance D5 section 3.1 chose over
+        4.0's silent substitution, so it either raises (when a slice is
+        not hex) or snaps a short value as if it were a colour. Recorded
+        rather than changed: no call site can reach it, because each one
+        validates first, and the review screen's guard (fix round 4, T7)
+        is what closed the last path that did not. The docstring used to
+        claim this behaviour was "exactly as upstream", and it is not.
+        """
+        assert upstream_color_matcher(value) == "#D8D8D8"
+        try:
+            ours = snap_to_palette(value)
+        except ValueError:
+            return                       # the 'red' and '#FFF' shape
+        assert ours != "#D8D8D8"         # the '#12345' shape: a real snap
+        assert ours in QUALCODER_COLORS
+
+    def test_a_seven_character_non_hex_value_raises_on_both_sides(self):
+        """And where upstream does raise, the port agrees."""
+        with pytest.raises(ValueError):
+            upstream_color_matcher("#GGHHII")
+        with pytest.raises(ValueError):
+            snap_to_palette("#GGHHII")
+
     def test_invalid_colours_still_refused_everywhere(self, setup_server,
                                                        qualcoder_db_path):
         bad = ("#zzzzzz", "#FFF", "red", "FF0000", "#12345G", "")

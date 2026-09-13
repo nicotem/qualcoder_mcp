@@ -157,8 +157,18 @@ def snap_to_palette(color: str) -> str:
     '#F8E0F7', '#000000' -> '#1B5E20'); that quirk is upstream's and is
     kept as parity, not improved.
 
-    Precondition: color already passed validate_color (a malformed value
-    would raise ValueError from int(..., 16) here, exactly as upstream).
+    Precondition: color already passed validate_color. Upstream is not
+    identical on a malformed value and the difference is deliberate:
+    color_matcher opens with `if len(hex_color) != 7: return "#D8D8D8"`,
+    so upstream substitutes light grey for 'red', '#FFF' or '#12345' and
+    raises only for a 7-character value that is not hex ('#GGHHII').
+    This port carries no length guard, which is the same
+    refuse-rather-than-substitute stance as validate_color (D5 section
+    3.1): it raises when a slice is not hex ('red', '#FFF') and snaps a
+    short all-hex value as if it were a colour ('#12345' lands on
+    '#1B5E20'). Every call site validates first, so neither outcome is
+    reachable through a tool; tests/test_v012_palette_idempotent.py
+    records the measured difference so this claim cannot drift.
     """
     color = color.upper()
     test_r = int(color[1:3], 16)
