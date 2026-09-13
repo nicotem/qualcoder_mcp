@@ -71,6 +71,31 @@ def _add_code(project_path, cid, name, catid=None):
     con.close()
 
 
+def _house_rules(texts, labels=None):
+    """No em dashes, British English, no forbidden vocabulary.
+
+    The house rules are pinned on every text this batch adds, in the
+    module that owns it, so a reworded string is checked where it is
+    written rather than in one distant place (the convention Batch A's D6
+    test 8 established).
+    """
+    forbidden_spellings = ("color", "colors", "behavior", "organize",
+                           "recognize", "authorization", "analyze",
+                           "labeled", "favor")
+    for index, text in enumerate(texts):
+        label = (labels[index] if labels else f"text {index}")
+        assert "\u2014" not in text, label
+        lowered = text.lower()
+        for word in forbidden_spellings:
+            # Identifiers are exempt by house rule (analyze_file_with_coding,
+            # honor_visibility, color): the word counts only when it is
+            # prose, that is, not glued to another identifier character.
+            pattern = r"(?<![A-Za-z_])" + word + r"(?![A-Za-z_])"
+            assert not re.search(pattern, lowered), (label, word)
+        for token in re.findall(r"(?<![A-Za-z_])session_id(?![A-Za-z_])",
+                                text):
+            raise AssertionError((label, "session_id"))
+
 # =============================================================================
 # PARITY PINS 1 TO 5: THE OVERLAP RULE
 # =============================================================================
@@ -793,3 +818,18 @@ class TestImplementationDiscipline:
         assert "search_files" in server.CORE_TOOLSET
         assert "get_coded_segments" in server.CORE_TOOLSET
         assert "search_coded_text" in server.CORE_TOOLSET
+
+
+class TestHouseRulesOnTheNewTexts:
+
+    def test_every_new_text_of_this_item(self):
+        texts = [
+            cursors.CURSOR_TOO_LONG,
+            cursors.DATABASE_CHANGED_NOTE,
+            cursors.cursor_invalid_message("search_files"),
+            server.search_files.__doc__ or "",
+            server.search_coded_text.__doc__ or "",
+            server.get_coded_segments.__doc__ or "",
+            server._novelty_block.__doc__ or "",
+        ]
+        _house_rules(texts)

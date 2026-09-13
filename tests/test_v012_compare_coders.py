@@ -58,6 +58,31 @@ def two_coders(setup_server, qualcoder_db_path):
     return qualcoder_db_path
 
 
+def _house_rules(texts, labels=None):
+    """No em dashes, British English, no forbidden vocabulary.
+
+    The house rules are pinned on every text this batch adds, in the
+    module that owns it, so a reworded string is checked where it is
+    written rather than in one distant place (the convention Batch A's D6
+    test 8 established).
+    """
+    forbidden_spellings = ("color", "colors", "behavior", "organize",
+                           "recognize", "authorization", "analyze",
+                           "labeled", "favor")
+    for index, text in enumerate(texts):
+        label = (labels[index] if labels else f"text {index}")
+        assert "\u2014" not in text, label
+        lowered = text.lower()
+        for word in forbidden_spellings:
+            # Identifiers are exempt by house rule (analyze_file_with_coding,
+            # honor_visibility, color): the word counts only when it is
+            # prose, that is, not glued to another identifier character.
+            pattern = r"(?<![A-Za-z_])" + word + r"(?![A-Za-z_])"
+            assert not re.search(pattern, lowered), (label, word)
+        for token in re.findall(r"(?<![A-Za-z_])session_id(?![A-Za-z_])",
+                                text):
+            raise AssertionError((label, "session_id"))
+
 # =============================================================================
 # PARITY PINS P1 TO P8
 # =============================================================================
@@ -607,3 +632,18 @@ class TestSurface:
             assert "kappa_qualcoder" in row and "kappa_cohen" in row
             for file_row in row.get("files", []):
                 assert "kappa" not in file_row
+
+
+class TestHouseRulesOnTheNewTexts:
+
+    def test_every_new_text_of_this_item(self):
+        texts = [
+            server.UNIT_OF_ANALYSIS,
+            server.HIDDEN_COMPARISON_REFUSAL,
+            cc.NOTE_NO_CHARACTERS,
+            cc.NOTE_NO_VARIANCE,
+            cc.NOTE_BOTH_CODED_ALL,
+            cc.SAME_CODER_OVERLAP_NOTE,
+            server.compare_coders.__doc__ or "",
+        ] + list(server.COMPARISON_METHOD.values())
+        _house_rules(texts)

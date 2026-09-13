@@ -42,6 +42,31 @@ def _preview(tool, *args, **kwargs):
     return json.loads(tool(*args, **kwargs))
 
 
+def _house_rules(texts, labels=None):
+    """No em dashes, British English, no forbidden vocabulary.
+
+    The house rules are pinned on every text this batch adds, in the
+    module that owns it, so a reworded string is checked where it is
+    written rather than in one distant place (the convention Batch A's D6
+    test 8 established).
+    """
+    forbidden_spellings = ("color", "colors", "behavior", "organize",
+                           "recognize", "authorization", "analyze",
+                           "labeled", "favor")
+    for index, text in enumerate(texts):
+        label = (labels[index] if labels else f"text {index}")
+        assert "\u2014" not in text, label
+        lowered = text.lower()
+        for word in forbidden_spellings:
+            # Identifiers are exempt by house rule (analyze_file_with_coding,
+            # honor_visibility, color): the word counts only when it is
+            # prose, that is, not glued to another identifier character.
+            pattern = r"(?<![A-Za-z_])" + word + r"(?![A-Za-z_])"
+            assert not re.search(pattern, lowered), (label, word)
+        for token in re.findall(r"(?<![A-Za-z_])session_id(?![A-Za-z_])",
+                                text):
+            raise AssertionError((label, "session_id"))
+
 # =============================================================================
 # THE CODEC (pure functions, no database)
 # =============================================================================
@@ -571,3 +596,16 @@ class TestExportPathsAreNotAimedAtTheState:
         out = _preview(server.export_codebook,
                        output_path=str(tmp_path / "codebook.csv"))
         assert out.get("success") is True, out
+
+
+class TestHouseRulesOnTheNewTexts:
+
+    def test_every_new_text_of_this_item(self):
+        texts = list(server.TOKEN_ERROR_TEXTS.values()) + [
+            server.TWO_STEP_PARAGRAPH,
+            server.DEPRECATED_CONFIRM_NOTE,
+            pt.SECRET_UNAVAILABLE_MESSAGE,
+            server.merge_codes.__doc__ or "",
+            server.delete_code.__doc__ or "",
+        ]
+        _house_rules(texts)
