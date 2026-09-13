@@ -3062,6 +3062,26 @@ class QualcoderDatabase:
                        "catid": r["catid"]} for r in codes],
         }
 
+    def text_file_ids(self, file_ids: Sequence[int]) -> set:
+        """Which of these files carry text (`fulltext IS NOT NULL`).
+
+        `get_file_content` maps a NULL fulltext to the empty string, so it
+        cannot answer this question; a comparison has to tell "an empty
+        text file" (in scope, zero characters) from "an audio file" (not
+        in scope at all, and an error when named explicitly).
+        """
+        if not file_ids:
+            return set()
+        marks = ",".join("?" for _ in file_ids)
+        try:
+            rows = self.conn.execute(
+                f"SELECT id FROM source WHERE id IN ({marks}) "
+                f"AND fulltext IS NOT NULL", tuple(file_ids)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "text_file_ids",
+                               "Failed to read the files in scope")
+        return {int(r["id"]) for r in rows}
+
     def comparison_spans(self, coder_a: str, coder_b: str,
                          code_ids: List[int], file_ids: List[int],
                          honor_visibility: bool = False

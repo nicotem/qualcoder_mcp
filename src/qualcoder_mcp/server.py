@@ -4335,11 +4335,11 @@ def compare_coders(coder_a: Optional[str] = None,
     for caseid in cases_requested:
         if caseid not in known_cases:
             return json.dumps({"error": f"Case ID {caseid} does not exist"})
+    text_files = db_.text_file_ids(files_requested)
     for fid in files_requested:
-        info = db_.get_file_content(fid)
-        if info is None:
+        if db_.get_file_content(fid) is None:
             return json.dumps({"error": f"File ID {fid} does not exist"})
-        if info.get("content") is None:
+        if fid not in text_files:
             return json.dumps({"error": (
                 f"File ID {fid} is not a text file; compare_coders covers "
                 f"text codings only. QualCoder's Coder comparison by file "
