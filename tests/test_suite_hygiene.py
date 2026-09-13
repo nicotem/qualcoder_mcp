@@ -140,11 +140,15 @@ class TestNoTestBindsTheResearchersOwnFolders:
     absent. That was 44 of the suite's 46 skips: 44 tests that ran for
     one person and for nobody else, on no CI job and on no platform. It
     showed. When they were pointed at the tmp_path fixture instead they
-    failed immediately, on a dataclass field renamed long ago, on a
-    constant that no longer existed and on spans past the end of the
-    file, none of which anything had noticed. And on a machine where
-    such a project DOES exist, those tests read the researcher's live
-    data instead.
+    failed immediately on two things nobody had noticed: a dataclass
+    field renamed long ago (`ai_memo`, now `reasoning`, at five call
+    sites) and spans running past the end of the file, which the REFI
+    export validator refuses. A third failure was counted with those two
+    when this was first written and should not have been: the module
+    constant four test bodies still referenced had just been deleted by
+    the same change, so it was that change's own fallout rather than rot
+    the skips were hiding. And on a machine where such a project DOES
+    exist, those tests read the researcher's live data instead.
     """
 
     TESTS = pathlib.Path(__file__).resolve().parent
