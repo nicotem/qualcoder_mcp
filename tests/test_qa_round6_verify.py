@@ -9,6 +9,7 @@ version-handshake pins.
 
 import json
 import shutil
+from contextlib import closing
 import sqlite3
 import time
 from pathlib import Path
@@ -125,7 +126,10 @@ class TestRestoreNeverHalfReplaced:
         json.loads(server.import_text_file("extra.txt", "x", create_backup=False))
         _reload()
         folder = Path(qualcoder_db_path)
-        pre_dump = list(sqlite3.connect(str(_db(qualcoder_db_path))).iterdump())
+        # closing(), not a bare connect(): an unclosed connection is a
+        # ResourceWarning on 3.13 and an open handle on Windows.
+        with closing(sqlite3.connect(str(_db(qualcoder_db_path)))) as c:
+            pre_dump = list(c.iterdump())
 
         real_copytree = shutil.copytree
 
@@ -143,7 +147,8 @@ class TestRestoreNeverHalfReplaced:
         json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         monkeypatch.undo()
         _reload()
-        post_dump = list(sqlite3.connect(str(_db(qualcoder_db_path))).iterdump())
+        with closing(sqlite3.connect(str(_db(qualcoder_db_path)))) as c:
+            post_dump = list(c.iterdump())
         assert post_dump == pre_dump                 # fully recovered old state
 
 

@@ -66,6 +66,16 @@ markers = [
 # which no runtime filter can see.
 filterwarnings = [
     "error:::qualcoder_mcp.*",
+    # An unclosed sqlite3.Connection is a ResourceWarning on 3.13, raised
+    # during finalisation, so pytest re-emits it as this warning FROM
+    # _pytest/unraisableexception.py. The module filter above matches on
+    # the module a warning is issued from, so it cannot see it, and the
+    # run stayed green over a leaked handle: on Windows an open handle
+    # also stops its directory being removed (fix round 2). Any
+    # unraisable exception is worth failing on, so this is not scoped to
+    # our own modules; the suite is clean under it on 3.10, 3.11 and
+    # 3.13.
+    "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [build-system]
