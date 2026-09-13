@@ -643,8 +643,10 @@ def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, An
     return {
         "hidden_coder_filter": "applied",
         "hidden_coders": hidden,
-        "note": f"This project hides {hidden} coder(s) (a QualCoder 4.0 "
-                f"per-coder visibility setting stored in the project). "
+        "note": f"This project hides {hidden} coder(s) (the "
+                f"coder-visibility capability of QualCoder 3.8.2 and "
+                f"4.0, schema v14 and later: a per-coder visibility "
+                f"setting stored in the project). "
                 f"Results reflect what the user sees in QualCoder; tools "
                 f"that take a coder argument (get_coded_segments, for "
                 f"example) read a specific coder's rows from the full "

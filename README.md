@@ -808,7 +808,8 @@ carries the complete list.
 - `export_code_report(code_name)` - Detailed code report returned into the conversation (public memo text only)
 - `get_project_summary()` - Comprehensive project overview
 
-On QualCoder 4.0 projects that hide coders, tools with a `coder`
+On projects with the coder-visibility capability (QualCoder 3.8.2 and
+4.0, schema v14 and later) that hide coders, tools with a `coder`
 argument read visible coders' work by default and one coder's rows from
 the full data when `coder` is given (see "Working alongside QualCoder
 4.0").

@@ -9,6 +9,7 @@ tables as before, and the view is never hard-required.
 """
 
 import json
+import re
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -971,3 +972,102 @@ class TestVisibilityGuardFailsClosed:
         assert "error" in json.loads(server.get_coded_segments(1))
         self._assert_failed_closed(server.delete_coding(3,
                                                         create_backup=False))
+
+
+class TestTheCapabilityIsNotAVersion:
+    """B1.16 (ruling 13), fix round 1 (QA round 1, F2 and F7).
+
+    Coder visibility is not a 4.0 feature: QualCoder 3.8.2 and 4.0,
+    schema v14 and later, create the table, the column and the views
+    (3.8.2:__main__.py:1198-1319; the same harvest and view code stands
+    at 9bddf17 app.py:1468-1540), and this server probes for the objects
+    rather than asking a version. The wording pass reworded the
+    docstrings and the guides but missed the runtime string every
+    visibility-shaped read returns, which is the sentence a researcher
+    actually sees, and one README line. Nothing pinned either, so the
+    grep the gate runs by hand is written down here instead.
+    """
+
+    DOCS = ("README.md", "PRIVACY.md", "INSTALL.md", "AI_CODING_GUIDE.md",
+            "AI_CODING_WORKFLOW.md")
+
+    # Sentences where 4.0 is genuinely about 4.0 and not a stand-in for
+    # the capability: its own assistant, its own rebuilds, its own lock
+    # behaviour.
+    GENUINELY_4_0 = ("QualCoder 4.0's own AI", "QualCoder 4.0's own",
+                     "QualCoder 4.0's built-in assistant",
+                     "4.0 builds no longer use a lock file",
+                     "QualCoder 4.0 rebuilds", "4.0 detection",
+                     # the README's own section title, quoted as a
+                     # cross-reference rather than as a qualifier
+                     '"Working alongside QualCoder 4.0"')
+
+    VISIBILITY_WORDS = ("visibility", "visible", "hidden", "hides",
+                        "hide ")
+
+    @staticmethod
+    def _sentences(text):
+        """Sentence-ish units. The rule is about one claim at a time: a
+        paragraph that happens to mention 4.0 in one sentence and
+        visibility in another is not a version standing in for the
+        capability."""
+        flat = " ".join(text.split())
+        return [s for s in re.split(r"(?<=[.:;])\s+", flat) if s]
+
+    @classmethod
+    def _offends(cls, text):
+        return any(cls._offends_sentence(s) for s in cls._sentences(text))
+
+    @classmethod
+    def _offends_sentence(cls, sentence):
+        # Remove the phrases where 4.0 is genuinely 4.0 rather than
+        # exempting the whole sentence: a cross-reference to the README's
+        # "Working alongside QualCoder 4.0" section can sit in the same
+        # sentence as the claim the rule is about, and an exemption would
+        # then hide it.
+        for phrase in cls.GENUINELY_4_0:
+            sentence = sentence.replace(phrase, "")
+        lowered = sentence.lower()
+        if "4.0" not in sentence:
+            return False
+        if not any(word in lowered for word in cls.VISIBILITY_WORDS):
+            return False
+        return "3.8.2" not in sentence
+
+    def test_the_disclosure_every_read_returns_names_the_capability(
+            self, visibility_db):
+        out = json.loads(server.get_coded_segments(1))
+        note = out["coder_visibility"]["note"]
+        assert "3.8.2" in note, note
+        assert not self._offends(note), note
+
+    def test_the_override_disclosure_keeps_its_4_0_reference(
+            self, visibility_db):
+        """The sibling branch is about the override QualCoder 4.0's own
+        AI uses, which is a fact about 4.0 rather than a version standing
+        in for the capability. It stays as it is."""
+        out = json.loads(server.get_coded_segments(1, coder=HIDDEN))
+        note = out["coder_visibility"]["note"]
+        assert "QualCoder 4.0's own AI" in note
+        assert not self._offends(note), note
+
+    def test_no_shipped_prose_makes_4_0_the_qualifier(self):
+        root = Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in self.DOCS:
+            text = (root / name).read_text(encoding="utf-8")
+            for paragraph in text.split("\n\n"):
+                if self._offends(paragraph):
+                    offenders.append((name, " ".join(paragraph.split())[:120]))
+        assert offenders == [], offenders
+
+    def test_the_sweep_would_notice(self):
+        # A guard that cannot fire is not a guard: the released CHANGELOG
+        # entries, which this rule deliberately does not rewrite, are
+        # full of the pattern it looks for.
+        assert self._offends(
+            "On QualCoder 4.0 projects that hide coders, tools with a "
+            "coder argument read visible coders' work by default.")
+        assert not self._offends(
+            "On projects with the coder-visibility capability (QualCoder "
+            "3.8.2 and 4.0, schema v14 and later) that hide coders.")
