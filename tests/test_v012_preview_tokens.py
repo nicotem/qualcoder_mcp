@@ -959,5 +959,9 @@ class TestHouseRulesOnTheNewTexts:
             pt.SECRET_UNAVAILABLE_MESSAGE,
             server.merge_codes.__doc__ or "",
             server.delete_code.__doc__ or "",
+            # the two file-level tools, whose two-step paragraphs this
+            # fix round wrote (QA round 1, priority 5)
+            server.restore_backup.__doc__ or "",
+            server.prune_backups.__doc__ or "",
         ]
         _house_rules(texts)

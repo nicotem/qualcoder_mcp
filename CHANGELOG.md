@@ -84,7 +84,14 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   because here the coder names are the subject rather than a filter; the
   refusal names neither coder nor any count, and with the override the
   result says the filter was bypassed, exactly as the v0.11 coder
-  override does.
+  override does. With the override the eligible-coder listings in the
+  error texts do include hidden coders, and say so instead of calling
+  them visible.
+- If the project's coder-visibility table cannot be read at all on a
+  project that has the capability, the comparison is refused and nothing
+  is computed, rather than treating every coder as visible: the same
+  fail-closed posture the write guards take, on the read where a
+  permissive answer would publish a hidden coder's statistics.
 
 ### Changed: `export_frequencies_csv` no longer names hidden coders in chat
 
