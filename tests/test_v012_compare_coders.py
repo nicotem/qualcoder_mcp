@@ -792,6 +792,87 @@ class TestFrequenciesExportRider:
         assert "coder_visibility" not in out
 
 
+class TestTheTwoMeansAreCountedSeparately:
+    """D2 3.6, fix round 1 (QA round 1, F13).
+
+    `mean_of_codes` reports two means whose defined-sets differ: a code
+    both coders applied to every character in scope has kappa_qualcoder
+    1.0 and kappa_cohen null (NOTE_BOTH_CODED_ALL), so it enters one mean
+    and not the other. `codes_included` was the kappa_qualcoder count
+    printed beside both, which is the denominator a researcher would
+    quote for a Cohen mean that was taken over fewer codes. No number was
+    wrong; the label was.
+    """
+
+    @pytest.fixture
+    def one_code_saturated(self, setup_server, qualcoder_db_path):
+        H.execute(qualcoder_db_path, "DELETE FROM code_text")
+        # cid 1: both coders coded every character of file 1
+        _code(qualcoder_db_path, 60, 1, 1, 0, 78, "TestCoder")
+        _code(qualcoder_db_path, 61, 1, 1, 0, 78, SECOND)
+        # cid 2: an ordinary partial overlap, so its kappas are defined
+        _code(qualcoder_db_path, 62, 2, 1, 0, 20, "TestCoder")
+        _code(qualcoder_db_path, 63, 2, 1, 10, 30, SECOND)
+        _reopen(qualcoder_db_path)
+        return qualcoder_db_path
+
+    def test_the_cohen_denominator_is_disclosed_when_it_differs(
+            self, one_code_saturated):
+        out = _compare("TestCoder", SECOND, file_ids=[1])
+        saturated = _row(out, "Stress")
+        assert saturated["kappa_qualcoder"] == 1.0
+        assert saturated["kappa_cohen"] is None
+        assert saturated["kappa_note"] == cc.NOTE_BOTH_CODED_ALL
+
+        mean = out["overall"]["mean_of_codes"]
+        assert mean["codes_included"] == 2
+        assert mean["codes_included_kappa_cohen"] == 1
+        assert mean["note"] == cc.MEAN_COHEN_FEWER_CODES_NOTE
+        # and the mean really is over the one code that has a value
+        assert mean["kappa_cohen"] == _row(out, "Coping")["kappa_cohen"]
+
+    def test_nothing_is_added_when_the_two_agree(self, two_coders):
+        mean = _compare("TestCoder", SECOND)["overall"]["mean_of_codes"]
+        assert "codes_included_kappa_cohen" not in mean
+        assert "note" not in mean
+        assert mean["codes_included"] == 2
+
+    def test_the_pinned_texts_are_untouched(self, two_coders):
+        """B3.3 pins the D2 3.10 unit_of_analysis and method texts
+        verbatim, so this disclosure is additive and must not reword
+        them."""
+        out = _compare("TestCoder", SECOND)
+        assert out["method"] == server.COMPARISON_METHOD
+        assert out["unit_of_analysis"] == server.UNIT_OF_ANALYSIS
+        _house_rules([cc.MEAN_COHEN_FEWER_CODES_NOTE],
+                     ["MEAN_COHEN_FEWER_CODES_NOTE"])
+
+
+class TestTheHelpParagraphOnKappa:
+    """QA round 1, F15: the help text said kappa_cohen "falls when most
+    of the text is uncoded". Holding the coding fixed and growing the
+    uncoded remainder, it RISES: uncoded characters are characters both
+    coders left alone, which the statistic counts as agreement. This is
+    guidance a model relays to a researcher interpreting a real
+    coefficient, so the direction is checked against the arithmetic
+    rather than against an opinion."""
+
+    def _cohen(self, characters):
+        return cc.statistics(characters, coded_a=20, coded_b=20,
+                             both=15)["kappa_cohen"]
+
+    def test_kappa_cohen_rises_as_the_uncoded_remainder_grows(self):
+        values = [self._cohen(n) for n in (30, 60, 120, 500, 2000)]
+        assert values == sorted(values), values
+        assert values[0] < values[-1]
+
+    def test_the_help_paragraph_states_that_direction(self):
+        paragraph = server.explain_ai_coding_tools()
+        assert "falls when most of the text is uncoded" not in paragraph
+        assert "uncoded stretches count as agreement" in paragraph
+        assert "it rises" in paragraph
+
+
 class TestSurface:
 
     def test_absent_from_the_core_toolset(self):

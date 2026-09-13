@@ -351,6 +351,12 @@ class TestTheExecutePath:
         assert refused["error"].startswith("The project changed since this "
                                            "preview was made")
         assert "A backup had already been taken" in refused["error"]
+        # B2.5: every token refusal is machine-readable, this one
+        # included. It used to reach the model as prose alone, because
+        # _perform_write maps a bare ValueError to {"error": ...} (QA
+        # round 1, F11).
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
         assert H.query(qualcoder_db_path,
                        "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
                        )[0]["n"] == 1

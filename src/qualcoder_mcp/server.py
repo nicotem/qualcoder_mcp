@@ -64,6 +64,7 @@ from .cursors import (
     page_block,
 )
 from .coder_comparison import (
+    MEAN_COHEN_FEWER_CODES_NOTE,
     SAME_CODER_OVERLAP_NOTE,
     qualcoder_report_values,
     statistics as comparison_statistics,
@@ -1604,6 +1605,12 @@ def _perform_write(op, create_backup: bool = True,
                 committed = True
             except DatabaseLockedError:
                 raise
+            except StateChangedError as e:
+                # The in-transaction refusal carries the machine-readable
+                # envelope B2.5 gives every other token refusal; it is a
+                # ValueError too, so a caller that does not know about it
+                # still degrades to the exact prose (D3 3.5).
+                return dict(e.payload)
             except (ValueError, RuntimeError) as e:
                 return {"error": str(e)}
     finally:
@@ -4532,6 +4539,17 @@ def compare_coders(coder_a: Optional[str] = None,
                             if kappa_c_values else None),
         },
     }
+    # The two means have different defined-sets: a code both coders
+    # applied to every character in scope has kappa_qualcoder 1.0 and
+    # kappa_cohen null, so it enters one mean and not the other. D2 3.6's
+    # codes_included is the kappa_qualcoder count; the Cohen denominator
+    # is disclosed only when it differs, the convention this result
+    # already uses for kappa_note and same_coder_overlap (QA round 1,
+    # F13).
+    if len(kappa_c_values) != len(kappa_q_values):
+        overall["mean_of_codes"]["codes_included_kappa_cohen"] = \
+            len(kappa_c_values)
+        overall["mean_of_codes"]["note"] = MEAN_COHEN_FEWER_CODES_NOTE
 
     sidecar = read_sidecar(_current_project_folder())
     result: Dict[str, Any] = {
@@ -7379,8 +7397,11 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                                 "characters somebody coded, and sits just "
                                 "below the proportion of those characters "
                                 "both coders agreed on; kappa_cohen is the "
-                                "textbook statistic over all the text, and "
-                                "falls when most of the text is uncoded. "
+                                "textbook statistic over every character in "
+                                "scope, so uncoded stretches count as "
+                                "agreement: widen the scope with more "
+                                "uncoded text and it rises, which is why the "
+                                "scope has to be reported with it. "
                                 "Quote both, say which is which, and never "
                                 "call either one simply 'kappa'.",
             "grounding": "Every step expects evidence discipline: base claims on "
@@ -9193,6 +9214,22 @@ def _ai_names_for_project() -> List[str]:
         return [DEFAULT_AI_CODER_NAME]
 
 
+class StateChangedError(ValueError):
+    """An in-transaction refusal that carries its own envelope (D3 3.5).
+
+    `_perform_write` maps a bare ValueError to `{"error": str(e)}`, so
+    the one refusal raised from inside the transaction reached the model
+    as prose while every other token refusal carried `reason` and
+    `nothing_changed` (QA round 1, F11). Subclassing ValueError keeps the
+    prescribed B2.4 mechanism, and any caller that does not know about
+    this class still gets the exact text.
+    """
+
+    def __init__(self, payload: Dict[str, Any]):
+        super().__init__(payload["error"])
+        self.payload = payload
+
+
 def _token_error(reason: str, tool: str) -> Dict[str, Any]:
     """A refusal that changed nothing, in the fixed text for that reason.
 
@@ -9229,10 +9266,14 @@ def _state_guarded(fingerprint_fn, expected: str, op_fn, tool: str):
     def guarded(wdb):
         wdb.begin_immediate()
         if fingerprint_fn(wdb) != expected:
-            raise ValueError(
-                TOKEN_ERROR_TEXTS["project_changed"].format(tool=tool)
+            raise StateChangedError({
+                "error": TOKEN_ERROR_TEXTS["project_changed"].format(
+                    tool=tool)
                 + " A backup had already been taken before the change was "
-                  "detected; it is unchanged and can be pruned.")
+                  "detected; it is unchanged and can be pruned.",
+                "reason": PROJECT_CHANGED,
+                "nothing_changed": True,
+            })
         return op_fn(wdb)
     return guarded
 

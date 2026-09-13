@@ -29,6 +29,11 @@ NOTE_NO_VARIANCE = (
 NOTE_BOTH_CODED_ALL = (
     "kappa_cohen undefined: both coders coded every character in scope "
     "(no variance); kappa_qualcoder is 1.0 by QualCoder's formula")
+MEAN_COHEN_FEWER_CODES_NOTE = (
+    "codes_included counts the codes behind kappa_qualcoder. kappa_cohen "
+    "is undefined for codes where both coders coded every character in "
+    "scope, so its mean is over codes_included_kappa_cohen codes "
+    "instead. The per-code rows say which.")
 
 
 def kappa_qualcoder(coded_a: int, coded_b: int, both: int) -> Optional[float]:
