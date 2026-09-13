@@ -29,6 +29,7 @@ if str(_SRC) not in sys.path:
 
 import qualcoder_mcp.server as server  # noqa: E402
 from qualcoder_mcp import database as _database  # noqa: E402
+from qualcoder_mcp import preview_tokens as _preview_tokens  # noqa: E402
 from qualcoder_mcp.database import QualcoderDatabase  # noqa: E402
 from qualcoder_mcp.project_settings import (  # noqa: E402
     DEFAULT_AI_CODER_NAME,
@@ -43,27 +44,46 @@ from qualcoder_mcp.sessions import (  # noqa: E402
 
 TMP_ROOT = Path(__file__).resolve().parent / "tmp"
 
-# The researcher's own workspace folder, read at IMPORT time, before any
-# fixture has moved HOME or rebound the constant: this is the folder the
-# shipped server would really copy projects into, and nothing in the
-# suite may write there (QA round 1, F1). conftest's session-wide guard
-# and tests/test_suite_hygiene.py both work from these two names.
+# The researcher's own folders, read at IMPORT time, before any fixture
+# has moved HOME or rebound a constant: these are the folders the
+# shipped server would really write into, and nothing in the suite may
+# write there (QA round 1, F1). conftest's session-wide guard and
+# tests/test_suite_hygiene.py both work from these names.
+#
+# Both are read from the module constants rather than rebuilt from
+# Path.home(), so the guard watches what the code actually binds. The
+# workspace takes project copies; the state home takes the MRU hint, the
+# preview-token secret and the AI coding sessions, and it is watched in
+# FULL rather than at its top level, because a leaked session file lands
+# one directory down (fix round 2, the widening the gate asked for).
 REAL_WORKSPACE = Path(_database.DEFAULT_WORKSPACE)
+REAL_STATE_HOME = Path(_preview_tokens.STATE_HOME)
 WORKSPACE_UNREADABLE = "unreadable"
+
+GUARDED_REAL_FOLDERS = {
+    "workspace": REAL_WORKSPACE,
+    "state home": REAL_STATE_HOME,
+}
 
 
 def real_workspace_entries(workspace=None):
-    """The names in the real workspace.
+    """Every path inside one of the researcher's real folders.
+
+    Relative, recursive, as posix strings. Recursive because the state
+    home's leak is a session file inside `sessions/`, which a top-level
+    listing cannot see.
 
     None when the folder does not exist (a folder that is not there is
     not an empty folder: creating it is itself a write into the
-    researcher's Documents); the `WORKSPACE_UNREADABLE` marker when it
-    cannot be listed (permissions, a network volume), since inventing an
-    empty set there would make the guard pass vacuously.
+    researcher's own directories); the `WORKSPACE_UNREADABLE` marker
+    when it cannot be listed (permissions, a network volume), since
+    inventing an empty set there would make the guard pass vacuously.
     """
     folder = Path(workspace) if workspace is not None else REAL_WORKSPACE
     try:
-        return {p.name for p in folder.iterdir()}
+        if not folder.is_dir():
+            raise FileNotFoundError(str(folder))
+        return {p.relative_to(folder).as_posix() for p in folder.rglob("*")}
     except FileNotFoundError:
         return None
     except OSError:

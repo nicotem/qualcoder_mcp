@@ -6,6 +6,7 @@ into the researcher's own folders, and a compile-time warning that only
 appears on the first import of a fresh checkout. Both get a pin here.
 """
 
+import ast
 import os
 import pathlib
 import shutil
@@ -73,9 +74,148 @@ class TestNothingIsWrittenOutsideTheSandbox:
         def _boom(*args, **kwargs):
             raise PermissionError("no")
 
-        monkeypatch.setattr(pathlib.Path, "iterdir", _boom)
+        # Patched where the walk actually reads: the snapshot is
+        # recursive now, because the state home's leak is a session file
+        # one directory down and a top-level listing cannot see it.
+        monkeypatch.setattr(pathlib.Path, "rglob", _boom)
         assert (H.real_workspace_entries(tmp_path)
                 is H.WORKSPACE_UNREADABLE)
+
+    def test_the_snapshot_reaches_below_the_top_level(self, tmp_path):
+        """Otherwise widening the guard to the state directory would
+        watch a folder whose only interesting contents it cannot see."""
+        root = tmp_path / "state"
+        (root / "sessions").mkdir(parents=True)
+        (root / "sessions" / "session_x.json").write_text("{}",
+                                                          encoding="utf-8")
+        assert H.real_workspace_entries(root) == {
+            "sessions", "sessions/session_x.json"}
+
+    def test_the_baseline_was_taken_before_any_test_module_was_imported(
+            self):
+        """G7: a session-scoped fixture body runs at the setup of the
+        FIRST test, by which time every module has been imported, so an
+        import-time write would sit inside `before` and never be
+        reported. The baseline is taken in `pytest_sessionstart`, and
+        this is the proof of the ordering rather than a claim about it:
+        the hook records whether any test module was already in
+        sys.modules when it ran."""
+        here = str(pathlib.Path(__file__).resolve().parent / "conftest.py")
+        loaded = [m for m in list(sys.modules.values())
+                  if getattr(m, "__file__", None) == here]
+        assert loaded, "the root conftest is not in sys.modules"
+        for conftest in loaded:
+            assert conftest.BASELINE_PRECEDED_TEST_IMPORTS is True
+            assert set(conftest.WORKSPACE_BASELINE) == \
+                set(H.GUARDED_REAL_FOLDERS)
+
+    def test_a_test_cannot_undo_the_sandbox(self, monkeypatch, tmp_path):
+        """The sandbox holds its own MonkeyPatch.
+
+        Two race tests call `monkeypatch.undo()` part way through to
+        stop a fault injection. On the shared instance that undid every
+        isolation fixture as well, and the rest of those tests ran
+        against the researcher's real MRU file, preview secret,
+        workspace and session directory.
+        """
+        monkeypatch.setattr(pathlib.Path, "cwd", lambda: tmp_path)
+        monkeypatch.undo()
+        assert pathlib.Path(database.DEFAULT_WORKSPACE).is_relative_to(
+            tmp_path.parent)
+        assert not pathlib.Path(
+            database.DEFAULT_WORKSPACE).is_relative_to(H.REAL_WORKSPACE)
+        import qualcoder_mcp.server as _server
+        assert not pathlib.Path(
+            _server.session_manager.storage_dir).is_relative_to(
+                H.REAL_STATE_HOME)
+        assert not pathlib.Path(_server._MRU_FILE).is_relative_to(
+            H.REAL_STATE_HOME)
+
+
+class TestNoTestBindsTheResearchersOwnFolders:
+    """No test opens a project inside the researcher's real Documents.
+
+    Two modules used to compute `Path.home() / "Documents" / "QDA
+    Projects" / "test_project.qda"` at import and skip when it was
+    absent. That was 44 of the suite's 46 skips: 44 tests that ran for
+    one person and for nobody else, on no CI job and on no platform. It
+    showed. When they were pointed at the tmp_path fixture instead they
+    failed immediately, on a dataclass field renamed long ago, on a
+    constant that no longer existed and on spans past the end of the
+    file, none of which anything had noticed. And on a machine where
+    such a project DOES exist, those tests read the researcher's live
+    data instead.
+    """
+
+    TESTS = pathlib.Path(__file__).resolve().parent
+
+    # Read as syntax, not as text: this very module has to be able to
+    # DESCRIBE the pattern it forbids, in a docstring and in the sample
+    # below, without reporting itself.
+    @staticmethod
+    def _home_folder_paths(source):
+        """Line numbers where code joins `Path.home()` to a named folder."""
+        hits = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.BinOp) or \
+                    not isinstance(node.op, ast.Div):
+                continue
+            dumped = ast.dump(node)
+            if "attr='home'" in dumped and "'Documents'" in dumped:
+                hits.append(node.lineno)
+        return sorted(set(hits))
+
+    @staticmethod
+    def _skip_reasons(source):
+        """Every string handed to a `pytest.skip(...)` call."""
+        reasons = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name != "skip":
+                continue
+            for argument in node.args:
+                for inner in ast.walk(argument):
+                    if isinstance(inner, ast.Constant) and \
+                            isinstance(inner.value, str):
+                        reasons.append(inner.value)
+        return reasons
+
+    def test_no_module_builds_a_path_into_the_real_documents_folder(self):
+        offenders = []
+        for path in sorted(self.TESTS.glob("*.py")):
+            for line in self._home_folder_paths(
+                    path.read_text(encoding="utf-8")):
+                offenders.append(f"{path.name}:{line}")
+        assert offenders == [], offenders
+
+    def test_there_are_modules_to_sweep(self):
+        assert len(list(self.TESTS.glob("*.py"))) >= 20
+
+    def test_the_sweep_would_notice(self):
+        sample = ('TEST_PROJECT_PATH = Path.home() / "Documents" / '
+                  '"QDA Projects" / "test_project.qda"')
+        assert self._home_folder_paths(sample) == [1]
+        assert self._home_folder_paths(
+            "REAL_WORKSPACE = Path(_database.DEFAULT_WORKSPACE)") == []
+
+    def test_nothing_skips_for_a_missing_personal_project(self):
+        """The reason string those 44 skips carried."""
+        offenders = []
+        for path in sorted(self.TESTS.glob("*.py")):
+            for reason in self._skip_reasons(
+                    path.read_text(encoding="utf-8")):
+                if "Test project not found" in reason:
+                    offenders.append(f"{path.name}: {reason}")
+        assert offenders == [], offenders
+
+    def test_that_sweep_would_notice_too(self):
+        assert self._skip_reasons(
+            'pytest.skip(f"Test project not found at {P}")') == [
+                "Test project not found at "]
+        assert self._skip_reasons("x = 1") == []
 
 
 class TestTheSourceCompilesWithoutWarnings:

@@ -5,6 +5,11 @@ These tests verify that all components work together correctly:
 - Session management and persistence
 - REFI-QDA export with actual database data
 - End-to-end workflow from suggestions to import-ready file
+
+Spans here are deliberately short. They used to run to position 150 in
+a project that no longer exists for anyone; they now sit inside the
+shortest source of the tmp_path fixture, which is what the REFI export
+validator checks before it builds anything.
 """
 
 import pytest
@@ -19,17 +24,26 @@ from qualcoder_mcp.sessions import CodingSuggestion, AICodingSession, SessionMan
 from qualcoder_mcp.refi_export import RefiQdaExporter, NAMESPACE
 
 
-# Path to the test project
-TEST_PROJECT_PATH = Path.home() / "Documents" / "QDA Projects" / "test_project.qda"
-
-
 @pytest.fixture
-def test_db():
-    """Create database connection to test project."""
-    if not TEST_PROJECT_PATH.exists():
-        pytest.skip(f"Test project not found at {TEST_PROJECT_PATH}")
+def test_db(qualcoder_db_path):
+    """Read-only connection to a fixture project built in tmp_path.
 
-    db = QualcoderDatabase(str(TEST_PROJECT_PATH))
+    This used to be `Path.home() / "Documents" / "QDA Projects" /
+    "test_project.qda"`, computed at import and skipped when absent.
+    Forty-four of the suite's forty-six skips were these two modules,
+    which means they ran for exactly one person and nobody else, on no
+    CI job, on no platform, ever. Worse, on a machine where the
+    researcher DOES have a project by that name, forty-four tests
+    silently start reading their live data, which is the same
+    home-derived import-bound binding the workspace escape came from.
+
+    `qualcoder_db_path` (tests/conftest.py) builds the full v14 schema
+    in tmp_path with two codes, two sources, two codings, a category, a
+    case, a case text span and the attribute tables, which satisfies
+    every assertion here, including the ones that require a non-empty
+    codebook and more than one file.
+    """
+    db = QualcoderDatabase(qualcoder_db_path)
     yield db
     db.close()
 
@@ -70,9 +84,9 @@ class TestCompleteAICodingWorkflow:
             code_id=code["id"],
             code_name=code["name"],
             start_pos=0,
-            end_pos=50,
+            end_pos=30,
             segment_text="Sample coded segment",
-            ai_memo="AI identified this segment",
+            reasoning="AI identified this segment",
             confidence=0.85,
             status="approved"
         )
@@ -82,7 +96,7 @@ class TestCompleteAICodingWorkflow:
         assert suggestion.code_id == code["id"]
         assert suggestion.confidence == 0.85
 
-    def test_session_creation_and_persistence(self, test_db, session_manager):
+    def test_session_creation_and_persistence(self, test_db, session_manager, qualcoder_db_path):
         """Test creating a session, adding suggestions, and persisting to disk."""
         # Get data from database
         codes = test_db.list_codes()
@@ -90,7 +104,7 @@ class TestCompleteAICodingWorkflow:
 
         # Create session
         session = AICodingSession(
-            project_path=str(TEST_PROJECT_PATH),
+            project_path=qualcoder_db_path,
             description="Integration test session",
             file_ids=[f["id"] for f in files[:2]],
             code_names=[c["name"] for c in codes[:2]],
@@ -105,10 +119,10 @@ class TestCompleteAICodingWorkflow:
                 file_name=file["name"],
                 code_id=code["id"],
                 code_name=code["name"],
-                start_pos=i * 100,
-                end_pos=(i * 100) + 50,
+                start_pos=i * 5,
+                end_pos=(i * 5) + 10,
                 segment_text=f"Test segment {i}",
-                ai_memo=f"Test memo {i}",
+                reasoning=f"Test memo {i}",
                 confidence=0.8 + (i * 0.05)
             )
             session.add_suggestion(suggestion)
@@ -123,7 +137,7 @@ class TestCompleteAICodingWorkflow:
         loaded = session_manager.load_session(session.session_id)
         assert loaded.session_id == session.session_id
         assert len(loaded.suggestions) == 2
-        assert loaded.project_path == str(TEST_PROJECT_PATH)
+        assert loaded.project_path == qualcoder_db_path
 
     def test_export_to_refi_qda(self, test_db, temp_dir):
         """Test exporting suggestions to REFI-QDA format."""
@@ -139,10 +153,10 @@ class TestCompleteAICodingWorkflow:
                 file_name=file["name"],
                 code_id=code["id"],
                 code_name=code["name"],
-                start_pos=i * 100,
-                end_pos=(i * 100) + 50,
+                start_pos=i * 5,
+                end_pos=(i * 5) + 10,
                 segment_text=f"Test segment {i}",
-                ai_memo=f"Test memo {i}",
+                reasoning=f"Test memo {i}",
                 confidence=0.85,
                 status="approved"
             ))
@@ -175,7 +189,7 @@ class TestCompleteAICodingWorkflow:
         assert root.find(f".//{{{NAMESPACE}}}CodeBook") is not None
         assert root.find(f".//{{{NAMESPACE}}}Sources") is not None
 
-    def test_full_workflow_suggestions_to_export(self, test_db, session_manager, temp_dir):
+    def test_full_workflow_suggestions_to_export(self, test_db, session_manager, temp_dir, qualcoder_db_path):
         """Test complete workflow: create suggestions, save session, export to REFI-QDA."""
         # Step 1: Get database data
         codes = test_db.list_codes()
@@ -183,7 +197,7 @@ class TestCompleteAICodingWorkflow:
 
         # Step 2: Create session
         session = AICodingSession(
-            project_path=str(TEST_PROJECT_PATH),
+            project_path=qualcoder_db_path,
             description="Full workflow test",
             file_ids=[f["id"] for f in files],
             code_names=[c["name"] for c in codes],
@@ -201,10 +215,10 @@ class TestCompleteAICodingWorkflow:
                 file_name=file["name"],
                 code_id=code["id"],
                 code_name=code["name"],
-                start_pos=i * 100,
-                end_pos=(i * 100) + 50,
+                start_pos=i * 5,
+                end_pos=(i * 5) + 10,
                 segment_text=f"Sample text segment {i}",
-                ai_memo=f"AI analysis memo {i}",
+                reasoning=f"AI analysis memo {i}",
                 confidence=0.75 + (i * 0.05),
                 status="approved"
             )
@@ -262,7 +276,7 @@ class TestCompleteAICodingWorkflow:
             code_id=9999,  # Doesn't exist
             code_name="Invalid Code",
             start_pos=0,
-            end_pos=50,
+            end_pos=30,
             segment_text="test",
             confidence=0.8
         )
@@ -288,7 +302,7 @@ class TestCompleteAICodingWorkflow:
             code_id=codes[0]["id"],
             code_name=codes[0]["name"],
             start_pos=0,
-            end_pos=50,
+            end_pos=30,
             segment_text="Test",
             confidence=0.8,
             guid="test-guid-123"  # Fixed GUID
@@ -336,8 +350,8 @@ class TestCompleteAICodingWorkflow:
                     file_name=file["name"],
                     code_id=codes[0]["id"],
                     code_name=codes[0]["name"],
-                    start_pos=j * 100,
-                    end_pos=(j * 100) + 50,
+                    start_pos=j * 5,
+                    end_pos=(j * 5) + 10,
                     segment_text=f"Text {i}-{j}",
                     confidence=0.8
                 ))
@@ -362,13 +376,13 @@ class TestCompleteAICodingWorkflow:
             selections = source.findall(f"{{{NAMESPACE}}}PlainTextSelection")
             assert len(selections) == 2
 
-    def test_session_list_and_cleanup(self, test_db, session_manager):
+    def test_session_list_and_cleanup(self, test_db, session_manager, qualcoder_db_path):
         """Test session listing and cleanup functionality."""
         # Create multiple sessions
         sessions = []
         for i in range(3):
             session = AICodingSession(
-                project_path=str(TEST_PROJECT_PATH),
+                project_path=qualcoder_db_path,
                 description=f"Test session {i}",
                 file_ids=[1],
                 code_names=["Test"]
@@ -382,7 +396,7 @@ class TestCompleteAICodingWorkflow:
 
         # List sessions for this project
         project_sessions = session_manager.list_sessions(
-            project_path=str(TEST_PROJECT_PATH)
+            project_path=qualcoder_db_path
         )
         assert len(project_sessions) >= 3
 
@@ -397,7 +411,7 @@ class TestCompleteAICodingWorkflow:
         assert session_manager.session_exists(sessions[1].session_id)
         assert session_manager.session_exists(sessions[2].session_id)
 
-    def test_confidence_filtering(self, test_db):
+    def test_confidence_filtering(self, test_db, qualcoder_db_path):
         """Test that confidence scores work correctly throughout workflow."""
         codes = test_db.list_codes()
         files = test_db.list_files()
@@ -410,7 +424,7 @@ class TestCompleteAICodingWorkflow:
                 code_id=codes[0]["id"],
                 code_name=codes[0]["name"],
                 start_pos=0,
-                end_pos=50,
+                end_pos=30,
                 segment_text="High confidence",
                 confidence=0.95,
                 status="approved"
@@ -420,8 +434,8 @@ class TestCompleteAICodingWorkflow:
                 file_name=files[0]["name"],
                 code_id=codes[0]["id"],
                 code_name=codes[0]["name"],
-                start_pos=100,
-                end_pos=150,
+                start_pos=15,
+                end_pos=30,
                 segment_text="Low confidence",
                 confidence=0.55,
                 status="pending"
@@ -430,7 +444,7 @@ class TestCompleteAICodingWorkflow:
 
         # Session with min_confidence = 0.6 should show only high confidence
         session = AICodingSession(
-            project_path=str(TEST_PROJECT_PATH),
+            project_path=qualcoder_db_path,
             min_confidence=0.6
         )
 
@@ -445,7 +459,8 @@ class TestCompleteAICodingWorkflow:
         assert len(high_conf) == 1
         assert len(low_conf) == 1
 
-    def test_ai_memo_preserved_in_export(self, test_db, temp_dir):
+    def test_the_reasoning_is_preserved_in_the_export(
+            self, test_db, temp_dir, qualcoder_db_path):
         """Test that AI memos and confidence scores are preserved in export."""
         codes = test_db.list_codes()
         files = test_db.list_files()
@@ -456,9 +471,9 @@ class TestCompleteAICodingWorkflow:
             code_id=codes[0]["id"],
             code_name=codes[0]["name"],
             start_pos=0,
-            end_pos=50,
+            end_pos=30,
             segment_text="Test",
-            ai_memo="Important AI insight here",
+            reasoning="Important AI insight here",
             confidence=0.92
         )
 

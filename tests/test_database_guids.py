@@ -7,17 +7,26 @@ from pathlib import Path
 from qualcoder_mcp.database import QualcoderDatabase
 
 
-# Path to the test project created earlier
-TEST_PROJECT_PATH = Path.home() / "Documents" / "QDA Projects" / "test_project.qda"
-
-
 @pytest.fixture
-def test_db():
-    """Create database connection to test project."""
-    if not TEST_PROJECT_PATH.exists():
-        pytest.skip(f"Test project not found at {TEST_PROJECT_PATH}")
+def test_db(qualcoder_db_path):
+    """Read-only connection to a fixture project built in tmp_path.
 
-    db = QualcoderDatabase(str(TEST_PROJECT_PATH))
+    This used to be `Path.home() / "Documents" / "QDA Projects" /
+    "test_project.qda"`, computed at import and skipped when absent.
+    Forty-four of the suite's forty-six skips were these two modules,
+    which means they ran for exactly one person and nobody else, on no
+    CI job, on no platform, ever. Worse, on a machine where the
+    researcher DOES have a project by that name, forty-four tests
+    silently start reading their live data, which is the same
+    home-derived import-bound binding the workspace escape came from.
+
+    `qualcoder_db_path` (tests/conftest.py) builds the full v14 schema
+    in tmp_path with two codes, two sources, two codings, a category, a
+    case, a case text span and the attribute tables, which satisfies
+    every assertion here, including the ones that require a non-empty
+    codebook and more than one file.
+    """
+    db = QualcoderDatabase(qualcoder_db_path)
     yield db
     db.close()
 
@@ -371,19 +380,16 @@ class TestGuidConsistencyAcrossMethods:
 class TestGuidPersistenceAcrossConnections:
     """Tests that GUIDs remain consistent across database connections."""
 
-    def test_guid_consistency_across_connections(self):
+    def test_guid_consistency_across_connections(self, qualcoder_db_path):
         """Test that same entity has same GUID with different connections."""
-        if not TEST_PROJECT_PATH.exists():
-            pytest.skip(f"Test project not found at {TEST_PROJECT_PATH}")
-
         # First connection
-        db1 = QualcoderDatabase(str(TEST_PROJECT_PATH))
+        db1 = QualcoderDatabase(qualcoder_db_path)
         guid1 = db1.generate_deterministic_guid("code", 1)
         code_guids1 = db1.get_code_guids()
         db1.close()
 
         # Second connection
-        db2 = QualcoderDatabase(str(TEST_PROJECT_PATH))
+        db2 = QualcoderDatabase(qualcoder_db_path)
         guid2 = db2.generate_deterministic_guid("code", 1)
         code_guids2 = db2.get_code_guids()
         db2.close()

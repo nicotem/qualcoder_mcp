@@ -19,24 +19,45 @@ from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.project_settings import DEFAULT_AI_CODER_NAME, SIDECAR_NAME
 from track5_helpers import (write_fixture_sidecar, REAL_WORKSPACE,
                             WORKSPACE_UNREADABLE, real_workspace_entries,
-                            SHARING_VIOLATION, open_paths_under)
+                            GUARDED_REAL_FOLDERS, SHARING_VIOLATION,
+                            open_paths_under)
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
 
 
 @pytest.fixture(autouse=True)
-def _isolate_mru_state(tmp_path, monkeypatch):
+def _sandbox_patch():
+    """A MonkeyPatch the sandbox owns, which a test cannot undo.
+
+    Every fixture below redirects a home-derived binding, and they used
+    to do it through the shared `monkeypatch` fixture. A test that calls
+    `monkeypatch.undo()` part way through, which two of them do to stop
+    a fault injection before asserting, therefore undid THE WHOLE
+    SANDBOX as well: for the rest of that test the MRU file, the preview
+    secret, the workspace constant, the session manager and the AI coder
+    name environment were all pointing back at the researcher's own
+    folders. Nothing had made that visible, because the two tests wrote
+    nothing afterwards. This instance is separate, so `undo()` in a test
+    reaches only the test's own patches.
+    """
+    patcher = pytest.MonkeyPatch()
+    yield patcher
+    patcher.undo()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mru_state(tmp_path, _sandbox_patch):
     """Keep the P1-6 MRU state file out of the real ~/.qualcoder_mcp.
 
     select_project records the most-recently-used project on disk;
     without this, every test that selects a fixture project would
     overwrite the developer's real MRU state.
     """
-    monkeypatch.setattr(server, "_MRU_FILE",
-                        tmp_path / "mru_state" / "mru_project.json")
+    _sandbox_patch.setattr(server, "_MRU_FILE",
+                           tmp_path / "mru_state" / "mru_project.json")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_preview_secret(tmp_path, monkeypatch):
+def _isolate_preview_secret(tmp_path, _sandbox_patch):
     """Keep the B2 preview-token secret out of the real ~/.qualcoder_mcp.
 
     The same reasoning as the MRU isolation above: a test that previews a
@@ -45,12 +66,12 @@ def _isolate_preview_secret(tmp_path, monkeypatch):
     server issued.
     """
     from qualcoder_mcp import preview_tokens
-    monkeypatch.setattr(preview_tokens, "STATE_HOME",
-                        tmp_path / "token_state")
+    _sandbox_patch.setattr(preview_tokens, "STATE_HOME",
+                           tmp_path / "token_state")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_workspace(tmp_path, monkeypatch):
+def _isolate_workspace(tmp_path, _sandbox_patch):
     """Keep copy_project_to_workspace out of the real ~/Documents workspace.
 
     `copy_project_to_workspace`'s `workspace` is not a tool argument, so a
@@ -61,45 +82,83 @@ def _isolate_workspace(tmp_path, monkeypatch):
     Patch the OBJECT, the way fix round 3 (S5) pinned the other
     home-derived constants.
     """
-    monkeypatch.setattr(_database, "DEFAULT_WORKSPACE",
-                        tmp_path / "workspace")
+    _sandbox_patch.setattr(_database, "DEFAULT_WORKSPACE",
+                           tmp_path / "workspace")
+
+
+# The baseline for the guard below, and the proof that it was taken
+# before anything could write. Both are filled by `pytest_sessionstart`.
+WORKSPACE_BASELINE = {}
+BASELINE_PRECEDED_TEST_IMPORTS = None
+
+
+def pytest_sessionstart(session):
+    """Snapshot the researcher's real folders BEFORE collection.
+
+    A session-scoped fixture body runs at the SETUP OF THE FIRST TEST,
+    by which time every test module has been imported. Anything a module
+    wrote at import time would therefore sit inside `before` and never
+    be reported, and the function-scoped isolation fixtures are not in
+    force during collection either, so such a write would land for real.
+    This is not hypothetical: `tests/test_scale_media.py` already does
+    filesystem work at import. `pytest_sessionstart` fires after the
+    root conftest is loaded and before any test module is imported,
+    which is the earliest point a snapshot can be taken at all.
+    """
+    global BASELINE_PRECEDED_TEST_IMPORTS
+    BASELINE_PRECEDED_TEST_IMPORTS = not any(
+        name.startswith("test_") for name in list(sys.modules))
+    for label, folder in GUARDED_REAL_FOLDERS.items():
+        WORKSPACE_BASELINE[label] = real_workspace_entries(folder)
 
 
 @pytest.fixture(autouse=True, scope="session")
 def _nothing_is_written_to_the_real_workspace():
-    """Fail the run if any test creates anything in the real workspace.
+    """Fail the run if any test creates anything in the researcher's own
+    folders.
 
-    The companion guard to `_isolate_workspace` above: the isolation
-    fixture redirects the constant, and this one proves that no route
-    into the researcher's own `~/Documents/Qualcoder MCP Projects`
-    survived it. In the spirit of the test-rot guard, it pins the
-    ABSENCE, so a future test that reaches the real folder by another
-    route (a hard-coded path, a `workspace=` argument built from
-    Path.home(), a re-import that rebinds the constant) is reported
-    instead of quietly leaving project copies behind.
+    The companion guard to the isolation fixtures above: they redirect
+    the constants, and this one proves that no route into the
+    researcher's own `~/Documents/Qualcoder MCP Projects` or
+    `~/.qualcoder_mcp` survived. In the spirit of the test-rot guard, it
+    pins the ABSENCE, so a future test that reaches a real folder by
+    another route (a hard-coded path, a `workspace=` argument built from
+    Path.home(), an import-bound object nobody redirected, a re-import
+    that rebinds a constant) is reported instead of quietly leaving
+    project copies or session files behind.
 
-    The path is read at IMPORT time (track5_helpers.REAL_WORKSPACE),
-    before any fixture has moved HOME or the constant, so it is the
-    folder the shipped server would really use. A missing folder is
-    recorded as missing: creating it is itself a write into the
-    researcher's Documents.
+    The state home is watched in full rather than at its top level: the
+    leak it is guarding against is a session file one directory down.
+
+    The paths are read at IMPORT time (track5_helpers), before any
+    fixture has moved HOME or a constant, so they are the folders the
+    shipped server would really use, and the baseline is taken before
+    collection. A missing folder is recorded as missing: creating it is
+    itself a write into the researcher's own directories.
     """
-    before = real_workspace_entries()
+    assert WORKSPACE_BASELINE, (
+        "the pre-collection baseline was never taken; this guard cannot "
+        "report anything and must not pass")
     yield
-    after = real_workspace_entries()
-    if WORKSPACE_UNREADABLE in (before, after):
-        return
-    if before is None and after is not None:
+    problems = []
+    for label, folder in GUARDED_REAL_FOLDERS.items():
+        before = WORKSPACE_BASELINE.get(label)
+        after = real_workspace_entries(folder)
+        if WORKSPACE_UNREADABLE in (before, after):
+            continue
+        if before is None and after is not None:
+            problems.append(
+                f"the suite created the real {label} folder {folder}")
+            continue
+        added = sorted((after or set()) - (before or set()))
+        if added:
+            noun = "entry" if len(added) == 1 else "entries"
+            problems.append(
+                f"the suite created {len(added)} {noun} in the real "
+                f"{label} {folder}: {added[:10]}")
+    if problems:
         raise AssertionError(
-            f"the suite created the real workspace folder "
-            f"{REAL_WORKSPACE}; tests must stay inside tmp_path")
-    added = sorted((after or set()) - (before or set()))
-    if added:
-        noun = "entry" if len(added) == 1 else "entries"
-        raise AssertionError(
-            f"the suite created {len(added)} {noun} in the real workspace "
-            f"{REAL_WORKSPACE}: {added[:10]}; tests must stay inside "
-            f"tmp_path")
+            "; ".join(problems) + "; tests must stay inside tmp_path")
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -182,7 +241,24 @@ def _windows_sharing_semantics():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_ai_coder_name(monkeypatch):
+def _isolate_session_manager(tmp_path, _sandbox_patch):
+    """Keep AI coding sessions out of the real ~/.qualcoder_mcp/sessions.
+
+    `server.session_manager` is an INSTANCE built at import time, and
+    its storage directory is `expanduser`d in the constructor, so a test
+    that moves HOME redirects nothing: the sessions land in the
+    researcher's own state directory. Several fixtures replace the
+    object already, which is why the leak has not been loud; the ones
+    that do not, and any tool call made outside them, wrote for real.
+    Patch the OBJECT, the way the other three home-derived bindings are
+    patched above.
+    """
+    _sandbox_patch.setattr(server, "session_manager",
+                           SessionManager(str(tmp_path / "sessions")))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ai_coder_name(_sandbox_patch):
     """Keep an ambient QUALCODER_MCP_AI_CODER_NAME out of the suite.
 
     The P1-2 attribution config is read from the environment on every
@@ -191,7 +267,7 @@ def _isolate_ai_coder_name(monkeypatch):
     spurious failures (QA round 1, F21). Tests that exercise the
     variable set it themselves through monkeypatch.
     """
-    monkeypatch.delenv("QUALCODER_MCP_AI_CODER_NAME", raising=False)
+    _sandbox_patch.delenv("QUALCODER_MCP_AI_CODER_NAME", raising=False)
 
 
 # =============================================================================
