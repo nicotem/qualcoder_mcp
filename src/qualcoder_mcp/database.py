@@ -4,7 +4,7 @@ import bisect
 import os
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Sequence, Tuple, Union
 import json
 import re
 import time
@@ -1750,6 +1750,162 @@ class QualcoderDatabase:
         except sqlite3.Error:
             return 0
 
+    # ------------------------------------------------------------------
+    # Novelty filter: the spans a search should treat as already coded
+    # (v0.12 B4, D4 3.1). Upstream's own definition, applied to our rows.
+    # ------------------------------------------------------------------
+
+    def excluded_span_mask(self, code_ids: List[int],
+                           file_ids: Optional[List[int]] = None,
+                           coder: Optional[str] = None
+                           ) -> Dict[int, Any]:
+        """Per file, the merged spans of the codes to exclude.
+
+        QualCoder 4.0's own search excludes a candidate span when it
+        overlaps any coding of a listed code in the same file, half-open,
+        so adjacency is not overlap (`ai_mcp_server.py:5245-5257` at
+        9bddf17), and it drops rows whose `pos1 <= pos0` (`:5212`). Both
+        rules are reproduced here.
+
+        The exclusion SOURCE is a documented deviation: upstream reads
+        the base table (`:5228`), which would let a hidden coder's
+        codings suppress a passage the user cannot see, turning this
+        filter into an oracle for hidden work. Ours reads what the caller
+        may see: the base table on projects without the coder-visibility
+        capability, the visible view where it exists, and the visible
+        view UNION the named coder's own rows when an explicit `coder`
+        override is in force (the X1 read rule).
+
+        Returns:
+            {file_id: (starts, ends)} with each file's spans merged into
+            a sorted disjoint list. Touching spans are merged too:
+            overlapping the union is the same question as overlapping any
+            member.
+
+        Raises:
+            RuntimeError / DatabaseLockedError: a query failure is an
+            ERROR for the call, never an empty mask (D4 3.1.3). A filter
+            that silently turned itself off would report coded passages
+            as novel, which is the opposite of what the caller asked.
+        """
+        if not code_ids:
+            return {}
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(coder is None)
+        placeholders = ",".join("?" for _ in code_ids)
+        file_clause = ""
+        file_params: tuple = ()
+        if file_ids:
+            file_clause = (" AND fid IN ("
+                           + ",".join("?" for _ in file_ids) + ")")
+            file_params = tuple(file_ids)
+        where = f"WHERE cid IN ({placeholders}) AND pos1 > pos0{file_clause}"
+        base_params = tuple(code_ids) + file_params
+        sql = f"SELECT fid, pos0, pos1 FROM {source} {where}"
+        params = base_params
+        visible_view = self.code_text_source(True)
+        if coder is not None and visible_view != "code_text":
+            # The override reads the visible view UNION the named coder's
+            # own rows, so the mask covers exactly the rows the caller's
+            # search can see and no more (D4 3.1.2, the X1 read rule).
+            sql = (f"SELECT fid, pos0, pos1 FROM {visible_view} {where} "
+                   f"UNION "
+                   f"SELECT fid, pos0, pos1 FROM code_text {where} "
+                   f"AND owner = ?")
+            params = base_params + base_params + (coder,)
+        try:
+            rows = self.conn.execute(sql, params).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(
+                e, "excluded_span_mask",
+                "Could not read the codings the novelty filter excludes; "
+                "nothing was searched")
+        by_file: Dict[int, List[tuple]] = {}
+        for row in rows:
+            by_file.setdefault(int(row["fid"]), []).append(
+                (int(row["pos0"]), int(row["pos1"])))
+        mask: Dict[int, Any] = {}
+        for fid, spans in by_file.items():
+            spans.sort()
+            starts: List[int] = []
+            ends: List[int] = []
+            for start, end in spans:
+                if starts and start <= ends[-1]:
+                    ends[-1] = max(ends[-1], end)
+                else:
+                    starts.append(start)
+                    ends.append(end)
+            mask[fid] = (starts, ends)
+        return mask
+
+    @staticmethod
+    def span_is_excluded(mask_entry, start: int, end: int) -> bool:
+        """Whether `[start, end)` overlaps a merged exclusion span.
+
+        `bisect` on the merged list, so a candidate costs O(log R) rather
+        than upstream's linear scan over every excluded coding
+        (`ai_mcp_server.py:5251-5256`). Half-open throughout: a candidate
+        that begins exactly where an excluded span ends does not overlap
+        it.
+        """
+        if not mask_entry or end <= start:
+            return False
+        starts, ends = mask_entry
+        i = bisect.bisect_right(starts, start) - 1
+        if i >= 0 and ends[i] > start:
+            return True
+        return i + 1 < len(starts) and starts[i + 1] < end
+
+    def unknown_code_ids(self, code_ids: List[int]) -> List[int]:
+        """Which of these code ids do not exist, sorted.
+
+        Unknown ids are refused rather than ignored (D4 3.1.4): a
+        silently dropped id would make the caller believe passages are
+        novel when they are not.
+        """
+        if not code_ids:
+            return []
+        placeholders = ",".join("?" for _ in code_ids)
+        try:
+            rows = self.conn.execute(
+                f"SELECT cid FROM code_name WHERE cid IN ({placeholders})",
+                tuple(code_ids)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "unknown_code_ids",
+                               "Failed to check the code ids")
+        known = {int(r["cid"]) for r in rows}
+        return sorted(set(code_ids) - known)
+
+    def unknown_file_ids(self, file_ids: List[int]) -> List[int]:
+        """Which of these file ids do not exist, sorted."""
+        if not file_ids:
+            return []
+        placeholders = ",".join("?" for _ in file_ids)
+        try:
+            rows = self.conn.execute(
+                f"SELECT id FROM source WHERE id IN ({placeholders})",
+                tuple(file_ids)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "unknown_file_ids",
+                               "Failed to check the file ids")
+        known = {int(r["id"]) for r in rows}
+        return sorted(set(file_ids) - known)
+
+    def code_names_for_ids(self, code_ids: List[int]) -> List[str]:
+        """The stored names of these codes, in the order given."""
+        if not code_ids:
+            return []
+        placeholders = ",".join("?" for _ in code_ids)
+        try:
+            rows = self.conn.execute(
+                f"SELECT cid, name FROM code_name WHERE cid IN "
+                f"({placeholders})", tuple(code_ids)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "code_names_for_ids",
+                               "Failed to read the code names")
+        by_id = {int(r["cid"]): r["name"] for r in rows}
+        return [by_id[c] for c in code_ids if c in by_id]
+
     def known_owner_presence(self, names: List[str]) -> Dict[str, bool]:
         """Whether each named owner already appears in this project.
 
@@ -2189,6 +2345,95 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             _raise_query_error(e, "get_coded_text_segments", "Failed to retrieve coded text segments")
 
+    def coded_segment_keys(self, code_id: int, coder: Optional[str] = None,
+                           file_ids: Optional[List[int]] = None,
+                           honor_visibility: bool = True
+                           ) -> List[Dict[str, Any]]:
+        """The ordering keys of every coding of one code, without its text.
+
+        The sampling strategies of D4 3.3.1 order a code's codings four
+        different ways, and a cursor resumes at a position in that order,
+        so the whole ordered list has to exist before a page can be cut
+        out of it. Fetching ids and keys first, sorting in Python and
+        then fetching only the page's full rows keeps that cheap: no
+        window functions (so every SQLite build behaves the same), one
+        code path for all four strategies, and the text of rows nobody
+        will see is never read.
+        """
+        code_id = validate_id(code_id, "code_id")
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(honor_visibility and coder is None)
+        where = ["ct.cid = ?"]
+        params: List[Any] = [code_id]
+        if coder is not None:
+            where.append("ct.owner = ?")
+            params.append(coder)
+        if file_ids:
+            where.append("ct.fid IN (" + ",".join("?" for _ in file_ids) + ")")
+            params.extend(file_ids)
+        try:
+            rows = self.conn.execute(f"""
+                SELECT ct.ctid, ct.fid, ct.pos0, ct.pos1, ct.date,
+                       s.name as file_name
+                FROM {source} ct
+                JOIN source s ON ct.fid = s.id
+                WHERE {" AND ".join(where)}
+            """, tuple(params)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "coded_segment_keys",
+                               "Failed to read the coded segments")
+        return [{"ctid": int(r["ctid"]), "file_id": int(r["fid"]),
+                 "file_name": r["file_name"] or "",
+                 "pos0": int(r["pos0"]), "pos1": int(r["pos1"]),
+                 "date": r["date"] or ""} for r in rows]
+
+    def coded_segments_by_ctids(self, ctids: List[int],
+                                honor_visibility: bool = True,
+                                coder: Optional[str] = None
+                                ) -> Dict[int, Dict[str, Any]]:
+        """The full rows for one page of ctids, keyed by ctid.
+
+        Chunked at 500 placeholders, well under SQLite's default variable
+        limit of 999, so a page of any size this server allows is one or
+        two queries. The visibility source is the same one the keys came
+        from, so a row that has become invisible between the two queries
+        is simply absent rather than smuggled in.
+        """
+        if not ctids:
+            return {}
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(honor_visibility and coder is None)
+        out: Dict[int, Dict[str, Any]] = {}
+        for start in range(0, len(ctids), 500):
+            chunk = ctids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                rows = self.conn.execute(f"""
+                    SELECT ct.ctid, ct.seltext, ct.pos0, ct.pos1, ct.memo,
+                           ct.owner, ct.date, ct.important,
+                           s.name as file_name, s.id as file_id
+                    FROM {source} ct
+                    JOIN source s ON ct.fid = s.id
+                    WHERE ct.ctid IN ({placeholders})
+                """, tuple(chunk)).fetchall()
+            except sqlite3.Error as e:
+                _raise_query_error(e, "coded_segments_by_ctids",
+                                   "Failed to read the coded segments")
+            for row in rows:
+                out[int(row["ctid"])] = {
+                    "id": row["ctid"],
+                    "text": row["seltext"],
+                    "position_start": row["pos0"],
+                    "position_end": row["pos1"],
+                    "memo": row["memo"] or "",
+                    "owner": row["owner"],
+                    "date": row["date"],
+                    "important": bool(row["important"]),
+                    "file_name": row["file_name"],
+                    "file_id": row["file_id"],
+                }
+        return out
+
     def count_codings_for_code(self, code_id: int,
                                honor_visibility: bool = True) -> int:
         """Count a code's text codings (visible view or base table),
@@ -2543,9 +2788,46 @@ class QualcoderDatabase:
             "text_segments": segments
         }
 
+    # The total order paged reads walk (D4 3.2.6). COALESCE wraps the
+    # nullable source name so a NULL name (the unnamed-source case of QA
+    # F5) sorts deterministically first instead of by SQLite's NULL
+    # placement, and the trailing ids make the order total, which is what
+    # a keyset cursor needs: with ties, a page boundary could otherwise
+    # skip or repeat a row.
+    CODED_TEXT_ORDER = ("COALESCE(s.name,'')", "s.id", "ct.pos0",
+                        "ct.pos1", "ct.ctid")
+
+    @staticmethod
+    def _keyset_predicate(columns) -> str:
+        """The expanded lexicographic "strictly after this key" predicate.
+
+        `(a > ?) OR (a = ? AND b > ?) OR ...` rather than SQLite's
+        row-value comparison syntax, which needs SQLite 3.15 and is not
+        worth requiring of whatever SQLite a researcher's Python was
+        built against. Parameters are bound in the order the clauses
+        appear; `_keyset_params` builds them.
+        """
+        clauses = []
+        for i, col in enumerate(columns):
+            equals = " AND ".join(f"{c} = ?" for c in columns[:i])
+            greater = f"{col} > ?"
+            clauses.append(f"({equals} AND {greater})" if equals
+                           else f"({greater})")
+        return "(" + " OR ".join(clauses) + ")"
+
+    @staticmethod
+    def _keyset_params(columns, key) -> tuple:
+        params: List[Any] = []
+        for i in range(len(columns)):
+            params.extend(key[:i])
+            params.append(key[i])
+        return tuple(params)
+
     def search_coded_text(self, query: str, code_name: Optional[str] = None,
-                         limit: int = DEFAULT_LIMIT,
-                         coder: Optional[str] = None) -> List[Dict[str, Any]]:
+                          limit: int = DEFAULT_LIMIT,
+                          coder: Optional[str] = None,
+                          after: Optional[Sequence[Any]] = None
+                          ) -> List[Dict[str, Any]]:
         """Search for coded text segments.
 
         Args:
@@ -2556,7 +2838,9 @@ class QualcoderDatabase:
                    to this owner (P1-3 override). Default reads through
                    code_text_visible when the project has the
                    coder-visibility capability
-                   visibility.
+            after: Keyset position from a cursor: return only rows that
+                   sort strictly after this (file name, file id, pos0,
+                   pos1, ctid) tuple, in the same total order (D4 3.2.6)
 
         Returns:
             List of matching coded segments
@@ -2572,52 +2856,42 @@ class QualcoderDatabase:
         limit = validate_limit(limit)
         coder = self._validate_coder(coder)
         source = self.code_text_source(coder is None)
-        owner_sql = " AND ct.owner = ?" if coder is not None else ""
-        owner_params = (coder,) if coder is not None else ()
+
+        where = ["ct.seltext LIKE ? ESCAPE '\\'"]
+        params: List[Any] = [f"%{escaped_query}%"]
+        if code_name:
+            code_name = validate_string(code_name, "code_name")
+            where.append("c.name = ?")
+            params.append(code_name)
+        if coder is not None:
+            where.append("ct.owner = ?")
+            params.append(coder)
+        if after is not None:
+            where.append(self._keyset_predicate(self.CODED_TEXT_ORDER))
+            params.extend(self._keyset_params(self.CODED_TEXT_ORDER, after))
+        order = ", ".join(self.CODED_TEXT_ORDER)
 
         try:
-            if code_name:
-                code_name = validate_string(code_name, "code_name")
-
-                cursor = self.conn.execute(f"""
-                    SELECT
-                        ct.ctid,
-                        ct.seltext,
-                        ct.pos0,
-                        ct.pos1,
-                        ct.memo,
-                        ct.owner,
-                        ct.date,
-                        s.name as file_name,
-                        c.name as code_name,
-                        c.color as code_color
-                    FROM {source} ct
-                    JOIN source s ON ct.fid = s.id
-                    JOIN code_name c ON ct.cid = c.cid
-                    WHERE ct.seltext LIKE ? ESCAPE '\\' AND c.name = ?{owner_sql}
-                    ORDER BY s.name, ct.pos0
-                    LIMIT ?
-                """, (f"%{escaped_query}%", code_name) + owner_params + (limit,))
-            else:
-                cursor = self.conn.execute(f"""
-                    SELECT
-                        ct.ctid,
-                        ct.seltext,
-                        ct.pos0,
-                        ct.pos1,
-                        ct.memo,
-                        ct.owner,
-                        ct.date,
-                        s.name as file_name,
-                        c.name as code_name,
-                        c.color as code_color
-                    FROM {source} ct
-                    JOIN source s ON ct.fid = s.id
-                    JOIN code_name c ON ct.cid = c.cid
-                    WHERE ct.seltext LIKE ? ESCAPE '\\'{owner_sql}
-                    ORDER BY s.name, ct.pos0
-                    LIMIT ?
-                """, (f"%{escaped_query}%",) + owner_params + (limit,))
+            cursor = self.conn.execute(f"""
+                SELECT
+                    ct.ctid,
+                    ct.seltext,
+                    ct.pos0,
+                    ct.pos1,
+                    ct.memo,
+                    ct.owner,
+                    ct.date,
+                    ct.fid,
+                    s.name as file_name,
+                    c.name as code_name,
+                    c.color as code_color
+                FROM {source} ct
+                JOIN source s ON ct.fid = s.id
+                JOIN code_name c ON ct.cid = c.cid
+                WHERE {" AND ".join(where)}
+                ORDER BY {order}
+                LIMIT ?
+            """, tuple(params) + (limit,))
 
             results = []
             for row in cursor.fetchall():
@@ -2629,6 +2903,7 @@ class QualcoderDatabase:
                     "memo": row["memo"] or "",
                     "owner": row["owner"],
                     "date": row["date"],
+                    "file_id": row["fid"],
                     "file_name": row["file_name"],
                     "code_name": row["code_name"],
                     "code_color": row["code_color"]
@@ -2636,6 +2911,35 @@ class QualcoderDatabase:
             return results
         except sqlite3.Error as e:
             _raise_query_error(e, "search_coded_text", "Failed to search coded text")
+
+    def count_coded_text_matches(self, query: str,
+                                 code_name: Optional[str] = None,
+                                 coder: Optional[str] = None) -> int:
+        """How many rows the same search matches in total (one COUNT)."""
+        query = validate_string(query, "query")
+        escaped_query = escape_like_pattern(query)
+        coder = self._validate_coder(coder)
+        source = self.code_text_source(coder is None)
+        where = ["ct.seltext LIKE ? ESCAPE '\\'"]
+        params: List[Any] = [f"%{escaped_query}%"]
+        if code_name:
+            code_name = validate_string(code_name, "code_name")
+            where.append("c.name = ?")
+            params.append(code_name)
+        if coder is not None:
+            where.append("ct.owner = ?")
+            params.append(coder)
+        try:
+            row = self.conn.execute(f"""
+                SELECT COUNT(*) FROM {source} ct
+                JOIN source s ON ct.fid = s.id
+                JOIN code_name c ON ct.cid = c.cid
+                WHERE {" AND ".join(where)}
+            """, tuple(params)).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "count_coded_text_matches",
+                               "Failed to count coded text matches")
+        return int(row[0]) if row else 0
 
     def get_coding_frequencies(self, coder: Optional[str] = None,
                                honor_visibility: bool = True
@@ -2966,7 +3270,10 @@ class QualcoderDatabase:
         search_memo: bool = False,
         case_sensitive: bool = False,
         limit: int = DEFAULT_LIMIT,
-        context_chars: int = 100
+        context_chars: int = 100,
+        max_matches_per_file: int = 5,
+        exclude_mask: Optional[Dict[int, Any]] = None,
+        after: Optional[Sequence[Any]] = None,
     ) -> Dict[str, Any]:
         """Search for files across multiple locations (filename, content, memo).
 
@@ -2981,6 +3288,13 @@ class QualcoderDatabase:
             case_sensitive: Case-sensitive matching (default: False)
             limit: Maximum number of files to return (default: DEFAULT_LIMIT)
             context_chars: Characters of context around content matches (default: 100)
+            max_matches_per_file: Content matches kept per file (1 to 50,
+                default 5). Matches are tested in text order and only the
+                ones that survive the novelty filter count towards it.
+            exclude_mask: Merged spans per file from excluded_span_mask; a
+                content match overlapping one is not a match (D4 3.1)
+            after: Keyset position from a cursor: skip files up to and
+                including this (name, id) pair
 
         Returns:
             Dictionary containing:
@@ -3000,8 +3314,17 @@ class QualcoderDatabase:
             }
 
         try:
-            # Get all files
-            cursor = self.conn.execute("""
+            # Get all files. COALESCE plus the id makes the scan order
+            # total, which is what the keyset cursor resumes against; a
+            # NULL name sorts first, as it did before (D4 3.2.6).
+            file_where = ""
+            file_params: tuple = ()
+            if after is not None:
+                file_where = (" WHERE " + self._keyset_predicate(
+                    ("COALESCE(name,'')", "id")))
+                file_params = self._keyset_params(
+                    ("COALESCE(name,'')", "id"), after)
+            cursor = self.conn.execute(f"""
                 SELECT
                     id,
                     name,
@@ -3010,14 +3333,17 @@ class QualcoderDatabase:
                     memo,
                     owner,
                     date
-                FROM source
-                ORDER BY name
-            """)
+                FROM source{file_where}
+                ORDER BY COALESCE(name,''), id
+            """, file_params)
 
             all_files = cursor.fetchall()
             results = []
             files_searched = 0
             files_skipped_no_text = 0
+            total_excluded = 0
+            files_all_excluded = 0
+            last_key = None
 
             search_pattern = pattern if case_sensitive else pattern.lower()
 
@@ -3049,26 +3375,44 @@ class QualcoderDatabase:
                 # were previously skipped silently, producing false negatives
                 # (QA F10). Sources without text (image/audio/video) are
                 # counted so the caller can see what was not searched.
+                content_found = 0
+                content_excluded = 0
+                content_shown = 0
                 if search_content:
                     file_text = row["fulltext"] or ""
                     if not file_text:
                         files_skipped_no_text += 1
                     search_text = file_text if case_sensitive else file_text.lower()
+                    mask_entry = (exclude_mask or {}).get(row["id"])
 
-                    # Find all content matches
+                    # Find content matches. Every occurrence is counted
+                    # (content_matches_found), the novelty filter is
+                    # applied BEFORE the per-file cap (D4 3.1.5) so the
+                    # cap is spent on novel matches, and the scan stops
+                    # once the cap is full unless there is still counting
+                    # to do for the filter's disclosure.
                     start_pos = 0
-                    content_matches = 0
 
                     while True:
                         pos = search_text.find(search_pattern, start_pos)
-                        if pos == -1 or content_matches >= 5:  # Limit to 5 content matches per file
+                        if pos == -1:
                             break
+                        content_found += 1
+                        match_end = pos + len(pattern)
+                        if mask_entry is not None and self.span_is_excluded(
+                                mask_entry, pos, match_end):
+                            content_excluded += 1
+                            start_pos = pos + 1
+                            continue
+                        if content_shown >= max_matches_per_file:
+                            start_pos = pos + 1
+                            continue
 
                         matched_in["content"] = True
 
                         # Extract context
                         context_start = max(0, pos - context_chars)
-                        context_end = min(len(file_text), pos + len(pattern) + context_chars)
+                        context_end = min(len(file_text), match_end + context_chars)
                         preview = file_text[context_start:context_end]
 
                         if context_start > 0:
@@ -3079,12 +3423,27 @@ class QualcoderDatabase:
                         matches.append({
                             "location": "content",
                             "position": pos,
+                            # Absolute anchors, so a hit can become a
+                            # coding without guesswork (D4 3.4).
+                            # preview_start is the position of the first
+                            # character AFTER any leading ellipsis.
+                            "match_start": pos,
+                            "match_end": match_end,
+                            "match_text": file_text[pos:match_end],
+                            "preview_start": context_start,
                             "preview": preview
                         })
 
-                        content_matches += 1
+                        content_shown += 1
                         match_count += 1
                         start_pos = pos + 1
+
+                    total_excluded += content_excluded
+                    if content_found and content_shown == 0 and \
+                            content_excluded == content_found:
+                        # Nothing novel in this file: not a result, but
+                        # counted, because saturation is a real answer
+                        files_all_excluded += 1
 
                 # Search memo. Memo privacy ('#####'): match against the
                 # public part only and preview the public part only, so a
@@ -3105,14 +3464,20 @@ class QualcoderDatabase:
                 if any(matched_in.values()):
                     file_type = _detect_file_type(row["mediapath"])
 
-                    results.append({
+                    entry = {
                         "file_id": row["id"],
                         "file_name": row["name"],
                         "file_type": file_type,
                         "matched_in": matched_in,
                         "match_count": match_count,
                         "matches": matches
-                    })
+                    }
+                    if search_content:
+                        entry["content_matches_found"] = content_found
+                        entry["content_matches_excluded"] = content_excluded
+                        entry["content_matches_shown"] = content_shown
+                    results.append(entry)
+                    last_key = [raw_name, int(row["id"])]
 
                 if len(results) >= limit:
                     break
@@ -3145,7 +3510,17 @@ class QualcoderDatabase:
                 "performance_info": performance_info,
                 "total_files_searched": files_searched,
                 "total_matches": len(results),
-                "results": results
+                "results": results,
+                # Paging bookkeeping for the server layer, stripped from
+                # the tool result: whether the scan ran out of files, the
+                # key of the last file returned, and the filter's totals.
+                "_scan": {
+                    "exhausted": len(results) < limit,
+                    "last_key": last_key,
+                    "files_examined": files_searched,
+                    "content_matches_excluded": total_excluded,
+                    "files_with_all_matches_excluded": files_all_excluded,
+                },
             }
 
         except sqlite3.Error as e:

@@ -28,6 +28,7 @@ from .database import (
     validate_coder_name,
     validate_coder_note,
     validate_id,
+    validate_limit,
     hidden_coder_refusal,
     private_note_refusal,
     MAX_CODER_NAME_LENGTH,
@@ -44,6 +45,21 @@ from .database import (
     normalize_name,
     name_key,
     position_safe as db_position_safe,
+)
+from .cursors import (
+    CURSOR_MAX_LENGTH,
+    CURSOR_TOO_LONG,
+    DATABASE_CHANGED_NOTE,
+    TAG_CODED_SEGMENTS,
+    TAG_SEARCH_CODED_TEXT,
+    TAG_SEARCH_FILES,
+    CursorError,
+    cursor_invalid_message,
+    database_stamp,
+    decode_cursor,
+    encode_cursor,
+    fingerprint_arguments,
+    page_block,
 )
 from .memo_privacy import extract_ai_memo, strip_private_memos
 from .project_settings import (
@@ -2694,10 +2710,177 @@ def copy_project_to_workspace(
     return json.dumps(result, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# Paged reads: the novelty filter, keyset cursors and sampling (v0.12, D4)
+# ---------------------------------------------------------------------------
+# Three read tools can now be walked page by page and filtered by what is
+# already coded. Two rules shape the design. First, nothing is stored: a
+# cursor carries the sort key of the last row a page returned and the next
+# page re-queries for the first row after it, so a recycled process, a
+# second host and a compacted conversation all continue correctly.
+# Second, the filter answers the saturation question honestly: a file
+# whose every match is already coded is not a result, and the page says
+# how many such files there were, because a null result is a result.
+
+MAX_EXCLUDE_CODE_IDS = 200
+MAX_MATCHES_PER_FILE_CAP = 50
+MAX_SEGMENT_CHARS = 50000            # ai_mcp_server.py:70 at 9bddf17
+SEGMENT_STRATEGIES = ("by_document", "diverse_by_document", "recent_first",
+                      "sequential")
+
+
+def _validate_id_list(value: Any, name: str, cap: int,
+                      cap_text: str) -> List[int]:
+    """A list of positive integers, de-duplicated and sorted.
+
+    FastMCP rejects most wrong shapes at the schema; this covers hosts
+    that coerce loosely, and it is the one place the order-insensitivity
+    of these arguments is established, which the cursor fingerprint then
+    relies on.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{name} must be a list of positive integers.")
+    out: List[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError(f"{name} must be a list of positive integers.")
+        if item <= 0:
+            raise ValueError(f"{name} must be a list of positive integers.")
+        out.append(validate_id(item, name))
+    unique = sorted(set(out))
+    if len(unique) > cap:
+        raise ValueError(cap_text)
+    return unique
+
+
+def _resolve_exclude_code_ids(db_, value: Any) -> List[int]:
+    """Validate exclude_code_ids and refuse unknown ids (D4 3.1.4).
+
+    An unknown id is refused rather than ignored: a filter that quietly
+    dropped one would report passages as novel when they are already
+    coded, which is the single answer this feature must never give.
+    """
+    ids = _validate_id_list(
+        value, "exclude_code_ids", MAX_EXCLUDE_CODE_IDS,
+        "exclude_code_ids accepts at most 200 code ids.")
+    if not ids:
+        return []
+    unknown = db_.unknown_code_ids(ids)
+    if unknown:
+        listed = ", ".join(str(i) for i in unknown)
+        raise ValueError(
+            f"exclude_code_ids contains unknown code id(s): {listed}. Use "
+            f"get_project_summary or export_codebook to list codes.")
+    return ids
+
+
+def _resolve_file_ids(db_, value: Any) -> List[int]:
+    """Validate file_ids and refuse unknown ids, as for code ids."""
+    ids = _validate_id_list(
+        value, "file_ids", 500,
+        "file_ids accepts at most 500 file ids.")
+    if not ids:
+        return []
+    unknown = db_.unknown_file_ids(ids)
+    if unknown:
+        listed = ", ".join(str(i) for i in unknown)
+        raise ValueError(
+            f"file_ids contains unknown file id(s): {listed}. Use "
+            f"search_files or the qualcoder://files/list resource to list "
+            f"files.")
+    return ids
+
+
+def _novelty_block(db_, code_ids: List[int], coder: Optional[str],
+                   applies_to: Optional[str] = None) -> Dict[str, Any]:
+    """The disclosure block a filtered read carries (D4 3.1.6).
+
+    `coder_visibility` says which rows the mask was built from, because
+    that is the one place this server deviates from upstream's filter
+    (which reads the base table, ai_mcp_server.py:5228) and the deviation
+    is what keeps the filter from becoming an oracle for hidden work.
+    """
+    caps = getattr(db_, "capabilities", None)
+    if caps is None or not caps.has_coder_visibility:
+        visibility = "not_applicable"
+    elif coder is not None:
+        visibility = "honoured_plus_named_coder"
+    else:
+        visibility = "honoured"
+    block: Dict[str, Any] = {
+        "exclude_code_ids": list(code_ids),
+        "exclude_code_names": db_.code_names_for_ids(code_ids),
+        "coder_visibility": visibility,
+        "overlap_rule": (
+            "A candidate is excluded when it overlaps a coding of one of "
+            "these codes in the same file. Spans are half-open, so a "
+            "candidate that starts exactly where an excluded coding ends "
+            "is NOT excluded (QualCoder's own rule, "
+            "ai_mcp_server.py:5245-5257 at 9bddf17)."),
+    }
+    if applies_to:
+        block["applies_to"] = applies_to
+    return block
+
+
+def _cursor_stamp() -> Optional[List[int]]:
+    """The data.qda fingerprint a cursor records, or None."""
+    try:
+        return database_stamp(validate_qda_path(current_project_path))
+    except Exception:
+        return None
+
+
+def _database_changed(stamp: Optional[List[int]]) -> bool:
+    """Whether data.qda looks different from when the cursor was minted.
+
+    A heuristic, and reported as one: mtime granularity, WAL and journal
+    side files and copy tools that preserve timestamps all make it
+    approximate. No page's correctness depends on it; positions are
+    recomputed on every page regardless.
+    """
+    if not stamp:
+        return False
+    current = _cursor_stamp()
+    return bool(current) and current != stamp
+
+
+def _request_block(tool: str, arguments: Dict[str, Any],
+                   cursor: Optional[str]) -> Dict[str, Any]:
+    """The re-fetch recipe every paged result echoes.
+
+    The compaction-stub convention (ai_chat.py:6356-6385, :7271 at
+    9bddf17): a host that drops the body of a result keeps a line that
+    says exactly how to ask for it again.
+    """
+    args = dict(arguments)
+    args["cursor"] = cursor
+    return {"tool": tool, "arguments": args}
+
+
+def _attach_paging(payload: Dict[str, Any], tool: str,
+                   arguments: Dict[str, Any], used_cursor: Optional[str],
+                   page: Dict[str, Any],
+                   changed: bool = False) -> None:
+    """Add page, request and next_request to a paged result."""
+    payload["page"] = page
+    payload["request"] = _request_block(tool, arguments, used_cursor)
+    if page["has_more"] and page["next_cursor"]:
+        payload["next_request"] = _request_block(tool, arguments,
+                                                 page["next_cursor"])
+    if changed:
+        payload["database_changed_since_cursor"] = True
+        payload["database_changed_note"] = DATABASE_CHANGED_NOTE
+
+
 @mcp.tool()
 @_tool_guard
 def search_coded_text(query: str, code_name: Optional[str] = None,
-                      limit: int = 50, coder: Optional[str] = None) -> str:
+                      limit: int = 50, coder: Optional[str] = None,
+                      exclude_code_ids: Optional[List[int]] = None,
+                      cursor: Optional[str] = None) -> str:
     """Search for text segments that contain specific keywords.
 
     This tool searches through all coded text segments for matching content.
@@ -2710,37 +2893,176 @@ def search_coded_text(query: str, code_name: Optional[str] = None,
     coder_visibility block. Pass coder to read one specific coder's
     segments from the full data instead.
 
+    NOVELTY FILTER: exclude_code_ids drops any segment that overlaps a
+    coding of one of those codes in the same file, which is how you ask
+    "what have I not already coded this way?". Spans are half-open, so a
+    segment that begins exactly where an excluded coding ends is kept.
+    Note that a segment is itself a coding: searching with
+    exclude_code_ids=[7] while looking at code 7's own segments returns
+    nothing, which is correct and is usually not what you meant; exclude
+    the codes you have ALREADY applied and search for the ones you have
+    not.
+
+    PAGING: the result carries a page block. Pass its next_cursor back as
+    cursor WITH THE SAME other arguments to continue; a cursor is bound
+    to them and is refused after any change. Nothing is stored between
+    calls: the next page is recomputed from the position in the cursor,
+    so it survives a restart and works from a second host.
+
     Args:
         query: The text to search for (case-insensitive substring match)
         code_name: Optional - filter results to only segments coded with this code
-        limit: Maximum number of results to return (default 50)
+        limit: Maximum number of results per page (default 50)
         coder: Optional coder name; reads that coder's rows from the
                base tables, bypassing the visibility filter
+        exclude_code_ids: Codes whose coded spans are already accounted
+               for; segments overlapping them are dropped (at most 200
+               ids, all of which must exist)
+        cursor: next_cursor from a previous page of this same search
 
     Returns:
         JSON array of matching segments with their codes, files, and context
     """
-    results = get_db().search_coded_text(query, code_name, limit,
-                                         coder=coder)
-    payload = {
+    db_ = get_db()
+    try:
+        exclude_ids = _resolve_exclude_code_ids(db_, exclude_code_ids)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    limit = validate_limit(limit)
+    normalised_coder = normalize_coder(coder)
+    canonical_args = {
+        "query": query,
+        "code_name": code_name,
+        "limit": limit,
+        "coder": normalised_coder,
+        "exclude_code_ids": exclude_ids,
+    }
+    fingerprint = fingerprint_arguments(TAG_SEARCH_CODED_TEXT, canonical_args)
+    after = None
+    returned_so_far = 0
+    changed = False
+    if cursor is not None:
+        try:
+            key, returned_so_far, stamp = decode_cursor(
+                cursor, TAG_SEARCH_CODED_TEXT, fingerprint,
+                (object, int, int, int, int))
+        except CursorError as e:
+            text = (CURSOR_TOO_LONG if str(e) == CURSOR_TOO_LONG
+                    else cursor_invalid_message("search_coded_text"))
+            return json.dumps({"error": text})
+        after = [key[0] or "", key[1], key[2], key[3], key[4]]
+        changed = _database_changed(stamp)
+
+    mask = (db_.excluded_span_mask(exclude_ids, coder=normalised_coder)
+            if exclude_ids else {})
+
+    # Fetch in batches and keep the novel ones until the page is full:
+    # the exclusion is a property of the row, so it cannot be pushed into
+    # the query without re-implementing the overlap rule in SQL.
+    kept: List[Dict[str, Any]] = []
+    exhausted = False
+    batch_size = max(limit, 50)
+    position = after
+    while len(kept) < limit:
+        rows = db_.search_coded_text(query, code_name, batch_size,
+                                     coder=coder, after=position)
+        if not rows:
+            exhausted = True
+            break
+        consumed = 0
+        for row in rows:
+            consumed += 1
+            position = [row["file_name"] or "", row["file_id"],
+                        row["position_start"], row["position_end"],
+                        row["id"]]
+            if mask and db_.span_is_excluded(
+                    mask.get(row["file_id"]), row["position_start"],
+                    row["position_end"]):
+                continue
+            kept.append(row)
+            if len(kept) >= limit:
+                break
+        # Only a batch that was read to its end AND came back short can
+        # prove there is nothing left; stopping early because the page
+        # filled says nothing about what follows.
+        if consumed == len(rows) and len(rows) < batch_size:
+            exhausted = True
+            break
+
+    if not exhausted and position is not None:
+        # One row of lookahead, so a page that happens to end on the last
+        # match reports has_more false instead of handing the caller a
+        # cursor that returns nothing.
+        exhausted = not db_.search_coded_text(query, code_name, 1,
+                                              coder=coder, after=position)
+
+    has_more = not exhausted
+    next_cursor = None
+    if has_more and position is not None:
+        next_cursor = encode_cursor(TAG_SEARCH_CODED_TEXT, fingerprint,
+                                    position, returned_so_far + len(kept),
+                                    _cursor_stamp())
+    total = db_.count_coded_text_matches(query, code_name, coder=coder)
+    payload: Dict[str, Any] = {
         "query": query,
         "code_filter": code_name,
-        "result_count": len(results),
-        "results": results
+        "result_count": len(kept),
+        "results": kept,
     }
+    if exclude_ids:
+        payload["novelty_filter"] = _novelty_block(db_, exclude_ids,
+                                                   normalised_coder)
+        payload["total_before_novelty_filter"] = total
+    else:
+        payload["total_results"] = total
+    _attach_paging(payload, "search_coded_text", canonical_args, cursor,
+                   page_block(limit, len(kept),
+                              returned_so_far + len(kept), has_more,
+                              next_cursor, not has_more),
+                   changed)
     note = _coder_visibility_note(coder)
     if note:
         payload["coder_visibility"] = note
     return _ai_json(payload, indent=2)
 
 
+def _segment_sort_key(strategy: str, item: Dict[str, Any]) -> List[Any]:
+    """The ordering key one strategy gives a coding (D4 3.3.1).
+
+    Each key is a total order, so a cursor position is unambiguous and a
+    page boundary can neither skip nor repeat a row.
+    """
+    if strategy == "diverse_by_document":
+        return [item["rank"], item["file_name"], item["file_id"],
+                item["pos0"], item["pos1"], item["ctid"]]
+    if strategy == "recent_first":
+        return [item["date"], item["ctid"]]
+    if strategy == "sequential":
+        return [item["ctid"]]
+    return [item["file_name"], item["file_id"], item["pos0"],
+            item["pos1"], item["ctid"]]
+
+
+_SEGMENT_KEY_SHAPES = {
+    "by_document": (str, int, int, int, int),
+    "diverse_by_document": (int, str, int, int, int, int),
+    "recent_first": (str, int),
+    "sequential": (int,),
+}
+
+
 @mcp.tool()
 @_tool_guard
 def get_coded_segments(code_id: int, limit: int = 100,
-                       coder: Optional[str] = None) -> str:
-    """Get all text segments that have been coded with a specific code.
+                       coder: Optional[str] = None,
+                       strategy: str = "by_document",
+                       max_chars: Optional[int] = None,
+                       file_ids: Optional[List[int]] = None,
+                       cursor: Optional[str] = None) -> str:
+    """Get text segments that have been coded with a specific code.
 
-    This tool retrieves all the text excerpts that have been assigned
+    This tool retrieves the text excerpts that have been assigned
     to a particular code, useful for reviewing themes or categories.
 
     Coder visibility (projects with the coder-visibility capability,
@@ -2750,31 +3072,188 @@ def get_coded_segments(code_id: int, limit: int = 100,
     coder_visibility block with the suppressed count. Pass coder to
     read one specific coder's segments from the full data instead.
 
+    SAMPLING: strategy decides which segments a page shows first.
+    - by_document (default): document order, file by file.
+    - diverse_by_document: one segment from each file in turn before a
+      second from any of them, so a first page spans the dataset rather
+      than one long interview. The ready-made choice for saturation and
+      overview work.
+    - recent_first: newest coding first. The date is compared as stored
+      text, which equals chronological order for every writer QualCoder
+      and this server use, and is a heuristic for a hand-edited value.
+    - sequential: the order the codings were created in.
+
+    BUDGET: max_chars caps the characters of segment TEXT one page
+    returns (memos, names and positions are free). Pass max_chars=8000
+    for a budgeted overview; QualCoder 4.0's assistant uses 8000 per
+    code. The first segment of a page is always returned even if it
+    alone exceeds the budget, in which case its text is truncated and
+    carries text_truncated and text_full_length, so a cursor never
+    returns an empty page while more segments remain.
+
+    PAGING: pass the page block's next_cursor back as cursor WITH THE
+    SAME other arguments to continue; a cursor is bound to them. Nothing
+    is stored between calls.
+
     Args:
         code_id: The numeric ID of the code (cid)
-        limit: Maximum number of segments to return (default 100)
+        limit: Maximum number of segments per page (default 100)
         coder: Optional coder name; reads that coder's rows from the
                base tables, bypassing the visibility filter
+        strategy: by_document, diverse_by_document, recent_first or
+               sequential (default by_document)
+        max_chars: Optional character budget for this page's segment
+               text, 1 to 50000
+        file_ids: Optional list of file ids to restrict the segments to
+        cursor: next_cursor from a previous page of this same call
 
     Returns:
-        JSON array of all text segments coded with this code, including
-        the text content, file names, memos, and position information
+        JSON with the segments, a selection block describing the
+        sampling, and a page block with the cursor for the next page
     """
-    db = get_db()
-    segments = db.get_coded_text_segments(code_id, limit, coder=coder)
-    payload = {
+    db_ = get_db()
+    code_id = validate_id(code_id, "code_id")
+    limit = validate_limit(limit)
+    if strategy not in SEGMENT_STRATEGIES:
+        return json.dumps({"error": (
+            "strategy must be one of: by_document, diverse_by_document, "
+            "recent_first, sequential.")})
+    if max_chars is not None:
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) \
+                or max_chars < 1 or max_chars > MAX_SEGMENT_CHARS:
+            return json.dumps({"error": (
+                "max_chars must be a positive integer no greater than "
+                "50000.")})
+    try:
+        scoped_files = _resolve_file_ids(db_, file_ids)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    normalised_coder = normalize_coder(coder)
+    canonical_args = {
+        "code_id": code_id,
+        "limit": limit,
+        "coder": normalised_coder,
+        "strategy": strategy,
+        "max_chars": max_chars,
+        "file_ids": scoped_files,
+    }
+    fingerprint = fingerprint_arguments(TAG_CODED_SEGMENTS, canonical_args)
+    after_key = None
+    returned_so_far = 0
+    changed = False
+    if cursor is not None:
+        try:
+            key, returned_so_far, stamp = decode_cursor(
+                cursor, TAG_CODED_SEGMENTS, fingerprint,
+                _SEGMENT_KEY_SHAPES[strategy])
+        except CursorError as e:
+            text = (CURSOR_TOO_LONG if str(e) == CURSOR_TOO_LONG
+                    else cursor_invalid_message("get_coded_segments"))
+            return json.dumps({"error": text})
+        after_key = list(key)
+        changed = _database_changed(stamp)
+
+    items = db_.coded_segment_keys(code_id, coder=coder,
+                                   file_ids=scoped_files or None)
+    if strategy == "diverse_by_document":
+        # Rank within the file by (pos0, ctid): the round-robin of
+        # ai_mcp_server.py:5334-5354, ordered by file name then id rather
+        # than by fid, so pages read alphabetically as everywhere else in
+        # this server.
+        by_file: Dict[int, List[Dict[str, Any]]] = {}
+        for item in items:
+            by_file.setdefault(item["file_id"], []).append(item)
+        for rows in by_file.values():
+            rows.sort(key=lambda r: (r["pos0"], r["ctid"]))
+            for index, row in enumerate(rows, start=1):
+                row["rank"] = index
+    descending = strategy == "recent_first"
+    ordered = sorted(items, key=lambda i: _segment_sort_key(strategy, i),
+                     reverse=descending)
+
+    if after_key is not None:
+        def after_position(item):
+            key_now = _segment_sort_key(strategy, item)
+            return key_now < after_key if descending else key_now > after_key
+        ordered = [i for i in ordered if after_position(i)]
+
+    candidates = ordered[:limit]
+    rows = db_.coded_segments_by_ctids([c["ctid"] for c in candidates],
+                                       coder=coder)
+    segments: List[Dict[str, Any]] = []
+    chars_returned = 0
+    hit_budget = False
+    last_item = None
+    for candidate in candidates:
+        row = rows.get(candidate["ctid"])
+        if row is None:
+            continue
+        text = row.get("text") or ""
+        if max_chars is not None and segments and \
+                chars_returned + len(text) > max_chars:
+            hit_budget = True
+            break
+        row = dict(row)
+        if max_chars is not None and not segments and len(text) > max_chars:
+            # Zero-progress rule (D4 3.3.2, a deviation from
+            # ai_mcp_server.py:5367-5372): the first segment of a page is
+            # always returned, truncated if it has to be, so a caller is
+            # never handed a cursor that returns nothing while more
+            # segments remain. Positions are unchanged, so the rest can
+            # be read with analyze_file_with_coding.
+            row["text"] = text[:max_chars]
+            row["text_truncated"] = True
+            row["text_full_length"] = len(text)
+            chars_returned += max_chars
+        else:
+            chars_returned += len(text)
+        segments.append(row)
+        last_item = candidate
+
+    if strategy == "diverse_by_document":
+        # The page is chosen round-robin and PRESENTED in document order
+        segments.sort(key=lambda r: (r.get("file_name") or "",
+                                     r.get("file_id") or 0,
+                                     r.get("position_start") or 0,
+                                     r.get("id") or 0))
+
+    has_more = len(ordered) > len(segments)
+    next_cursor = None
+    if has_more and last_item is not None:
+        next_cursor = encode_cursor(
+            TAG_CODED_SEGMENTS, fingerprint,
+            _segment_sort_key(strategy, last_item),
+            returned_so_far + len(segments), _cursor_stamp())
+
+    payload: Dict[str, Any] = {
         "code_id": code_id,
         "segment_count": len(segments),
-        "segments": segments
+        "segments": segments,
+        "selection": {
+            "strategy": strategy,
+            "limit": limit,
+            "max_chars": max_chars,
+            "file_ids": scoped_files,
+            "coder": normalised_coder,
+            "total_segments": len(items),
+            "hit_max_char_limit": hit_budget,
+            "chars_returned": chars_returned,
+        },
     }
+    _attach_paging(payload, "get_coded_segments", canonical_args, cursor,
+                   page_block(limit, len(segments),
+                              returned_so_far + len(segments), has_more,
+                              next_cursor, not has_more),
+                   changed)
     note = _coder_visibility_note(coder)
     if note:
         if coder is None:
             # Count suppressed rows for THIS code (disclosure may count,
             # never name, hidden coders)
-            suppressed = (db.count_codings_for_code(code_id,
-                                                    honor_visibility=False)
-                          - db.count_codings_for_code(code_id))
+            suppressed = (db_.count_codings_for_code(code_id,
+                                                     honor_visibility=False)
+                          - db_.count_codings_for_code(code_id))
             note["codings_suppressed"] = max(0, suppressed)
         payload["coder_visibility"] = note
     return _ai_json(payload, indent=2)
@@ -2788,7 +3267,10 @@ def search_files(
     search_content: bool = False,
     search_memo: bool = False,
     case_sensitive: bool = False,
-    limit: int = 50
+    limit: int = 50,
+    exclude_code_ids: Optional[List[int]] = None,
+    cursor: Optional[str] = None,
+    max_matches_per_file: int = 5
 ) -> str:
     """Search for files by name, content, or memo.
 
@@ -2823,20 +3305,44 @@ def search_files(
     This ensures you search only what the user intends and provides the best
     performance for their needs.
 
+    NOVELTY FILTER: exclude_code_ids drops content matches that overlap a
+    coding of one of those codes in the same file, which is how you ask
+    "where is this word in a passage I have NOT already coded this way?".
+    Spans are half-open, so a match that begins exactly where an excluded
+    coding ends is kept. A file whose every match is excluded is not a
+    result and is counted in files_with_all_matches_excluded, so
+    saturation shows as a number rather than as silence. It needs
+    search_content=true.
+
+    PAGING: the result carries a page block. Pass its next_cursor back as
+    cursor WITH THE SAME other arguments to continue; a cursor is bound
+    to them. Nothing is stored between calls.
+
     Args:
         pattern: Text to search for (case-insensitive by default)
         search_filename: Search in file names (default: True, fast)
         search_content: Search in file content/fulltext (default: False, slower)
         search_memo: Search in file memos (default: False, fast)
         case_sensitive: Use case-sensitive matching (default: False)
-        limit: Maximum number of files to return (default: 50)
+        limit: Maximum number of files to return per page (default: 50)
+        exclude_code_ids: Codes whose coded spans are already accounted
+               for; content matches overlapping them are dropped (at most
+               200 ids, all of which must exist; needs search_content)
+        cursor: next_cursor from a previous page of this same search
+        max_matches_per_file: Content matches kept per file, 1 to 50
+               (default 5). A long transcript with forty occurrences of a
+               word shows five of them unless you raise this.
 
     Returns:
         JSON object with:
         - search_parameters: Dictionary showing what was searched
         - performance_info: Performance details and warnings
-        - total_files_searched: Number of files examined
-        - total_matches: Number of files with matches
+        - total_files_searched: Files EXAMINED for this page (deprecated
+          in favour of page.*)
+        - total_matches: Files RETURNED on this page (deprecated in
+          favour of page.*)
+        - page: limit, returned, returned_so_far, has_more, next_cursor,
+          exhaustive
         - results: Array of matching files with:
             - file_id: ID for use with other tools
             - file_name: Name of the file
@@ -2868,16 +3374,86 @@ def search_files(
     - You can combine multiple search locations
     - Once you have file_id, use analyze_file_with_coding() to get full content
     """
+    db_ = get_db()
+    if isinstance(max_matches_per_file, bool) or \
+            not isinstance(max_matches_per_file, int) or \
+            not 1 <= max_matches_per_file <= MAX_MATCHES_PER_FILE_CAP:
+        return json.dumps({
+            "error": "max_matches_per_file must be between 1 and 50."})
     try:
-        result = get_db().search_files(
+        exclude_ids = _resolve_exclude_code_ids(db_, exclude_code_ids)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    if exclude_ids and not search_content:
+        return json.dumps({"error": (
+            "exclude_code_ids filters content matches; call search_files "
+            "with search_content=true to use it.")})
+
+    limit = validate_limit(limit)
+    canonical_args = {
+        "pattern": pattern,
+        "search_filename": search_filename,
+        "search_content": search_content,
+        "search_memo": search_memo,
+        "case_sensitive": case_sensitive,
+        "limit": limit,
+        "exclude_code_ids": exclude_ids,
+        "max_matches_per_file": max_matches_per_file,
+    }
+    fingerprint = fingerprint_arguments(TAG_SEARCH_FILES, canonical_args)
+    after = None
+    returned_so_far = 0
+    changed = False
+    if cursor is not None:
+        try:
+            key, returned_so_far, stamp = decode_cursor(
+                cursor, TAG_SEARCH_FILES, fingerprint, (str, int))
+        except CursorError as e:
+            text = (CURSOR_TOO_LONG if str(e) == CURSOR_TOO_LONG
+                    else cursor_invalid_message("search_files"))
+            return json.dumps({"error": text})
+        after = [key[0], key[1]]
+        changed = _database_changed(stamp)
+
+    try:
+        mask = (db_.excluded_span_mask(exclude_ids) if exclude_ids else None)
+        result = db_.search_files(
             pattern=pattern,
             search_filename=search_filename,
             search_content=search_content,
             search_memo=search_memo,
             case_sensitive=case_sensitive,
-            limit=limit
+            limit=limit,
+            max_matches_per_file=max_matches_per_file,
+            exclude_mask=mask,
+            after=after,
         )
-
+        scan = result.pop("_scan", None) or {}
+        has_more = not scan.get("exhausted", True)
+        next_cursor = None
+        if has_more and scan.get("last_key"):
+            next_cursor = encode_cursor(
+                TAG_SEARCH_FILES, fingerprint, scan["last_key"],
+                returned_so_far + len(result.get("results", [])),
+                _cursor_stamp())
+        if exclude_ids:
+            block = _novelty_block(db_, exclude_ids, None,
+                                   applies_to="content")
+            block["content_matches_excluded"] = scan.get(
+                "content_matches_excluded", 0)
+            block["files_with_all_matches_excluded"] = scan.get(
+                "files_with_all_matches_excluded", 0)
+            result["novelty_filter"] = block
+        result["files_examined_this_page"] = scan.get("files_examined", 0)
+        result["search_parameters"]["exclude_code_ids"] = exclude_ids
+        result["search_parameters"]["max_matches_per_file"] = \
+            max_matches_per_file
+        _attach_paging(result, "search_files", canonical_args, cursor,
+                       page_block(limit, len(result.get("results", [])),
+                                  returned_so_far
+                                  + len(result.get("results", [])),
+                                  has_more, next_cursor, not has_more),
+                       changed)
         return json.dumps(result, indent=2)
 
     except Exception as e:
