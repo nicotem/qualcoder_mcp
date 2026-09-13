@@ -729,7 +729,7 @@ carries the complete list.
 > loudly at startup. Measured for the 0.12 development branch (the
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13), the definitions run
-> to about 127,000 characters for `full`, roughly 32k tokens at four
+> to about 128,000 characters for `full`, roughly 32k tokens at four
 > characters per token, and about 49,000 characters for `core`, roughly
 > 12k tokens. On Python 3.10 to 3.12 the same definitions measure about
 > five per cent more, because those interpreters keep the docstring

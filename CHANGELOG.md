@@ -147,7 +147,7 @@ withholds project data.
 - The MCP initialize handshake now carries an `instructions` string
   (three sentences on evidence discipline and per-item approval);
   whether a host shows it to the model is host behaviour.
-- Serialised tool definitions measure about 127,000 characters for the
+- Serialised tool definitions measure about 128,000 characters for the
   full toolset (roughly 32k tokens) and 49,000 for `core` (roughly 12k
   tokens), up from 118,000 and 44,000 in 0.11. Measured under Python
   3.13; Python 3.10 to 3.12 keep the docstring indentation that 3.13

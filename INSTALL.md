@@ -430,7 +430,7 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 67 tools by
 default, and the serialised tool definitions alone measure about
-127,000 characters, roughly 32k tokens (measured for the 0.12
+128,000 characters, roughly 32k tokens (measured for the 0.12
 development branch under Python 3.13; the palette and idempotency notes
 on the codebook tools account for rather more of the growth since 0.11
 than the methodology guidance does. Python 3.10 to 3.12 keep the
