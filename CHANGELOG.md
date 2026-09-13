@@ -49,6 +49,70 @@ claims cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   `__main__.py:1230-1244`), with visibility 1, so a new name appears in
   its coder list by itself.
 
+### Changed: destructive tools need a preview token, not a confirm flag
+
+- `merge_codes`, `delete_code`, `delete_category`, `merge_category`,
+  `restore_backup` and `prune_backups` are two-step: call without
+  `preview_token` for a preview of exactly what would change, then call
+  again with the token the preview returned. `confirm=true` said yes to
+  whatever the tool was asked to do at that moment, which need not be
+  what the preview the researcher read described; a token is bound to
+  the tool, the arguments that decide the effect, the project and a
+  fingerprint of the rows the operation would touch, so a preview the
+  user approved cannot authorise something else, and a project that
+  changed in between is refused rather than acted on.
+- The token is valid for 60 minutes and is verified by recomputation,
+  not by anything the server remembers, so it survives a host recycling
+  the server process between the two calls. It is signed with a
+  per-user secret at `~/.qualcoder_mcp/preview_secret` (64 random hex
+  characters, created owner-only on POSIX). The secret never appears in
+  a result, a log line or an error; if it cannot be created or read, the
+  destructive tools refuse rather than falling back.
+- The execute re-checks the rows after taking SQLite's RESERVED lock
+  (`BEGIN IMMEDIATE`), so the window between the check and the mutation
+  is closed rather than narrowed. The mandatory backup is still taken
+  first, and a refusal at that point says the backup is there.
+- `confirm` stays in all six signatures for one release and is inert:
+  `confirm=true` without a token returns the preview with a note saying
+  so. It is removed in v0.13.
+
+### Added: previews say whose work is at stake
+
+- The four cascade previews carry a `collateral` block: how many of the
+  affected codings were made under this project's AI coder name or an
+  earlier one, a per-owner breakdown of the rest (visible owners only,
+  sorted by count, capped at 20 with `more_owners`), how many belong to
+  coders currently hidden in QualCoder (a count, never a name), and the
+  owner of the code or category row being removed, reported as
+  "(hidden coder)" when that coder is hidden. `merge_codes` additionally
+  reports whose codings it discards as duplicates, which is the one
+  irreversible part of a merge.
+- Rows under QualCoder 4.0's own assistant string that this project has
+  not adopted as its AI coder name are listed as another coder's work
+  with `known_ai_assistant: true`, a heuristic label rather than a claim
+  about who typed.
+- Warnings spell the numbers out, in the shape QualCoder's own AI server
+  uses for the same situation (`ai_mcp_server.py:1684-1688` at
+  `9bddf17`): other coders' work, hidden coders' codings, private notes
+  that die with their row, and a merge's discarded duplicates. Executing
+  a cascade that would remove a hidden coder's codings requires
+  `allow_hidden_coder=true`.
+
+### Changed: exports cannot be aimed at this server's state folder
+
+- `export_refi_qda` and the report exports refuse an output path inside
+  `~/.qualcoder_mcp`, on principle: that folder holds the preview-token
+  secret, the session files and the last-used-project pointer, and no
+  export has business there.
+
+### Upgrading from 0.11.x (destructive tools)
+
+- Scripts or prompts that called a destructive tool with `confirm=true`
+  no longer execute: they get the preview and a note. Take
+  `preview_token` from the preview and call again with it. The preview
+  also returns `execute_with`, which spells out the exact follow-up call
+  including `cascade` and `allow_hidden_coder` when they are needed.
+
 ### Added: ask what is NOT already coded, and page through the answer
 
 - `exclude_code_ids` on `search_files` (with `search_content=true`) and

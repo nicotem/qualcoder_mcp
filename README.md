@@ -879,14 +879,27 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `rename_category(category_id, new_name)` - **WRITES TO DATABASE** - Rename a category (same collision and no-op rules as `rename_code`)
 - `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
-**Codebook, Destructive (preview, then confirm, then safety backup):**
-- `merge_codes(from_code_id, into_code_id, confirm)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder; previews before confirming)
-- `delete_code(code_id, confirm, cascade)` - **WRITES TO DATABASE** - Delete a code and all its coded segments (preview shows how many codings will be removed; `cascade=true` is required for a code that has sub-codes)
-- `delete_category(category_id, confirm)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data)
-- `merge_category(from_category_id, into_category, confirm)` - **WRITES TO DATABASE** - Merge a category into another (or into the top level); its codes and sub-categories move to the target
+**Codebook, Destructive (preview, then token, then safety backup):**
+- `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
+- `delete_code(code_id, preview_token, cascade, allow_hidden_coder)` - **WRITES TO DATABASE** - Delete a code and all its coded segments (`cascade=true` is required for a code that has sub-codes)
+- `delete_category(category_id, preview_token)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data)
+- `merge_category(from_category_id, into_category, preview_token)` - **WRITES TO DATABASE** - Merge a category into another (or into the top level); its codes and sub-categories move to the target
 
-On QualCoder 4.0 projects the previews of these four tools also report
-`hidden_coder_codings_affected` and `private_notes_affected` as counts.
+Since v0.12 these four, and `restore_backup` and `prune_backups`, are
+two-step: call without `preview_token` for a preview of exactly what
+would change, then call again with the token the preview returned. The
+token is bound to that operation, those arguments, that project and the
+rows the preview covered, so a preview the user approved cannot
+authorise something else, and a project that changed in between is
+refused rather than acted on. `confirm=true` no longer executes; it
+returns the preview with a note and is removed in v0.13.
+
+Every preview says whose work is at stake: how many of the affected
+codings were made under this project's AI coder name(s), a per-owner
+breakdown of the rest, how many belong to coders currently hidden in
+QualCoder (a count, never a name), and how many rows carry a `#####`
+private note. Executing when hidden coders' codings are affected
+requires `allow_hidden_coder=true`.
 
 ## Available Prompts
 

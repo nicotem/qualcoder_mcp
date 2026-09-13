@@ -42,6 +42,14 @@ What stays local, always:
   apply to it)
 - AI-coding session files (`~/.qualcoder_mcp/sessions/`), written
   atomically and created owner-only on POSIX systems (mode 0600)
+- the preview-token secret (`~/.qualcoder_mcp/preview_secret`): 64
+  random hex characters, created owner-only on POSIX systems, used to
+  sign the tokens that authorise a destructive operation. It never
+  leaves your machine, never appears in a result, a log line or an error,
+  and holds nothing about your project. Deleting it invalidates
+  outstanding preview tokens, which means the next execute asks for a
+  fresh preview; nothing else. No export can be written into this
+  folder: the export tools refuse paths inside it.
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
@@ -110,9 +118,9 @@ keeps the same promise:
     The refusal says only that a private note exists on that row; it
     never quotes, counts or characterises it.
   - The cascades (delete_code, delete_category, merge_codes,
-    merge_category) require a preview and a confirm, always back up
-    first, and their preview reports how many rows carrying a private
-    note the operation would remove, as a count only.
+    merge_category) require a preview token, always back up first, and
+    their preview reports how many rows carrying a private note the
+    operation would remove, as a count only.
   - Deliberate disclosure: because the refusal and the forced backup
     trigger only on rows that carry a private note, they reveal that a
     private note EXISTS on that row (never its content). The owner
@@ -179,10 +187,15 @@ project has the coder-visibility capability:
   in QualCoder, never who or how many. With the override, the result
   echoes ids only (as QualCoder's AI server does; update_annotation
   also echoes back the public note text the AI itself just supplied),
-  never the hidden coder's name, code, span or text. The confirm-gated cascades
-  (delete_code, delete_category, merge_codes, merge_category) report
-  in their preview how many affected codings belong to hidden coders,
-  as a count. If the visibility state cannot be read (the view exists
+  never the hidden coder's name, code, span or text. The token-gated
+  cascades (delete_code, delete_category, merge_codes, merge_category)
+  report in their preview how many affected codings belong to hidden
+  coders, as a count, and name every OTHER owner whose codings the
+  operation would remove, so the researcher can see whose work is at
+  stake; a hidden coder is never named there, and the owner of a code or
+  category row being removed is reported as "(hidden coder)" when that
+  coder is hidden. Executing a cascade that would remove a hidden
+  coder's codings requires an explicit allow_hidden_coder=true. If the visibility state cannot be read (the view exists
   but does not answer), these tools return an error and change nothing,
   with or without the override; they never assume a row is visible, and
   the cascade previews return an error rather than an undercount.
@@ -250,7 +263,7 @@ Two further rules touch files on your disk:
   have a project open (4.0 writes no lock file), every tool that
   reports a `qualcoder_gui_signals` field (today: select_project,
   get_current_project, analyze_for_coding and the restore_backup
-  preview, which is the default confirm=false call) also looks at the
+  preview, which is the call without a preview_token) also looks at the
   list of processes running on this machine (`ps` or `tasklist`, or
   psutil when installed). The listing is filtered in memory for
   process names and command lines that mention QualCoder (this

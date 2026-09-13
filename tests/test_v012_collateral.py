@@ -322,6 +322,41 @@ class TestTheExecutePath:
         assert len(_backups(qualcoder_db_path)) == 1
         assert server.db.read_only is True
 
+    def test_a_row_added_INSIDE_the_write_window_stops_it(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """The in-transaction re-check, which is the only guard for the
+        window between verifying the token and mutating (H2).
+
+        Another writer commits after the verification and before the
+        delete. BEGIN IMMEDIATE takes the RESERVED lock first, so this
+        can only happen strictly before it; the re-read then sees the new
+        row, and the operation refuses with the backup already taken and
+        says so.
+        """
+        out = _preview(server.delete_code, 1)
+        original = QualcoderDatabase.begin_immediate
+        fired = []
+
+        def racing_begin(self):
+            if not fired:
+                fired.append(True)
+                _add_coding(qualcoder_db_path, 96, 1, 1, 61, 63, "Racer")
+            return original(self)
+
+        monkeypatch.setattr(QualcoderDatabase, "begin_immediate",
+                            racing_begin)
+        refused = _preview(server.delete_code, 1,
+                           preview_token=out["preview_token"])
+        assert fired, "the race never happened; the test proves nothing"
+        assert refused["error"].startswith("The project changed since this "
+                                           "preview was made")
+        assert "A backup had already been taken" in refused["error"]
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
+                       )[0]["n"] == 1
+        assert len(_backups(qualcoder_db_path)) == 1
+        assert server.db.read_only is True
+
     def test_a_row_added_between_preview_and_execute_stops_it(
             self, setup_server, qualcoder_db_path):
         out = _preview(server.delete_code, 1)

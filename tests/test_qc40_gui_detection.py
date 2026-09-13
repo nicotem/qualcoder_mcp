@@ -262,7 +262,8 @@ class TestLadderWiring:
     def test_restore_preview_reports_signals_and_asks(self, setup_server,
                                                       qualcoder_db_path,
                                                       no_process_hits):
-        # The confirm=false preview is restore_backup's own ask rung:
+        # The preview (the call without a token) is restore_backup's own
+        # ask rung:
         # it reports the heuristics and asks, and stays a preview
         # (QA round 1, F18)
         import shutil
@@ -476,8 +477,9 @@ class TestProcessScanCallersAreDocumented:
 
     def test_callers_enumerated_from_the_code(self):
         # database.py has no other consumer of the scan; server.py's
-        # callers are these four (restore_backup: its confirm=false
-        # preview). Update PRIVACY.md and README.md when this set grows.
+        # callers are these four (restore_backup: its preview, the call
+        # without a token). Update PRIVACY.md and README.md when this set
+        # grows.
         assert _tools_running_the_process_scan() == self.EXPECTED
 
     def test_privacy_doc_names_every_caller(self):
@@ -485,8 +487,9 @@ class TestProcessScanCallersAreDocumented:
         bullet = _paragraph_after(privacy, "**Process listing.**")
         for tool in _tools_running_the_process_scan():
             assert tool in bullet, tool
-        # and says the preview is the default call, so nobody is surprised
-        assert "confirm=false" in bullet
+        # and says the preview is the call WITHOUT a token, so nobody is
+        # surprised (v0.12 replaced confirm with the preview token)
+        assert "without a preview_token" in bullet
 
     def test_readme_names_every_caller(self):
         readme = (_ROOT / "README.md").read_text(encoding="utf-8")
