@@ -252,6 +252,17 @@ def query(project_path: str, sql: str, args=()) -> List[sqlite3.Row]:
         conn.close()
 
 
+def execute(project_path: str, sql: str, args=()) -> None:
+    """Write directly, out of band, to set up a drift scenario."""
+    data = Path(project_path) / "data.qda"
+    conn = sqlite3.connect(str(data))
+    try:
+        conn.execute(sql, args)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def core_invariant_problems(project_path: str) -> List[str]:
     """Return a list of invariant-violation descriptions (empty == all good).
 

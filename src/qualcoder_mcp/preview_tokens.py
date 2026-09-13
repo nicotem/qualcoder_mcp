@@ -65,6 +65,16 @@ SECRET_UNAVAILABLE_MESSAGE = (
     "~/.qualcoder_mcp: check permissions; nothing was changed.")
 
 
+def state_home() -> Path:
+    """The state folder, read through the module attribute.
+
+    A function rather than a direct import, so a test that isolates
+    STATE_HOME isolates it for every caller, including the export-path
+    guard in the server layer.
+    """
+    return STATE_HOME
+
+
 def _now() -> int:
     """Unix seconds. Injectable so no test depends on the wall clock."""
     return int(time.time())
@@ -295,18 +305,20 @@ OK = "ok"
 MALFORMED = "token_malformed"
 EXPIRED = "token_expired"
 OTHER_OPERATION = "token_other_operation"
+PROJECT_CHANGED = "project_changed"
 
 
 def verify(token: Any, tool: str, args: Dict[str, Any], project: str,
            state: str, now: Optional[int] = None) -> str:
     """Check a token against the operation it is being used for.
 
-    Returns one of OK, MALFORMED, EXPIRED or OTHER_OPERATION. A token
-    whose MAC does not match is OTHER_OPERATION rather than MALFORMED,
-    because from the caller's side those are the same situation: this
-    token does not authorise this operation. Expiry is checked before the
-    MAC so an old token for the right operation gets the more useful
-    message. Every comparison uses `hmac.compare_digest`.
+    Returns one of OK, MALFORMED, EXPIRED, PROJECT_CHANGED or
+    OTHER_OPERATION. A token whose MAC does not match is a refusal either
+    way; the public `bind` decides which of the two explanations the
+    caller gets, since a matching bind means this token WAS issued for
+    this operation and the rows have moved since. Expiry is checked
+    before the MAC so an old token for the right operation gets the more
+    useful message. Every comparison uses `hmac.compare_digest`.
     """
     if not isinstance(token, str):
         return MALFORMED
@@ -330,5 +342,14 @@ def verify(token: Any, tool: str, args: Dict[str, Any], project: str,
     secret = load_secret()
     expected = _mac(secret, tool, args, project, state, issued)
     if not hmac.compare_digest(mac, expected):
+        # The MAC covers the state as well as the operation, so a failure
+        # means one of the two moved. `bind` is exactly what tells them
+        # apart: it covers the tool, the arguments and the project and
+        # nothing else, so a token whose bind still matches was issued
+        # for THIS operation and the project has changed under it, which
+        # is the more useful thing to say. It is public and proves
+        # nothing on its own; the MAC has already refused either way.
+        if hmac.compare_digest(bind, bind_id(tool, args, project)):
+            return PROJECT_CHANGED
         return OTHER_OPERATION
     return OK

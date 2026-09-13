@@ -67,12 +67,14 @@ from .preview_tokens import (
     MALFORMED,
     OK,
     OTHER_OPERATION,
+    PROJECT_CHANGED,
     SECRET_UNAVAILABLE_MESSAGE,
     TOKEN_VALID_FOR_MINUTES,
     PreviewSecretUnavailable,
     canonical_args,
     fingerprint_rows,
     issue,
+    state_home as preview_tokens_state_home,
     verify,
 )
 from .project_settings import (
@@ -3690,6 +3692,12 @@ def export_refi_qda(
         return json.dumps({
             "error": f"'{out_file.name}' already exists. Pass overwrite=true "
                      f"to replace it."
+        })
+    if _inside_state_home(out_file):
+        return json.dumps({
+            "error": "Refusing to write the export inside this server's "
+                     "state folder (~/.qualcoder_mcp), which holds session "
+                     "files and internal state; choose another location."
         })
     project_folder = validate_qda_path(current_project_path).parent
     if project_folder in out_file.parents or out_file.parent == project_folder:
@@ -8523,6 +8531,19 @@ TOKEN_ERROR_TEXTS = {
         "the token no longer applies. Call `{tool}` without preview_token "
         "for a fresh preview, show the user what changed, then execute; "
         "nothing was changed."),
+    # The pre-verify variant. The MAC covers the state, so a mismatch
+    # whose `bind` still matches means either the rows moved or the
+    # secret was rotated; the two cannot be told apart statelessly, and
+    # both mean "preview again", so the text names both rather than
+    # asserting the one it cannot know (D3 3.5 plus 4.3).
+    "project_changed_or_rotated": (
+        "The project changed since this preview was made: the rows this "
+        "operation would affect are no longer exactly those previewed, so "
+        "the token no longer applies. Call `{tool}` without preview_token "
+        "for a fresh preview, show the user what changed, then execute; "
+        "nothing was changed. If nothing in the project changed, this "
+        "server's preview secret was rotated since the preview, which has "
+        "the same remedy."),
     "hidden_coder_override_required": (
         "This operation affects codings that belong to a coder currently "
         "hidden in QualCoder (see hidden_coder_codings_affected in the "
@@ -8611,7 +8632,9 @@ def _token_error(reason: str, tool: str) -> Dict[str, Any]:
     Count-free and name-free even where the preview disclosed a count:
     the same posture as every other refusal in this server.
     """
-    return {"error": TOKEN_ERROR_TEXTS[reason].format(tool=tool),
+    key = ("project_changed_or_rotated" if reason == PROJECT_CHANGED
+           else reason)
+    return {"error": TOKEN_ERROR_TEXTS[key].format(tool=tool),
             "reason": reason, "nothing_changed": True}
 
 
@@ -8667,6 +8690,13 @@ def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
                              else state_preview, rows)
     token = issue(tool, args, project, state)
     arguments = dict(execute_arguments)
+    # The recipe spells out the arguments the preview says this execute
+    # will need, so a small local model does not have to infer them from
+    # a note (D3 3.5).
+    if preview.get("hidden_coder_codings_affected", 0):
+        arguments["allow_hidden_coder"] = True
+    if preview.get("subcode_count", 0):
+        arguments["cascade"] = True
     arguments["preview_token"] = token
     payload: Dict[str, Any] = {
         "requires_confirmation": True,
@@ -8780,9 +8810,15 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
         return _token_error("hidden_coder_override_required", tool)
 
     # Always back up before a destructive write (no create_backup=False here)
-    return _perform_write(_state_guarded(state_of, state, op_fn, tool),
-                          create_backup=True,
-                          backup_fail_detail=backup_fail_detail)
+    result = _perform_write(_state_guarded(state_of, state, op_fn, tool),
+                            create_backup=True,
+                            backup_fail_detail=backup_fail_detail)
+    if isinstance(result, dict) and "error" not in result \
+            and "collateral" in preview:
+        # What the user approved travels with what was done, so the
+        # result can be read on its own afterwards.
+        result.setdefault("collateral", preview["collateral"])
+    return result
 
 
 @mcp.tool()
@@ -9456,6 +9492,23 @@ def set_attribute(target_type: str, target_id: int, attribute_name: str,
 # REPORT EXPORTS (v0.8 phase B) — file artefacts with QualCoder-parity shapes
 # ============================================================================
 
+def _inside_state_home(out_file) -> bool:
+    """Whether an export path lands inside ~/.qualcoder_mcp (D3 5.2).
+
+    The state home holds the preview-token secret, the session files and
+    the MRU pointer. No export has business there, and refusing on
+    principle means no export can ever be aimed at the secret, whatever a
+    caller intends. Resolved on both sides so a symlinked home or a
+    traversing path cannot slip past the comparison.
+    """
+    try:
+        home = Path(preview_tokens_state_home()).resolve()
+        target = Path(out_file).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return home == target or home in target.parents
+
+
 def _resolve_export_path(output_path: str, suffix: str, default_name: str,
                          overwrite: bool):
     """Resolve and validate an export path (export_refi_qda posture).
@@ -9511,6 +9564,12 @@ def _resolve_export_path(output_path: str, suffix: str, default_name: str,
                 "error": f"'{out_file.name}' already exists. Pass "
                          f"overwrite=true to replace it."
             }
+    if _inside_state_home(out_file):
+        return None, {
+            "error": "Refusing to write the export inside this server's "
+                     "state folder (~/.qualcoder_mcp), which holds session "
+                     "files and internal state; choose another location."
+        }
     project_folder = validate_qda_path(current_project_path).parent
     if project_folder in out_file.parents or out_file.parent == project_folder:
         return None, {
