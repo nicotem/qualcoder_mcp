@@ -59,6 +59,14 @@ dev = [
 markers = [
     "giant: large 10k+ coding / 500k-char build; opt-in via TRACK6_GIANT=1",
 ]
+# A warning raised by our own modules fails the run (fix round 1, F19).
+# Scoped to this package: a dependency's DeprecationWarning is not ours
+# to fix, and failing on one would pin third-party release notes into
+# this suite. tests/test_suite_hygiene.py covers the compile-time half,
+# which no runtime filter can see.
+filterwarnings = [
+    "error:::qualcoder_mcp.*",
+]
 
 [build-system]
 requires = ["setuptools>=77"]

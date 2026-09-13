@@ -569,7 +569,7 @@ class SessionManager:
     def save_session(self, session: AICodingSession) -> None:
         """Save session to disk as JSON, atomically and owner-only.
 
-        The MRU write discipline (server.py \_open_mru_tmp), applied here
+        The MRU write discipline (server.py _open_mru_tmp), applied here
         because a session file holds the researcher's approvals and a
         torn write would lose them: tempfile.mkstemp opens O_CREAT|O_EXCL
         at mode 0600 under an unpredictable name in the sessions
