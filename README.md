@@ -822,7 +822,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `delete_annotation(annotation_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` - **WRITES TO DATABASE** - Delete an annotation
 
 **Codebook Editing (Write Operations):**
-- `create_code(name, category, color, memo, parent_code_id, create_backup)` - **WRITES TO DATABASE** - Create a new code (a supplied colour is snapped onto QualCoder's 120-colour palette and the result says so; `parent_code_id` nests it as a sub-code on v16+ schemas). Idempotent: a name that already exists, exactly or differing only by letter case, answers `created: false, reason: already_exists` with the existing code and makes no backup
+- `create_code(name, category, color, memo, parent_code_id, create_backup)` - **WRITES TO DATABASE** - Create a new code (a supplied colour is snapped onto QualCoder's 120-colour palette and the result says so; `parent_code_id` nests it as a sub-code on v16+ schemas). Idempotent: a name that already exists, ignoring letter case, spacing and Unicode form, answers `created: false, reason: already_exists` with the existing code and makes no backup
 - `rename_code(code_id, new_name)` - **WRITES TO DATABASE** - Rename a code (a name another code already uses, case-insensitively, is refused; the identical name answers `changed: false`)
 - `recolor_code(code_id, color)` - **WRITES TO DATABASE** - Change a code's colour (snapped onto QualCoder's palette; `changed: false` when the code already has that colour)
 - `move_code_to_category(code_id, category)` - **WRITES TO DATABASE** - Move a code into a category (omit `category` for top level; `changed: false` when it is already there)

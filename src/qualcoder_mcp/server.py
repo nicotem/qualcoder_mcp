@@ -754,12 +754,19 @@ def _recheck_lock_before_commit(project_folder: Path, held: bool) -> None:
 def _resolve_category_by_name(name: str):
     """Resolve a category name to its catid, refusing ambiguous matches.
 
-    Exact (case-sensitive) match wins; otherwise a UNIQUE case-insensitive
-    match is used (name_key: whitespace-normalised, NFC, casefold). The
-    schema's unique(name) is BINARY, so the GUI can legally create 'Theme'
-    and 'theme' side by side; with both present a case-insensitive lookup
-    must refuse and list the candidates instead of silently picking the
-    first one (QA5-1).
+    Exact match wins and it is BYTE for byte (`c["name"] == name`, no
+    normalisation on either side); otherwise a UNIQUE match under name_key
+    (whitespace-normalised, NFC, casefold) is the category. The schema's
+    unique(name) is BINARY, so the GUI can legally create 'Theme' and
+    'theme' side by side; with both present a case-insensitive lookup must
+    refuse and list the candidates instead of silently picking the first
+    one (QA5-1).
+
+    Because tier 1 here is byte for byte, the exact spelling of a
+    candidate always selects it, whatever the two rows differ by; the
+    ambiguity message therefore says so. _find_existing_by_name compares
+    normalised names in BOTH tiers (D5 section 3.2) and its message has to
+    give different advice (fix round 2, R15).
 
     Returns:
         (category_id, None) on success, (None, error_dict) otherwise.
@@ -774,9 +781,15 @@ def _resolve_category_by_name(name: str):
         return ci[0]["id"], None
     if len(ci) > 1:
         return None, {
+            # name_key folds spacing and Unicode form as well as letter
+            # case, so "differ only by letter case" misdescribed why the
+            # candidates collide whenever they were whitespace or NFC/NFD
+            # twins (fix round 2, R15).
             "error": f"Category name '{name}' is ambiguous: {len(ci)} "
-                     f"categories differ only by letter case. Use the exact "
-                     f"spelling of the one you mean (their ids are listed).",
+                     f"categories match it once letter case, spacing and "
+                     f"Unicode form are ignored. Use the exact spelling of "
+                     f"the one you mean, byte for byte (their ids are "
+                     f"listed).",
             "candidates": [{"id": c["id"], "name": c["name"]} for c in ci],
         }
     return None, {
@@ -800,14 +813,35 @@ def _resolve_category_by_name(name: str):
 # as the race backstop, and the pre-check runs BEFORE _perform_write so a
 # duplicate or a no-op costs no lock, no read-write upgrade and no backup.
 
+# What a caller can do with an ambiguity that no spelling can resolve:
+# the ids are in `candidates`, and these are the tools that take one.
+_AMBIGUITY_ID_TOOLS = {
+    "code": "rename_code and merge_codes take a code id",
+    "category": "rename_category and merge_category take a category id",
+    "case": "cases are renamed and merged in QualCoder, not here",
+}
+
+
 def _find_existing_by_name(rows, name: str, kind: str, plural: str):
     """Find the row a requested name refers to, under the X2 rule.
 
-    Tier 1: exactly one row whose NFC form equals the request byte for
-    byte ("exact"). Tier 2: exactly one row equal under name_key
-    ("case_insensitive"). Two or more matches (a codebook the GUI filled
-    with 'Theme' and 'theme') is an ambiguity the caller must resolve by
-    exact spelling, the rule _resolve_category_by_name applies.
+    Tier 1 ("exact"): exactly one row equal to the request after
+    normalize_name and NFC on BOTH sides (D5 section 3.2). It is not a
+    byte-for-byte comparison: a stored name that differs from the request
+    only by a run of whitespace, or only by Unicode form, is the same name
+    here rather than a case difference that is not there (fix round 1,
+    F11; docstring corrected in fix round 2, R7 and R12). Tier 2
+    ("case_insensitive"): exactly one row equal under name_key, which adds
+    casefold.
+
+    Two or more matches (a codebook the GUI filled with 'Theme' and
+    'theme') is an ambiguity the caller must resolve, and the error says
+    how. That depends on the candidates: letter case is still selectable
+    by spelling, but rows sharing one normalised form cannot be told apart
+    by any spelling, because tier 1 normalises the request too, so those
+    are pointed at their ids instead (fix round 2, R6).
+    _resolve_category_by_name applies the same two tiers with a byte-exact
+    tier 1, so its advice differs and its docstring says why.
 
     Returns:
         (row, match, None) on a match, (None, None, error_dict) on an
@@ -828,12 +862,30 @@ def _find_existing_by_name(rows, name: str, kind: str, plural: str):
         return ci[0], "case_insensitive", None
     if len(ci) > 1 or len(exact) > 1:
         candidates = ci if len(ci) > 1 else exact
+        # Say something the caller can act on. Tier 1 normalises the
+        # REQUEST as well as the stored name, so candidates that share one
+        # normalised form (whitespace twins, NFC/NFD twins) cannot be
+        # separated by any spelling at all: repeating "use the exact
+        # spelling" there is advice that cannot be followed, and the caller
+        # is left with no way to name the row (fix round 2, R6).
+        forms = [unicodedata.normalize("NFC", normalize_name(r["name"]))
+                 for r in candidates]
+        twins = max(forms.count(form) for form in forms)
+        if twins == 1:
+            remedy = ("differ only by letter case; use the exact spelling "
+                      "of the one you mean (their ids are listed)")
+        else:
+            hint = _AMBIGUITY_ID_TOOLS.get(kind, "their ids are listed")
+            remedy = (f"differ only by letter case, spacing or Unicode "
+                      f"form, and {twins} of them are one and the same "
+                      f"name once spacing and Unicode form are normalised, "
+                      f"so no spelling of the name can single those out: "
+                      f"work from the ids listed here ({hint}), or give "
+                      f"the duplicates distinct names in QualCoder")
         return None, None, {
             "error": f"{kind.capitalize()} name '{normalize_name(name)}' "
                      f"matches {len(candidates)} existing {plural} that "
-                     f"differ only by letter case, spacing or Unicode "
-                     f"form; use the exact spelling of the one you mean "
-                     f"(their ids are listed).",
+                     f"{remedy}.",
             "candidates": [{"id": r["id"], "name": r["name"]}
                            for r in candidates],
         }
@@ -6541,8 +6593,8 @@ def create_code(name: str, category: Optional[str] = None,
     defaults to a random pick from QualCoder's own palette (like
     GUI-created codes).
 
-    IDEMPOTENT: if a code with this name already exists (exactly, or
-    differing only by letter case), nothing is written and no backup is
+    IDEMPOTENT: if a code with this name already exists (ignoring letter
+    case, spacing and Unicode form), nothing is written and no backup is
     made; the result is `created: false, reason: already_exists` with the
     existing row under `code` (use its id), `match` (exact or
     case_insensitive) and, under `requested`, only the arguments that
@@ -6883,10 +6935,10 @@ def create_category(name: str, parent_category: Optional[str] = None,
     are unique among categories, globally (no per-parent scope) and
     compared case-insensitively.
 
-    IDEMPOTENT: if a category with this name already exists (exactly, or
-    differing only by letter case), nothing is written and no backup is
-    made; the result is `created: false, reason: already_exists` with the
-    existing row under `category` (use its id), `match` (exact or
+    IDEMPOTENT: if a category with this name already exists (ignoring
+    letter case, spacing and Unicode form), nothing is written and no
+    backup is made; the result is `created: false, reason: already_exists`
+    with the existing row under `category` (use its id), `match` (exact or
     case_insensitive) and, under `requested`, only the arguments that
     differ from the stored row (spelling, parent). A supplied memo is
     never applied to an existing category (set_memo does that).
@@ -7489,8 +7541,8 @@ def create_case(name: str, memo: Optional[str] = None,
     are created for any existing case attributes, exactly as QualCoder
     does.
 
-    IDEMPOTENT: if a case with this name already exists (exactly, or
-    differing only by letter case), nothing is written and no backup is
+    IDEMPOTENT: if a case with this name already exists (ignoring letter
+    case, spacing and Unicode form), nothing is written and no backup is
     made; the result is `created: false, reason: already_exists` with the
     existing row under `case` (use its id) and `match` (exact or
     case_insensitive). A supplied memo is never applied to an existing

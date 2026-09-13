@@ -386,6 +386,16 @@ class TestIdempotentCreates:
         assert out["color_requested"] == "#FF0000"
         assert out["color_snapped"] is True
         assert "#E65100" in out["message"]              # the nearest palette colour
+        # Fix round 2, R13: `requested.color` and `code.color` print the
+        # SAME string here, deliberately. The row holds an off-palette
+        # colour a GUI created, the argument asks for that same colour,
+        # and a write would have stored #E65100, so the argument does
+        # differ from what the row would hold; D5 section 3.3 fixes that
+        # reading of "differs" on this exact colour pair. The message and
+        # color_snapped carry the explanation, and this assertion makes
+        # the identical pair a pinned decision rather than an accident.
+        assert out["requested"]["color"] == out["code"]["color"] == "#FF0000"
+        assert "is not a QualCoder palette colour" in out["message"]
         assert _backups(qualcoder_db_path) == before
         assert _count(qualcoder_db_path, "code_name") == 2
 
@@ -423,7 +433,8 @@ class TestIdempotentCreates:
     def test_whitespace_twins_are_an_ambiguity_like_case_twins(
             self, setup_server, qualcoder_db_path):
         """Both tiers now normalise, so a codebook holding both spellings is
-        ambiguous in tier 1 exactly as it already was in tier 2."""
+        ambiguous in tier 1 exactly as it already was in tier 2. The advice
+        the refusal gives is pinned separately (TestAmbiguityGuidance)."""
         for cid, name in ((9, "Work  stress"), (10, "Work stress")):
             _exec(qualcoder_db_path,
                   "INSERT INTO code_name (cid, name, memo, catid, owner, date, color) "
@@ -564,6 +575,120 @@ class TestIdempotentCreates:
 
 
 # ===========================================================================
+# A2 fix round 2 (R6, R15): what an ambiguity refusal tells the caller to do
+# ===========================================================================
+
+class TestAmbiguityGuidance:
+    """An ambiguity refusal has to describe a remedy that exists.
+
+    Tier 1 of `_find_existing_by_name` normalises the REQUEST as well as
+    the stored name (D5 section 3.2, applied on both sides in fix round 1,
+    F11), so rows that share one normalised form (whitespace twins,
+    NFC/NFD twins) cannot be told apart by any spelling; only case twins
+    can. Every one of them used to be told to "use the exact spelling of
+    the one you mean", which for the first two is advice that cannot be
+    followed and leaves the caller with no way to name the row.
+
+    `_resolve_category_by_name` compares byte for byte in tier 1, so the
+    exact spelling does select a row there; its message keeps that advice
+    and now names the comparison it actually makes (name_key folds
+    spacing and Unicode form, not only letter case).
+    """
+
+    def _seed_codes(self, db_path, names, first_cid=9):
+        for offset, name in enumerate(names):
+            _exec(db_path,
+                  "INSERT INTO code_name (cid, name, memo, catid, owner, "
+                  "date, color) VALUES (?, ?, '', NULL, 'gui_user', "
+                  "'2024-01-15', '#F5D0A9')", (first_cid + offset, name))
+        _reload()
+
+    def test_whitespace_twins_are_sent_to_the_ids_not_to_a_spelling(
+            self, setup_server, qualcoder_db_path):
+        self._seed_codes(qualcoder_db_path, ("Work  stress", "Work stress"))
+        out = json.loads(server.create_code("work stress"))
+        error = out["error"]
+        assert "spacing" in error
+        assert "2 of them are one and the same name" in error
+        assert "no spelling of the name can single those out" in error
+        assert "rename_code and merge_codes take a code id" in error
+        assert "use the exact spelling" not in error
+        assert sorted(c["id"] for c in out["candidates"]) == [9, 10]
+
+        # Why the old advice could not be followed: every spelling of the
+        # pair, including each row's own, answers the same refusal.
+        for spelling in ("Work  stress", "Work stress", "WORK  STRESS"):
+            again = json.loads(server.create_code(spelling))
+            assert again.get("candidates") == out["candidates"], spelling
+        assert _count(qualcoder_db_path, "code_name") == 4
+        assert _backups(qualcoder_db_path) == []
+
+    def test_unicode_form_twins_get_the_same_answer(
+            self, setup_server, qualcoder_db_path):
+        # NFC and NFD spellings of one name: legal under the BINARY
+        # unique(name), and identical once tier 1 normalises both sides.
+        self._seed_codes(qualcoder_db_path, (
+            unicodedata.normalize("NFC", "Émotion"),
+            unicodedata.normalize("NFD", "Émotion")))
+        out = json.loads(server.create_code("Émotion"))
+        assert "Unicode form" in out["error"]
+        assert "no spelling of the name can single those out" in out["error"]
+        assert sorted(c["id"] for c in out["candidates"]) == [9, 10]
+
+    def test_case_twins_keep_the_exact_spelling_advice_because_it_works(
+            self, setup_server, qualcoder_db_path):
+        self._seed_codes(qualcoder_db_path, ("Theme", "theme"))
+        out = json.loads(server.create_code("THEME"))
+        assert "differ only by letter case" in out["error"]
+        assert "use the exact spelling of the one you mean" in out["error"]
+        assert "no spelling" not in out["error"]
+
+        # Followed, it resolves: tier 1 finds one row and the create is
+        # the ordinary idempotent answer.
+        resolved = json.loads(server.create_code("theme"))
+        assert resolved["created"] is False and resolved["match"] == "exact"
+        assert resolved["code"]["id"] == 10
+        assert _backups(qualcoder_db_path) == []
+
+    def test_case_twin_cases_name_no_tool_this_server_does_not_have(
+            self, setup_server, qualcoder_db_path):
+        # Cases have no rename or merge tool here, so the hint points at
+        # QualCoder rather than inventing one.
+        for name in ("Case  one", "Case one"):
+            _exec(qualcoder_db_path,
+                  "INSERT INTO cases (name, memo, owner, date) "
+                  "VALUES (?, '', 'gui_user', '2024-01-15')", (name,))
+        _reload()
+        out = json.loads(server.create_case("case one"))
+        assert "cases are renamed and merged in QualCoder, not here" in out["error"]
+        assert "rename_case" not in out["error"]
+
+    def test_category_resolution_names_the_comparison_it_makes(
+            self, setup_server, qualcoder_db_path):
+        for name in ("Cat  A", "Cat A"):
+            _exec(qualcoder_db_path,
+                  "INSERT INTO code_cat (name, memo, owner, date) "
+                  "VALUES (?, '', 'gui_user', '2024-01-15')", (name,))
+        _reload()
+        out = json.loads(server.move_code_to_category(1, "cat a"))
+        assert "ambiguous" in out["error"]
+        # name_key folds spacing and Unicode form as well as letter case,
+        # which is what the message used to leave out (R15).
+        assert "letter case, spacing and Unicode form are ignored" in out["error"]
+        assert "byte for byte" in out["error"]
+        assert len(out["candidates"]) == 2
+        assert _backups(qualcoder_db_path) == []
+
+        # And here the advice IS followable: tier 1 is byte for byte, so
+        # the double-spaced spelling selects the double-spaced row.
+        moved = json.loads(server.move_code_to_category(1, "Cat  A",
+                                                        create_backup=False))
+        assert moved["success"] is True and moved["changed"] is True
+        target = [c for c in out["candidates"] if c["name"] == "Cat  A"][0]
+        assert moved["new_category_id"] == target["id"]
+
+
+# ===========================================================================
 # A2: no-op moves and renames
 # ===========================================================================
 
@@ -616,12 +741,23 @@ class TestRecolourRacePath:
             calls["n"] += 1
             return real(self_, code_id) if calls["n"] == 1 else None
 
+        before = _backups(qualcoder_db_path)
         monkeypatch.setattr(QualcoderDatabase, "get_code_details", vanishing)
         out = json.loads(server.recolor_code(1, "#00FF7F"))
         assert "error" in out and "does not exist" in out["error"]
         assert calls["n"] >= 2
         assert _row(qualcoder_db_path,
                     "SELECT color FROM code_name WHERE cid=1")["color"] == "#FF0000"
+        # Fix round 2, R14: discriminate the raise from a plain
+        # `return answer`. The raise leaves _perform_write's try block
+        # before it commits and before it decorates the result, so the
+        # transaction is rolled back and the error envelope carries no
+        # backup_path; returning the answer instead would commit and add
+        # one. Without this assertion both spellings pass.
+        assert "backup_path" not in out
+        # The backup file itself was taken before the op ran, so it is on
+        # disk either way; only the disclosure tells the two arms apart.
+        assert len(_backups(qualcoder_db_path)) == len(before) + 1
 
 
 class TestNoOpMovesAndRenames:
