@@ -1404,6 +1404,23 @@ def _resolve_write_owner(
     return current, None
 
 
+def _ai_coder_name_change_warning(session, owner: str) -> Optional[str]:
+    """A warning when suggestions were recorded under another name.
+
+    Never a refusal: the rows are written under the CURRENT name, because
+    a name change never re-attributes anything, and the researcher is
+    told which name the suggestions were recorded under so the difference
+    is theirs to judge (ruling 9). Silent for 0.11 session files, which
+    carry no snapshot.
+    """
+    recorded = getattr(session, "ai_coder_name_at_record", None)
+    if recorded and owner and recorded != owner:
+        return (f"These suggestions were recorded while the project's AI "
+                f"coder name was '{recorded}'; they are being written "
+                f"under '{owner}'.")
+    return None
+
+
 def _ai_coder_name_report() -> Dict[str, Any]:
     """The AI coder name fields a project READ carries (D7 4.2).
 
@@ -3029,9 +3046,13 @@ def export_refi_qda(
 
     Known limitations (documented): cases, annotations and journals are not
     included (code categories ARE preserved as nested codes); all
-    selections are attributed to a single export user (the configured AI
-    coder name, QUALCODER_MCP_AI_CODER_NAME, default "AI Coding
-    Assistant") rather than the original coders.
+    selections are attributed to a single export user rather than to the
+    original coders, even when the project has used several AI coder
+    names. That user is named after the project's AI coder name, or,
+    when the project has none, after this host's declaration
+    (QUALCODER_MCP_AI_CODER_NAME) or the built-in default; the export
+    never asks for a name, and the result says which of the three it
+    used (ai_user_name_source).
 
     Args:
         output_path: Where to write the .qdpx file (must end in .qdpx; the
@@ -3745,7 +3766,13 @@ def analyze_for_coding(
         file_ids=file_ids,
         code_names=[c['name'] for c in codes_to_use],
         instruction=instruction,
-        min_confidence=min_confidence
+        min_confidence=min_confidence,
+        # A snapshot, not a decision: if the researcher changes the
+        # project's AI coder name between recording and applying, the
+        # rows are written under the NEW name (a name change never
+        # re-attributes) and the apply says which name they were recorded
+        # under (D7 section 7).
+        ai_coder_name_at_record=read_sidecar(_current_project_folder()).name
     )
 
     # Save session (Claude records its suggestions with record_suggestions)
@@ -4698,14 +4725,14 @@ def apply_codings(
     Args:
         coding_session_id: The session ID with approved suggestions
         create_backup: Create timestamped backup before writing (default: True)
-        owner: Coder name for attribution. Default: the configured AI
-               coder name (QUALCODER_MCP_AI_CODER_NAME environment
-               variable, falling back to "AI Coding Assistant"). Only
-               pass it when the user explicitly asks for a different
-               attribution; it is validated like the configured name
-               (plain single-line text, at most 80 characters, no
-               '#####') and must never be the project's own coder name
-               or another human coder's name.
+        owner: Deprecated since v0.12 and kept in the signature for
+               one release cycle only; removal is planned for v1.0.
+               Every row is attributed to the project's AI coder name;
+               passing exactly that name is a no-op, any other value is
+               refused before backup or write. To attribute a write
+               differently, change the project's AI coder name first
+               (set_project_ai_coder_name). A human coder's name is
+               never used.
 
     Returns:
         Detailed confirmation of what was written to the database
@@ -4963,6 +4990,10 @@ def apply_codings(
     # Format output
     output = ["\n✅ **CODINGS APPLIED TO DATABASE**\n"]
 
+    name_change = _ai_coder_name_change_warning(session, owner)
+    if name_change:
+        output.append(name_change + "\n")
+
     if unsafe_written:
         output.append(
             f"position_safety_warning: file(s) {unsafe_written} contain \\r\\n "
@@ -5032,14 +5063,14 @@ def import_text_file(
         filename: Name for the new file (must include extension, e.g., "interview_04.txt")
         content: The full text content of the file
         memo: Optional memo/description for the file
-        owner: Creator name for attribution. Default: the configured AI
-               coder name (QUALCODER_MCP_AI_CODER_NAME environment
-               variable, falling back to "AI Coding Assistant"). Only
-               pass it when the user explicitly asks for a different
-               attribution; it is validated like the configured name
-               (plain single-line text, at most 80 characters, no
-               '#####') and must never be the project's own coder name
-               or another human coder's name.
+        owner: Deprecated since v0.12 and kept in the signature for
+               one release cycle only; removal is planned for v1.0.
+               Every row is attributed to the project's AI coder name;
+               passing exactly that name is a no-op, any other value is
+               refused before backup or write. To attribute a write
+               differently, change the project's AI coder name first
+               (set_project_ai_coder_name). A human coder's name is
+               never used.
         create_backup: Create timestamped backup before writing (default: True)
         case_name: Optional existing case to link the new file to
                    (matched case-insensitively)
@@ -5754,6 +5785,11 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     if _project_is_write_locked(project_data):
         return json.dumps({"error": DB_LOCKED_MESSAGE})
 
+    # The AI coder name before the swap: the restore replaces the whole
+    # project folder, sidecar included, so the setting reverts to the
+    # backup's version and the result has to say so (B1.14).
+    name_before = read_sidecar(project_folder).name
+
     # Safety backup of the current state (rename to mark it as pre-restore)
     safety_report: Dict[str, Any] = {}
     safety_backup = backup_project(project_folder, report=safety_report)
@@ -5854,6 +5890,20 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         "hint": "The pre-restore state is kept in the safety backup in case "
                 "you change your mind."
     }
+    name_after = read_sidecar(project_folder).name
+    if name_after != name_before:
+        if name_after is None:
+            result["ai_coder_name_note"] = (
+                f"That backup carries no AI coder name setting, so this "
+                f"project no longer has one (it was '{name_before}' before "
+                f"the restore); the next write will ask for it again.")
+        else:
+            result["ai_coder_name_note"] = (
+                f"The AI coder name setting was restored to "
+                f"'{name_after}'" + (f" (it was '{name_before}' before the "
+                                     f"restore)." if name_before else
+                                     " (this project had none before the "
+                                     "restore)."))
     _attach_skipped_symlinks(result, safety_report, prefix="safety_backup_")
     return json.dumps(result, indent=2)
 
@@ -7029,6 +7079,9 @@ def create_proposed_codes(coding_session_id: str,
         session.last_modified = datetime.now().isoformat()
         session_manager.save_session(session)
         result["proposal_statistics"] = session.proposal_statistics()
+        name_change = _ai_coder_name_change_warning(session, owner)
+        if name_change:
+            result["ai_coder_name_warning"] = name_change
         if unsafe_files:
             result["position_safety_warning"] = (
                 f"File(s) {sorted(unsafe_files.values())} are position-unsafe "

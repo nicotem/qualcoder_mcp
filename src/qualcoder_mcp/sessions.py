@@ -2,7 +2,9 @@
 
 import json
 import logging
+import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -197,9 +199,18 @@ class AICodingSession:
         file_ids: Optional[List[int]] = None,
         code_names: Optional[List[str]] = None,
         instruction: str = "",
-        min_confidence: float = 0.6
+        min_confidence: float = 0.6,
+        ai_coder_name_at_record: Optional[str] = None
     ):
         self.session_id = session_id or str(uuid.uuid4())
+        # The project's AI coder name AT THE MOMENT the session was
+        # created (v0.12, D7 section 7). Suggestions recorded under one
+        # name and applied after the researcher changed it are still
+        # written under the CURRENT name, because a name change never
+        # re-attributes anything; the snapshot exists so the apply can
+        # SAY so. Absent in 0.11 session files, which is why it is
+        # optional here and read with a default below.
+        self.ai_coder_name_at_record = ai_coder_name_at_record
         # Ensure project_path is always a string for JSON serialization
         self.project_path = str(project_path) if project_path else ""
         self.description = description
@@ -448,6 +459,7 @@ class AICodingSession:
             "code_names": self.code_names,
             "instruction": self.instruction,
             "min_confidence": self.min_confidence,
+            "ai_coder_name_at_record": self.ai_coder_name_at_record,
             "suggestions": [s.to_dict() for s in self.suggestions],
             "proposed_codes": [p.to_dict() for p in self.proposed_codes],
             "span_edit_stats": self.span_edit_stats,
@@ -481,7 +493,9 @@ class AICodingSession:
             file_ids=data.get("file_ids", []),
             code_names=data.get("code_names", []),
             instruction=data.get("instruction", ""),
-            min_confidence=data.get("min_confidence", 0.6)
+            min_confidence=data.get("min_confidence", 0.6),
+            # Absent in 0.11 files: no snapshot, so no warning to give
+            ai_coder_name_at_record=data.get("ai_coder_name_at_record")
         )
         session.created_at = data["created_at"]
         session.last_modified = data["last_modified"]
@@ -553,7 +567,19 @@ class SessionManager:
         return session_id
 
     def save_session(self, session: AICodingSession) -> None:
-        """Save session to disk as JSON.
+        """Save session to disk as JSON, atomically and owner-only.
+
+        The MRU write discipline (server.py \_open_mru_tmp), applied here
+        because a session file holds the researcher's approvals and a
+        torn write would lose them: tempfile.mkstemp opens O_CREAT|O_EXCL
+        at mode 0600 under an unpredictable name in the sessions
+        directory, so a concurrent host cannot share a temp name and a
+        symlink planted at a would-be name is refused rather than written
+        through; os.replace is atomic, so a reader sees the old file or
+        the new one; a failure unlinks the temp and leaves the previous
+        file intact. No fsync: sessions are re-creatable, and the one
+        fsync in this server is the AI coder name sidecar, which is not
+        (H5, B4.5).
 
         Args:
             session: The AICodingSession to save
@@ -564,11 +590,22 @@ class SessionManager:
         self._validate_session_id(session.session_id)
         self._ensure_storage_dir()
         filepath = self.storage_dir / f"session_{session.session_id}.json"
+        tmp = None
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
+            fd, tmp_name = tempfile.mkstemp(dir=str(self.storage_dir),
+                                            prefix=f"{filepath.name}.",
+                                            suffix=".tmp")
+            tmp = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(session.to_dict(), f, indent=2)
+            os.replace(str(tmp), str(filepath))
             logger.info(f"Saved session {session.session_id} to {filepath}")
         except Exception as e:
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
             logger.error(f"Failed to save session {session.session_id}: {e}")
             raise
 
