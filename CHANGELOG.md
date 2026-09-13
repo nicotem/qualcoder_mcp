@@ -39,7 +39,12 @@ cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   Proposal colours were not snapped before 0.12, so a session file
   written by an earlier release can hold an off-palette one; the
   researcher used to approve that colour and see nothing about the
-  different value actually written.
+  different value actually written. A session file that holds a value
+  which is not `#RRGGBB` at all (hand-edited, or corrupted) shows that
+  value as it stands on its own row of the review screen, named with the
+  refusal it will meet on create, rather than being snapped: the rest of
+  the screen renders as usual, and a value the create path will refuse is
+  never announced as the one that will be stored.
 - Invalid colours are still refused with the existing message (QualCoder
   4.0 silently substitutes a random colour; a refused argument is more
   honest). There is no opt-out argument.

@@ -1123,6 +1123,152 @@ class TestProposalColourDisclosure:
         assert stored == created["color"]
 
 
+class TestReviewScreenSurvivesACorruptedProposalColour:
+    """Fix round 4, T7. The S1 extension above reads the proposal colour
+    off disk and snapped it without the validation snap_to_palette
+    declares as its precondition (database.py:160), so one hand-edited or
+    corrupted value replaced the WHOLE review screen with
+    {"error": "invalid literal for int() with base 16: ''"}. That screen
+    is where the researcher gives approval, so a malformed value has to
+    degrade its own row and nothing else, and a value the create path
+    will refuse must not be advertised as what will be stored.
+    """
+
+    MALFORMED = ["red", "#FFF", "#GGHHII", "rgb(1,2,3)", "#12345",
+                 "#1234567", "", "  #FF0000  "]
+
+    @staticmethod
+    def _seed(sid, pairs):
+        """Put proposals straight into the session file, colours and all.
+
+        Bypasses propose_codes deliberately: it enforces #RRGGBB, so the
+        only way to the state this class is about is a session file
+        written by an older release, edited by hand, or corrupted.
+        """
+        from qualcoder_mcp.sessions import ProposedCode
+
+        session = server.session_manager.load_session(sid)
+        guids = []
+        for name, colour in pairs:
+            proposal = ProposedCode(name=name)
+            proposal.color = colour
+            proposal.status = "approved"
+            session.add_proposal(proposal)
+            guids.append(proposal.guid)
+        server.session_manager.save_session(session)
+        return guids
+
+    @pytest.mark.parametrize("colour", MALFORMED)
+    def test_one_malformed_colour_costs_one_row_not_the_screen(
+        self, setup_server, qualcoder_db_path, colour
+    ):
+        sid = _sid()
+        self._seed(sid, [("Before", "#FF0000"), ("Corrupted", colour),
+                         ("After", "#1B5E20")])
+
+        review = server.review_proposals(sid)
+        # The screen, not an error envelope.
+        assert review.startswith("**Review of 3 Code Proposal(s)**"), review
+        assert "invalid literal for int()" not in review
+        # Every proposal still reviewable, the two sound ones unaffected.
+        assert "**Name:** Before" in review
+        assert "**Name:** Corrupted" in review
+        assert "**Name:** After" in review
+        assert f"Colour: {snap_to_palette('#FF0000')} (the nearest palette" \
+            in review
+        assert "Colour: #1B5E20\n" in review
+
+    def test_a_malformed_colour_is_named_with_the_refusal_it_earns(
+        self, setup_server, qualcoder_db_path
+    ):
+        sid = _sid()
+        self._seed(sid, [("Corrupted", "red")])
+        review = server.review_proposals(sid)
+        assert "Colour: red (not a #RRGGBB value" in review
+        assert "create_proposed_codes refuses the batch on it" in review
+        assert "update_proposal" in review
+        # And the remedy is a real one: update_proposal takes a colour.
+        assert "what will be stored" not in review
+
+    def test_a_six_character_value_is_not_promised_as_what_gets_stored(
+        self, setup_server, qualcoder_db_path
+    ):
+        """'#12345' snapped silently (int('5', 16) is legal), so the screen
+        named a palette colour 'which is what will be stored' while
+        create_proposed_codes refuses the whole batch on it."""
+        sid = _sid()
+        self._seed(sid, [("Short", "#12345")])
+        review = server.review_proposals(sid)
+        assert "what will be stored" not in review
+        assert "Colour: #12345 (not a #RRGGBB value" in review
+
+    def test_a_non_string_colour_degrades_its_row_too(
+        self, setup_server, qualcoder_db_path
+    ):
+        """A corrupted file can hold any JSON scalar, and `p.color.upper()`
+        raised AttributeError on the pre-fix branch for every one of them."""
+        sid = _sid()
+        self._seed(sid, [("Numeric", 12345), ("Listed", ["#FF0000"])])
+        review = server.review_proposals(sid)
+        assert review.startswith("**Review of 2 Code Proposal(s)**"), review
+        assert "not a #RRGGBB value" in review
+
+    def test_the_snap_disclosure_the_extension_added_is_unchanged(
+        self, setup_server, qualcoder_db_path
+    ):
+        """The guard must not cost the S1 extension anything: a legal
+        off-palette colour is still reported as the snapped one, and a
+        palette member is still reported plainly."""
+        sid = _sid()
+        self._seed(sid, [("Legacy", "#FF0000"), ("Member", "#1B5E20"),
+                         ("Lower", "#1b5e20"), ("Unset", None)])
+        review = server.review_proposals(sid)
+        snapped = snap_to_palette("#FF0000")
+        assert (f"Colour: {snapped} (the nearest palette colour to #FF0000, "
+                f"which is what will be stored)") in review
+        assert "Colour: #1B5E20\n" in review
+        # Lower case is the same palette colour, so no snap is claimed.
+        assert "Colour: #1b5e20\n" in review
+        assert "Colour: (palette pick at creation)" in review
+
+    def test_a_corrupted_session_file_end_to_end(
+        self, setup_server, qualcoder_db_path
+    ):
+        """From the bytes on disk to the write, on a file this process did
+        not author: edit the JSON, drop the in-memory copy, review, then
+        create."""
+        sid = _sid()
+        before = _count(qualcoder_db_path, "code_name")
+        self._seed(sid, [("Sound", "#FF0000"), ("Corrupted", "#FF0000")])
+
+        path = (Path(server.session_manager.storage_dir)
+                / f"session_{sid}.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert [p["name"] for p in data["proposed_codes"]] == ["Sound",
+                                                               "Corrupted"]
+        data["proposed_codes"][1]["color"] = "not a colour"
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _reload()          # nothing cached from before the edit
+
+        review = server.review_proposals(sid)
+        assert review.startswith("**Review of 2 Code Proposal(s)**"), review
+        assert "Colour: not a colour (not a #RRGGBB value" in review
+        assert (f"Colour: {snap_to_palette('#FF0000')} (the nearest palette "
+                f"colour to #FF0000, which is what will be stored)") in review
+
+        # And the screen's claim about the write is the write's behaviour.
+        created = json.loads(server.create_proposed_codes(
+            sid, create_backup=False))
+        assert created["error"] == ("color must be hex format #RRGGBB, "
+                                    "got not a colour")
+        # Nothing written: the batch refuses as a batch, so the sound
+        # proposal beside the corrupted one is rolled back with it.
+        assert _count(qualcoder_db_path, "code_name") == before
+        assert _rows(qualcoder_db_path,
+                     "SELECT cid FROM code_name WHERE name = ?",
+                     ("Sound",)) == []
+
+
 class TestSubcodeMoves:
     """v16+ compares both parent pointers (4.0, ai_mcp_server.py:2046)."""
 

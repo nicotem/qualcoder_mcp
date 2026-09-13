@@ -6036,13 +6036,34 @@ def review_proposals(coding_session_id: str,
         # session file written by v0.11 or earlier (or edited by hand)
         # holds an unsnapped colour, and this is the screen the researcher
         # approves from (fix round 3, S1).
-        stored_color = snap_to_palette(p.color) if p.color else None
-        if stored_color and stored_color != p.color.upper():
+        #
+        # p.color comes off disk, so it is checked before it is snapped
+        # (fix round 4, T7). snap_to_palette's precondition is
+        # validate_color (database.py:160) and this was the only one of
+        # its call sites not honouring it, which cost the WHOLE screen
+        # rather than one row: for 'red' or '#FFF' int(color[5:7], 16)
+        # raised out of a read-only tool and _tool_guard replaced every
+        # proposal in the session with a bare conversion error, and for a
+        # six-character '#12345' the snap quietly succeeded and promised
+        # a colour create_proposed_codes then refuses. A value that is
+        # not #RRGGBB is therefore shown as it stands, with the refusal
+        # it is heading for, and the rest of the screen renders.
+        valid_hex = (isinstance(p.color, str)
+                     and re.fullmatch(r"#[0-9A-Fa-f]{6}", p.color) is not None)
+        stored_color = snap_to_palette(p.color) if valid_hex else None
+        if not p.color:
+            lines.append("🎨 Colour: (palette pick at creation)")
+        elif not valid_hex:
+            lines.append(f"🎨 Colour: {p.color} (not a #RRGGBB value: "
+                         f"create_proposed_codes refuses the batch on it. "
+                         f"Give this proposal a valid colour with "
+                         f"update_proposal before approving it)")
+        elif stored_color != p.color.upper():
             lines.append(f"🎨 Colour: {stored_color} (the nearest palette "
                          f"colour to {p.color}, which is what will be "
                          f"stored)")
         else:
-            lines.append(f"🎨 Colour: {p.color or '(palette pick at creation)'}")
+            lines.append(f"🎨 Colour: {p.color}")
         lines.append(f"📁 Category: {p.category or '(uncategorised)'}")
         if p.memo:
             lines.append(f"**Definition:** {p.memo}")
