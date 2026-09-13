@@ -7179,21 +7179,41 @@ def restore_backup(backup_path: str,
                 "you change your mind.",
         "preview_verified": True,
     }
-    name_after = read_sidecar(project_folder).name
-    if name_after != name_before:
-        if name_after is None:
-            result["ai_coder_name_note"] = (
-                f"That backup carries no AI coder name setting, so this "
-                f"project no longer has one (it was '{name_before}' before "
-                f"the restore); the next write will ask for it again.")
-        else:
-            result["ai_coder_name_note"] = (
-                f"The AI coder name setting was restored to "
-                f"'{name_after}'" + (f" (it was '{name_before}' before the "
-                                     f"restore)." if name_before else
-                                     " (this project had none before the "
-                                     "restore)."))
-    _attach_skipped_symlinks(result, safety_report, prefix="safety_backup_")
+    # Everything from here is DECORATION on a restore that has already
+    # happened. The restore is done, the folder is swapped and the
+    # safety backup is the researcher's only route back to the
+    # pre-restore state, so nothing below may cost them that pointer: a
+    # failure here is reported as a note beside the result, never as the
+    # result. read_sidecar promises it never raises and the guard it
+    # needed to keep that promise is now wide enough, but this tool is
+    # where a broken promise did the damage, so it does not rely on one
+    # (fix round 4, S1).
+    try:
+        name_after = read_sidecar(project_folder).name
+        if name_after != name_before:
+            if name_after is None:
+                result["ai_coder_name_note"] = (
+                    f"That backup carries no AI coder name setting, so this "
+                    f"project no longer has one (it was '{name_before}' "
+                    f"before the restore); the next write will ask for it "
+                    f"again.")
+            else:
+                result["ai_coder_name_note"] = (
+                    f"The AI coder name setting was restored to "
+                    f"'{name_after}'" + (f" (it was '{name_before}' before "
+                                         f"the restore)." if name_before else
+                                         " (this project had none before the "
+                                         "restore)."))
+        _attach_skipped_symlinks(result, safety_report,
+                                 prefix="safety_backup_")
+    except Exception as e:                        # noqa: BLE001
+        logger.error(f"Restore completed, reporting degraded: {e}")
+        result["report_incomplete"] = (
+            "The restore completed and the paths above are correct. This "
+            "server could not finish describing the restored project "
+            "(check qualcoder_mcp.json in the project folder); nothing "
+            "further was changed.")
+        result.setdefault("safety_backup", str(safety_backup))
     return json.dumps(result, indent=2)
 
 

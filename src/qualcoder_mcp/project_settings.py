@@ -230,7 +230,19 @@ def _read_raw(path: Path) -> Optional[Dict[str, Any]]:
         return None
     try:
         data = json.loads(raw.decode("utf-8-sig"))
-    except (UnicodeDecodeError, ValueError):
+    except Exception:
+        # Deliberately the whole class, not a list of the failures we
+        # thought of. `read_sidecar` promises it never raises, and the
+        # list did not hold: CPython's JSON scanner raises RecursionError
+        # on deep nesting, which is a RuntimeError and not a ValueError,
+        # and 64 KiB of '[' is about 30,000 levels, under the size cap.
+        # The damage was not here but in restore_backup, which reads the
+        # sidecar again AFTER the folder swap: a COMPLETED restore was
+        # reported as a bare internal error with no success flag and no
+        # safety-backup path, which is the researcher's only way back.
+        # Over-catching costs one thing, classifying an odd file as
+        # unreadable, which is the documented fallback for every other
+        # malformed shape and names the file in the message (fix round 4).
         return None
     return data if isinstance(data, dict) else None
 

@@ -1306,6 +1306,96 @@ class TestTravel:
 
 
 # =============================================================================
+# A FUNCTION DOCUMENTED AS NEVER RAISING MUST NOT RAISE (fix round 4, S1)
+# =============================================================================
+
+class TestReadSidecarNeverRaises:
+    """`_read_raw` caught (UnicodeDecodeError, ValueError). CPython's
+    JSON scanner raises RecursionError on deep nesting, which is a
+    RuntimeError, so it escaped a function whose docstring says "Never
+    raises". 64 KiB of '[' is about 30,000 levels and sits under the
+    size cap, so the cap did not help."""
+
+    BOMB = b"[" * 30000
+
+    def test_a_deeply_nested_sidecar_classifies_as_unreadable(self,
+                                                              tmp_path):
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        (folder / SIDECAR_NAME).write_bytes(self.BOMB)
+        assert read_sidecar(folder).status == "unreadable"
+
+    def test_the_promise_holds_for_every_shape_the_file_can_take(self,
+                                                                 tmp_path):
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        target = folder / SIDECAR_NAME
+        for raw in (self.BOMB, b"{" * 30000, b"\x00\xff\xfe", b"",
+                    b"[1, 2", b"null", b"3", b'"a string"',
+                    ("{" * 400 + "}" * 400).encode("utf-8")):
+            target.write_bytes(raw)
+            state = read_sidecar(folder)          # must not raise
+            assert state.status in ("unreadable", "unset"), raw[:12]
+
+    def test_the_message_names_the_file_and_the_repair(self, setup_server,
+                                                       qualcoder_db_path):
+        _sidecar(qualcoder_db_path).write_bytes(self.BOMB)
+        out = json.loads(server.create_code("Blocked"))
+        assert "error" in out
+        assert SIDECAR_NAME in out["error"]
+        assert "RecursionError" not in out["error"]
+        assert "maximum recursion" not in out["error"]
+
+    def test_a_restore_that_completed_keeps_its_recovery_pointer(
+            self, setup_server, qualcoder_db_path):
+        """The damaging call site: restore_backup reads the sidecar
+        AGAIN after the folder swap. A bomb in the BACKUP therefore
+        reported a completed restore as a bare internal error, with no
+        success flag, no restored path and no safety_backup, which is
+        the researcher's only route back."""
+        server.create_code("BeforeRestore")
+        backups = _backup_folders(qualcoder_db_path)
+        backup = Path(qualcoder_db_path).parent / backups[-1]
+        (backup / SIDECAR_NAME).write_bytes(self.BOMB)
+        out = json.loads(H.execute_destructive(server.restore_backup,
+                                               str(backup)))
+        assert out.get("success") is True, out
+        assert out["safety_backup"]
+        assert Path(out["safety_backup"]).exists()
+        assert out["restored_from"] == str(backup)
+        assert read_sidecar(qualcoder_db_path).status == "unreadable"
+
+    def test_the_pointer_survives_a_failure_in_the_reporting_itself(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """Belt and braces on the same line: whatever the post-swap
+        reporting raises, the result still carries success and the two
+        paths, with a note saying the description is incomplete."""
+        server.create_code("BeforeRestore")
+        backups = _backup_folders(qualcoder_db_path)
+        backup = Path(qualcoder_db_path).parent / backups[-1]
+
+        real = server.read_sidecar
+        calls = []
+
+        def _boom_after_the_swap(*a, **k):
+            # The PRE-restore read at the top of the tool happens before
+            # anything destructive and must keep working; only the read
+            # after the swap is faulted here.
+            calls.append(1)
+            if len(calls) == 1:
+                return real(*a, **k)
+            raise RuntimeError("anything at all")
+
+        monkeypatch.setattr(server, "read_sidecar", _boom_after_the_swap)
+        out = json.loads(H.execute_destructive(server.restore_backup,
+                                               str(backup)))
+        assert out.get("success") is True, out
+        assert out["safety_backup"]
+        assert "report_incomplete" in out
+        assert "anything at all" not in json.dumps(out)
+
+
+# =============================================================================
 # 10.14 SURFACE PINS
 # =============================================================================
 
