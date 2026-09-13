@@ -198,11 +198,16 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after this batch: full = 136,285 characters
-  (about 34.1k tokens at chars/4), core = 56,275 (about 14.1k). Before
-  the batch: 128,163 and 48,755. The three paged read tools account for
-  5,104 characters of the growth and the new setter for most of the
-  rest.
+- Serialised tool JSON after this batch: full = 143,610 characters
+  (about 35.9k tokens at chars/4), core = 56,245 (about 14.1k). Before
+  the batch: 128,118 and 48,725. Both trees measured the same way, in
+  one interpreter and one environment (the tool definitions' name,
+  description and input schema, Python 3.13 with mcp 1.30.0), because
+  the figure moves with both: on Python 3.10 to 3.12, which keep the
+  docstring indentation 3.13 strips, the same definitions measure about
+  five per cent more (150,870 and 59,181). The three paged read tools
+  account for 5,104 characters of the growth, `compare_coders` and the
+  new setter for most of the rest.
 
 ### Changed: tied rows have a defined order
 

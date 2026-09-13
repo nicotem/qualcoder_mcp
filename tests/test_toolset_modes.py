@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -272,3 +273,77 @@ class TestCoreModeEndToEnd:
         ).fetchall()
         conn.close()
         assert len(rows) == 1
+
+
+class TestThePublishedSchemaBudget:
+    """One measurement, propagated to every site (QA round 1, F8 and F21).
+
+    Three documents quote the size of the serialised tool definitions,
+    and a reader sizes a context window from them. The 0.12 entry was
+    written from two different interpreters' measurements, which made
+    the recorded growth arithmetically impossible, and the README block
+    was never updated at all: it still quoted the pre-batch figures while
+    claiming to be the 0.12 measurement.
+
+    The numbers themselves cannot be asserted here, because they move
+    with the interpreter AND with the installed mcp and pydantic, which
+    is the trap the last round fell into. What can be pinned is that the
+    sites agree with each other, so updating one and forgetting another
+    fails rather than ships.
+    """
+
+    # The measurement the 0.12 CHANGELOG entry records: Python 3.13 with
+    # mcp 1.30.0, the tool definitions' name, description and input
+    # schema. Re-measure both trees the same way before changing these.
+    FULL_CHARS = "143,610"
+    CORE_CHARS = "56,245"
+    FULL_ROUNDED = "144,000"
+    CORE_ROUNDED = "56,000"
+    FULL_TOKENS = "36k"
+    CORE_TOKENS = "14k"
+
+    @staticmethod
+    def _read(name):
+        """The document with its line wrapping flattened: these figures
+        straddle line breaks, and a wrap must not hide a stale number."""
+        text = (REPO / name).read_text(encoding="utf-8")
+        return " ".join(text.replace("\n>", " ").split())
+
+    def test_the_changelog_entry_carries_the_measurement(self):
+        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
+        assert f"full = {self.FULL_CHARS} characters" in entry
+        assert f"core = {self.CORE_CHARS}" in entry
+        assert "Python 3.13 with mcp 1.30.0" in entry
+
+    def test_the_readme_quotes_the_same_measurement(self):
+        readme = self._read("README.md")
+        assert f"about {self.FULL_ROUNDED} characters for `full`" in readme
+        assert f"about {self.CORE_ROUNDED} characters for" in readme
+        assert f"roughly {self.FULL_TOKENS} tokens" in readme
+        assert f"roughly {self.CORE_TOKENS} tokens" in readme
+
+    def test_install_quotes_the_same_measurement(self):
+        install = self._read("INSTALL.md")
+        assert f"about {self.FULL_ROUNDED} characters" in install
+        assert f"roughly {self.FULL_TOKENS} tokens" in install
+        assert f"about {self.CORE_ROUNDED} characters, roughly " \
+               f"{self.CORE_TOKENS} tokens" in install
+
+    def test_install_advises_a_context_the_core_schema_fits_in(self):
+        """Step 4's advice is arithmetic, not a number to swap: at a 14k
+        schema the old 16k floor leaves about 2k for the transcript."""
+        install = self._read("INSTALL.md")
+        assert "at least 32k for the core toolset" in install
+        assert "16k would leave barely 2k and is not workable" in install
+
+    def test_the_growth_is_arithmetically_possible(self):
+        """The defect that gave this away: a full delta smaller than the
+        core delta plus the tools outside core."""
+        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
+        block = entry[entry.index("Serialised tool JSON after this batch"):]
+        numbers = [int(n.replace(",", "")) for n in
+                   re.findall(r"\d{2,3},\d{3}", block)]
+        full_after, core_after, full_before, core_before = numbers[:4]
+        assert full_after > core_after
+        assert full_before > core_before
+        assert full_after - full_before > core_after - core_before

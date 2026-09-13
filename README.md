@@ -786,13 +786,14 @@ carries the complete list.
 > Required for local models, optional elsewhere; unknown values fail
 > loudly at startup. Measured for the 0.12 development branch (the
 > serialised tool definitions: name, description and input schema, the
-> same method as the CHANGELOG, under Python 3.13), the definitions run
-> to about 128,000 characters for `full`, roughly 32k tokens at four
-> characters per token, and about 49,000 characters for `core`, roughly
-> 12k tokens. On Python 3.10 to 3.12 the same definitions measure about
-> five per cent more, because those interpreters keep the docstring
-> indentation that 3.13 strips. See the LM Studio recipe in INSTALL.md
-> for what that means for context length.
+> same method as the CHANGELOG, under Python 3.13 with mcp 1.30.0), the
+> definitions run to about 144,000 characters for `full`, roughly 36k
+> tokens at four characters per token, and about 56,000 characters for
+> `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
+> definitions measure about five per cent more, because those
+> interpreters keep the docstring indentation that 3.13 strips. See the
+> LM Studio recipe in INSTALL.md for what that means for context
+> length.
 
 **Project Management:**
 - `list_available_projects(search_directories)` - Discover Qualcoder projects on your system

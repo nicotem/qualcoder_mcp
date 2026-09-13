@@ -440,14 +440,14 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 69 tools by
 default, and the serialised tool definitions alone measure about
-136,000 characters, roughly 34k tokens (measured for the 0.12
-development branch under Python 3.13; the paging, novelty-filter and
-sampling arguments added in 0.12 account for about 5,000 characters of
-that, and the palette and idempotency notes on the codebook tools for
-rather more of the growth since 0.11 than the methodology guidance does.
-Python 3.10 to 3.12 keep the docstring indentation that 3.13 strips, so
-on those interpreters the same definitions measure about five per cent
-more).
+144,000 characters, roughly 36k tokens (measured for the 0.12
+development branch under Python 3.13 with mcp 1.30.0; the paging,
+novelty-filter and sampling arguments added in 0.12 account for about
+5,000 characters of that, and the palette and idempotency notes on the
+codebook tools for rather more of the growth since 0.11 than the
+methodology guidance does. Python 3.10 to 3.12 keep the docstring
+indentation that 3.13 strips, so on those interpreters the same
+definitions measure about five per cent more).
 That exceeds LM Studio's 8k default context several times over before
 you type a word, and tool counts this size are far past where
 small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
@@ -455,12 +455,12 @@ small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
 coding set, measured at about 56,000 characters, roughly 14k tokens.
 
 **Step 4. Raise the context length.** Even the core toolset's roughly
-12k tokens of schema exceed the 8k default context. When loading the
-model, set the context length to at least 16k for the core toolset
-(that leaves about 5k tokens for your transcript excerpts and
-conversation; 32k is more comfortable), or 64k if you must run the
-full surface (its schema alone is about 32k tokens). Use the model
-load settings dialog or a per-model default
+14k tokens of schema exceed the 8k default context. When loading the
+model, set the context length to at least 32k for the core toolset
+(that leaves about 18k tokens for your transcript excerpts and
+conversation; 16k would leave barely 2k and is not workable), or 64k if
+you must run the full surface (its schema alone is about 36k tokens).
+Use the model load settings dialog or a per-model default
 (<https://lmstudio.ai/docs/app/advanced/per-model>).
 
 **Step 5. Add the server.** Open the Program tab in the right sidebar,
