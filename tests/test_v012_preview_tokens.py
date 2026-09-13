@@ -537,6 +537,281 @@ class TestFileLevelOperations:
                            preview_token=token)
         assert refused["reason"] == "token_other_operation"
 
+    def test_a_write_inside_the_restore_window_stops_it(
+            self, setup_server, qualcoder_db_path, monkeypatch):
+        """B2.4's recheck immediately before `rmtree` (QA round 1, F12).
+
+        It is the only guard for the window between verifying the token
+        and destroying the project folder, and that window spans the
+        whole safety-backup copy of the project tree, so it is the more
+        destructive of the two recheck sites. The codebook path's
+        equivalent window is pinned in test_v012_collateral.py; this one
+        was not, and replacing the comparison with `if False:` left the
+        suite green.
+
+        The racing write lands inside the window by riding on the safety
+        backup itself, so no sleep and no wall clock are involved.
+        """
+        H.execute_destructive(server.delete_code, 2)   # makes a backup
+        backups = _backups(qualcoder_db_path)
+        backup = str(Path(qualcoder_db_path).parent / backups[-1])
+        token = _preview(server.restore_backup, backup)["preview_token"]
+
+        real_backup = server.backup_project
+
+        def racing_backup(folder, *args, **kwargs):
+            made = real_backup(folder, *args, **kwargs)
+            H.execute(qualcoder_db_path,
+                      "INSERT INTO code_name (cid, name, memo, catid, "
+                      "owner, date, color) VALUES (99, 'RacedIn', '', NULL, "
+                      "'TestCoder', '2024-01-15', '#FF0000')")
+            return made
+
+        monkeypatch.setattr(server, "backup_project", racing_backup)
+        out = _preview(server.restore_backup, backup, preview_token=token)
+        assert out["reason"] == "project_changed", out
+        assert out["nothing_changed"] is True
+        assert "A backup had already been taken" in out["error"]
+        assert Path(out["safety_backup"]).exists()
+        # The racing row is still there: the folder was not destroyed.
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_name WHERE cid=99"
+                       )[0]["n"] == 1
+
+
+class TestRaceAndStateBinding:
+    """D3 6.4 R3 to R8: what the token is bound to, one limb at a time.
+
+    R1 and R2 live in TestTwoStepFlow above (delete_code's rows, and the
+    per-operation choice that a second operation does not invalidate the
+    first token). The rest were named by the design and never written
+    (QA round 1), which left four of the six fingerprint functions
+    unpinned: each of these tests fails when the limb it names stops
+    being part of the fingerprint.
+    """
+
+    @staticmethod
+    def _reopen(project_path):
+        server.db.close()
+        server.db = QualcoderDatabase(project_path)
+
+    def test_r3_a_renamed_destination_refuses_the_merge(
+            self, setup_server, qualcoder_db_path):
+        token = _preview(server.merge_codes, 1, 2)["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_name SET name = 'Coping (renamed)' "
+                  "WHERE cid = 2")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.merge_codes, 1, 2, preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
+        assert _backups(qualcoder_db_path) == []
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_text WHERE cid=1"
+                       )[0]["n"] == 1
+
+    def test_r4_a_new_collision_refuses_the_merge(self, setup_server,
+                                                 qualcoder_db_path):
+        """The collision set is what the merge would DISCARD, so it is
+        the number the user was shown and the one they approved."""
+        before = _preview(server.merge_codes, 1, 2)
+        assert before["preview"]["text_codings_discarded_as_duplicates"] == 0
+        token = before["preview_token"]
+        # cid 2 on the same file, span and owner as cid 1's ctid 1: the
+        # merge would now drop that row instead of moving it.
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_text (ctid, cid, fid, seltext, pos0, "
+                  "pos1, owner, date, memo, important) VALUES "
+                  "(91, 2, 1, 'x', 24, 55, 'TestCoder', '2024-01-15', '', 0)")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.merge_codes, 1, 2, preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert _backups(qualcoder_db_path) == []
+
+    def test_r5_a_changed_project_refuses_the_restore(self, setup_server,
+                                                     qualcoder_db_path):
+        H.execute_destructive(server.delete_code, 2)
+        backups = _backups(qualcoder_db_path)
+        backup = str(Path(qualcoder_db_path).parent / backups[-1])
+        token = _preview(server.restore_backup, backup)["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_name (cid, name, memo, catid, owner, "
+                  "date, color) VALUES (92, 'AfterThePreview', '', NULL, "
+                  "'TestCoder', '2024-01-15', '#FF0000')")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.restore_backup, backup,
+                           preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_name WHERE cid=92"
+                       )[0]["n"] == 1
+
+    def test_r6_a_newer_backup_refuses_the_prune(self, setup_server,
+                                                qualcoder_db_path):
+        server.create_code("PruneRaceOne")
+        server.create_code("PruneRaceTwo")
+        out = _preview(server.prune_backups, keep_last=1)
+        would_remove = [b["name"] for b in out["would_remove"]]
+        token = out["preview_token"]
+        # A third backup appears: what keep_last=1 would remove is no
+        # longer the list the user approved.
+        server.create_code("PruneRaceThree")
+        refused = _preview(server.prune_backups, keep_last=1,
+                           preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
+        for name in would_remove:
+            assert (Path(qualcoder_db_path).parent / name).exists()
+
+    def test_r8_a_renamed_target_category_is_another_operation(
+            self, setup_server, qualcoder_db_path):
+        """The RESOLVED id is bound, never the name (B2.1), so a name
+        that moves to a different category between the two calls is a
+        different operation rather than a changed project."""
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_cat (catid, name, memo, owner, date, "
+                  "supercatid) VALUES (2, 'Category B', '', 'TestCoder', "
+                  "'2024-01-15', NULL)")
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_cat (catid, name, memo, owner, date, "
+                  "supercatid) VALUES (3, 'Category C', '', 'TestCoder', "
+                  "'2024-01-15', NULL)")
+        self._reopen(qualcoder_db_path)
+        token = _preview(server.merge_category, 1,
+                         into_category="Category B")["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_cat SET name = 'Category B (old)' "
+                  "WHERE catid = 2")
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_cat SET name = 'Category B' WHERE catid = 3")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.merge_category, 1,
+                           into_category="Category B", preview_token=token)
+        assert refused["reason"] == "token_other_operation"
+        assert refused["nothing_changed"] is True
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_cat WHERE catid=1"
+                       )[0]["n"] == 1
+
+    def test_a_new_child_code_refuses_the_category_delete(
+            self, setup_server, qualcoder_db_path):
+        """fingerprint_rows_category's child limb, which no test reached:
+        the codes that would be moved to the top level are exactly what
+        the preview counted."""
+        token = _preview(server.delete_category, 1)["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_name (cid, name, memo, catid, owner, "
+                  "date, color) VALUES (93, 'NewChild', '', 1, 'TestCoder', "
+                  "'2024-01-15', '#FF0000')")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.delete_category, 1, preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_cat WHERE catid=1"
+                       )[0]["n"] == 1
+
+    def test_a_changed_destination_refuses_the_category_merge(
+            self, setup_server, qualcoder_db_path):
+        """The destination limb of the same fingerprint, which only
+        merge_category fills in."""
+        H.execute(qualcoder_db_path,
+                  "INSERT INTO code_cat (catid, name, memo, owner, date, "
+                  "supercatid) VALUES (4, 'Destination', '', 'TestCoder', "
+                  "'2024-01-15', NULL)")
+        self._reopen(qualcoder_db_path)
+        token = _preview(server.merge_category, 1,
+                         into_category="Destination")["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_cat SET name = 'Destination', "
+                  "memo = 'renamed in place' WHERE catid = 4")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.merge_category, 1,
+                           into_category="Destination",
+                           preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert _backups(qualcoder_db_path) == []
+
+
+class TestTheFingerprintCarriesItsOwnWeight:
+    """The rows half of the state, changed where the preview cannot see it.
+
+    `state` is signed over the preview AND the fingerprint rows
+    (B2.1), so a change the preview also counts is refused either way:
+    the tests above would stay green with `fingerprint_rows_merge_codes`
+    or `_prune_fingerprint` returning a constant, which is exactly the
+    gap the gate found (QA round 1). Each test here changes something
+    the preview does not report, so it fails when its own fingerprint
+    function stops looking.
+    """
+
+    @staticmethod
+    def _reopen(project_path):
+        server.db.close()
+        server.db = QualcoderDatabase(project_path)
+
+    def test_a_moved_span_refuses_the_delete(self, setup_server,
+                                             qualcoder_db_path):
+        """Same number of codings, different codings: the preview counts
+        one either way, so only the row digest can tell."""
+        before = _preview(server.delete_code, 1)
+        assert before["preview"]["total_codings_to_delete"] == 1
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_text SET pos0 = 30, pos1 = 60 WHERE ctid = 1")
+        self._reopen(qualcoder_db_path)
+        after = _preview(server.delete_code, 1)
+        assert after["preview"]["total_codings_to_delete"] == 1
+        refused = _preview(server.delete_code, 1,
+                           preview_token=before["preview_token"])
+        assert refused["reason"] == "project_changed"
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
+                       )[0]["n"] == 1
+
+    def test_a_moved_span_refuses_the_merge(self, setup_server,
+                                            qualcoder_db_path):
+        token = _preview(server.merge_codes, 1, 2)["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_text SET pos0 = 30, pos1 = 60 WHERE ctid = 1")
+        self._reopen(qualcoder_db_path)
+        refused = _preview(server.merge_codes, 1, 2, preview_token=token)
+        assert refused["reason"] == "project_changed"
+        assert _backups(qualcoder_db_path) == []
+
+    def test_a_renamed_child_code_refuses_the_category_delete(
+            self, setup_server, qualcoder_db_path):
+        """The preview counts the codes that would move; the fingerprint
+        knows which ones they are."""
+        before = _preview(server.delete_category, 1)
+        assert before["preview"]["codes_moved_to_top_level"] == 2
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_name SET name = 'Stress (renamed)' "
+                  "WHERE cid = 1")
+        self._reopen(qualcoder_db_path)
+        after = _preview(server.delete_category, 1)
+        assert after["preview"]["codes_moved_to_top_level"] == 2
+        refused = _preview(server.delete_category, 1,
+                           preview_token=before["preview_token"])
+        assert refused["reason"] == "project_changed"
+
+    def test_a_grown_backup_folder_refuses_the_prune(self, setup_server,
+                                                    qualcoder_db_path):
+        """prune signs a stable core of its preview (the folder names,
+        deviation 9 of this batch), so the sizes the user was shown live
+        in the fingerprint alone."""
+        server.create_code("SizeOne")
+        server.create_code("SizeTwo")
+        out = _preview(server.prune_backups, keep_last=1)
+        doomed = out["would_remove"][0]["name"]
+        assert out["would_remove"][0]["size_mb"] > 0
+        (Path(qualcoder_db_path).parent / doomed / "grown.bin").write_bytes(
+            b"0" * 2_000_000)
+        refused = _preview(server.prune_backups, keep_last=1,
+                           preview_token=out["preview_token"])
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
+        assert (Path(qualcoder_db_path).parent / doomed).exists()
+
 
 class TestRestartResilience:
     """S1 to S4: the token is a claim, not a memory."""
