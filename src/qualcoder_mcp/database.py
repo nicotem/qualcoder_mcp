@@ -266,6 +266,29 @@ class CoderVisibilityUnreadable(RuntimeError):
     """
 
 
+def coder_is_hidden(visibility: Optional[Dict[str, int]],
+                    name: Optional[str]) -> bool:
+    """Whether `name` is a coder this project hides.
+
+    The ONE reading of a `coder_visibility_map()` result. The rule is
+    the views' rule: a row of 0 hides; a name with no row is visible
+    (app.py:1530-1540); a project with no capability hides nobody, which
+    is what `None` means here.
+
+    A predicate rather than ten copies of `visibility.get(n, 1) == 0`
+    spelled out at the call sites. They agreed today, but the
+    hidden-coder class recurred four times on exactly this pattern: a
+    rule carried in the heads of the callers rather than written once
+    beside the data it reads (fix round 4). An unreadable state is NOT
+    represented here: callers that must tell "hidden" from "cannot
+    tell" catch CoderVisibilityUnreadable, which is raised before a map
+    exists to ask.
+    """
+    if visibility is None or name is None:
+        return False
+    return visibility.get(name, 1) == 0
+
+
 class DatabaseLockedError(RuntimeError):
     """Raised when the SQLite database is locked by another process."""
 
@@ -5975,7 +5998,7 @@ class QualcoderDatabase:
             return "(hidden coder)"
         if visibility is None:
             return owner              # no capability: nothing is hidden
-        return "(hidden coder)" if visibility.get(owner, 1) == 0 else owner
+        return "(hidden coder)" if coder_is_hidden(visibility, owner) else owner
 
     def _discarded_by_owner(self, from_code_id: int,
                             into_code_id: int) -> List[Dict[str, Any]]:

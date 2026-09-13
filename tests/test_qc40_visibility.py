@@ -1467,6 +1467,18 @@ def _drop_view(project_path, name):
         con.close()
 
 
+
+def _predicate_line():
+    """The line number of coder_is_hidden's own return, so the sweep can
+    demand that it is the ONLY place the rule is spelled out."""
+    from qualcoder_mcp import database as db_module
+    lines = Path(db_module.__file__).read_text(encoding="utf-8").splitlines()
+    for number, line in enumerate(lines, 1):
+        if line.strip() == "return visibility.get(name, 1) == 0":
+            return number
+    raise AssertionError("coder_is_hidden no longer looks like itself")
+
+
 class TestPartialViewSetIsNotACapability:
     """The probe used to say "this project can hide coders" on one view
     plus a column, after which every consuming path assumed all four
@@ -1608,15 +1620,61 @@ class TestPartialViewSetIsNotACapability:
 
     def test_no_consumer_reaches_a_base_table_through_the_helper(self):
         """The audit, as a pin: `_visible_source` is the only place that
-        turns (base, view) into a source, it is never called with a
-        literal base table as its return value's fallback, and no module
-        reads a *_visible view name outside it."""
+        turns (base, view) into a source, and the only outcomes are the
+        view, the base table on a project that declares nothing, and a
+        refusal."""
         from qualcoder_mcp import database as db_module
         source = Path(db_module.__file__).read_text(encoding="utf-8")
         helper = source.split("def _visible_source", 1)[1].split(
             "\n    def ", 1)[0]
         assert "raise CoderVisibilityUnreadable" in helper
         assert "table_exists" in helper
+        assert "visibility_declared()" in helper
+
+    def test_one_predicate_decides_who_is_hidden(self):
+        """The other half of the audit. The rule "0 hides, absent is
+        visible" used to be spelled out at ten call sites; each was a
+        place a future consumer could get it wrong, which is how this
+        class recurred. It is written once now, beside the map."""
+        from qualcoder_mcp import database as db_module
+        import qualcoder_mcp.server as server_module
+        offenders = []
+        for module in (db_module, server_module):
+            for number, line in enumerate(
+                    Path(module.__file__).read_text(
+                        encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#") or stripped.startswith("A pred"):
+                    continue                      # the comment about it
+                if re.search(r"\.get\([^)]*,\s*1\)\s*[!=]=\s*0", line):
+                    offenders.append(
+                        f"{Path(module.__file__).name}:{number}: "
+                        f"{stripped[:60]}")
+        # The one that remains is the predicate's own body.
+        assert offenders == [
+            f"database.py:{_predicate_line()}: "
+            f"return visibility.get(name, 1) == 0"], offenders
+        assert db_module.coder_is_hidden({"X": 0}, "X") is True
+        assert db_module.coder_is_hidden({"X": 1}, "X") is False
+        assert db_module.coder_is_hidden({"X": 0}, "Y") is False
+        assert db_module.coder_is_hidden(None, "X") is False
+
+    def test_the_predicate_is_what_the_views_do(self, visibility_db):
+        """Driven against the views themselves rather than against its
+        own docstring."""
+        from qualcoder_mcp.database import coder_is_hidden
+        visibility = server.db.coder_visibility_map()
+        con = sqlite3.connect(str(Path(visibility_db) / "data.qda"))
+        try:
+            seen = {r[0] for r in con.execute(
+                "SELECT DISTINCT owner FROM code_text_visible")}
+            every = {r[0] for r in con.execute(
+                "SELECT DISTINCT owner FROM code_text")}
+        finally:
+            con.close()
+        for owner in every:
+            assert coder_is_hidden(visibility, owner) == (owner not in seen), \
+                owner
 
 
 # =============================================================================

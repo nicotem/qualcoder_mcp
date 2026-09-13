@@ -21,6 +21,7 @@ from mcp.server.fastmcp import Context
 from .database import (
     QualcoderDatabase,
     CoderVisibilityUnreadable,
+    coder_is_hidden,
     DatabaseLockedError,
     DatabaseOpenError,
     UnsupportedSchemaError,
@@ -2555,7 +2556,7 @@ def set_project_ai_coder_name(name: str, note: str = "",
                 f"decided. Pass allow_hidden_coder=true to store it "
                 f"anyway, or ask the user to check the coder's visibility "
                 f"in QualCoder. Nothing was changed.")})
-        if (visibility or {}).get(name, 1) == 0:
+        if coder_is_hidden(visibility or {}, name):
             return json.dumps({"error": (
                 f"\"{name}\" is a coder currently hidden in QualCoder; rows "
                 f"written under it would not be shown in QualCoder or in this "
@@ -2673,7 +2674,7 @@ def _set_name_warnings(ro, state, name: str,
         # the coder anyway, three lines under this comment. Unknown is
         # not visible: the name-free wording carries the same advice.
         if (visibility is _VISIBILITY_UNREADABLE
-                or (visibility or {}).get(variant, 1) == 0):
+                or coder_is_hidden(visibility or {}, variant)):
             warnings.append(
                 f"\"{name}\" differs only by letter case from a coder name "
                 f"already used in this project; QualCoder treats them as "
@@ -4292,7 +4293,7 @@ def _eligible_coders(db_, visibility: Optional[Dict[str, int]],
              if n != SPEAKER_SYSTEM_CODER]
     if include_hidden or visibility is None:
         return names
-    return [n for n in names if visibility.get(n, 1) != 0]
+    return [n for n in names if not coder_is_hidden(visibility, n)]
 
 
 def _hidden_eligible_count(db_, visibility: Optional[Dict[str, int]]) -> int:
@@ -4301,7 +4302,7 @@ def _hidden_eligible_count(db_, visibility: Optional[Dict[str, int]]) -> int:
         return 0
     return len([n for n in db_.coders_with_text_codings()
                 if n != SPEAKER_SYSTEM_CODER
-                and visibility.get(n, 1) == 0])
+                and coder_is_hidden(visibility, n)])
 
 
 def _coder_listing(names: List[str]) -> str:
@@ -4458,8 +4459,8 @@ def compare_coders(coder_a: Optional[str] = None,
     caps = getattr(db_, "capabilities", None)
     has_visibility = caps is not None and caps.visibility_declared()
     if has_visibility and not allow_hidden_coder:
-        if (visibility or {}).get(coder_a, 1) == 0 or \
-                (visibility or {}).get(coder_b, 1) == 0:
+        if (coder_is_hidden(visibility or {}, coder_a)
+                or coder_is_hidden(visibility or {}, coder_b)):
             return json.dumps({"error": HIDDEN_COMPARISON_REFUSAL})
 
     known_coders = set(db_.coders_with_text_codings())
@@ -4704,8 +4705,8 @@ def compare_coders(coder_a: Optional[str] = None,
     note = _coder_visibility_note(coder_a if allow_hidden_coder else None)
     if note is not None:
         if allow_hidden_coder and (
-                (visibility or {}).get(coder_a, 1) == 0
-                or (visibility or {}).get(coder_b, 1) == 0):
+                coder_is_hidden(visibility or {}, coder_a)
+                or coder_is_hidden(visibility or {}, coder_b)):
             result["coder_visibility"] = note
         else:
             result["coder_visibility"] = {
@@ -10895,7 +10896,8 @@ def export_frequencies_csv(output_path: str,
         visible_coders = coders               # no capability: nothing hidden
         hidden_coders_in_file = 0
     else:
-        visible_coders = [c for c in coders if visibility.get(c, 1) != 0]
+        visible_coders = [c for c in coders
+                          if not coder_is_hidden(visibility, c)]
         hidden_coders_in_file = len(coders) - len(visible_coders)
     counts: Dict[Any, int] = {}
     for r in raw:
