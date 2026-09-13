@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import QualcoderDatabase, QUALCODER_COLORS
 
 
@@ -300,7 +301,7 @@ class TestMergeGotchas:
         assert p["av_codings_reassigned"] == 1
         assert p["image_codings_reassigned"] == 1
 
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("success") is True, out
 
         # C2: destination wins — the surviving row at (1,10,20,ownerX) is the
@@ -344,7 +345,7 @@ class TestMergeGotchas:
             self, setup_server, qualcoder_db_path):
         _seed_merge_fixture(qualcoder_db_path)
         _reload()
-        json.loads(server.merge_codes(1, 2, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         # gr_* rows and recently_used_codes untouched (still referencing the
         # merged-away cid/deleted ctid — matching QualCoder's dangling policy)
         assert _row(qualcoder_db_path,
@@ -354,7 +355,7 @@ class TestMergeGotchas:
         assert _row(qualcoder_db_path,
                     "SELECT recently_used_codes AS r FROM project")["r"] == "1 2"
 
-        out = json.loads(server.delete_code(2, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 2))
         assert out.get("success") is True
         assert _row(qualcoder_db_path,
                     "SELECT cid FROM gr_cdct_text_item WHERE gtextid=1")["cid"] == 1
@@ -375,7 +376,7 @@ class TestMergeGotchas:
             raise RuntimeError("simulated post-mutation failure")
 
         monkeypatch.setattr(QualcoderDatabase, "merge_codes", merge_then_explode)
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert "error" in out
         # backup folders are siblings; the DB itself must be byte-restored
         assert _dump(qualcoder_db_path) == before
@@ -395,7 +396,7 @@ class TestMergeGotchas:
             qualcoder_db_path, "SELECT name FROM sqlite_master WHERE type='table'")]
         before = {t: _rows(qualcoder_db_path, f"SELECT COUNT(*) AS n FROM {t}")[0]["n"]
                   for t in tables}
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert out.get("success") is True
         after = {t: _rows(qualcoder_db_path, f"SELECT COUNT(*) AS n FROM {t}")[0]["n"]
                  for t in tables}
@@ -508,7 +509,7 @@ class TestQualCoderFidelityDifferential:
         _reload()
         twin = _twin(qualcoder_db_path, tmp_path)
 
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("success") is True
         _qualcoder_merge(twin, 1, 2)
 
@@ -520,7 +521,7 @@ class TestQualCoderFidelityDifferential:
         _reload()
         twin = _twin(qualcoder_db_path, tmp_path)
 
-        assert json.loads(server.delete_code(1, confirm=True))["success"] is True
+        assert json.loads(H.execute_destructive(server.delete_code, 1))["success"] is True
         # QualCoder delete_code (code_text.py:2953-2956)
         conn = sqlite3.connect(str(_db(twin)))
         cur = conn.cursor()
@@ -547,7 +548,7 @@ class TestQualCoderFidelityDifferential:
         _reload()
         twin = _twin(qualcoder_db_path, tmp_path)
 
-        out = json.loads(server.delete_category(2, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_category, 2))
         assert out.get("success") is True
         assert out["codes_moved_to_top_level"] == 1
         assert out["subcategories_moved_to_top_level"] == 1

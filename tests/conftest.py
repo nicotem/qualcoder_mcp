@@ -32,6 +32,20 @@ def _isolate_mru_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_preview_secret(tmp_path, monkeypatch):
+    """Keep the B2 preview-token secret out of the real ~/.qualcoder_mcp.
+
+    The same reasoning as the MRU isolation above: a test that previews a
+    destructive operation would otherwise create or rotate the
+    developer's own secret, and a rotation invalidates tokens the real
+    server issued.
+    """
+    from qualcoder_mcp import preview_tokens
+    monkeypatch.setattr(preview_tokens, "STATE_HOME",
+                        tmp_path / "token_state")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_ai_coder_name(monkeypatch):
     """Keep an ambient QUALCODER_MCP_AI_CODER_NAME out of the suite.
 

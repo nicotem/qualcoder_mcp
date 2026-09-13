@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 
 
 FULLTEXT = "This is interview text. I feel stressed about deadlines. I cope by exercising."
@@ -179,7 +180,7 @@ class TestMergeCategory:
 
         pv = json.loads(server.merge_category(2, "Other"))
         assert pv["requires_confirmation"] is True
-        out = json.loads(server.merge_category(2, "Other", confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2, "Other"))
         assert out.get("success") is True, out
 
         # category-tree.md §9 recipe on the twin
@@ -209,12 +210,12 @@ class TestMergeCategory:
                                                 qualcoder_db_path):
         self._tree(qualcoder_db_path)
         # target is the source's own descendant -> refuse
-        out = json.loads(server.merge_category(2, "Subcat", confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2, "Subcat"))
         assert "error" in out
         # target == source -> refuse
-        assert "error" in json.loads(server.merge_category(2, "Src", confirm=True))
+        assert "error" in json.loads(H.execute_destructive(server.merge_category, 2, "Src"))
         # None target -> everything to top level
-        out = json.loads(server.merge_category(2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2))
         assert out.get("success") is True, out
         assert _row(qualcoder_db_path,
                     "SELECT catid FROM code_name WHERE cid=1")["catid"] is None

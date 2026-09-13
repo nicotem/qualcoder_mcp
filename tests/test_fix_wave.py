@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 import qualcoder_mcp.database as dbmod
 from qualcoder_mcp.database import (
     QualcoderDatabase,
@@ -489,7 +490,7 @@ class TestRecoveryTools:
     def test_restore_foreign_path_refused(self, setup_server, tmp_path, qualcoder_db_path):
         foreign = tmp_path / "unrelated.qda"
         shutil.copytree(qualcoder_db_path, foreign)
-        result = json.loads(server.restore_backup(str(foreign), confirm=True))
+        result = json.loads(H.execute_destructive(server.restore_backup, str(foreign)))
         assert "Not a backup of the currently open project" in result["error"]
 
     def test_restore_roundtrip_with_safety_backup(self, setup_server, qualcoder_db_path):
@@ -500,7 +501,7 @@ class TestRecoveryTools:
         # mutate current state
         json.loads(server.import_text_file("extra.txt", "extra content",
                                            create_backup=False))
-        result = json.loads(server.restore_backup(str(backup), confirm=True))
+        result = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         assert result["success"] is True
         assert "_prerestore" in result["safety_backup"]
         # the imported file is gone after the restore

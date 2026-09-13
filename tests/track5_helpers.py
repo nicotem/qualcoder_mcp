@@ -160,6 +160,28 @@ def build_project(spec: Dict[str, Any], parent: Optional[Path] = None) -> str:
 # ---------------------------------------------------------------------------
 # server wiring
 # ---------------------------------------------------------------------------
+def execute_destructive(tool, *args, **kwargs) -> str:
+    """Run a token-gated destructive tool the way a caller must: in two steps.
+
+    v0.12 replaced `confirm=True` with a preview token, so a test that
+    used to say "do it" now has to preview, take the token, show nothing
+    to nobody, and execute. This helper does exactly that and returns
+    what the tool returns, so the assertions around the old call sites
+    stay as they were and keep testing what they were written for.
+
+    A preview that comes back without a token (a refusal, a validation
+    error) is handed back unchanged, because that is the answer the test
+    is about.
+    """
+    import json as _json
+
+    preview = _json.loads(tool(*args, **kwargs))
+    token = preview.get("preview_token")
+    if token is None:
+        return _json.dumps(preview, indent=2)
+    return tool(*args, preview_token=token, **kwargs)
+
+
 def write_fixture_sidecar(project_path, name: str = DEFAULT_AI_CODER_NAME,
                           note: str = "test fixture") -> None:
     """Make a fixture project one that has been asked for its AI coder name.

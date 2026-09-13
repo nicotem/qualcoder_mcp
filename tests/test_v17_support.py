@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import (QualcoderDatabase, UnsupportedSchemaError,
                                     VERIFIED_MASTER_COMMIT)
@@ -304,7 +305,7 @@ class TestT3MergeSubcodes:
         conn.close()
         server.switch_project(str(folder))
 
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("success") is True, out
         assert out["subcodes_reparented_to_target"] == 2
         assert out["provenance_memo_added"] is True
@@ -332,7 +333,7 @@ class TestT3MergeSubcodes:
         add_subcode(folder, 11, "Sub sub", supercid=10)
         server.switch_project(str(folder))
         before = _rows(folder, "SELECT cid FROM code_name")
-        out = json.loads(server.merge_codes(1, 11, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 11))
         assert "sub-codes" in out["error"]
         assert _rows(folder, "SELECT cid FROM code_name") == before
         # refused at preview time too, before any backup
@@ -341,7 +342,7 @@ class TestT3MergeSubcodes:
     def test_v14_merge_stays_382_exact(self, v17_env):
         """No provenance memo, no graph cleanup on v14 (3.8.2 parity)."""
         folder = v17_env("v14")
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("success") is True
         assert "subcodes_reparented_to_target" not in out
         assert "provenance_memo_added" not in out
@@ -376,7 +377,7 @@ class TestT4DeleteBranch:
         folder = v17_env("v16")
         add_subcode(folder, 10, "Sub one", supercid=1)
         server.switch_project(str(folder))
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert "cascade=true" in out["error"]
         assert _rows(folder, "SELECT cid FROM code_name WHERE cid IN (1, 10)")
 
@@ -390,7 +391,7 @@ class TestT4DeleteBranch:
         conn.commit()
         conn.close()
         server.switch_project(str(folder))
-        out = json.loads(server.delete_code(1, confirm=True, cascade=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1, cascade=True))
         assert out.get("success") is True, out
         assert out["branch_deleted"] is True
         assert _rows(folder, "SELECT cid FROM code_name WHERE cid IN (1, 10, 11)") == []
@@ -402,7 +403,7 @@ class TestT4DeleteBranch:
 
     def test_v14_delete_unchanged(self, v17_env):
         folder = v17_env("v14")
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert out.get("success") is True
         assert "branch_deleted" not in out
 

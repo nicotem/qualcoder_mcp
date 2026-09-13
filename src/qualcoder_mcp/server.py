@@ -62,6 +62,19 @@ from .cursors import (
     page_block,
 )
 from .memo_privacy import extract_ai_memo, strip_private_memos
+from .preview_tokens import (
+    EXPIRED,
+    MALFORMED,
+    OK,
+    OTHER_OPERATION,
+    SECRET_UNAVAILABLE_MESSAGE,
+    TOKEN_VALID_FOR_MINUTES,
+    PreviewSecretUnavailable,
+    canonical_args,
+    fingerprint_rows,
+    issue,
+    verify,
+)
 from .project_settings import (
     AI_CODER_NAME_ENV,
     DEFAULT_AI_CODER_NAME,
@@ -6096,6 +6109,7 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
 @_tool_guard
 def prune_backups(keep_last: Optional[int] = None,
                   older_than_days: Optional[float] = None,
+                  preview_token: Optional[str] = None,
                   confirm: bool = False) -> str:
     """Delete this project's own backup snapshots to reclaim disk space.
 
@@ -6202,7 +6216,10 @@ def prune_backups(keep_last: Optional[int] = None,
             "kept_count": len(kept),
         }, indent=2)
 
-    if not confirm:
+    fingerprint = _prune_fingerprint(to_remove, kept)
+    token_args = canonical_args("prune_backups", keep_last=keep_last,
+                                older_than_days=older_than_days)
+    if preview_token is None:
         preview = {
             "requires_confirmation": True,
             "would_remove": [
@@ -6210,13 +6227,38 @@ def prune_backups(keep_last: Optional[int] = None,
                  "size_mb": b["size_mb"]} for b in to_remove],
             "would_keep": [b["name"] for b in kept],
             "reclaimed_mb": reclaimed_mb,
-            "hint": "Call prune_backups again with confirm=true to delete "
-                    "these backup folders. QualCoder's own _BKUP_ backups "
-                    "are never touched.",
+            "hint": "Call prune_backups again with the preview_token to "
+                    "delete these backup folders. QualCoder's own _BKUP_ "
+                    "backups are never touched.",
         }
         if notes:
             preview["notes"] = notes
-        return json.dumps(preview, indent=2)
+        try:
+            payload = _issue_preview(
+                "prune_backups", token_args, preview, fingerprint, confirm,
+                preview["hint"],
+                {"keep_last": keep_last, "older_than_days": older_than_days},
+                state_preview={
+                    "would_remove": [b["name"] for b in to_remove],
+                    "would_keep": [b["name"] for b in kept]})
+        except PreviewSecretUnavailable:
+            return json.dumps(
+                _token_error("preview_secret_unavailable", "prune_backups"))
+        payload.update({k: v for k, v in preview.items()
+                        if k not in ("requires_confirmation", "hint")})
+        return json.dumps(payload, indent=2)
+
+    state = fingerprint_rows(
+        {"would_remove": [b["name"] for b in to_remove],
+         "would_keep": [b["name"] for b in kept]}, fingerprint)
+    try:
+        outcome = verify(preview_token, "prune_backups", token_args,
+                         _token_project(), state)
+    except PreviewSecretUnavailable:
+        return json.dumps(
+            _token_error("preview_secret_unavailable", "prune_backups"))
+    if outcome != OK:
+        return json.dumps(_token_error(outcome, "prune_backups"))
 
     removed, failed = [], []
     for backup in to_remove:
@@ -6263,7 +6305,9 @@ def _project_is_write_locked(data_qda: Path) -> bool:
 
 @mcp.tool()
 @_tool_guard
-def restore_backup(backup_path: str, confirm: bool = False) -> str:
+def restore_backup(backup_path: str,
+                   preview_token: Optional[str] = None,
+                   confirm: bool = False) -> str:
     """Restore the currently open project from one of its backups.
 
     THIS REPLACES THE CURRENT PROJECT STATE with the chosen backup snapshot.
@@ -6337,14 +6381,18 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
     # The backup itself must be a valid QualCoder project
     validate_qda_path(str(backup_folder))
 
-    if not confirm:
+    fingerprint = _restore_fingerprint(project_folder, backup_folder)
+    token_args = canonical_args("restore_backup",
+                                backup=str(backup_folder))
+    if preview_token is None:
         preview = {
             "requires_confirmation": True,
             "would_restore_from": backup_folder.name,
             "would_overwrite": project_folder.name,
             "safety": "A safety backup of the current state will be created "
                       "first, so the restore itself can be undone.",
-            "hint": "Call restore_backup again with confirm=true to proceed."
+            "hint": "Call restore_backup again with the preview_token to "
+                    "proceed."
         }
         if "_BKUP_" in backup_folder.name:
             preview["note"] = (
@@ -6366,7 +6414,31 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
                 "open, and the window will not display the restored state "
                 "until the project is reopened."
             )
-        return json.dumps(preview, indent=2)
+        try:
+            payload = _issue_preview(
+                "restore_backup", token_args, preview, fingerprint, confirm,
+                preview["hint"],
+                {"backup_path": backup_path},
+                state_preview=_restore_state_core(project_folder,
+                                                  backup_folder))
+        except PreviewSecretUnavailable:
+            return json.dumps(
+                _token_error("preview_secret_unavailable", "restore_backup"))
+        # The preview's own keys stay at the top level, as they were
+        payload.update({k: v for k, v in preview.items()
+                        if k not in ("requires_confirmation", "hint")})
+        return json.dumps(payload, indent=2)
+
+    state = fingerprint_rows(_restore_state_core(project_folder,
+                                                 backup_folder), fingerprint)
+    try:
+        outcome = verify(preview_token, "restore_backup", token_args,
+                         _token_project(), state)
+    except PreviewSecretUnavailable:
+        return json.dumps(
+            _token_error("preview_secret_unavailable", "restore_backup"))
+    if outcome != OK:
+        return json.dumps(_token_error(outcome, "restore_backup"))
 
     # Refuse while QualCoder has the project open (heartbeat lock file)
     lock_error = _qualcoder_open_error()
@@ -6402,6 +6474,20 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         except Exception:
             pass
         db = None
+
+    if _restore_fingerprint(project_folder, backup_folder) != fingerprint:
+        # The project (or the backup) changed between the preview and
+        # this moment. The safety backup above stays; it is exactly the
+        # state the researcher has now.
+        return json.dumps({
+            "error": TOKEN_ERROR_TEXTS["project_changed"].format(
+                tool="restore_backup")
+            + " A backup had already been taken before the change was "
+              "detected; it is unchanged and can be pruned.",
+            "reason": "project_changed",
+            "nothing_changed": True,
+            "safety_backup": str(safety_backup),
+        })
 
     try:
         with hold_project_lock(project_folder):
@@ -6480,7 +6566,8 @@ def restore_backup(backup_path: str, confirm: bool = False) -> str:
         "restored_from": str(backup_folder),
         "safety_backup": str(safety_backup),
         "hint": "The pre-restore state is kept in the safety backup in case "
-                "you change your mind."
+                "you change your mind.",
+        "preview_verified": True,
     }
     name_after = read_sidecar(project_folder).name
     if name_after != name_before:
@@ -8405,35 +8492,304 @@ def move_category(category_id: int, parent_category: Optional[str] = None,
 # CODEBOOK EDITING (destructive — preview -> confirm -> safety backup)
 # ============================================================================
 
-def _guarded_destructive(preview_fn, op_fn, confirm: bool,
-                         backup_fail_detail: str,
-                         confirm_hint: str) -> Dict[str, Any]:
-    """Preview -> confirm -> safety-backup gate for destructive codebook ops.
+# ---------------------------------------------------------------------------
+# Preview tokens: an execute needs proof that a preview was computed (D3)
+# ---------------------------------------------------------------------------
+# `confirm=true` said yes to whatever the tool was asked to do NOW, which
+# need not be what the preview the researcher read described. A token is
+# bound to the tool, to the arguments that decide the effect, to the
+# project, and to a fingerprint of the rows the operation would touch, so
+# a stale preview cannot authorise a changed operation, and the binding
+# is verified by recomputation rather than by anything the server
+# remembers, which is what makes it survive a host recycling the process.
 
-    Without confirm this returns a preview (read-only) of exactly what will
-    change; with confirm=true it runs the mutation under the full write
-    discipline, always creating a backup first (the safety net).
+TOKEN_ERROR_TEXTS = {
+    "token_malformed": (
+        "preview_token is not a token this server issued. Call `{tool}` "
+        "without preview_token for a fresh preview and token; nothing was "
+        "changed."),
+    "token_expired": (
+        "preview_token has expired (tokens are valid for 60 minutes). Call "
+        "`{tool}` without preview_token for a fresh preview, show it to the "
+        "user again, then execute; nothing was changed."),
+    "token_other_operation": (
+        "preview_token was issued for a different operation (another tool, "
+        "different arguments, or a different project), or the preview "
+        "secret has been rotated since the preview. Call `{tool}` without "
+        "preview_token for a fresh preview; nothing was changed."),
+    "project_changed": (
+        "The project changed since this preview was made: the rows this "
+        "operation would affect are no longer exactly those previewed, so "
+        "the token no longer applies. Call `{tool}` without preview_token "
+        "for a fresh preview, show the user what changed, then execute; "
+        "nothing was changed."),
+    "hidden_coder_override_required": (
+        "This operation affects codings that belong to a coder currently "
+        "hidden in QualCoder (see hidden_coder_codings_affected in the "
+        "preview); nothing was changed. Pass allow_hidden_coder=true to "
+        "proceed anyway, or ask the user to unhide the coder in "
+        "QualCoder."),
+    "preview_secret_unavailable": SECRET_UNAVAILABLE_MESSAGE,
+}
+
+TWO_STEP_PARAGRAPH = (
+    "Two-step by design. Call without preview_token: nothing is written "
+    "and the result is a preview of exactly what would change, with a "
+    "preview_token. Show the user the preview (including the collateral "
+    "breakdown and every warning) and ask whether to proceed. Only if "
+    "they agree, call again with the same arguments and "
+    "preview_token=<the token>. The token is valid for 60 minutes and "
+    "only while the rows it covers are unchanged; if the project changed "
+    "in between, the execute is refused and you must preview again. A "
+    "backup is always created first.")
+
+DEPRECATED_CONFIRM_NOTE = (
+    "confirm is deprecated and was ignored: an execute now needs the "
+    "preview_token this preview returns, which proves that the preview "
+    "the user saw is the operation being executed. confirm is removed in "
+    "v0.13.")
+
+
+def _qda_file_stamp(path) -> List[Any]:
+    """Size, mtime and two header words of a data.qda, for a fingerprint.
+
+    The SQLite change counter at header offset 24 advances per committed
+    write in rollback-journal mode but NOT in WAL mode, so it is used
+    here as ONE heuristic input beside the size and the modification
+    time, never on its own (D3 3.2).
     """
     try:
-        preview = preview_fn(get_db())
+        st = os.stat(str(path))
+        with open(str(path), "rb") as f:
+            header = f.read(100)
+    except OSError:
+        return ["missing"]
+    return [st.st_size, st.st_mtime_ns,
+            header[24:28].hex(), header[92:100].hex()]
+
+
+def _restore_state_core(project_folder, backup_folder) -> Dict[str, Any]:
+    """The part of a restore preview a token signs: what, onto what."""
+    return {"would_restore_from": Path(backup_folder).name,
+            "would_overwrite": Path(project_folder).name}
+
+
+def _restore_fingerprint(project_folder, backup_folder) -> Dict[str, Any]:
+    """What a restore would overwrite, and what it would overwrite it with."""
+    return {
+        "project": _qda_file_stamp(Path(project_folder) / "data.qda"),
+        "backup": _qda_file_stamp(Path(backup_folder) / "data.qda"),
+        "backup_name": Path(backup_folder).name,
+    }
+
+
+def _prune_fingerprint(to_remove, kept) -> Dict[str, Any]:
+    """The exact folders a prune would remove and keep."""
+    return {
+        "remove": sorted((b["name"], b["size_mb"]) for b in to_remove),
+        "keep": sorted(b["name"] for b in kept),
+    }
+
+
+def _ai_names_for_project() -> List[str]:
+    """The names this server treats as its own AI work here (H3).
+
+    One helper defines this for the whole server: the project's current
+    AI coder name and its history, the built-in default, and this host's
+    declaration. Reads never ask, so an unset project yields the default
+    alone rather than a refusal.
+    """
+    try:
+        return list(ai_coder_names_for_project(_current_project_folder()))
+    except Exception:
+        return [DEFAULT_AI_CODER_NAME]
+
+
+def _token_error(reason: str, tool: str) -> Dict[str, Any]:
+    """A refusal that changed nothing, in the fixed text for that reason.
+
+    Count-free and name-free even where the preview disclosed a count:
+    the same posture as every other refusal in this server.
+    """
+    return {"error": TOKEN_ERROR_TEXTS[reason].format(tool=tool),
+            "reason": reason, "nothing_changed": True}
+
+
+def _token_project() -> str:
+    """The canonical project identity a token is bound to.
+
+    The resolved `data.qda` path, case-folded on Windows only. A project
+    moved or renamed between preview and execute therefore invalidates
+    the token and the model previews again, which is the same identity
+    rule sessions already use.
+    """
+    return os.path.normcase(str(validate_qda_path(current_project_path)))
+
+
+def _state_guarded(fingerprint_fn, expected: str, op_fn, tool: str):
+    """Wrap a write so it re-checks the rows after taking the lock (H2).
+
+    BEGIN IMMEDIATE takes SQLite's RESERVED lock before we re-read, so
+    between the re-read and the mutation no other writer can commit
+    against the rows we are about to change. Without it the window
+    between the read-only fingerprint and the delete is open, which is
+    exactly the window the token exists to close. Lives here so the
+    flagship's pseudonymisation can reuse it.
+    """
+    def guarded(wdb):
+        wdb.begin_immediate()
+        if fingerprint_fn(wdb) != expected:
+            raise ValueError(
+                TOKEN_ERROR_TEXTS["project_changed"].format(tool=tool)
+                + " A backup had already been taken before the change was "
+                  "detected; it is unchanged and can be pruned.")
+        return op_fn(wdb)
+    return guarded
+
+
+def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
+                   rows: Any, confirm: bool, hint: str,
+                   execute_arguments: Dict[str, Any],
+                   warnings: Optional[List[str]] = None,
+                   state_preview: Optional[Dict[str, Any]] = None
+                   ) -> Dict[str, Any]:
+    """The preview payload, with the token that authorises its execute.
+
+    `state_preview` is what goes into the signed state when the preview
+    the model reads carries values that legitimately move between two
+    calls a minute apart: the age of a backup folder, the heuristics
+    about an open QualCoder window. Signing those would expire every
+    token by the clock rather than by change, so the signed part is the
+    stable core and the readable part is the whole preview.
+    """
+    project = _token_project()
+    state = fingerprint_rows(preview if state_preview is None
+                             else state_preview, rows)
+    token = issue(tool, args, project, state)
+    arguments = dict(execute_arguments)
+    arguments["preview_token"] = token
+    payload: Dict[str, Any] = {
+        "requires_confirmation": True,
+        "preview": preview,
+    }
+    if warnings:
+        payload["warnings"] = warnings
+    payload["preview_token"] = token
+    payload["token_valid_for_minutes"] = TOKEN_VALID_FOR_MINUTES
+    payload["execute_with"] = {"tool": tool, "arguments": arguments}
+    payload["hint"] = hint
+    if confirm:
+        payload["deprecated_argument"] = DEPRECATED_CONFIRM_NOTE
+    return payload
+
+
+def _collateral_warnings(preview: Dict[str, Any]) -> List[str]:
+    """The warnings a cascade preview carries (D3 3.7).
+
+    Each appears only when its count is positive, and each says what the
+    researcher would need to know to answer the question the preview
+    asks: whose work is at stake, whether any of it is hidden, whether a
+    private note dies with a row, and what a merge discards.
+    """
+    warnings: List[str] = []
+    block = preview.get("collateral") or {}
+    total = preview.get("total_codings_to_delete")
+    if total is None:
+        total = (block.get("ai_owned_codings", 0)
+                 + block.get("other_owned_codings", 0))
+    other = block.get("other_owned_codings", 0)
+    if other:
+        names = ", ".join(block.get("ai_coder_names", [])) or "none recorded"
+        warnings.append(
+            f"Warning: {other} of the {total} affected coding(s) were not "
+            f"made under this server's AI coder name(s) ({names}); they are "
+            f"other coders' work. Show the user the by_owner breakdown and "
+            f"get an explicit go-ahead before executing.")
+    hidden = preview.get("hidden_coder_codings_affected") or 0
+    if hidden:
+        warnings.append(
+            f"Warning: {hidden} affected coding(s) belong to coder(s) "
+            f"currently hidden in QualCoder; their names are not shown. "
+            f"Executing requires allow_hidden_coder=true.")
+    private = preview.get("private_notes_affected") or 0
+    if private:
+        warnings.append(
+            f"Warning: {private} affected row(s) carry a private note the "
+            f"assistant cannot see; it is destroyed with the row (a backup "
+            f"is made first).")
+    discarded = preview.get("text_codings_discarded_as_duplicates") or 0
+    if discarded:
+        warnings.append(
+            f"Warning: {discarded} source coding(s) are discarded as "
+            f"duplicates of the destination's (their memos and important "
+            f"flags are lost); see discarded_by_owner.")
+    return warnings
+
+
+def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
+                         token_args: Dict[str, Any],
+                         preview_token: Optional[str], confirm: bool,
+                         backup_fail_detail: str, confirm_hint: str,
+                         execute_arguments: Dict[str, Any],
+                         allow_hidden_coder: bool = False) -> Dict[str, Any]:
+    """Preview -> token -> safety-backup gate for destructive codebook ops.
+
+    Without a token this returns a preview (read-only, no backup, no
+    connection upgrade) of exactly what would change, plus the token that
+    authorises that operation and nothing else. With a token it verifies
+    the token against the tool, the arguments, the project and a
+    fingerprint of the rows in the blast radius, checks the hidden-coder
+    gate, and only then runs the mutation under the full write discipline
+    with a mandatory backup and an in-transaction re-check.
+    """
+    def state_of(db_) -> str:
+        """The signed state: what the preview says AND which rows it covers.
+
+        Recomputed on the write connection inside the transaction, so the
+        comparison is between two answers to the same question rather
+        than between a question and its hash.
+        """
+        return fingerprint_rows(preview_fn(db_), fingerprint_fn(db_))
+
+    try:
+        ro = get_db()
+        preview = preview_fn(ro)
+        rows = fingerprint_fn(ro)
     except (ValueError, RuntimeError) as e:
         return {"error": str(e)}
 
-    if not confirm:
-        return {
-            "requires_confirmation": True,
-            "preview": preview,
-            "hint": confirm_hint,
-        }
+    if preview_token is None:
+        try:
+            return _issue_preview(tool, token_args, preview, rows, confirm,
+                                  confirm_hint, execute_arguments,
+                                  _collateral_warnings(preview))
+        except PreviewSecretUnavailable:
+            return _token_error("preview_secret_unavailable", tool)
+
+    state = fingerprint_rows(preview, rows)
+    try:
+        outcome = verify(preview_token, tool, token_args, _token_project(),
+                         state)
+    except PreviewSecretUnavailable:
+        return _token_error("preview_secret_unavailable", tool)
+    if outcome != OK:
+        return _token_error(outcome, tool)
+
+    if preview.get("hidden_coder_codings_affected", 0) and \
+            not allow_hidden_coder:
+        return _token_error("hidden_coder_override_required", tool)
 
     # Always back up before a destructive write (no create_backup=False here)
-    return _perform_write(op_fn, create_backup=True,
+    return _perform_write(_state_guarded(state_of, state, op_fn, tool),
+                          create_backup=True,
                           backup_fail_detail=backup_fail_detail)
 
 
 @mcp.tool()
 @_tool_guard
 def merge_codes(from_code_id: int, into_code_id: int,
+                preview_token: Optional[str] = None,
+                allow_hidden_coder: bool = False,
                 confirm: bool = False) -> str:
     """Merge one code into another. DESTRUCTIVE: preview first, then confirm.
 
@@ -8445,8 +8801,14 @@ def merge_codes(from_code_id: int, into_code_id: int,
     codings are reassigned without de-duplication (as QualCoder does), which
     can create visual duplicates.
 
-    Call once without confirm to see how many codings will be reassigned vs
-    discarded, then again with confirm=true. A backup is created first.
+    Two-step by design. Call without preview_token: nothing is written and the
+    result is a preview of exactly what would change, with a preview_token.
+    Show the user the preview (including the collateral breakdown and every
+    warning) and ask whether to proceed. Only if they agree, call again with
+    the same arguments and preview_token=<the token>. The token is valid for
+    60 minutes and only while the rows it covers are unchanged; if the project
+    changed in between, the execute is refused and you must preview again. A
+    backup is always created first.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -8455,26 +8817,51 @@ def merge_codes(from_code_id: int, into_code_id: int,
     Args:
         from_code_id: The code to merge away (deleted afterwards)
         into_code_id: The code to keep (receives the codings)
-        confirm: Must be true to actually merge (default: preview only)
+        preview_token: The token from this operation's preview; omit it to
+                       get the preview
+        allow_hidden_coder: Required when the preview reports codings that
+                       belong to a coder currently hidden in QualCoder
+        confirm: Deprecated, ignored; use preview_token
     """
+    def _preview(ro):
+        preview = ro.preview_merge_codes(from_code_id, into_code_id)
+        preview["collateral"] = ro.collateral_for_cids(
+            [from_code_id], _ai_names_for_project(),
+            row_owner=ro.code_owner(from_code_id),
+            discarded_cid_pair=(from_code_id, into_code_id))
+        return preview
+
     result = _guarded_destructive(
-        preview_fn=lambda ro: ro.preview_merge_codes(from_code_id, into_code_id),
+        preview_fn=_preview,
         op_fn=lambda wdb: {"success": True, "message": "Merged codes",
+                           "preview_verified": True,
                            **wdb.merge_codes(from_code_id, into_code_id,
                                              auto_commit=False)},
+        fingerprint_fn=lambda db_: db_.fingerprint_rows_merge_codes(
+            from_code_id, into_code_id),
+        tool="merge_codes",
+        token_args=canonical_args("merge_codes",
+                                  from_code_id=from_code_id,
+                                  into_code_id=into_code_id),
+        preview_token=preview_token,
         confirm=confirm,
+        allow_hidden_coder=allow_hidden_coder,
         backup_fail_detail="no codes were merged",
-        confirm_hint="Review the counts, then call merge_codes again with "
-                     "confirm=true. The source coding is discarded on any "
-                     "duplicate span; a backup is made first.",
+        confirm_hint="Review the counts and the collateral breakdown, then "
+                     "call merge_codes again with preview_token. The source "
+                     "coding is discarded on any duplicate span; a backup "
+                     "is made first.",
+        execute_arguments={"from_code_id": from_code_id,
+                           "into_code_id": into_code_id},
     )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def delete_code(code_id: int, confirm: bool = False,
-                cascade: bool = False) -> str:
+def delete_code(code_id: int, preview_token: Optional[str] = None,
+                cascade: bool = False, allow_hidden_coder: bool = False,
+                confirm: bool = False) -> str:
     """Delete a code AND all its codings. DESTRUCTIVE: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a code removes the code itself and
@@ -8488,9 +8875,14 @@ def delete_code(code_id: int, confirm: bool = False,
     preview always reports the branch, so review it before confirming.
     Move the sub-codes first if they are needed.
 
-    Call once without confirm to see how many codings will be destroyed, then
-    again with confirm=true. A backup is created first, so a mistaken delete
-    can be undone with restore_backup.
+    Two-step by design. Call without preview_token: nothing is written and the
+    result is a preview of exactly what would change, with a preview_token.
+    Show the user the preview (including the collateral breakdown and every
+    warning) and ask whether to proceed. Only if they agree, call again with
+    the same arguments and preview_token=<the token>. The token is valid for
+    60 minutes and only while the rows it covers are unchanged; if the project
+    changed in between, the execute is refused and you must preview again. A
+    backup is always created first.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -8498,28 +8890,52 @@ def delete_code(code_id: int, confirm: bool = False,
 
     Args:
         code_id: The code's cid
-        confirm: Must be true to actually delete (default: preview only)
+        preview_token: The token from this operation's preview; omit it to
+                 get the preview
         cascade: Must be true to delete a code that has sub-codes (the
                  whole branch dies; default false refuses instead)
+        allow_hidden_coder: Required when the preview reports codings that
+                 belong to a coder currently hidden in QualCoder
+        confirm: Deprecated, ignored; use preview_token
     """
+    def _preview(ro):
+        preview = ro.preview_delete_code(code_id)
+        preview["collateral"] = ro.collateral_for_cids(
+            ro.get_branch_cids(code_id), _ai_names_for_project(),
+            row_owner=ro.code_owner(code_id))
+        return preview
+
+    execute_args: Dict[str, Any] = {"code_id": code_id}
+    if cascade:
+        execute_args["cascade"] = True
     result = _guarded_destructive(
-        preview_fn=lambda ro: ro.preview_delete_code(code_id),
+        preview_fn=_preview,
         op_fn=lambda wdb: {"success": True, "message": "Deleted code",
+                           "preview_verified": True,
                            **wdb.delete_code(code_id, cascade=cascade,
                                              auto_commit=False)},
+        fingerprint_fn=lambda db_: db_.fingerprint_rows_delete_code(code_id),
+        tool="delete_code",
+        token_args=canonical_args("delete_code", code_id=code_id),
+        preview_token=preview_token,
         confirm=confirm,
+        allow_hidden_coder=allow_hidden_coder,
         backup_fail_detail="the code was not deleted",
         confirm_hint="This will destroy the code and all its coded segments "
                      "(and, with cascade=true, its whole sub-code branch). "
-                     "Review total_codings_to_delete, then call delete_code "
-                     "again with confirm=true. A backup is made first.",
+                     "Review total_codings_to_delete and the collateral "
+                     "breakdown, then call delete_code again with "
+                     "preview_token. A backup is made first.",
+        execute_arguments=execute_args,
     )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 @_tool_guard
-def delete_category(category_id: int, confirm: bool = False) -> str:
+def delete_category(category_id: int,
+                    preview_token: Optional[str] = None,
+                    confirm: bool = False) -> str:
     """Delete a category. DESTRUCTIVE to the category: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a category is SHALLOW and safe for
@@ -8532,9 +8948,14 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
     codes and codings; this tool deliberately does not do that (the safe
     detach is valid on every schema and never destroys coded data).
 
-    Call once without confirm to see how many codes and sub-categories will be
-    moved to the top level, then again with confirm=true. A backup is made
-    first.
+    Two-step by design. Call without preview_token: nothing is written and the
+    result is a preview of exactly what would change, with a preview_token.
+    Show the user the preview (including the collateral breakdown and every
+    warning) and ask whether to proceed. Only if they agree, call again with
+    the same arguments and preview_token=<the token>. The token is valid for
+    60 minutes and only while the rows it covers are unchanged; if the project
+    changed in between, the execute is refused and you must preview again. A
+    backup is always created first.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with
@@ -8542,18 +8963,37 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
 
     Args:
         category_id: The category's catid
-        confirm: Must be true to actually delete (default: preview only)
+        preview_token: The token from this operation's preview; omit it to
+                       get the preview
+        confirm: Deprecated, ignored; use preview_token
     """
+    def _preview(ro):
+        preview = ro.preview_delete_category(category_id)
+        # No coding rows are touched, so the block reports zeros; it
+        # still names the owner of the category row being removed.
+        preview["collateral"] = ro.collateral_for_cids(
+            [], _ai_names_for_project(),
+            row_owner=ro.category_owner(category_id),
+            row_owner_key="category_row_owner")
+        return preview
+
     result = _guarded_destructive(
-        preview_fn=lambda ro: ro.preview_delete_category(category_id),
+        preview_fn=_preview,
         op_fn=lambda wdb: {"success": True, "message": "Deleted category",
+                           "preview_verified": True,
                            **wdb.delete_category(category_id,
                                                  auto_commit=False)},
+        fingerprint_fn=lambda db_: db_.fingerprint_rows_category(category_id),
+        tool="delete_category",
+        token_args=canonical_args("delete_category",
+                                  category_id=category_id),
+        preview_token=preview_token,
         confirm=confirm,
         backup_fail_detail="the category was not deleted",
         confirm_hint="Codes and sub-categories will move to the top level "
                      "(coded data is untouched). Call delete_category again "
-                     "with confirm=true. A backup is made first.",
+                     "with preview_token. A backup is made first.",
+        execute_arguments={"category_id": category_id},
     )
     return json.dumps(result, indent=2)
 
@@ -8562,6 +9002,7 @@ def delete_category(category_id: int, confirm: bool = False) -> str:
 @_tool_guard
 def merge_category(from_category_id: int,
                    into_category: Optional[str] = None,
+                   preview_token: Optional[str] = None,
                    confirm: bool = False) -> str:
     """Merge a category into another category (or into the top level).
 
@@ -8571,6 +9012,15 @@ def merge_category(from_category_id: int,
     then the source category is removed. Coded data is never touched;
     codings key on the code, not the category. Merging into a descendant
     of the source is refused (it would orphan the subtree).
+
+    Two-step by design. Call without preview_token: nothing is written and the
+    result is a preview of exactly what would change, with a preview_token.
+    Show the user the preview (including the collateral breakdown and every
+    warning) and ask whether to proceed. Only if they agree, call again with
+    the same arguments and preview_token=<the token>. The token is valid for
+    60 minutes and only while the rows it covers are unchanged; if the project
+    changed in between, the execute is refused and you must preview again. A
+    backup is always created first.
 
     Source category memo: on projects with sub-code support (v16+
     schemas) a merge into a real target carries the source category's
@@ -8593,7 +9043,9 @@ def merge_category(from_category_id: int,
                        otherwise letter case, spacing and Unicode form are
                        ignored; ambiguous variants refused), or
                        null/omitted to move everything to the top level
-        confirm: Must be true to actually merge (default: preview only)
+        preview_token: The token from this operation's preview; omit it to
+                       get the preview
+        confirm: Deprecated, ignored; use preview_token
     """
     into_category_id = None
     if into_category is not None:
@@ -8601,17 +9053,40 @@ def merge_category(from_category_id: int,
         if err is not None:
             return json.dumps(err, indent=2)
 
+    def _preview(ro):
+        preview = ro.preview_merge_category(from_category_id,
+                                            into_category_id)
+        preview["collateral"] = ro.collateral_for_cids(
+            [], _ai_names_for_project(),
+            row_owner=ro.category_owner(from_category_id),
+            row_owner_key="category_row_owner")
+        return preview
+
+    execute_args: Dict[str, Any] = {"from_category_id": from_category_id}
+    if into_category is not None:
+        execute_args["into_category"] = into_category
     result = _guarded_destructive(
-        preview_fn=lambda ro: ro.preview_merge_category(from_category_id,
-                                                        into_category_id),
+        preview_fn=_preview,
         op_fn=lambda wdb: {"success": True, "message": "Merged category",
+                           "preview_verified": True,
                            **wdb.merge_category(from_category_id,
                                                 into_category_id,
                                                 auto_commit=False)},
+        fingerprint_fn=lambda db_: db_.fingerprint_rows_category(
+            from_category_id, into_category_id),
+        tool="merge_category",
+        # The RESOLVED id is bound, never the name: if the name is given
+        # to a different category between preview and execute, the
+        # binding differs and the model previews again.
+        token_args=canonical_args("merge_category",
+                                  from_category_id=from_category_id,
+                                  into_category_id=into_category_id),
+        preview_token=preview_token,
         confirm=confirm,
         backup_fail_detail="no categories were merged",
         confirm_hint="Review the reparent counts, then call merge_category "
-                     "again with confirm=true. A backup is made first.",
+                     "again with preview_token. A backup is made first.",
+        execute_arguments=execute_args,
     )
     return json.dumps(result, indent=2)
 

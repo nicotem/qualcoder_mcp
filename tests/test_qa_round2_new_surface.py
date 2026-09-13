@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 import qualcoder_mcp.database as database
 from qualcoder_mcp.database import (
     QualcoderDatabase,
@@ -313,7 +314,7 @@ class TestRestoreBackupGates:
         # a "backup" of a DIFFERENT project in the same directory
         other = tmp_path / "unrelated_backup_20990101_000000.qda"
         shutil.copytree(qualcoder_db_path, other)
-        out = json.loads(server.restore_backup(str(other), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(other)))
         assert "error" in out
 
         # nested path outside the project parent
@@ -321,24 +322,23 @@ class TestRestoreBackupGates:
         nested_dir.mkdir()
         nested = nested_dir / f"{Path(qualcoder_db_path).stem}_backup_20990101_000000.qda"
         shutil.copytree(backup, nested)
-        out = json.loads(server.restore_backup(str(nested), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(nested)))
         assert "error" in out
 
         # symlink with a correct-looking name pointing elsewhere
         link = tmp_path / f"{Path(qualcoder_db_path).stem}_backup_20990102_000000.qda"
         os.symlink(nested, link)
-        out = json.loads(server.restore_backup(str(link), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(link)))
         assert "error" in out
 
         # correct-looking name but not a valid project inside
         hollow = tmp_path / f"{Path(qualcoder_db_path).stem}_backup_20990103_000000.qda"
         hollow.mkdir()
-        out = json.loads(server.restore_backup(str(hollow), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(hollow)))
         assert "error" in out
 
         # nonexistent path
-        out = json.loads(server.restore_backup(
-            str(tmp_path / "nope_backup_1.qda"), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(tmp_path / "nope_backup_1.qda")))
         assert "error" in out
 
     def test_refuses_while_qualcoder_open_or_sqlite_locked(
@@ -347,7 +347,7 @@ class TestRestoreBackupGates:
         lock = _lock(qualcoder_db_path)
         lock.write_text(f"livecoder\n{time.time()}", encoding="utf-8")
         try:
-            out = json.loads(server.restore_backup(str(backup), confirm=True))
+            out = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
             assert "livecoder" in out["error"]
         finally:
             lock.unlink()
@@ -355,7 +355,7 @@ class TestRestoreBackupGates:
         other = sqlite3.connect(str(_data_qda(qualcoder_db_path)))
         other.execute("BEGIN IMMEDIATE")
         try:
-            out = json.loads(server.restore_backup(str(backup), confirm=True))
+            out = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
             assert "error" in out
         finally:
             other.rollback()
@@ -369,7 +369,7 @@ class TestRestoreBackupGates:
         # plant a stray lock file inside the backup (old-format backups had them)
         (backup / QUALCODER_LOCK_FILENAME).write_text("ghost\n1.0", encoding="utf-8")
 
-        out = json.loads(server.restore_backup(str(backup), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         assert out["success"] is True, out
         # the post-backup file is gone
         res = json.loads(server.search_files("post_backup"))
@@ -618,7 +618,7 @@ class TestHeartbeatProtocol:
                 server.import_text_file("locked_out.txt", "nope"),
                 server.link_file_to_case(2, case_id=1),
                 server.delete_coding(1),
-                server.restore_backup(str(backup), confirm=True),
+                H.execute_destructive(server.restore_backup, str(backup)),
             ]
             for out in attempts:
                 parsed = json.loads(out)

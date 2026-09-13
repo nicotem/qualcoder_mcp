@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 
 
 def _make_backup(project_path, suffix, age_days=0.0):
@@ -89,7 +90,7 @@ class TestPruneBackupsPolicy:
         # nothing removed yet
         assert made["b20"].exists()
 
-        result = json.loads(server.prune_backups(keep_last=2, confirm=True))
+        result = json.loads(H.execute_destructive(server.prune_backups, keep_last=2))
         assert result["success"] is True
         assert len(result["removed"]) == 4
         assert not made["b20"].exists()
@@ -98,8 +99,7 @@ class TestPruneBackupsPolicy:
 
     def test_older_than_days_only(self, retention_env):
         project, made = retention_env
-        result = json.loads(server.prune_backups(older_than_days=7,
-                                                 confirm=True))
+        result = json.loads(H.execute_destructive(server.prune_backups, older_than_days=7))
         removed = set(result["removed"])
         assert removed == {made["b10"].name, made["b20"].name}
         assert made["b5"].exists() and made["pre5"].exists()
@@ -107,9 +107,8 @@ class TestPruneBackupsPolicy:
     def test_both_criteria_conservative_intersection(self, retention_env):
         """Pruned only if BEYOND keep_last AND older than the age bound."""
         project, made = retention_env
-        result = json.loads(server.prune_backups(keep_last=1,
-                                                 older_than_days=7,
-                                                 confirm=True))
+        result = json.loads(H.execute_destructive(server.prune_backups, keep_last=1,
+                                                 older_than_days=7))
         removed = set(result["removed"])
         # beyond-newest-1 covers all but b0; older-than-7 covers b10, b20
         # -> intersection is exactly b10 + b20
@@ -125,8 +124,7 @@ class TestPruneBackupsPolicy:
                 ts = time.time() - 100 * 86400
                 os.utime(path, (ts, ts))
         server.switch_project(project)
-        result = json.loads(server.prune_backups(older_than_days=1,
-                                                 confirm=True))
+        result = json.loads(H.execute_destructive(server.prune_backups, older_than_days=1))
         # exactly one MCP backup survives: the newest one
         survivors = [p for p in made.values()
                      if p.exists() and "_BKUP_" not in p.name]
@@ -134,7 +132,7 @@ class TestPruneBackupsPolicy:
 
     def test_keep_last_zero_explicit_removes_all(self, retention_env):
         project, made = retention_env
-        result = json.loads(server.prune_backups(keep_last=0, confirm=True))
+        result = json.loads(H.execute_destructive(server.prune_backups, keep_last=0))
         assert result["success"] is True
         remaining_mcp = [p for p in made.values()
                          if p.exists() and "_BKUP_" not in p.name]
@@ -163,8 +161,7 @@ class TestPruneBackupsPolicy:
         lock = Path(project) / "project_in_use.lock"
         lock.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
-            result = json.loads(server.prune_backups(older_than_days=15,
-                                                     confirm=True))
+            result = json.loads(H.execute_destructive(server.prune_backups, older_than_days=15))
             assert result["success"] is True
             assert made["b20"].name in result["removed"]
         finally:

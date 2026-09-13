@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.sessions import AICodingSession, CodingSuggestion
 from qualcoder_mcp.database import (
     BACKUP_IGNORE_PATTERNS,
@@ -130,8 +131,7 @@ class TestRestoreWithoutSearchSqlite:
         backup_path = out["backup_path"]
         assert not (Path(backup_path) / "ai_data" / "search.sqlite").exists()
 
-        restored = json.loads(server.restore_backup(backup_path,
-                                                    confirm=True))
+        restored = json.loads(H.execute_destructive(server.restore_backup, backup_path))
         assert restored.get("success") is True, restored
         # The restored project has ai_data WITHOUT search.sqlite; that is
         # upstream-normal (QualCoder rebuilds it on open), and the server
@@ -631,8 +631,7 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
                                                    tmp_path):
         restore_point = backup_project(qualcoder_db_path)
         self._plant(qualcoder_db_path, tmp_path)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert out["success"] is True
         assert out["safety_backup_skipped_symlinks"] == 1
         assert out["safety_backup_skipped_symlink_names"] == [
@@ -644,8 +643,7 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
     def test_restore_of_a_clean_project_carries_no_key(self, setup_server,
                                                        qualcoder_db_path):
         restore_point = backup_project(qualcoder_db_path)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert out["success"] is True
         assert "safety_backup_skipped_symlinks" not in out
 
@@ -682,8 +680,7 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
         restore_point = backup_project(qualcoder_db_path)
         link = self._plant(qualcoder_db_path, tmp_path)
         self._swap_fails(monkeypatch, qualcoder_db_path, restore_point)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert "success" not in out
         assert "recovered" in out["error"]
         assert "safety backup" in out["error"]
@@ -704,8 +701,7 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
         self._plant(qualcoder_db_path, tmp_path)
         self._swap_fails(monkeypatch, qualcoder_db_path, restore_point,
                          recovery_too=True)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert "success" not in out
         assert "safety backup" in out["error"]
         assert "copy it back" in out["error"]
@@ -718,16 +714,14 @@ class TestSkippedSymlinksSurfacedByEveryBackupTaker:
             self, setup_server, qualcoder_db_path, monkeypatch):
         restore_point = backup_project(qualcoder_db_path)
         self._swap_fails(monkeypatch, qualcoder_db_path, restore_point)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert "recovered" in out["error"]
         assert "nothing was lost" in out["error"]
         assert "safety_backup_skipped_symlinks" not in out
         assert "safety_backup_skipped_symlink_names" not in out
         self._swap_fails(monkeypatch, qualcoder_db_path, restore_point,
                          recovery_too=True)
-        out = json.loads(server.restore_backup(str(restore_point),
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(restore_point)))
         assert "safety backup" in out["error"]
         assert "recreate" not in out["error"]
         assert "safety_backup_skipped_symlinks" not in out

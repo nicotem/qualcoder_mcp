@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 
 
 def _row(project_path, sql, args=()):
@@ -231,9 +232,8 @@ class TestMergeCategory:
         orphan-to-top-level — the two must differ)."""
         project, ids = tree
         codings_before = _row(project, "SELECT COUNT(*) FROM code_text")[0]
-        out = json.loads(server.merge_category(ids["B"],
-                                               into_category="Category A",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, ids["B"],
+                                               into_category="Category A"))
         assert out["success"] is True
         # source gone; code 2 now in A; C now under A
         assert _row(project, "SELECT COUNT(*) FROM code_cat WHERE catid=?",
@@ -246,7 +246,7 @@ class TestMergeCategory:
 
     def test_merge_into_top_level(self, tree):
         project, ids = tree
-        out = json.loads(server.merge_category(ids["B"], confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, ids["B"]))
         assert out["success"] is True
         assert _row(project, "SELECT catid FROM code_name WHERE cid=2")[0] is None
         assert _row(project, "SELECT supercatid FROM code_cat WHERE catid=?",
@@ -255,15 +255,13 @@ class TestMergeCategory:
     def test_merge_into_descendant_refused(self, tree):
         """§9 cycle guard: target must not be the source's descendant."""
         project, ids = tree
-        out = json.loads(server.merge_category(ids["A"], into_category="C",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, ids["A"], into_category="C"))
         assert "descendant" in out["error"]
         assert _row(project, "SELECT COUNT(*) FROM code_cat WHERE catid=1")[0] == 1
 
     def test_merge_into_self_refused(self, tree):
         project, ids = tree
-        out = json.loads(server.merge_category(ids["B"], into_category="B",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, ids["B"], into_category="B"))
         assert "into itself" in out["error"]
 
     def test_ambiguous_target_name_refused(self, tree):

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp import project_settings as ps
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.project_settings import (
@@ -1174,7 +1175,7 @@ class TestTravel:
         backups = _backup_folders(qualcoder_db_path)
         backup = str(Path(qualcoder_db_path).parent / backups[-1])
         write_ai_coder_name(qualcoder_db_path, "Changed Since")
-        out = json.loads(server.restore_backup(backup, confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, backup))
         assert out.get("success") is True, out
         assert out["ai_coder_name_note"] == (
             f"The AI coder name setting was restored to "
@@ -1188,7 +1189,7 @@ class TestTravel:
         backups = _backup_folders(qualcoder_db_path)
         backup = Path(qualcoder_db_path).parent / backups[-1]
         (backup / SIDECAR_NAME).unlink()        # a pre-0.12 backup
-        out = json.loads(server.restore_backup(str(backup), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         assert out.get("success") is True, out
         assert "no longer has one" in out["ai_coder_name_note"]
         assert read_sidecar(qualcoder_db_path).status == "unset"

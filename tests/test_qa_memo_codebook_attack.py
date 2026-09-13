@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import (
     QualcoderDatabase,
     QUALCODER_LOCK_FILENAME,
@@ -96,18 +97,18 @@ class TestDestructiveGates:
               "INSERT INTO code_text (cid, fid, seltext, pos0, pos1, owner) "
               "VALUES (1, 1, ?, 0, 12, 'late_arrival')", (FULLTEXT[0:12],))
         _reload()
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert out["success"] is True
         assert out["text_codings_to_delete"] == 2      # fresh, not stale
         assert _one(qualcoder_db_path,
                     "SELECT COUNT(*) FROM code_text WHERE cid = 1")[0] == 0
 
     def test_double_confirm_is_a_clean_no_target_error(self, setup_server):
-        assert json.loads(server.merge_codes(1, 2, confirm=True))["success"]
-        again = json.loads(server.merge_codes(1, 2, confirm=True))
+        assert json.loads(H.execute_destructive(server.merge_codes, 1, 2))["success"]
+        again = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert "error" in again and "does not exist" in again["error"]
         # delete after merge: same clean error, no traceback
-        gone = json.loads(server.delete_code(1, confirm=True))
+        gone = json.loads(H.execute_destructive(server.delete_code, 1))
         assert "error" in gone and "does not exist" in gone["error"]
 
     def test_confirm_true_without_prior_preview_executes_with_backup(
@@ -116,7 +117,7 @@ class TestDestructiveGates:
         confirm=true call executes — but always behind a fresh backup. Pin
         the backup-always property, which is the actual safety net."""
         n = len(_backups(qualcoder_db_path))
-        out = json.loads(server.delete_code(2, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 2))
         assert out["success"] is True
         assert "backup_path" in out
         assert len(_backups(qualcoder_db_path)) == n + 1
@@ -124,21 +125,21 @@ class TestDestructiveGates:
     def test_safety_backup_is_restorable_to_premerge_state(
             self, setup_server, qualcoder_db_path):
         pre = _dump(qualcoder_db_path)
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         backup_path = out["backup_path"]
         assert _dump(qualcoder_db_path) != pre         # merge really happened
-        restored = json.loads(server.restore_backup(backup_path, confirm=True))
+        restored = json.loads(H.execute_destructive(server.restore_backup, backup_path))
         assert restored["success"] is True
         assert _dump(qualcoder_db_path) == pre         # bit-true recovery
 
     def test_invalid_targets_cost_nothing(self, setup_server,
                                           qualcoder_db_path):
         n = len(_backups(qualcoder_db_path))
-        assert "error" in json.loads(server.merge_codes(1, 1, confirm=True))
-        assert "error" in json.loads(server.merge_codes(1, 424242, confirm=True))
-        assert "error" in json.loads(server.merge_codes(424242, 1, confirm=True))
-        assert "error" in json.loads(server.delete_code(424242, confirm=True))
-        assert "error" in json.loads(server.delete_category(424242, confirm=True))
+        assert "error" in json.loads(H.execute_destructive(server.merge_codes, 1, 1))
+        assert "error" in json.loads(H.execute_destructive(server.merge_codes, 1, 424242))
+        assert "error" in json.loads(H.execute_destructive(server.merge_codes, 424242, 1))
+        assert "error" in json.loads(H.execute_destructive(server.delete_code, 424242))
+        assert "error" in json.loads(H.execute_destructive(server.delete_category, 424242))
         assert len(_backups(qualcoder_db_path)) == n   # no backup litter
 
 
@@ -158,9 +159,9 @@ class TestWriteDisciplineAcrossNewSurface:
         ("create_category", lambda: server.create_category("Lock probe cat")),
         ("rename_category", lambda: server.rename_category(1, "Lock renamed cat")),
         ("move_category", lambda: server.move_category(1)),
-        ("merge_codes", lambda: server.merge_codes(1, 2, confirm=True)),
-        ("delete_code", lambda: server.delete_code(1, confirm=True)),
-        ("delete_category", lambda: server.delete_category(1, confirm=True)),
+        ("merge_codes", lambda: H.execute_destructive(server.merge_codes, 1, 2)),
+        ("delete_code", lambda: H.execute_destructive(server.delete_code, 1)),
+        ("delete_category", lambda: H.execute_destructive(server.delete_category, 1)),
     ]
 
     def test_fresh_lock_refuses_all_12_no_mutation_no_backup(
@@ -219,8 +220,8 @@ class TestWriteDisciplineAcrossNewSurface:
 
         n_backups = len(sorted(old.parent.glob(f"{old.stem}_backup_*.qda")))
         for name, call in [("set_memo", lambda: server.set_memo("code", 1, "x")),
-                           ("merge_codes", lambda: server.merge_codes(1, 2, confirm=True)),
-                           ("delete_category", lambda: server.delete_category(1, confirm=True))]:
+                           ("merge_codes", lambda: H.execute_destructive(server.merge_codes, 1, 2)),
+                           ("delete_category", lambda: H.execute_destructive(server.delete_category, 1))]:
             out = json.loads(call())
             assert "error" in out and "pre-v14" in out["error"], name
         assert len(sorted(old.parent.glob(f"{old.stem}_backup_*.qda"))) == n_backups
@@ -229,8 +230,8 @@ class TestWriteDisciplineAcrossNewSurface:
                                                        qualcoder_db_path):
         json.loads(server.set_memo("code", 1, "x"))
         json.loads(server.create_code("RO check"))
-        json.loads(server.merge_codes(1, 2, confirm=True))
-        json.loads(server.delete_category(1, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
+        json.loads(H.execute_destructive(server.delete_category, 1))
         assert server.db is not None and server.db.read_only
 
 
@@ -344,7 +345,7 @@ class TestUnicodeAndHostileNames:
     def test_merge_by_ids_unaffected_by_hostile_names(self, setup_server,
                                                       qualcoder_db_path):
         hostile = json.loads(server.create_code("evil'); --"))["code"]["id"]
-        out = json.loads(server.merge_codes(1, hostile, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, hostile))
         assert out["success"] is True
         assert _one(qualcoder_db_path,
                     "SELECT COUNT(*) FROM code_text WHERE cid = ?",
@@ -373,7 +374,7 @@ class TestSessionInteraction:
         away: apply must refuse cleanly (stale code_id), write nothing,
         create no backup — not corrupt the destination code."""
         sid, guid = self._pending_approved_suggestion()
-        assert json.loads(server.merge_codes(1, 2, confirm=True))["success"]
+        assert json.loads(H.execute_destructive(server.merge_codes, 1, 2))["success"]
 
         n_backups = len(_backups(qualcoder_db_path))
         before = _one(qualcoder_db_path, "SELECT COUNT(*) FROM code_text")[0]
@@ -388,13 +389,13 @@ class TestSessionInteraction:
     def test_delete_code_invalidates_pending_suggestion_cleanly(
             self, setup_server, qualcoder_db_path):
         sid, guid = self._pending_approved_suggestion()
-        assert json.loads(server.delete_code(1, confirm=True))["success"]
+        assert json.loads(H.execute_destructive(server.delete_code, 1))["success"]
         out = json.loads(server.apply_codings(sid))
         assert "error" in out and out["failures"][0]["guid"] == guid
 
     def test_record_after_delete_rejects_with_available_codes(
             self, setup_server):
-        assert json.loads(server.delete_code(1, confirm=True))["success"]
+        assert json.loads(H.execute_destructive(server.delete_code, 1))["success"]
         sid = server.analyze_for_coding([1]).split("Session ID: `")[1].split("`")[0]
         rec = json.loads(server.record_suggestions(sid, [{
             "file_id": 1, "code_name": "Stress",

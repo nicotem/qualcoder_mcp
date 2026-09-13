@@ -53,6 +53,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import (
     QualcoderDatabase,
@@ -1076,7 +1077,7 @@ class TestRestoreBackupFaults:
         backup_hash = db_hash(env.backup_folder)
         before = env.backup_names()
 
-        result = server.restore_backup(str(env.backup_folder), confirm=True)
+        result = H.execute_destructive(server.restore_backup, str(env.backup_folder))
 
         data = json.loads(result)
         assert data.get("success") is True, data
@@ -1108,7 +1109,7 @@ class TestRestoreBackupFaults:
 
         monkeypatch.setattr(server, "backup_project", backup_then_lock)
 
-        result = server.restore_backup(str(env.backup_folder), confirm=True)
+        result = H.execute_destructive(server.restore_backup, str(env.backup_folder))
 
         assert_structured_error(result, "open in QualCoder")
         assert env.hash() == pre_hash
@@ -1140,7 +1141,7 @@ class TestRestoreBackupFaults:
 
         monkeypatch.setattr(shutil, "copytree", fake)
 
-        result = server.restore_backup(str(env.backup_folder), confirm=True)
+        result = H.execute_destructive(server.restore_backup, str(env.backup_folder))
 
         data = assert_structured_error(result, "recovered")
         assert "safety_backup" in data
@@ -1163,7 +1164,7 @@ class TestRestoreBackupFaults:
 
         _partial_copytree_patch(monkeypatch, env)
 
-        server.restore_backup(str(env.backup_folder), confirm=True)
+        H.execute_destructive(server.restore_backup, str(env.backup_folder))
 
         assert env.folder.exists()
         post = env.state()
@@ -1183,7 +1184,7 @@ class TestRestoreBackupFaults:
 
         _partial_copytree_patch(monkeypatch, env, unrecoverable=True)
 
-        result = server.restore_backup(str(env.backup_folder), confirm=True)
+        result = H.execute_destructive(server.restore_backup, str(env.backup_folder))
 
         data = assert_structured_error(result, "safety backup")
         assert "safety_backup" in data
@@ -1268,7 +1269,7 @@ class TestPerformWriteUnconditionalCleanup:
         pre_hash = env.hash()
         self._inject_commit_error(monkeypatch)
 
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert "error" in out
         assert env.hash() == pre_hash                 # nothing destroyed
         assert server.db.read_only is True

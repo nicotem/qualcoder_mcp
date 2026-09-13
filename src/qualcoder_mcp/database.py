@@ -792,6 +792,12 @@ def validate_string(value: str, param_name: str = "value",
     return value
 
 
+# QualCoder 4.0's built-in assistant writes under this exact string
+# (ai_mcp_server.py:85 at 9bddf17). Defined here, the layer with no
+# internal dependencies, and re-exported by project_settings, so ONE
+# constant describes that assistant (H3) without a circular import.
+KNOWN_AI_ASSISTANT_OWNER = "AI Agent"
+
 # Coder names appear in every coding row and in QualCoder's coder lists;
 # 80 characters is generous for a display name and short enough to keep
 # those lists readable (P1-2).
@@ -5461,6 +5467,281 @@ class QualcoderDatabase:
             seen.add(cid)
             stack.extend(children.get(cid, []))
         return False
+
+    # ------------------------------------------------------------------
+    # Collateral: whose work a cascade would take with it (v0.12 B2, D3 3.7)
+    # ------------------------------------------------------------------
+
+    def collateral_for_cids(self, cids: Sequence[int],
+                            ai_coder_names: Sequence[str],
+                            row_owner: Optional[str] = None,
+                            row_owner_key: str = "code_row_owner",
+                            discarded_cid_pair: Optional[Tuple[int, int]] = None
+                            ) -> Dict[str, Any]:
+        """Whose codings a cascade over `cids` would remove.
+
+        A preview that says "20 codings" does not tell the researcher
+        whether those are theirs, this server's, or a colleague's, and
+        that is the question that decides whether the operation is
+        acceptable. Per-owner counts come from the VISIBLE source, so
+        hidden coders are never enumerated by name; their rows are
+        counted once, anonymously, through `_hidden_codings_affected`,
+        which stays fail-closed.
+
+        `ai_coder_names` is the caller's set of names this server treats
+        as its own work (the one helper of H3, resolved in the server
+        layer); rows under those names are folded into `ai_owned_codings`
+        and never appear as `by_owner` entries.
+        """
+        ai_names = set(ai_coder_names)
+        caps = getattr(self, "capabilities", None)
+        tables = (("code_text", "code_text_visible", "text"),
+                  ("code_av", "code_av_visible", "av"),
+                  ("code_image", "code_image_visible", "image"))
+        per_owner: Dict[str, Dict[str, int]] = {}
+        visible_total = 0
+        if cids:
+            marks = ",".join("?" for _ in cids)
+            for base, view, label in tables:
+                source = self._visible_source(base, view)
+                try:
+                    rows = self.conn.execute(
+                        f"SELECT owner, COUNT(*) AS n FROM {source} "
+                        f"WHERE cid IN ({marks}) GROUP BY owner",
+                        tuple(cids)).fetchall()
+                except sqlite3.Error as e:
+                    _raise_query_error(
+                        e, "collateral_for_cids",
+                        "Could not read whose codings this operation would "
+                        "affect; nothing was changed")
+                for row in rows:
+                    owner = row["owner"] or ""
+                    entry = per_owner.setdefault(
+                        owner, {"owner": owner, "codings": 0, "text": 0,
+                                "av": 0, "image": 0})
+                    entry[label] += int(row["n"])
+                    entry["codings"] += int(row["n"])
+                    visible_total += int(row["n"])
+
+        hidden = None
+        if cids:
+            marks = ",".join("?" for _ in cids)
+            hidden = self._hidden_codings_affected(f"cid IN ({marks})",
+                                                   list(cids))
+        elif caps is not None and caps.has_coder_visibility:
+            hidden = 0
+
+        ai_owned = sum(e["codings"] for o, e in per_owner.items()
+                       if o in ai_names)
+        total_affected = visible_total + (hidden or 0)
+        by_owner = sorted(
+            (dict(e) for o, e in per_owner.items() if o not in ai_names),
+            key=lambda e: (-e["codings"], e["owner"]))
+        for entry in by_owner:
+            if entry["owner"] == KNOWN_AI_ASSISTANT_OWNER:
+                # A heuristic label, not a fact about who typed: rows
+                # under QualCoder 4.0's own assistant string that this
+                # project has not adopted as its own AI name.
+                entry["known_ai_assistant"] = True
+        block: Dict[str, Any] = {
+            "ai_coder_names": list(ai_coder_names),
+            "ai_owned_codings": ai_owned,
+            "other_owned_codings": max(0, total_affected - ai_owned),
+            "by_owner": by_owner[:20],
+        }
+        if len(by_owner) > 20:
+            block["more_owners"] = len(by_owner) - 20
+        if hidden is not None:
+            block["hidden_coder_codings"] = hidden
+        if row_owner is not None:
+            block[row_owner_key] = self._mask_hidden_owner(row_owner)
+        if discarded_cid_pair is not None:
+            block["discarded_by_owner"] = self._discarded_by_owner(
+                *discarded_cid_pair)
+        return block
+
+    def _mask_hidden_owner(self, owner: Optional[str]) -> Optional[str]:
+        """A code or category row's owner, masked when that coder is hidden.
+
+        QualCoder's visibility views cover codings and annotations only
+        (app.py:1517-1560), so a hidden coder's name can legitimately
+        appear as a code owner in QualCoder's own tree, and `list_codes`
+        still returns it. This NEW block is more careful than that: it
+        reports "(hidden coder)" rather than the name (ruling Q6). A
+        disclosure rule, not a gate.
+        """
+        if owner is None:
+            return None
+        return "(hidden coder)" if self.coder_name_visibility(owner) == 0 \
+            else owner
+
+    def _discarded_by_owner(self, from_code_id: int,
+                            into_code_id: int) -> List[Dict[str, Any]]:
+        """Whose source codings a merge discards as duplicates.
+
+        The discarded duplicate is the one irreversible part of a merge
+        (its memo and important flag are lost), so the preview says whose
+        it is. Visible owners only, by the same rule as `by_owner`.
+        """
+        source = self._visible_source("code_text", "code_text_visible")
+        try:
+            rows = self.conn.execute(
+                f"SELECT s.owner AS owner, COUNT(*) AS n FROM {source} s "
+                f"WHERE s.cid = ? AND EXISTS ("
+                f"  SELECT 1 FROM {source} d WHERE d.cid = ? AND d.fid = s.fid"
+                f"  AND d.pos0 = s.pos0 AND d.pos1 = s.pos1 "
+                f"  AND d.owner = s.owner) GROUP BY s.owner",
+                (from_code_id, into_code_id)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(
+                e, "_discarded_by_owner",
+                "Could not read whose codings this merge would discard; "
+                "nothing was changed")
+        return sorted(({"owner": r["owner"] or "", "codings": int(r["n"])}
+                       for r in rows),
+                      key=lambda e: (-e["codings"], e["owner"]))
+
+    # ------------------------------------------------------------------
+    # Fingerprint rows: the identity of what a preview covered (D3 3.2)
+    # ------------------------------------------------------------------
+
+    def _row_digest_rows(self, sql: str, params: Sequence[Any]) -> List[list]:
+        try:
+            rows = self.conn.execute(sql, tuple(params)).fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(
+                e, "_row_digest_rows",
+                "Could not read the rows this operation would affect; "
+                "nothing was changed")
+        return [[(v if not isinstance(v, bytes) else v.hex()) for v in row]
+                for row in rows]
+
+    def _coding_rows_for_cids(self, cids: Sequence[int]) -> Dict[str, Any]:
+        """Ids, spans, ownership and memo FLAGS of the codings in scope.
+
+        Always the BASE tables: hidden rows are inside the blast radius,
+        so they must be inside the digest, or a change to one of them
+        would not invalidate the token that covers it. Memo TEXT never
+        enters the payload, on principle; `has_memo` and `has_private`
+        are booleans (D3 3.2).
+        """
+        if not cids:
+            return {}
+        marks = ",".join("?" for _ in cids)
+        mark = PERSONAL_NOTE_MARK
+        params = list(cids) + [mark]
+        return {
+            "code_text": self._row_digest_rows(
+                f"SELECT ctid, cid, fid, pos0, pos1, owner, important, "
+                f"(memo IS NOT NULL AND memo != ''), "
+                f"(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                f"FROM code_text WHERE cid IN ({marks}) ORDER BY ctid",
+                [mark] + list(cids)),
+            "code_av": self._row_digest_rows(
+                f"SELECT avid, cid, id, pos0, pos1, owner, "
+                f"(memo IS NOT NULL AND memo != ''), "
+                f"(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                f"FROM code_av WHERE cid IN ({marks}) ORDER BY avid",
+                [mark] + list(cids)),
+            "code_image": self._row_digest_rows(
+                f"SELECT imid, cid, id, x1, y1, width, height, owner, "
+                f"(memo IS NOT NULL AND memo != ''), "
+                f"(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                f"FROM code_image WHERE cid IN ({marks}) ORDER BY imid",
+                [mark] + list(cids)),
+        }
+
+    def _code_rows_for_cids(self, cids: Sequence[int]) -> List[list]:
+        if not cids:
+            return []
+        marks = ",".join("?" for _ in cids)
+        supercid = ("supercid" if getattr(self, "capabilities", None)
+                    is not None and self.capabilities.has_supercid
+                    else "NULL")
+        return self._row_digest_rows(
+            f"SELECT cid, name, catid, {supercid}, owner, "
+            f"(memo IS NOT NULL AND memo != ''), "
+            f"(memo IS NOT NULL AND instr(memo, ?) > 0) "
+            f"FROM code_name WHERE cid IN ({marks}) ORDER BY cid",
+            [PERSONAL_NOTE_MARK] + list(cids))
+
+    def _category_rows(self, catids: Sequence[int]) -> List[list]:
+        if not catids:
+            return []
+        marks = ",".join("?" for _ in catids)
+        return self._row_digest_rows(
+            f"SELECT catid, name, supercatid, owner, "
+            f"(memo IS NOT NULL AND memo != ''), "
+            f"(memo IS NOT NULL AND instr(memo, ?) > 0) "
+            f"FROM code_cat WHERE catid IN ({marks}) ORDER BY catid",
+            [PERSONAL_NOTE_MARK] + list(catids))
+
+    def fingerprint_rows_delete_code(self, code_id: int) -> Dict[str, Any]:
+        branch = self.get_branch_cids(code_id)
+        rows = {"codes": self._code_rows_for_cids(branch)}
+        rows.update(self._coding_rows_for_cids(branch))
+        return rows
+
+    def fingerprint_rows_merge_codes(self, from_code_id: int,
+                                     into_code_id: int) -> Dict[str, Any]:
+        rows = {"source_code": self._code_rows_for_cids([from_code_id]),
+                "destination_code": self._code_rows_for_cids([into_code_id])}
+        rows.update(self._coding_rows_for_cids([from_code_id]))
+        rows["collisions"] = self._row_digest_rows(
+            "SELECT s.ctid FROM code_text s WHERE s.cid = ? AND EXISTS ("
+            "  SELECT 1 FROM code_text d WHERE d.cid = ? AND d.fid = s.fid "
+            "  AND d.pos0 = s.pos0 AND d.pos1 = s.pos1 AND d.owner = s.owner)"
+            " ORDER BY s.ctid", (from_code_id, into_code_id))
+        return rows
+
+    def fingerprint_rows_category(self, category_id: int,
+                                  into_category_id: Optional[int] = None
+                                  ) -> Dict[str, Any]:
+        rows: Dict[str, Any] = {
+            "category": self._category_rows([category_id]),
+            "child_codes": self._row_digest_rows(
+                "SELECT cid, name, catid FROM code_name WHERE catid = ? "
+                "ORDER BY cid", (category_id,)),
+            "child_categories": self._row_digest_rows(
+                "SELECT catid, name, supercatid FROM code_cat "
+                "WHERE supercatid = ? ORDER BY catid", (category_id,)),
+        }
+        if into_category_id is not None:
+            rows["destination"] = self._category_rows([into_category_id])
+        return rows
+
+    def code_owner(self, code_id: int) -> Optional[str]:
+        """The owner of one code row, or None when it does not exist."""
+        try:
+            row = self.conn.execute(
+                "SELECT owner FROM code_name WHERE cid = ?",
+                (code_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+        return row["owner"] if row else None
+
+    def category_owner(self, category_id: int) -> Optional[str]:
+        """The owner of one category row, or None when it does not exist."""
+        try:
+            row = self.conn.execute(
+                "SELECT owner FROM code_cat WHERE catid = ?",
+                (category_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+        return row["owner"] if row else None
+
+    def begin_immediate(self) -> None:
+        """Take SQLite's RESERVED lock before re-reading what we will change.
+
+        The write connection uses the legacy transaction control with a
+        five-second busy timeout (:1173-1178), so an explicit BEGIN
+        IMMEDIATE either acquires the lock or fails inside the existing
+        sqlite3.Error handling. Used by the token guard to close the
+        window between the read-only fingerprint and the mutation (H2);
+        the flagship reuses it.
+        """
+        self._require_write_access()
+        self.conn.execute("BEGIN IMMEDIATE")
 
     def get_branch_cids(self, root_cid: int) -> List[int]:
         """The code plus every transitive sub-code, read fresh from the DB

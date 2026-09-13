@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.sessions import SessionManager
@@ -307,7 +308,7 @@ class TestSubcodeWriteDifferentials:
         p = self._project(tmp_path)
         twin = self._twin(p, tmp_path)
 
-        out = json.loads(server.merge_codes(3, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 3, 2))
         assert out.get("success") is True, out
         assert out.get("provenance_memo_added") is True
         assert out.get("subcodes_reparented_to_target") == 1   # SubSub(4)
@@ -352,9 +353,8 @@ class TestSubcodeWriteDifferentials:
         folder = Path(p)
         n_backups = len(list(folder.parent.glob(f"{folder.stem}_backup_*.qda")))
         for args in ((1, "SubSub"), (1, "SubB"), (3, "SubSub")):
-            out = json.loads(server.merge_codes(args[0],
-                                                _one(p, "SELECT cid FROM code_name WHERE name=?", (args[1],))[0],
-                                                confirm=True))
+            out = json.loads(H.execute_destructive(server.merge_codes, args[0],
+                                                _one(p, "SELECT cid FROM code_name WHERE name=?", (args[1],))[0]))
             assert "error" in out, args
             assert "sub-code" in out["error"].lower() or "descend" in out["error"].lower()
         assert len(list(folder.parent.glob(f"{folder.stem}_backup_*.qda"))) \
@@ -375,11 +375,11 @@ class TestSubcodeWriteDifferentials:
         assert preview["text_codings_to_delete"] == 4  # ctids 1,10,11,12
 
         # refuse without cascade
-        out = json.loads(server.delete_code(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
         assert "error" in out and "cascade" in out["error"]
         assert _one(p, "SELECT COUNT(*) FROM code_name")[0] == 5   # untouched
 
-        out = json.loads(server.delete_code(1, confirm=True, cascade=True))
+        out = json.loads(H.execute_destructive(server.delete_code, 1, cascade=True))
         assert out.get("success") is True, out
 
         # master recipe on the twin: branch cids {1,3,4,5}, per-cid deletes
@@ -432,7 +432,7 @@ class TestSubcodeWriteDifferentials:
         shutil.copytree(p, twin)
 
         assert json.loads(server.move_code_to_category(1))["success"] is True
-        assert json.loads(server.merge_codes(1, 2, confirm=True))["success"] is True
+        assert json.loads(H.execute_destructive(server.merge_codes, 1, 2))["success"] is True
         conn = sqlite3.connect(str(twin / "data.qda"))
         c = conn.cursor()
         c.execute("update code_name set catid=? where cid=?", (None, 1))  # 3.8.2 move

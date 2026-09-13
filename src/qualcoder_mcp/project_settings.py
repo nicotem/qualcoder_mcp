@@ -30,7 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .database import validate_coder_name, validate_coder_note
+from .database import (KNOWN_AI_ASSISTANT_OWNER, validate_coder_name,
+                       validate_coder_note)
 
 # The sidecar. Only this exact name is ever treated as one.
 SIDECAR_NAME = "qualcoder_mcp.json"
@@ -48,11 +49,11 @@ HISTORY_ECHO = 20
 # and this server's built-in default.
 AI_CODER_NAME_ENV = "QUALCODER_MCP_AI_CODER_NAME"
 DEFAULT_AI_CODER_NAME = "AI Coding Assistant"
-# QualCoder 4.0's built-in assistant writes under this exact string
-# (ai_mcp_server.py:85 at 9bddf17). Rows under it that this project has
+# QualCoder 4.0's built-in assistant's owner string, re-exported from
+# database.py (one definition, H3). Rows under it that this project has
 # not adopted are another coder's work; `known_ai_assistant` is a
 # heuristic label for them, never a fact about who typed.
-KNOWN_AI_ASSISTANT_OWNER = "AI Agent"
+__all_known_ai = KNOWN_AI_ASSISTANT_OWNER
 # The pre-0.11 import label. It is an owner on `source` and `case_text`
 # rows, never a coding owner, so it is not an AI coder name and never
 # enters the set below (Appendix A, R2).

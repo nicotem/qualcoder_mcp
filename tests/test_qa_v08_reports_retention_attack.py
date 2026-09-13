@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 
 
 FULLTEXT = "This is interview text. I feel stressed about deadlines. I cope by exercising."
@@ -324,7 +325,7 @@ class TestPruneBackups:
             self, setup_server, qualcoder_db_path):
         seeded = self._seed(qualcoder_db_path)
         stem = Path(qualcoder_db_path).stem
-        out = json.loads(server.prune_backups(keep_last=2, confirm=True))
+        out = json.loads(H.execute_destructive(server.prune_backups, keep_last=2))
         assert out["success"] is True, out
         survivors = {p.name for p in
                      Path(qualcoder_db_path).parent.glob(f"{stem}_*")
@@ -354,14 +355,13 @@ class TestPruneBackups:
         self._seed(qualcoder_db_path)
         stem = Path(qualcoder_db_path).stem
         # older_than_days=0 targets everything, but the >=1 floor holds
-        out = json.loads(server.prune_backups(older_than_days=0.0,
-                                              confirm=True))
+        out = json.loads(H.execute_destructive(server.prune_backups, older_than_days=0.0))
         assert out["success"] is True, out
         remaining = [p for p in
                      Path(qualcoder_db_path).parent.glob(f"{stem}_backup_*")]
         assert len(remaining) >= 1                        # floor kept >=1
         # explicit keep_last=0 removes the rest
-        out = json.loads(server.prune_backups(keep_last=0, confirm=True))
+        out = json.loads(H.execute_destructive(server.prune_backups, keep_last=0))
         assert out["success"] is True, out
         assert not list(Path(qualcoder_db_path).parent.glob(
             f"{stem}_backup_*"))
@@ -386,7 +386,7 @@ class TestPruneBackups:
         lock = Path(qualcoder_db_path) / QUALCODER_LOCK_FILENAME
         lock.write_text(f"livecoder\n{time.time()}")
         try:
-            out = json.loads(server.prune_backups(keep_last=1, confirm=True))
+            out = json.loads(H.execute_destructive(server.prune_backups, keep_last=1))
             assert out.get("success") is True, out
         finally:
             lock.unlink()

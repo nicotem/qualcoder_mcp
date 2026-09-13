@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import QualcoderDatabase
 from qualcoder_mcp.memo_privacy import (
     PERSONAL_NOTE_MARK,
@@ -445,7 +446,7 @@ class TestMergeProvenancePreservesSuffix:
               (f"target public#####{SECRET}",))
         _reopen(qualcoder_db_path)
 
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("merged") is True, out
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
@@ -463,7 +464,7 @@ class TestMergeProvenancePreservesSuffix:
               (f"source pub#####{SECRET}",))
         _reopen(qualcoder_db_path)
 
-        json.loads(server.merge_codes(1, 2, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
         # Carried into the target whole; the marker keeps it AI-hidden
@@ -478,7 +479,7 @@ class TestMergeProvenancePreservesSuffix:
         _exec(qualcoder_db_path,
               "UPDATE code_name SET memo = 'target note' WHERE cid = 2")
         _reopen(qualcoder_db_path)
-        json.loads(server.merge_codes(1, 2, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
         assert stored.startswith("target note")
@@ -498,7 +499,7 @@ class TestMergeProvenancePreservesSuffix:
         out = json.loads(server.rename_code(1, "Stress ##### x",
                                             create_backup=False))
         assert out.get("success") is True, out
-        out = json.loads(server.merge_codes(1, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         assert out.get("merged") is True, out
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
@@ -520,7 +521,7 @@ class TestMergeProvenancePreservesSuffix:
         out = json.loads(server.create_code("Probe #####y", memo="src public",
                                             create_backup=False))
         cid = out["code"]["id"] if "code" in out else out["code_id"]
-        out = json.loads(server.merge_codes(cid, 2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, cid, 2))
         assert out.get("merged") is True, out
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
@@ -539,7 +540,7 @@ class TestMergeProvenancePreservesSuffix:
         _exec(qualcoder_db_path,
               "UPDATE code_name SET memo = 'target' WHERE cid = 2")
         _reopen(qualcoder_db_path)
-        json.loads(server.merge_codes(1, 2, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
         assert PERSONAL_NOTE_MARK not in stored
@@ -554,7 +555,7 @@ class TestMergeProvenancePreservesSuffix:
               "UPDATE code_name SET name = 'N #####n', owner = 'O #####o', "
               "memo = ? WHERE cid = 1", (f"src pub#####{SECRET}",))
         _reopen(qualcoder_db_path)
-        json.loads(server.merge_codes(1, 2, confirm=True))
+        json.loads(H.execute_destructive(server.merge_codes, 1, 2))
         stored = _row(qualcoder_db_path,
                       "SELECT memo FROM code_name WHERE cid = 2")["memo"]
         assert stored.count(PERSONAL_NOTE_MARK) == 1
@@ -598,8 +599,7 @@ class TestMergeCategoryProvenance:
         preview = json.loads(server.merge_category(2, "Category A"))
         assert preview["preview"]["source_memo_carried_to_target"] is True
         assert "carried into the target" in preview["preview"]["note"]
-        out = json.loads(server.merge_category(2, "Category A",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2, "Category A"))
         assert out.get("merged") is True, out
         assert out["provenance_memo_added"] is True
         stored = self._target_memo(qualcoder_db_path)
@@ -631,7 +631,7 @@ class TestMergeCategoryProvenance:
               (f"tpub\n#####{self.T_SECRET}",))
         _reopen(qualcoder_db_path)
         preview_raw = server.merge_category(2, "Category A")
-        raw = server.merge_category(2, "Category A", confirm=True)
+        raw = H.execute_destructive(server.merge_category, 2, "Category A")
         for secret in (self.S_SECRET, self.T_SECRET):
             assert secret not in preview_raw
             assert secret not in raw
@@ -660,7 +660,7 @@ class TestMergeCategoryProvenance:
               "UPDATE code_cat SET name = 'B #####x', owner = 'O #####o', "
               "memo = 'plain' WHERE catid = 2")
         _reopen(qualcoder_db_path)
-        json.loads(server.merge_category(2, "Category A", confirm=True))
+        json.loads(H.execute_destructive(server.merge_category, 2, "Category A"))
         stored = self._target_memo(qualcoder_db_path)
         assert PERSONAL_NOTE_MARK not in stored
         assert "[Merged from category: B ####x, Coder: O ####o," in stored
@@ -673,7 +673,7 @@ class TestMergeCategoryProvenance:
         preview = json.loads(server.merge_category(2))
         assert preview["preview"]["source_memo_carried_to_target"] is False
         assert "top level removes" in preview["preview"]["note"]
-        out = json.loads(server.merge_category(2, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2))
         assert out.get("merged") is True, out
         assert "provenance_memo_added" not in out
         assert self._target_memo(qualcoder_db_path) == ""
@@ -692,8 +692,7 @@ class TestMergeCategoryProvenance:
         preview = json.loads(server.merge_category(2, "Category A"))
         assert preview["preview"]["source_memo_carried_to_target"] is False
         assert "3.8.2" in preview["preview"]["note"]
-        out = json.loads(server.merge_category(2, "Category A",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2, "Category A"))
         assert out.get("merged") is True, out
         assert "provenance_memo_added" not in out
         assert self._target_memo(qualcoder_db_path) == "target note"
@@ -708,8 +707,7 @@ class TestMergeCategoryProvenance:
         _exec(qualcoder_db_path,
               "UPDATE code_cat SET memo = 'target' WHERE catid = 1")
         _reopen(qualcoder_db_path)
-        out = json.loads(server.merge_category(2, "Category A",
-                                               confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_category, 2, "Category A"))
         assert out["provenance_memo_added"] is True
         stored = self._target_memo(qualcoder_db_path)
         assert stored.startswith("target\n\n[Merged from category: B, ")

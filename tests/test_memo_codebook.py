@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import QualcoderDatabase, QUALCODER_COLORS
 
 
@@ -337,7 +338,7 @@ class TestMergeCodes:
         """gotcha #8/#10: collision -> source row discarded, destination
         untouched; owner is part of the unique key."""
         self._setup_merge(qualcoder_db_path)
-        out = json.loads(server.merge_codes(2, 1, confirm=True))
+        out = json.loads(H.execute_destructive(server.merge_codes, 2, 1))
         assert out["success"] is True
         # Coping (cid 2) gone
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_name WHERE cid=2")[0] == 0
@@ -360,18 +361,18 @@ class TestMergeCodes:
         _exec(qualcoder_db_path,
               "INSERT INTO code_av (cid,id,pos0,pos1,owner) VALUES (2,1,0,10,'T')")
         server.switch_project(qualcoder_db_path)
-        server.merge_codes(2, 1, confirm=True)
+        H.execute_destructive(server.merge_codes, 2, 1)
         n = _row(qualcoder_db_path,
                  "SELECT COUNT(*) FROM code_av WHERE cid=1 AND pos0=0 AND pos1=10")[0]
         assert n == 2  # both survive — no dedup
 
     def test_merge_into_self_refused(self, setup_server, qualcoder_db_path):
-        assert "into itself" in json.loads(server.merge_codes(1, 1, confirm=True))["error"]
+        assert "into itself" in json.loads(H.execute_destructive(server.merge_codes, 1, 1))["error"]
 
     def test_merge_backup_made_on_confirm(self, setup_server, qualcoder_db_path):
         parent = Path(qualcoder_db_path).parent
         before = len(list(parent.glob("*_backup_*")))
-        server.merge_codes(2, 1, confirm=True)
+        H.execute_destructive(server.merge_codes, 2, 1)
         assert len(list(parent.glob("*_backup_*"))) == before + 1
 
 
@@ -386,7 +387,7 @@ class TestDeleteCode:
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_name WHERE cid=1")[0] == 1
 
     def test_confirm_bulk_deletes(self, setup_server, qualcoder_db_path):
-        server.delete_code(1, confirm=True)
+        H.execute_destructive(server.delete_code, 1)
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_name WHERE cid=1")[0] == 0
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_text WHERE cid=1")[0] == 0
 
@@ -394,7 +395,7 @@ class TestDeleteCode:
                                                       qualcoder_db_path):
         """code-edits.md §7.3: delete code leaves categories/annotations."""
         cats_before = _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_cat")[0]
-        server.delete_code(1, confirm=True)
+        H.execute_destructive(server.delete_code, 1)
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_cat")[0] == cats_before
 
 
@@ -407,7 +408,7 @@ class TestDeleteCategory:
         sub = json.loads(server.create_category("Sub", parent_category="Category A",
                                                 create_backup=False))["category"]["id"]
         codings_before = _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_text")[0]
-        out = json.loads(server.delete_category(1, confirm=True))
+        out = json.loads(H.execute_destructive(server.delete_category, 1))
         assert out["success"] is True
         # category gone
         assert _row(qualcoder_db_path, "SELECT COUNT(*) FROM code_cat WHERE catid=1")[0] == 0
@@ -427,7 +428,7 @@ class TestDeleteCategory:
         lk = _lock(qualcoder_db_path)
         lk.write_text(f"gemma\n{time.time()}", encoding="utf-8")
         try:
-            out = json.loads(server.delete_category(1, confirm=True))
+            out = json.loads(H.execute_destructive(server.delete_category, 1))
             assert "open in QualCoder" in out["error"]
         finally:
             lk.unlink()

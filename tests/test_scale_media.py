@@ -42,6 +42,7 @@ _GEN = Path(tempfile.mkdtemp(prefix="qc_scale_"))   # generated projects/exports
 import track6_build as tb  # noqa: E402
 
 import qualcoder_mcp.server as server  # noqa: E402
+import track5_helpers as H
 from qualcoder_mcp.database import QualcoderDatabase  # noqa: E402
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion  # noqa: E402
 
@@ -282,7 +283,7 @@ class TestWriteLoop:
         restore_target = Path(json.loads(server.list_backups())["backups"][-1]["path"])
         preview = json.loads(server.restore_backup(str(restore_target)))
         assert preview.get("requires_confirmation") is True
-        done = json.loads(server.restore_backup(str(restore_target), confirm=True))
+        done = json.loads(H.execute_destructive(server.restore_backup, str(restore_target)))
         assert done.get("success") is True, done
 
 
@@ -541,7 +542,7 @@ def _bench_write_loop(scratch):
     _, out["list_backups"], _ = time_call(lambda: server.list_backups())
     target = Path(json.loads(server.list_backups())["backups"][-1]["path"])
     server.restore_backup(str(target))  # preview
-    _, out["restore_backup(confirm)"], _ = time_call(lambda: server.restore_backup(str(target), confirm=True))
+    _, out["restore_backup(confirm)"], _ = time_call(lambda: H.execute_destructive(server.restore_backup, str(target)))
     # backup completeness check
     bk = json.loads(server.list_backups())["backups"][0]
     out["_backup_complete"] = (Path(bk["path"]) / "data.qda").exists()

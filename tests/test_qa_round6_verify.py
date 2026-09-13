@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import QualcoderDatabase, validate_qda_path
 
 
@@ -98,7 +99,7 @@ class TestRestoreNeverHalfReplaced:
             return real_copytree(src, dst, *a, **k)
 
         monkeypatch.setattr(shutil, "copytree", flaky_copytree)
-        out = json.loads(server.restore_backup(str(backup), confirm=True))
+        out = json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         monkeypatch.undo()
 
         assert calls["n"] >= 1                       # the swap really failed
@@ -139,7 +140,7 @@ class TestRestoreNeverHalfReplaced:
             return real_copytree(src, dst, *a, **k)
 
         monkeypatch.setattr(shutil, "copytree", flaky)
-        json.loads(server.restore_backup(str(backup), confirm=True))
+        json.loads(H.execute_destructive(server.restore_backup, str(backup)))
         monkeypatch.undo()
         _reload()
         post_dump = list(sqlite3.connect(str(_db(qualcoder_db_path))).iterdump())

@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
+import track5_helpers as H
 from qualcoder_mcp.database import (
     QUALCODER_LOCK_FILENAME,
     validate_qda_path,
@@ -258,7 +259,7 @@ class TestConcurrencyLadder:
                 server.import_text_file("ladder_refused.txt", "nope"),
                 server.link_file_to_case(2, case_id=1),
                 server.delete_coding(1),
-                server.restore_backup(str(backup), confirm=True),
+                H.execute_destructive(server.restore_backup, str(backup)),
             ]
             for out in gated:
                 parsed = json.loads(out)
