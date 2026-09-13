@@ -28,6 +28,7 @@ from .database import (
     validate_qda_path,
     validate_coder_name,
     validate_coder_note,
+    forbidden_display_char,
     validate_id,
     validate_limit,
     MAX_LIMIT,
@@ -331,11 +332,13 @@ def _mru_path_is_canonical(path: Any) -> bool:
     """
     if not isinstance(path, str) or not path.strip():
         return False
-    for ch in path:
-        cat = unicodedata.category(ch)
-        if cat in ("Cc", "Zl", "Zp") or 0x202A <= ord(ch) <= 0x202E \
-                or 0x2066 <= ord(ch) <= 0x2069:
-            return False
+    # The same character rule as a coder name, from the same helper: it
+    # used to be a hand-listed bidi range here, which let through the
+    # three bidi controls outside it (U+061C, U+200E, U+200F) and every
+    # zero-width character, while this docstring promised otherwise
+    # (fix round 4).
+    if forbidden_display_char(path) is not None:
+        return False
     p = Path(path)
     return p.name == "data.qda" and p.parent.suffix == ".qda"
 

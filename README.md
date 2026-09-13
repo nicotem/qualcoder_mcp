@@ -375,9 +375,16 @@ way to say "this host runs this model". It never writes a row by
 itself: if it differs from the project's current name, the next write
 asks which of the two to use rather than re-attributing anything, and
 answering either way settles it for that host. Invalid values (empty,
-longer than 80 characters, containing control, line-separator or
-bidirectional formatting characters, or containing the `#####`
-memo-privacy marker) stop the server at startup with a clear error.
+longer than 80 characters, containing control or line-separator
+characters, containing any invisible formatting character (Unicode
+category Cf: every bidirectional control, every zero-width character;
+the two exceptions are ZWNJ and ZWJ, which spell words in Persian and
+Indic scripts), or containing the `#####` memo-privacy marker) stop the
+server at startup with a clear error. The invisible ones are refused
+because a name you cannot see is a name you cannot check: it renders
+identically to yours in QualCoder's coder list, its visibility toggle
+and its reports, and telling AI rows from yours is what the setting is
+for.
 
 The name cannot be your own QualCoder coder name (the project's
 codername) or QualCoder's literal `default`: AI rows would then be

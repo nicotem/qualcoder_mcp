@@ -436,3 +436,117 @@ class TestSuiteIsolation:
         # conftest's autouse fixture removes an ambient export so the
         # default-owner pins across the suite stay valid (QA F21)
         assert AI_CODER_NAME_ENV not in os.environ
+
+
+# =============================================================================
+# INVISIBLE CHARACTERS IN A NAME DEFEAT ATTRIBUTION (fix round 4, S3)
+# =============================================================================
+
+class TestFormatCharactersAreRefusedAsAClass:
+    """A coder name exists to tell AI rows from a person's. A name
+    carrying U+FEFF, U+200B or U+2060 renders identically to the
+    researcher's own everywhere QualCoder shows it, so category Cf is
+    refused as a class, with ZWNJ and ZWJ kept because they spell words
+    in Persian and Indic scripts rather than hiding them.
+
+    Every character below is written as an escape on purpose: a test
+    about invisible characters must not itself contain one a reader
+    cannot see.
+    """
+
+    # The first three are inside Unicode's own Bidi_Control set and the
+    # hand-listed range missed all three; the rest render as nothing.
+    INVISIBLE = ("؜", "‎", "‏", "﻿", "​",
+                 "⁠", "­", "⁡", "⁪", "￹",
+                 "\U000E0001", "\U000E0041")
+
+    PERSIAN = "می‌خواهم"
+
+    def test_every_format_character_is_refused(self):
+        from qualcoder_mcp.database import validate_coder_name
+        for ch in self.INVISIBLE:
+            with pytest.raises(ValueError) as e:
+                validate_coder_name("AI" + ch + "Agent")
+            assert "invisible formatting characters" in str(e.value), repr(ch)
+
+    def test_the_class_is_closed_not_a_list(self):
+        """Every Cf character in the BMP except the two, swept rather
+        than listed, so a Unicode release that adds one is covered."""
+        import unicodedata
+        from qualcoder_mcp.database import (validate_coder_name,
+                                            forbidden_display_char)
+        allowed, refused = [], 0
+        for cp in range(0x10000):
+            ch = chr(cp)
+            if unicodedata.category(ch) != "Cf":
+                continue
+            if forbidden_display_char(ch) is None:
+                allowed.append(ch)
+            else:
+                refused += 1
+        assert allowed == ["‌", "‍"]
+        assert refused >= 30
+        assert validate_coder_name(self.PERSIAN) == self.PERSIAN
+
+    def test_the_environment_declaration_refuses_them_too(self, monkeypatch):
+        for ch in self.INVISIBLE:
+            monkeypatch.setenv(AI_CODER_NAME_ENV, "AI" + ch + "Agent")
+            with pytest.raises(ValueError) as e:
+                _ai_coder_name()
+            assert AI_CODER_NAME_ENV in str(e.value), repr(ch)
+
+    def test_the_note_beside_the_name_refuses_them_too(self):
+        from qualcoder_mcp.database import validate_coder_note
+        with pytest.raises(ValueError):
+            validate_coder_note("qwen﻿ 3")
+        assert validate_coder_note("qwen 3") == "qwen 3"
+
+    def test_the_sidecar_refuses_one_on_write_and_on_read(self, tmp_path):
+        """The sidecar validates on both sides, so neither a tool call
+        nor a hand-edited file can put an invisible name in an owner
+        column."""
+        import json as _json
+        from qualcoder_mcp import project_settings as ps
+        folder = tmp_path / "p.qda"
+        folder.mkdir()
+        with pytest.raises(ValueError):
+            ps.write_ai_coder_name(folder, "Qwen﻿ 3")
+        assert not (folder / ps.SIDECAR_NAME).exists()
+        (folder / ps.SIDECAR_NAME).write_text(_json.dumps({
+            "format": ps.SIDECAR_FORMAT, "format_version": 1,
+            "ai_coder_name": {"name": "Qwen﻿ 3", "set_at": None,
+                              "note": "", "host_declaration": None},
+        }), encoding="utf-8")
+        assert ps.read_sidecar(folder).status == ps.SIDECAR_UNREADABLE
+
+    def test_ordinary_names_are_still_accepted(self):
+        from qualcoder_mcp.database import validate_coder_name
+        for good in ("AI Agent", "研究助手", self.PERSIAN,
+                     "\U0001F469‍\U0001F4BB coder", "Zoë O'Brien"):
+            assert validate_coder_name(good) == good, repr(good)
+
+    def test_the_mru_hint_path_uses_the_same_rule(self):
+        """The same false docstring sat on the path guard: it listed a
+        bidi RANGE, which let U+061C, U+200E and U+200F through."""
+        for ch in ("؜", "‎", "‏", "﻿", "​"):
+            assert server._mru_path_is_canonical(
+                "/home/me/a" + ch + "b.qda/data.qda") is False, repr(ch)
+        assert server._mru_path_is_canonical(
+            "/home/me/study.qda/data.qda") is True
+
+    def test_the_two_documents_say_what_the_code_does(self):
+        """The shipped docstring and the README sentence both used to
+        promise that bidi characters were refused while three of them
+        were accepted."""
+        from qualcoder_mcp.database import validate_coder_name
+        doc = validate_coder_name.__doc__
+        assert "category Cf" in doc
+        assert "ZWNJ and ZWJ" in doc
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        paragraphs = [" ".join(p.split()) for p in readme.split("\n\n")]
+        sentence = [p for p in paragraphs
+                    if "stop the server at startup" in p]
+        assert len(sentence) == 1, sentence
+        assert "Unicode category Cf" in sentence[0]
+        assert "ZWNJ and ZWJ" in sentence[0]

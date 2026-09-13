@@ -337,6 +337,13 @@ def write_ai_coder_name(project_folder: Any, name: str, note: str = "",
     if state.status == SIDECAR_UNREADABLE:
         raise SidecarWriteError(UNREADABLE_MESSAGE)
 
+    # Validated HERE as well as at the tool layer, because this writes
+    # the string every later AI row is attributed to: one gate on the
+    # way in, one on the way out (_validated_entry), so no path can put
+    # a name in an owner column that the validator would refuse
+    # (fix round 4).
+    name = validate_coder_name(name, "name")
+    note = validate_coder_note(note, "note")
     entry = _entry(name, now or _now_iso(), note, host_declaration)
     history = list(state.history) + [entry]
     if len(history) > HISTORY_CAP:

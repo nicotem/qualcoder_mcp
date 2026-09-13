@@ -852,25 +852,55 @@ KNOWN_AI_ASSISTANT_OWNER = "AI Agent"
 # those lists readable (P1-2).
 MAX_CODER_NAME_LENGTH = 80
 
-# Bidirectional formatting characters (embeddings, overrides, isolates).
-# Category Cf as a whole is NOT rejected: U+200C ZWNJ and U+200D ZWJ are
-# legitimate in Persian/Indic orthography and emoji sequences (S-H2).
-_BIDI_CONTROL_CHARS = frozenset(
-    [chr(c) for c in range(0x202A, 0x202F)]      # LRE, RLE, PDF, LRO, RLO
-    + [chr(c) for c in range(0x2066, 0x206A)])   # LRI, RLI, FSI, PDI
+# The two format characters a name may contain. Category Cf is refused
+# AS A CLASS, and these two are the exception, because they carry
+# orthographic meaning: U+200C ZWNJ and U+200D ZWJ are required in
+# Persian and Indic spelling (and in emoji sequences), where leaving
+# them out spells a different word (S-H2).
+#
+# Everything else in Cf is refused. The rule used to be a hand-listed
+# bidi set, which accepted 161 of Unicode 15.1's 170 format characters,
+# 34 of them in the BMP; three of those, U+061C ARABIC LETTER MARK,
+# U+200E LEFT-TO-RIGHT MARK and U+200F RIGHT-TO-LEFT MARK, are in
+# Unicode's own Bidi_Control set, so the docstring below and the README
+# sentence that both promised "no bidirectional formatting characters"
+# were false as written. The rest are as bad for the purpose the
+# configurable name exists to serve: U+FEFF, U+200B and U+2060 render as
+# nothing at all, so a name carrying one is INDISTINGUISHABLE from the
+# researcher's own in QualCoder's coder list, its visibility toggle, its
+# reports and this server's comparison tool, and attribution is the
+# whole point of the setting (fix round 4).
+#
+# Deliberately NOT done here: Unicode normalisation. NFC and NFD
+# spellings of one name remain two owners, because `coder_names.name` is
+# TEXT UNIQUE under SQLite's binary collation and QualCoder compares the
+# bytes; normalising on our side would write a row QualCoder's own
+# dialogs would not match.
+_ORTHOGRAPHIC_FORMAT_CHARS = frozenset("‌‍")  # ZWNJ, ZWJ
 
 
-def _forbidden_coder_name_char(name: str) -> Optional[str]:
-    """Name the first class of forbidden character in a coder name, or None."""
-    for ch in name:
+def forbidden_display_char(value: str) -> Optional[str]:
+    """Name the first class of forbidden character in `value`, or None.
+
+    One rule, used for coder names, for the notes stored beside them and
+    for the MRU path hint: text this server echoes into a conversation or
+    writes into an `owner` column must be plain, visible, single-line.
+    """
+    for ch in value:
         cat = unicodedata.category(ch)
         if cat == "Cc":
             return "control characters (newlines, tabs or similar)"
         if cat in ("Zl", "Zp"):
             return "line or paragraph separator characters"
-        if ch in _BIDI_CONTROL_CHARS:
-            return "bidirectional formatting characters"
+        if cat == "Cf" and ch not in _ORTHOGRAPHIC_FORMAT_CHARS:
+            return ("invisible formatting characters (bidirectional "
+                    "controls, zero-width spaces and the like)")
     return None
+
+
+def _forbidden_coder_name_char(name: str) -> Optional[str]:
+    """Name the first class of forbidden character in a coder name, or None."""
+    return forbidden_display_char(name)
 
 
 def validate_coder_name(value: Any, param_name: str = "owner") -> str:
@@ -880,12 +910,14 @@ def validate_coder_name(value: Any, param_name: str = "owner") -> str:
     tool-supplied owner arguments (apply_codings, import_text_file), so
     no owner column can receive what the configured name may not be
     (S-H3): the name is stripped, must be non-empty, at most
-    MAX_CODER_NAME_LENGTH characters, plain single-line text (no
-    Unicode control characters, C1 included; no line or paragraph
-    separators; no bidirectional formatting characters), and must not
+    MAX_CODER_NAME_LENGTH characters, plain single-line VISIBLE text
+    (no Unicode control characters, C1 included; no line or paragraph
+    separators; no format characters of category Cf, which covers every
+    bidirectional control and every zero-width character), and must not
     contain the '#####' memo-privacy marker, because coder names are
     written verbatim into merge provenance memos (S-M1). Ordinary names
-    in any script, including ZWJ/ZWNJ sequences, are accepted.
+    in any script are accepted, and so are the two format characters
+    that spell a word rather than hide one: ZWNJ and ZWJ.
 
     Returns:
         The stripped name.

@@ -575,6 +575,46 @@ withholds project data.
   trailing comment, a YAML anchor) fails the suite instead of escaping
   the check, and the jobs it found are compared with the jobs recorded.
 
+### Changed: coder names may not carry an invisible character
+
+- A coder name is refused when it contains any Unicode format character
+  (category Cf), which covers every bidirectional control and every
+  zero-width character. The two exceptions are ZWNJ and ZWJ, which
+  spell words in Persian and Indic scripts. The same rule applies to
+  the note stored beside the name and to the project path echoed in the
+  "no project selected" hint.
+- The rule used to be a hand-listed set of bidi characters, which
+  accepted 161 of Unicode 15.1's 170 format characters, three of them
+  (U+061C, U+200E, U+200F) inside Unicode's own Bidi_Control set: the
+  docstring and the README sentence promising that bidi characters were
+  refused were false as written, and both now describe the code. A name
+  containing U+FEFF or U+200B renders identically to a person's in
+  QualCoder's coder list, its visibility toggle, its reports and this
+  server's comparison tool, which defeats the attribution the setting
+  exists to provide.
+- NFC and NFD spellings of one name remain two coders, deliberately:
+  `coder_names.name` is TEXT UNIQUE under SQLite's binary collation and
+  QualCoder compares the bytes.
+
+### Changed: per-coder visibility needs the whole view set, not one view
+
+- The capability is probed from `coder_names.visibility` plus ALL FOUR
+  of `code_text_visible`, `code_image_visible`, `code_av_visible` and
+  `annotation_visible`, the set QualCoder creates in one transaction
+  when it opens a project. It used to be probed from the text view
+  alone, after which reads whose view was missing quietly returned
+  unfiltered base tables while the result still said the hidden-coder
+  filter had been applied.
+- A project that has the column and only some of the views now fails
+  closed: visibility-sensitive reads and the by-id write guards refuse
+  with "one of its coder-visibility views is missing. Open the project
+  in QualCoder, which recreates them, and try again". Projects with no
+  visibility objects at all are unaffected and read base tables as
+  before.
+- Duplicate rows in `coder_names` fold the way QualCoder's views fold
+  them: ANY row with visibility 0 hides that coder. The hidden-coder
+  count counts coders, not rows.
+
 ### Upgrading from 0.11.x
 
 - Upgrade the package and restart the MCP host fully so it reloads the
