@@ -62,23 +62,49 @@ class SchemaCapabilities:
     def __init__(self, has_coder_names=False, has_av_bookmarks=False,
                  has_avbookmarktextpos=False, has_supercid=False,
                  has_graph_labels=False, has_gr_memo_item=False,
-                 has_coder_visibility=False, tables=frozenset()):
+                 has_coder_visibility=False, tables=frozenset(),
+                 visibility_incomplete=False):
         self.has_coder_names = has_coder_names          # v14 floor
         self.has_av_bookmarks = has_av_bookmarks        # v15 (informational)
         self.has_avbookmarktextpos = has_avbookmarktextpos  # v15 repair
         self.has_supercid = has_supercid                # v16 SUB-CODES switch
         self.has_graph_labels = has_graph_labels        # v17 (informational)
         self.has_gr_memo_item = has_gr_memo_item        # v17 (informational)
-        # Per-coder visibility (P1-3): coder_names.visibility
-        # column AND the code_text_visible view, both created in the
-        # project database on 4.0 project open (app.py:1499-1562 at pin
-        # 9bddf17), so the setting travels with the project. Partial
-        # states (column without view, view without column) probe False.
+        # Per-coder visibility (P1-3): coder_names.visibility column AND
+        # ALL FOUR *_visible views (VISIBILITY_VIEWS below), created
+        # together in the project database on 4.0 project open
+        # (app.py:1499-1562 at pin 9bddf17), so the setting travels with
+        # the project. Every partial state probes False, including the
+        # one this used to accept: the column plus SOME of the views.
+        # That partial state is what made the capability a lie, because
+        # a read whose view is missing has no filtered source to use
+        # (fix round 4, the hidden-coder class at its root).
         self.has_coder_visibility = has_coder_visibility
+        # The column plus SOME of the views: the project DECLARES that it
+        # can hide coders and this server cannot reproduce what QualCoder
+        # shows. Not the same as a pre-4.0 project, which declares
+        # nothing, so it must not be treated as one: QualCoder creates
+        # all four views together on open, so a subset is a project
+        # someone has taken views out of, which is the hostile-
+        # collaborator case the threat model names. Visibility-sensitive
+        # reads fail closed on it (see _visible_source); nothing else
+        # about the project is refused.
+        self.visibility_incomplete = visibility_incomplete
         self.tables = frozenset(tables)                 # for guarded cleanups
 
     def table_exists(self, name: str) -> bool:
         return name in self.tables
+
+    def visibility_declared(self) -> bool:
+        """Whether this project says a coder can be hidden in it.
+
+        True for a complete 4.0 visibility set AND for a damaged one.
+        The ONE predicate every "does visibility apply here?" decision
+        asks, so no consumer has to work the answer out from the objects
+        again (fix round 4): the difference between the two true cases
+        is decided once, in `_visible_source`, and nowhere else.
+        """
+        return self.has_coder_visibility or self.visibility_incomplete
 
     def to_dict(self) -> Dict[str, bool]:
         return {
@@ -100,6 +126,18 @@ REQUIRED_COLUMNS = {
     "code_text": ["important"],
     "project": ["codername"],
 }
+
+# The four coder-visibility views QualCoder 4.0 creates in ONE transaction
+# when it opens a project (app.py:1518-1561 at 9bddf17). The capability
+# requires the WHOLE set, not a representative member of it: with only
+# some present, the reads whose view is missing have no filtered source,
+# and a server that still believes it is filtering publishes hidden
+# coders' work and their names while saying it does not. This constant is
+# the single place that decides what "the project can hide a coder" means.
+VISIBILITY_VIEWS = frozenset({
+    "code_text_visible", "code_image_visible",
+    "code_av_visible", "annotation_visible",
+})
 
 # QualCoder's code colour palette: 120 upper-case #RRGGBB strings, laid out
 # as 12 rows of 10 (color_selector.py:52-65 at master 9bddf17; byte-identical
@@ -1482,10 +1520,13 @@ class QualcoderDatabase:
                 has_supercid="supercid" in code_cols,
                 has_graph_labels="label" in line_cols,
                 has_gr_memo_item="gr_memo_item" in tables,
-                # Column AND view, never a version string (P1-3). The
-                # sqlite_master scan above includes views.
+                # Column AND the WHOLE view set, never a version string
+                # (P1-3). The sqlite_master scan above includes views.
                 has_coder_visibility=("visibility" in coder_cols
-                                      and "code_text_visible" in tables),
+                                      and VISIBILITY_VIEWS <= tables),
+                visibility_incomplete=("visibility" in coder_cols
+                                       and bool(VISIBILITY_VIEWS & tables)
+                                       and not VISIBILITY_VIEWS <= tables),
                 tables=tables,
             )
         except sqlite3.OperationalError as e:
@@ -1725,26 +1766,60 @@ class QualcoderDatabase:
                           + list(reversed(code_names)))
 
     # ------------------------------------------------------------------
-    # P1-3: coder-visibility reads. When the project carries
-    # QualCoder's per-coder visibility state (probe: coder_names.visibility
-    # column plus the code_text_visible view, created in the project DB
-    # at app.py:1499-1562), coded-segment reads and analytics go through
-    # the *_visible views by default so this server reads what the user
-    # sees in QualCoder. An explicit coder filter reads the base tables
-    # instead (upstream does the same, ai_chat.py:3922); file exports
-    # pass honor_visibility=False for QualCoder export/report parity
-    # (upstream's reports and refi.py read base tables). Pre-4.0
-    # projects lack the objects and always read base tables; the view is
-    # never hard-required (their server errors on a missing view,
-    # ai_mcp_server.py:5281-5283; we degrade gracefully by doctrine).
+    # P1-3: coder-visibility reads. When the project carries QualCoder's
+    # per-coder visibility state (probe: coder_names.visibility column
+    # plus ALL FOUR views of VISIBILITY_VIEWS, created together in the
+    # project DB at app.py:1499-1562), coded-segment reads and analytics
+    # go through the *_visible views by default so this server reads
+    # what the user sees in QualCoder. An explicit coder filter reads
+    # the base tables instead (upstream does the same, ai_chat.py:3922);
+    # file exports pass honor_visibility=False for QualCoder
+    # export/report parity (upstream's reports and refi.py read base
+    # tables). Pre-4.0 projects lack the objects and always read base
+    # tables: that is the graceful degradation the doctrine asks for,
+    # and it is a WHOLE-project property, decided once by the probe
+    # (their server errors on a missing view, ai_mcp_server.py:5281-5283).
+    # What is NOT graceful degradation, and used to happen here, is a
+    # project that probes capable and then reads a base table for the
+    # one view it lacks: that publishes the hidden coder the caller was
+    # told had been filtered out. See _visible_source.
     # ------------------------------------------------------------------
 
     def _visible_source(self, base: str, view: str,
                         honor_visibility: bool = True) -> str:
-        """The table or view a read should select from."""
+        """The table or view a read should select from.
+
+        On a project that declares no visibility at all, or with
+        `honor_visibility=False` (the export-parity reads), the base
+        table: nothing is hidden there, and nothing claims otherwise.
+
+        On a project that DECLARES visibility, the view or nothing.
+        Falling back to the base table is what let this class recur four
+        times: the fallback was silent, every caller kept its "hidden
+        coders are filtered" wording, and the base table answered with
+        the hidden coder's rows and their name. Two states reach the
+        raise, and they are indistinguishable in effect:
+
+        - the probe found the whole view set and one is gone NOW, so it
+          was dropped after this connection was opened;
+        - the probe found the column and only SOME of the views, so the
+          project cannot be filtered as QualCoder filters it. QualCoder
+          creates the four together, so this is a project views have
+          been taken out of.
+
+        Raising is the posture `_row_is_visible` already takes for a view
+        that is present but cannot answer. No caller opts into it and no
+        caller can opt out, which is the point: one rule, decided here,
+        never at the call sites (fix round 4).
+        """
         caps = getattr(self, "capabilities", None)
-        if (honor_visibility and caps is not None
-                and caps.has_coder_visibility and caps.table_exists(view)):
+        if honor_visibility and caps is not None and caps.visibility_declared():
+            if not (caps.has_coder_visibility and caps.table_exists(view)):
+                raise CoderVisibilityUnreadable(
+                    "Could not determine coder visibility for this project "
+                    "(one of its coder-visibility views is missing). Open "
+                    "the project in QualCoder, which recreates them, and "
+                    "try again")
             return view
         return base
 
@@ -1757,11 +1832,17 @@ class QualcoderDatabase:
         visibility capability). Used for result disclosure; hidden
         coders' NAMES are never disclosed."""
         caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.has_coder_visibility:
+        if caps is None or not caps.visibility_declared():
             return 0
         try:
+            # DISTINCT, for the same reason coder_visibility_map folds:
+            # the count is of CODERS, and a coder_names table that
+            # arrived without its UNIQUE constraint can hold a name
+            # twice. COUNT(*) would report two hidden coders where the
+            # views hide one (fix round 4).
             row = self.conn.execute(
-                "SELECT COUNT(*) FROM coder_names WHERE visibility = 0"
+                "SELECT COUNT(DISTINCT name) FROM coder_names "
+                "WHERE visibility = 0"
             ).fetchone()
             return int(row[0]) if row else 0
         except sqlite3.Error:
@@ -2001,7 +2082,7 @@ class QualcoderDatabase:
         the next time it opens the project (app.py:1480-1494).
         """
         caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.has_coder_visibility:
+        if caps is None or not caps.visibility_declared():
             return None
         try:
             rows = self.conn.execute(
@@ -2028,17 +2109,41 @@ class QualcoderDatabase:
                     "Could not determine coder visibility for this project "
                     "(its coder-visibility table did not answer)") from None
 
-        return {str(r["name"]): _visibility(r["visibility"])
-                for r in rows if r["name"] is not None}
+        # Fold duplicates the way the VIEWS fold them. QualCoder's own
+        # DDL is `WHERE NOT EXISTS (SELECT 1 FROM coder_names c WHERE
+        # c.name = t.owner AND c.visibility = 0)` (app.py:1518-1561), so
+        # ANY row with visibility 0 hides that coder. A dict
+        # comprehension keeps the LAST row instead, which on a
+        # coder_names table that arrived without its UNIQUE constraint
+        # (upstream creates it with one, but never re-adds it to a table
+        # that already exists, and this server never writes that table)
+        # disagrees with the views that do the actual filtering: the
+        # rows vanish and the NAME is published beside the count of what
+        # vanished. Once a 0 is seen for a name, no later row can undo
+        # it, which is what NOT EXISTS says; any other value is "not
+        # hidden" and its exact number is immaterial to every caller.
+        folded: Dict[str, int] = {}
+        for r in rows:
+            if r["name"] is None:
+                continue
+            key = str(r["name"])
+            value = _visibility(r["visibility"])
+            if folded.get(key) == 0:
+                continue
+            folded[key] = value
+        return folded
 
     def _row_is_visible(self, base: str, view: str, id_col: str,
                         row_id: int) -> bool:
         """Whether a row the AI targets by id is one the user sees.
 
         True on projects without the visibility capability (nothing is
-        hidden there) or when the view is absent; otherwise the row must
-        appear in the *_visible view. A view that is present but cannot
-        be queried (schema drift, damage to the coder_names pages, a
+        hidden there); otherwise the row must appear in the *_visible
+        view. A missing view is no longer a reason to answer True: the
+        probe requires the whole set, so one gone at read time is an
+        ERROR from `_visible_source`, not a visible row (fix round 4).
+        A view that is present but cannot be queried (schema drift,
+        damage to the coder_names pages, a
         locked database) is an ERROR, never a visible row: the guard
         fails closed, so a write can neither proceed with the Tier 2
         refusal and the Tier 1 redaction switched off, nor mislabel an
@@ -2111,18 +2216,20 @@ class QualcoderDatabase:
         """How many coding rows (text, av, image) matching `where` belong
         to coders the project hides; None without the visibility
         capability (Tier 2 cascade previews). Count only, never names.
-        A view that is present but cannot be queried is an error (the
-        same fail-closed rule as _row_is_visible): a preview must never
-        report fewer hidden rows than the cascade would remove."""
+        A view that is present but cannot be queried is an error, and so
+        now is one that is missing (the same fail-closed rule as
+        _row_is_visible): a preview must never report fewer hidden rows
+        than the cascade would remove. This used to `continue` past a
+        missing view, which undercounted by a whole modality in silence
+        (fix round 4)."""
         caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.has_coder_visibility:
+        if caps is None or not caps.visibility_declared():
             return None
         total = 0
         for base, view in (("code_text", "code_text_visible"),
                            ("code_av", "code_av_visible"),
                            ("code_image", "code_image_visible")):
-            if self._visible_source(base, view) == base:
-                continue
+            self._visible_source(base, view)      # raises if it is gone
             try:
                 all_n = self.conn.execute(
                     f"SELECT COUNT(*) FROM {base} WHERE ({where})",
@@ -5778,7 +5885,7 @@ class QualcoderDatabase:
             marks = ",".join("?" for _ in cids)
             hidden = self._hidden_codings_affected(f"cid IN ({marks})",
                                                    list(cids))
-        elif caps is not None and caps.has_coder_visibility:
+        elif caps is not None and caps.visibility_declared():
             hidden = 0
 
         ai_owned = sum(e["codings"] for o, e in per_owner.items()
@@ -6546,7 +6653,7 @@ class QualcoderDatabase:
                     "untouched.",
         }
         caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.has_coder_visibility:
+        if caps is not None and caps.visibility_declared():
             # No coding rows are touched, so none of a hidden coder's
             preview["hidden_coder_codings_affected"] = 0
         return preview
@@ -6952,7 +7059,7 @@ class QualcoderDatabase:
                     "the source category." + memo_note,
         }
         caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.has_coder_visibility:
+        if caps is not None and caps.visibility_declared():
             preview["hidden_coder_codings_affected"] = 0
         return preview
 

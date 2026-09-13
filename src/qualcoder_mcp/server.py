@@ -2883,7 +2883,7 @@ def _novelty_block(db_, code_ids: List[int], coder: Optional[str],
     is what keeps the filter from becoming an oracle for hidden work.
     """
     caps = getattr(db_, "capabilities", None)
-    if caps is None or not caps.has_coder_visibility:
+    if caps is None or not caps.visibility_declared():
         visibility = "not_applicable"
     elif coder is not None:
         visibility = "honoured_plus_named_coder"
@@ -4403,7 +4403,7 @@ def compare_coders(coder_a: Optional[str] = None,
     # naming a hidden coder needs the explicit boolean, and with it the
     # tool behaves exactly as the v0.11 read override does (B3.4).
     caps = getattr(db_, "capabilities", None)
-    has_visibility = caps is not None and caps.has_coder_visibility
+    has_visibility = caps is not None and caps.visibility_declared()
     if has_visibility and not allow_hidden_coder:
         if (visibility or {}).get(coder_a, 1) == 0 or \
                 (visibility or {}).get(coder_b, 1) == 0:

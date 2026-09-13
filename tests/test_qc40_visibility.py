@@ -1327,7 +1327,8 @@ class TestTheClassCannotComeBack:
     # gate upheld for the frequency, summary and cascade paths).
     EXPECTED = {
         "database.py": {
-            "SELECT COUNT(*) FROM coder_names WHERE visibility = 0",
+            "SELECT COUNT(DISTINCT name) FROM coder_names "
+            "WHERE visibility = 0",
             "SELECT name, visibility FROM coder_names",
         },
     }
@@ -1450,3 +1451,302 @@ class TestTheClassCannotComeBack:
             server.db.coder_visibility_map()
         assert "yes" not in str(caught.value)      # value-free text
         assert HIDDEN not in str(caught.value)
+
+
+# =============================================================================
+# THE ROOT OF THE CLASS: A PARTIAL VIEW SET IS NOT A CAPABILITY
+# (fix round 4, S2 / S6 / S7)
+# =============================================================================
+
+def _drop_view(project_path, name):
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        con.execute(f"DROP VIEW {name}")
+        con.commit()
+    finally:
+        con.close()
+
+
+class TestPartialViewSetIsNotACapability:
+    """The probe used to say "this project can hide coders" on one view
+    plus a column, after which every consuming path assumed all four
+    existed and the missing ones silently read the base table. The
+    capability now requires the whole set, the partial state is a
+    DECLARED-but-unusable state of its own, and the difference is
+    decided in `_visible_source` alone."""
+
+    FORBIDDEN = TestWriteEchoesRedactHiddenTargets.FORBIDDEN
+
+    def test_the_whole_set_is_the_capability(self, visibility_db):
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is True
+        assert caps.visibility_incomplete is False
+        assert caps.visibility_declared() is True
+
+    @pytest.mark.parametrize("view", sorted(
+        ["code_text_visible", "code_image_visible",
+         "code_av_visible", "annotation_visible"]))
+    def test_each_of_the_four_is_required(self, visibility_db, view):
+        _drop_view(visibility_db, view)
+        _reopen(visibility_db)
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is False, view
+        assert caps.visibility_incomplete is True, view
+        assert caps.visibility_declared() is True, view
+
+    def test_the_constant_names_exactly_the_four(self):
+        from qualcoder_mcp.database import VISIBILITY_VIEWS
+        assert VISIBILITY_VIEWS == {
+            "code_text_visible", "code_image_visible",
+            "code_av_visible", "annotation_visible"}
+
+    def test_a_column_with_no_views_declares_nothing(self, setup_server):
+        """Unchanged from before: coder_names with the column and not one
+        view is a project that has not been opened by a build that makes
+        them, so it declares nothing and reads base tables."""
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is False
+        assert caps.visibility_incomplete is False
+        assert caps.visibility_declared() is False
+        assert server.db.hidden_coder_count() == 0
+
+    def test_the_collateral_block_refuses_rather_than_naming(
+            self, visibility_db):
+        """S2: with code_av_visible and code_image_visible gone, the code
+        cascade previews used to publish the hidden coder's name from the
+        base tables while their own docstring promised the visible
+        source. They now refuse, and the refusal names nobody."""
+        _drop_view(visibility_db, "code_av_visible")
+        _drop_view(visibility_db, "code_image_visible")
+        _reopen(visibility_db)
+        for raw in (server.delete_code(1), server.merge_codes(1, 2)):
+            for needle in self.FORBIDDEN:
+                assert needle not in raw, needle
+            out = json.loads(raw)
+            assert "error" in out and "preview" not in out, out
+            assert "coder-visibility view" in out["error"]
+
+    def test_the_category_previews_read_no_coding_rows_and_still_mask(
+            self, visibility_db, qualcoder_db_path):
+        """The other half of the same block: a category preview passes
+        no cids, so it reads no coding rows and has nothing to refuse.
+        Its one name, the category row's owner, comes from the TABLE,
+        which the missing view does not damage, so it is still masked."""
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("UPDATE code_cat SET owner = ? WHERE catid = 1",
+                    (HIDDEN,))
+        con.commit()
+        con.close()
+        _drop_view(visibility_db, "code_av_visible")
+        _reopen(visibility_db)
+        for raw in (server.delete_category(1), server.merge_category(1)):
+            assert HIDDEN not in raw
+            out = json.loads(raw)
+            assert out["preview"]["collateral"]["category_row_owner"] == \
+                "(hidden coder)"
+
+    def test_search_memos_refuses_rather_than_claiming_a_filter(
+            self, visibility_db):
+        """S7, the sharpest reach: annotation_visible gone returned the
+        hidden coder's annotation MEMO TEXT and their name, under a
+        result that still said hidden_coder_filter: applied."""
+        _drop_view(visibility_db, "annotation_visible")
+        _reopen(visibility_db)
+        raw = server.search_memos("hidden")
+        assert "hidden annotation" not in raw
+        assert HIDDEN not in raw
+        assert "\"applied\"" not in raw
+        out = json.loads(raw)
+        assert "error" in out and "coder-visibility view" in out["error"]
+
+    def test_file_content_refuses_rather_than_leaking_the_annotation(
+            self, visibility_db):
+        """The files resource reads annotations through the view. It is a
+        resource, not a tool, so it has no `_tool_guard` to turn the
+        refusal into JSON; it raises, which is the fail-closed end of the
+        same rule and never returns the hidden coder's memo."""
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        _drop_view(visibility_db, "annotation_visible")
+        _reopen(visibility_db)
+        with pytest.raises(CoderVisibilityUnreadable) as caught:
+            server.get_file_content(1)
+        assert "hidden annotation" not in str(caught.value)
+        assert HIDDEN not in str(caught.value)
+
+    def test_by_id_write_guards_do_not_read_the_row_as_visible(
+            self, visibility_db):
+        """`_row_is_visible` used to answer True when the view was
+        absent, which switched the Tier 2 refusal off for exactly the
+        rows it exists to protect."""
+        _drop_view(visibility_db, "annotation_visible")
+        _drop_view(visibility_db, "code_text_visible")
+        _reopen(visibility_db)
+        for raw in (server.delete_coding(3), server.update_annotation(1, "x"),
+                    server.delete_annotation(1),
+                    server.set_memo("coding", 3, "x")):
+            for needle in self.FORBIDDEN:
+                assert needle not in raw, needle
+            out = json.loads(raw)
+            assert "error" in out and "success" not in out, out
+        assert _row(visibility_db,
+                    "SELECT memo FROM code_text WHERE ctid = 3")[0] == \
+            "hidden memo"
+        assert _row(visibility_db,
+                    "SELECT memo FROM annotation WHERE anid = 1")[0] == \
+            "hidden annotation"
+
+    def test_exports_still_read_base_tables_in_the_partial_state(
+            self, visibility_db):
+        """honor_visibility=False is export parity, not a visibility
+        decision, so it must not be caught by the refusal."""
+        _drop_view(visibility_db, "code_av_visible")
+        _reopen(visibility_db)
+        assert server.db.code_text_source(honor_visibility=False) == "code_text"
+        out = json.loads(server.export_codebook(
+            str(Path(visibility_db).parent / "codebook.csv")))
+        assert "error" not in out, out
+
+    def test_no_consumer_reaches_a_base_table_through_the_helper(self):
+        """The audit, as a pin: `_visible_source` is the only place that
+        turns (base, view) into a source, it is never called with a
+        literal base table as its return value's fallback, and no module
+        reads a *_visible view name outside it."""
+        from qualcoder_mcp import database as db_module
+        source = Path(db_module.__file__).read_text(encoding="utf-8")
+        helper = source.split("def _visible_source", 1)[1].split(
+            "\n    def ", 1)[0]
+        assert "raise CoderVisibilityUnreadable" in helper
+        assert "table_exists" in helper
+
+
+# =============================================================================
+# THE SAME ROOT, FOLDED: DUPLICATE coder_names ROWS (fix round 4, S6)
+# =============================================================================
+
+def _drop_the_unique_constraint(project_path):
+    """Leave coder_names as a table that ALLOWS a repeated name.
+
+    Upstream creates it `name TEXT UNIQUE NOT NULL` (app.py:1469-1475),
+    but with IF NOT EXISTS: a table that arrives from another tool
+    without the constraint survives QualCoder's own project open
+    untouched, and nothing in this server ever writes that table.
+    """
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        for view in sorted(("code_text_visible", "code_image_visible",
+                            "code_av_visible", "annotation_visible")):
+            con.execute(f"DROP VIEW {view}")
+        con.execute("CREATE TABLE coder_names_rebuilt "
+                    "(name TEXT, visibility INTEGER NOT NULL DEFAULT 1)")
+        con.execute("INSERT INTO coder_names_rebuilt (name, visibility) "
+                    "SELECT name, visibility FROM coder_names")
+        con.execute("DROP TABLE coder_names")
+        con.execute("ALTER TABLE coder_names_rebuilt RENAME TO coder_names")
+        for ddl in _VIEW_DDL:
+            con.execute(ddl)
+        con.commit()
+    finally:
+        con.close()
+
+
+def _add_coder_row(project_path, name, visibility):
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        con.execute("INSERT INTO coder_names (name, visibility) VALUES (?, ?)",
+                    (name, visibility))
+        con.commit()
+    finally:
+        con.close()
+
+
+class TestDuplicateRowsFoldTheWayTheViewsDo:
+    """`coder_visibility_map` took the LAST row per name; the views hide
+    on ANY row. On a coder_names table that arrived without its UNIQUE
+    constraint the two disagreed, the rows vanished from the views and
+    the NAME was published beside the count of what vanished."""
+
+    @pytest.fixture
+    def doubled(self, visibility_db):
+        _drop_the_unique_constraint(visibility_db)
+        # The hiding row first, a visible row for the same name after it:
+        # the order the old fold got wrong.
+        _add_coder_row(visibility_db, HIDDEN, 1)
+        _reopen(visibility_db)
+        return visibility_db
+
+    def test_any_row_hides(self, doubled):
+        assert server.db.coder_visibility_map()[HIDDEN] == 0
+
+    def test_the_order_does_not_matter(self, visibility_db):
+        _drop_the_unique_constraint(visibility_db)
+        _add_coder_row(visibility_db, "Late Hider", 1)
+        _add_coder_row(visibility_db, "Late Hider", 0)
+        _reopen(visibility_db)
+        assert server.db.coder_visibility_map()["Late Hider"] == 0
+
+    def test_the_count_is_of_coders_not_of_rows(self, doubled):
+        """The disclosure block says "this project hides N coder(s)", so
+        two hiding rows for one name are one hidden coder, not two."""
+        _add_coder_row(doubled, HIDDEN, 0)
+        _reopen(doubled)
+        assert _row(doubled, "SELECT COUNT(*) FROM coder_names "
+                             "WHERE visibility = 0")[0] == 2
+        assert server.db.hidden_coder_count() == 1
+        note = json.loads(server.get_coded_segments(1))["coder_visibility"]
+        assert note["hidden_coders"] == 1
+
+    def test_the_map_still_agrees_with_the_views(self, doubled):
+        """The property the fold exists to hold: a name the views filter
+        out is a name the map calls hidden."""
+        con = sqlite3.connect(str(Path(doubled) / "data.qda"))
+        try:
+            visible_owners = {
+                r[0] for r in con.execute(
+                    "SELECT DISTINCT owner FROM code_text_visible")}
+            all_owners = {r[0] for r in con.execute(
+                "SELECT DISTINCT owner FROM code_text")}
+        finally:
+            con.close()
+        filtered = all_owners - visible_owners
+        assert HIDDEN in filtered
+        visibility = server.db.coder_visibility_map()
+        for owner in filtered:
+            assert visibility.get(owner, 1) == 0, owner
+
+    def test_compare_coders_still_refuses_the_hidden_coder(self, doubled):
+        out = json.loads(server.compare_coders("TestCoder", HIDDEN))
+        assert "error" in out
+        assert HIDDEN not in out["error"]
+
+    def test_the_masked_owner_stays_masked(self, doubled,
+                                           qualcoder_db_path):
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("UPDATE code_name SET owner = ? WHERE cid = 1", (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        raw = server.delete_code(1)
+        assert HIDDEN not in raw
+        assert json.loads(raw)["preview"]["collateral"]["code_row_owner"] == \
+            "(hidden coder)"
+
+    def test_a_wrong_typed_row_still_fails_closed(self, visibility_db):
+        """The fold must not swallow the unreadable case: a row whose
+        visibility is not an integer still raises."""
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        con = sqlite3.connect(str(Path(visibility_db) / "data.qda"))
+        con.execute("PRAGMA writable_schema = ON")
+        con.execute("UPDATE sqlite_master SET sql = replace(sql, "
+                    "'CHECK (visibility IN (0, 1))', '') "
+                    "WHERE name = 'coder_names'")
+        con.execute("PRAGMA writable_schema = OFF")
+        con.commit()
+        con.close()
+        con = sqlite3.connect(str(Path(visibility_db) / "data.qda"))
+        con.execute("UPDATE coder_names SET visibility = 'yes' "
+                    "WHERE name = 'TestCoder'")
+        con.commit()
+        con.close()
+        _reopen(visibility_db)
+        with pytest.raises(CoderVisibilityUnreadable):
+            server.db.coder_visibility_map()
