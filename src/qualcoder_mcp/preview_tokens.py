@@ -157,7 +157,8 @@ def ensure_state_home() -> None:
     ensure_state_dir(STATE_HOME)
 
 
-def _publish_exclusive(tmp_name: str, path: Path) -> None:
+def _publish_exclusive(tmp_name: str, path: Path,
+                       windows: Optional[bool] = None) -> None:
     """Give a complete temp file the final name, or raise FileExistsError.
 
     Two spellings of one rule, because the platforms differ on what
@@ -174,8 +175,15 @@ def _publish_exclusive(tmp_name: str, path: Path) -> None:
 
     The caller unlinks the temp either way; on Windows the rename has
     already consumed it, which its own unlink tolerates.
+
+    `windows` is an argument rather than a read of `os.name` inside the
+    branch so a test can drive the other platform's spelling without
+    patching `os.name`, which makes `pathlib.Path()` try to build a
+    WindowsPath and takes pytest itself down with it on 3.11.
     """
-    if os.name == "nt":
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
         os.rename(tmp_name, str(path))
     else:
         os.link(tmp_name, str(path))

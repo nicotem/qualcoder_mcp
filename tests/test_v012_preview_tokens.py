@@ -306,17 +306,18 @@ class TestSecretFile:
             calls.append((src, dst))
             raise FileExistsError("another server won")
 
-        monkeypatch.setattr(pt.os, "name", "nt")
+        source = state / "complete.tmp"
+        source.write_text("b" * 64 + "\n", encoding="ascii")
         monkeypatch.setattr(pt.os, "rename", windows_rename)
         with pytest.raises(FileExistsError):
-            pt._write_new_secret(path, exclusive=True)
+            pt._publish_exclusive(str(source), path, windows=True)
         assert calls, "the nt branch was not taken"
         assert path.read_text(encoding="ascii") == before
-        # The temp file's own cleanup is asserted in the POSIX test
-        # above, not here: with os.name patched, pathlib builds
-        # WindowsPath objects whose string form this filesystem cannot
-        # resolve, which is an artefact of the patch rather than
-        # anything the code does on Windows.
+        # And the POSIX spelling of the same rule, which is what this
+        # platform actually runs: link, never replace.
+        with pytest.raises(FileExistsError):
+            pt._publish_exclusive(str(source), path, windows=False)
+        assert path.read_text(encoding="ascii") == before
 
     @POSIX_ONLY
     def test_a_secret_widened_since_creation_is_rotated(self, tmp_path,
