@@ -302,6 +302,46 @@ class TestColourSnappingOnWrites:
         assert colours["Deadline pressure"] == "#E65100"
         assert colours["Nocolour"] == "#0D47A1"
 
+    def test_the_collision_rule_is_described_with_the_scope_it_has(self):
+        """Fix round 4, T8. Fix round 1 (730de9d) widened
+        _code_name_collisions from `lower()` to `name_key`, which folds
+        whitespace runs, NFC and casefold, so the rule catches whitespace
+        and Unicode twins as well as case ones. Two descriptions of it
+        were left at the old scope: this tool description, which a model
+        reads at plan time and would otherwise not expect "Work  stress"
+        to refuse a batch against a codebook holding "Work stress", and
+        the runtime collision_note. Same stale-description class as R7,
+        R12 and R15."""
+        # Flattened: the description is wrapped, and where it wraps
+        # differs between the interpreters that strip docstring indent
+        # (3.13) and those that do not.
+        description = " ".join(server.mcp._tool_manager._tools[
+            "create_proposed_codes"].description.split())
+        assert "case-variant" not in description
+        assert ("once letter case, spacing and Unicode form are ignored"
+                in description)
+
+    def test_a_whitespace_variant_really_does_refuse_the_batch(
+        self, setup_server, qualcoder_db_path
+    ):
+        """The description above, exercised: the codebook holds "Stress",
+        so a proposal spelled "St ress" does not collide but " Stress "
+        does, on spacing alone."""
+        sid = _sid()
+        out = json.loads(server.propose_codes(
+            sid, [{"name": "  Stress  "}]))
+        recorded = out["recorded"][0]
+        assert recorded["collides_with"] == "Stress"
+        assert ("letter case, spacing and Unicode form ignored"
+                in out["collision_note"])
+        server.update_proposal_status(sid, approve=[recorded["guid"]])
+        before = _backups(qualcoder_db_path)
+        created = json.loads(server.create_proposed_codes(sid))
+        assert "error" in created
+        assert created["failures"][0]["reason"].startswith(
+            "name collides with existing code 'Stress'")
+        assert _backups(qualcoder_db_path) == before
+
     def test_create_proposed_codes_collision_rule_unchanged(self, setup_server,
                                                              qualcoder_db_path):
         sid = _sid()

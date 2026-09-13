@@ -5994,7 +5994,8 @@ def propose_codes(coding_session_id: str, proposals: List[Dict[str, Any]],
     if any(e.get("collides_with") for e in recorded):
         result["collision_note"] = (
             "Proposals flagged collides_with match an existing code "
-            "(case-insensitively). Creation will refuse them unless renamed; "
+            "(letter case, spacing and Unicode form ignored). Creation will "
+            "refuse them unless renamed; "
             "consider applying the existing code via the normal coding "
             "loop instead of creating a near-duplicate."
         )
@@ -6350,11 +6351,12 @@ def create_proposed_codes(coding_session_id: str,
     now-existing codes.
 
     Every approved proposal is validated BEFORE the backup and the write:
-    the name must still be unique against the live codebook (exact AND
-    case-variant collisions refuse; rename the proposal first), the
-    category must exist, and (when applying) every evidence span must
-    still match the file text. Any failure -> nothing is written.
-    Rejected proposals and their evidence are never created.
+    the name must still be unique against the live codebook (a name that
+    matches an existing code exactly, or once letter case, spacing and
+    Unicode form are ignored, refuses the batch; rename the proposal
+    first), the category must exist, and (when applying) every evidence
+    span must still match the file text. Any failure -> nothing is
+    written. Rejected proposals and their evidence are never created.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
     the user to close the project in QualCoder, re-check with

@@ -96,8 +96,9 @@ Owner ruling X2 (QualCoder 4.0 parity, `ai_mcp_server.py:1409-1427`,
   (`already_existing_count`), and the rest are written as one batch.
   When every approved suggestion already exists nothing is written and
   no backup is made.
-- `create_proposed_codes` keeps refusing a batch on a collision (exact
-  or case-variant): a proposal asserts a new code. `create_category`
+- `create_proposed_codes` keeps refusing a batch on a collision (exact,
+  or a variant differing only by letter case, spacing or Unicode form):
+  a proposal asserts a new code. `create_category`
   now returns through the memo privacy strip like the other creates.
 - This reverses the v0.10 decision that "Stress" and "stress" are two
   codes through this server. The database constraint is still BINARY,
