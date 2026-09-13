@@ -178,6 +178,17 @@ withholds project data.
   ignored the argument and started. The documented host configurations
   pass no arguments; if yours passes one, remove it.
 
+### Fixed
+
+- An id larger than SQLite's 64-bit integer (2**63, say) now answers with
+  the tool's own refusal, `code_id must be at most 9223372036854775807`,
+  instead of leaving the tool as a protocol error with no result. The
+  driver raised `OverflowError`, which is an `ArithmeticError` and so not
+  in the error-envelope handler's list; `validate_id` carries SQLite's own
+  upper bound now. Eight tools answered that way, `recolor_code`,
+  `rename_code`, `move_code_to_category`, `rename_category`,
+  `move_category`, `delete_code`, `set_memo` and `get_coded_segments`.
+
 ### CI
 
 - GitHub Actions bumped by Dependabot (SHA-pinned, version comments

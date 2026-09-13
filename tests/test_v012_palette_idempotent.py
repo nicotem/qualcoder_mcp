@@ -824,6 +824,53 @@ class TestNoOpMovesAndRenames:
         assert json.loads(server.move_category(99, None))["error"] == "Category ID 99 does not exist"
         assert _backups(qualcoder_db_path) == []
 
+    def test_out_of_range_ids_answer_in_the_envelope(self, setup_server,
+                                                    qualcoder_db_path):
+        """Fix round 3, S7: an id too large for SQLite is a refusal.
+
+        recolor_code's pre-check, new in this batch, handed the value
+        straight to a parameterised query (get_code_details) because
+        validate_id had no upper bound, and sqlite3 raised OverflowError.
+        OverflowError is an ArithmeticError, which _tool_guard does not
+        catch, so the tool lost its error envelope and the caller got an
+        MCP protocol error where every other bad id gets a refusal.
+        validate_id now carries SQLite's own bound, so the whole family
+        answers the same way, including the three tools this batch never
+        touched.
+        """
+        too_big = 2 ** 63
+        bound = 2 ** 63 - 1
+        calls = {
+            "recolor_code": lambda: server.recolor_code(too_big, "#FF0000"),
+            "rename_code": lambda: server.rename_code(too_big, "x"),
+            "move_code_to_category":
+                lambda: server.move_code_to_category(too_big, None),
+            "rename_category": lambda: server.rename_category(too_big, "x"),
+            "move_category": lambda: server.move_category(too_big, None),
+            "delete_code": lambda: server.delete_code(too_big),
+            "get_coded_segments":
+                lambda: server.get_coded_segments(too_big),
+            "set_memo": lambda: server.set_memo("code", too_big, "x"),
+        }
+        for name, call in calls.items():
+            raw = call()          # a raise here is the defect itself
+            assert isinstance(raw, str), name
+            out = json.loads(raw)
+            assert out["error"].endswith(
+                f"must be at most {bound}, got {too_big}"), (name, out)
+            # Seven of the eight validate the id before the write gate, so
+            # the refusal costs no backup. set_memo is the exception and it
+            # is pre-existing, not this batch's: it validates target_type
+            # on the read-only connection but leaves target_id to
+            # db.set_memo, which runs inside _perform_write, after the
+            # backup. Pinned as it is so a change either way is deliberate.
+            expected = 1 if name == "set_memo" else 0
+            assert len(_backups(qualcoder_db_path)) == expected, name
+        # The bound is SQLite's: the largest id it can hold is still a
+        # normal "does not exist" answer, not a refusal.
+        assert json.loads(server.recolor_code(bound, "#FF0000"))["error"] == \
+            f"Code ID {bound} does not exist"
+
 
 class TestProposalNameNormalisation:
     """Fix round 1, F10. add_code stores normalize_name, so the proposal

@@ -24,6 +24,7 @@ from qualcoder_mcp.database import (
     validate_string,
     MAX_LIMIT,
     MAX_STRING_LENGTH,
+    SQLITE_MAX_INT,
 )
 from qualcoder_mcp.sessions import (
     SessionManager,
@@ -389,18 +390,32 @@ class TestExpandedIntegerOverflow:
     """Test extreme integer values beyond 2**31."""
 
     def test_very_large_code_id_64bit(self, qualcoder_db_path):
-        """2**63 exceeds SQLite INTEGER range and raises OverflowError."""
+        """2**63 exceeds SQLite's INTEGER range, so validate_id refuses it.
+
+        It used to reach a parameterised query and raise OverflowError
+        from the driver. OverflowError is an ArithmeticError, which
+        _tool_guard does not catch, so the tool lost its error envelope
+        (v0.12 Batch A, fix round 3, S7). validate_id now carries
+        SQLite's own upper bound and refuses with a ValueError, which
+        every caller in the stack already handles.
+        """
         db = QualcoderDatabase(qualcoder_db_path)
-        with pytest.raises(OverflowError):
+        with pytest.raises(ValueError, match="must be at most"):
             db.get_code_details(2**63)
         db.close()
 
     def test_very_large_file_id_64bit(self, qualcoder_db_path):
-        """2**63 exceeds SQLite INTEGER range and raises OverflowError."""
+        """2**63 exceeds SQLite's INTEGER range, so validate_id refuses it."""
         db = QualcoderDatabase(qualcoder_db_path)
-        with pytest.raises(OverflowError):
+        with pytest.raises(ValueError, match="must be at most"):
             db.get_file_content(2**63)
         db.close()
+
+    def test_the_largest_sqlite_integer_is_still_accepted(self):
+        """The bound is SQLite's, not one step tighter than it."""
+        assert validate_id(SQLITE_MAX_INT, "code_id") == SQLITE_MAX_INT
+        with pytest.raises(ValueError, match="must be at most"):
+            validate_id(SQLITE_MAX_INT + 1, "code_id")
 
     def test_negative_extreme_id(self):
         with pytest.raises(ValueError, match="must be non-negative"):

@@ -851,8 +851,21 @@ def validate_coder_name(value: Any, param_name: str = "owner") -> str:
     return name
 
 
+# The largest value sqlite3 will bind to an INTEGER column. Above it the
+# driver raises OverflowError, which is an ArithmeticError and therefore
+# not in the server's _tool_guard except list, so an id one step too large
+# left the tool as an MCP protocol error instead of the tool's own error
+# envelope (v0.12 Batch A, fix round 3, S7).
+SQLITE_MAX_INT = 2 ** 63 - 1
+
+
 def validate_id(id_value: int, param_name: str = "id") -> int:
     """Validate an ID parameter.
+
+    The upper bound is SQLite's, not an arbitrary one: a row id cannot
+    exceed it, so a larger value is a caller error to be reported, the
+    way a negative one is, rather than a driver exception raised deep
+    inside a parameterised query.
 
     Args:
         id_value: The ID to validate
@@ -863,13 +876,17 @@ def validate_id(id_value: int, param_name: str = "id") -> int:
 
     Raises:
         TypeError: If not an integer
-        ValueError: If negative
+        ValueError: If negative, or larger than SQLite's 64-bit INTEGER
     """
     if not isinstance(id_value, int):
         raise TypeError(f"{param_name} must be an integer, got {type(id_value).__name__}")
 
     if id_value < 0:
         raise ValueError(f"{param_name} must be non-negative, got {id_value}")
+
+    if id_value > SQLITE_MAX_INT:
+        raise ValueError(
+            f"{param_name} must be at most {SQLITE_MAX_INT}, got {id_value}")
 
     return id_value
 
