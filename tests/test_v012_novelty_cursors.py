@@ -13,6 +13,7 @@ table (`:5228`), unknown ids are refused rather than ignored
 returned (`:5367-5372`).
 """
 
+import base64
 import json
 import re
 import sqlite3
@@ -59,6 +60,13 @@ def _add_file(project_path, fid, name, text):
         (fid, name, text))
     con.commit()
     con.close()
+
+
+def _cursor_payload(token):
+    """The cursor's own payload, so a test can mint a neighbouring key."""
+    body = token[len(cursors.CURSOR_PREFIX):]
+    return json.loads(base64.urlsafe_b64decode(
+        body + "=" * (-len(body) % 4)))
 
 
 def _add_code(project_path, cid, name, catid=None):
@@ -851,6 +859,46 @@ class TestVisibilityOfTheMask:
         assert "error" in out
         assert "novelty filter" in out["error"].lower() or \
             "search" in out["error"].lower()
+
+    def test_a_forged_key_cannot_probe_for_a_hidden_row(self, hidden):
+        """D4 section 6 point 16, the pin under D4 5.1(b).
+
+        A cursor key is a position in the ordering, not a permission, and
+        the ordering is over rows the caller may see. So a key naming a
+        hidden row must be answered exactly as the visible key it sits
+        beside, and so must a key naming no row at all: if any of the
+        three differed, the cursor would be an oracle for "is there a
+        hidden coder's row here?". The three pages are compared whole,
+        not sampled, because a difference anywhere in the payload would
+        be the leak.
+        """
+        project, name = hidden
+        page = json.loads(server.search_coded_text("e", limit=1))
+        assert page["total_results"] == 2, "the walk must have a next page"
+        payload = _cursor_payload(page["page"]["next_cursor"])
+        real_key = payload["k"]
+        assert real_key == ["interview.txt", 1, 24, 55, 1]
+        # ctid 3 is the hidden coder's row on the same span as ctid 1;
+        # ctid 2 at that span is no row at all and sits strictly between.
+        hidden_key = real_key[:-1] + [3]
+        synthetic_key = real_key[:-1] + [2]
+
+        pages = []
+        for key in (real_key, hidden_key, synthetic_key):
+            token = cursors.encode_cursor(payload["t"], payload["f"], key,
+                                          payload["n"], payload["d"] or None)
+            answer = json.loads(server.search_coded_text("e", limit=1,
+                                                         cursor=token))
+            # the echoed cursor is the only thing that may differ: it is
+            # the caller's own argument coming back
+            answer["request"]["arguments"].pop("cursor")
+            if "next_request" in answer:
+                answer["next_request"]["arguments"].pop("cursor")
+            pages.append(answer)
+
+        assert pages[0] == pages[1] == pages[2]
+        assert [r["id"] for r in pages[0]["results"]] == [2]
+        assert name not in json.dumps(pages[0])
 
     def test_no_marker_reaches_any_page(self, setup_server,
                                         qualcoder_db_path):

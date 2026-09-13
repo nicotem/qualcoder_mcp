@@ -22,6 +22,7 @@ default workspace.
 
 import os
 import gc
+import re
 import sys
 import json
 import time
@@ -448,16 +449,117 @@ class TestSafety:
 
 
 # ===========================================================================
+# 4b. THE NOVELTY FILTER'S QUERY SHAPE (v0.12 B4, D4 section 6)
+# ===========================================================================
+class _QueryTally:
+    """What SQL a call actually issued, by the table it reads.
+
+    SQLite's own trace callback rather than a wrapper around
+    `conn.execute`, which is read-only on a Connection. Counting the
+    QUERIES is the point: a filtered content search must cost one mask
+    query and one file query per page however many codings the project
+    holds, and a per-file or per-match query would not show up as a
+    failure in any assertion about results.
+    """
+
+    def __init__(self):
+        self.statements = []
+
+    def __enter__(self):
+        server.db.conn.set_trace_callback(
+            lambda sql: self.statements.append(" ".join(sql.split())))
+        return self
+
+    def __exit__(self, *exc):
+        server.db.conn.set_trace_callback(None)
+        return False
+
+    def reading(self, table):
+        return [s for s in self.statements
+                if re.search(r"\bFROM\s+" + table + r"\b", s, re.I)]
+
+
+def _filtered_page_query_shape(project, sessions_dir, pattern, code_ids,
+                               pages=3):
+    """Walk `pages` pages of a filtered content search, tallying queries."""
+    connect(project, sessions_dir)
+    cursor = None
+    shapes = []
+    timings = []
+    for _ in range(pages):
+        with _QueryTally() as tally:
+            started = time.perf_counter()
+            page = json.loads(server.search_files(
+                pattern, search_content=True, exclude_code_ids=code_ids,
+                limit=5, cursor=cursor))
+            timings.append((time.perf_counter() - started) * 1000)
+        assert _err(json.dumps(page)) is None, page
+        shapes.append((len(tally.reading("code_text")),
+                       len(tally.reading("source")),
+                       len(tally.statements)))
+        cursor = page["page"]["next_cursor"]
+        if not page["page"]["has_more"]:
+            break
+    return shapes, timings
+
+
+def test_the_filtered_search_costs_one_mask_and_one_file_query_per_page(
+        small_scale, scratch):
+    """D4 section 6's query-count assertion, at a size the suite can run.
+
+    No time bound: wall clock is measured and printed, never asserted on
+    (the house rule against fragile timing tests).
+    """
+    proj, stats = small_scale
+    shapes, timings = _filtered_page_query_shape(
+        proj, scratch / "sess_novelty", "the", [1])
+    assert len(shapes) >= 2, "the walk must cover more than one page"
+    for mask_queries, file_queries, total in shapes:
+        assert mask_queries == 1, shapes
+        assert file_queries == 1, shapes
+        assert total == 4, shapes      # plus the two code_name lookups
+    print("novelty-filter page times (ms):",
+          [round(ms, 1) for ms in timings])
+
+
+# ===========================================================================
 # 5. OPT-IN GIANT BUILD (10k+ codings, 500k doc) — TRACK6_GIANT=1
 # ===========================================================================
-@pytest.mark.giant
-@pytest.mark.skipif(not GIANT, reason="giant build is opt-in: set TRACK6_GIANT=1")
-def test_giant_scale(scratch):
+@pytest.fixture(scope="session")
+def giant_scale(scratch):
     proj = scratch / "scale_giant.qda"
     stats = tb.build_scale_project(
         proj, n_files=320, n_codes=60, n_categories=45, n_cases=55,
         target_codings=12000, big_doc_chars=500_000, n_hot_files=3,
         mega_code_codings=5200)
+    return proj, stats
+
+
+@pytest.mark.giant
+@pytest.mark.skipif(not GIANT, reason="giant build is opt-in: set TRACK6_GIANT=1")
+def test_giant_novelty_filter_query_count(giant_scale, scratch):
+    """The same query shape over the 500k-char document with 10k codings.
+
+    The point of running it here is that the counts do not move with the
+    size of the project: if the filter ever grew a per-file or per-match
+    query, this is where it would show. Timings are printed, never
+    asserted on.
+    """
+    proj, stats = giant_scale
+    shapes, timings = _filtered_page_query_shape(
+        proj, scratch / "sess_giant_novelty", "the", [1])
+    for mask_queries, file_queries, total in shapes:
+        assert mask_queries == 1, shapes
+        assert file_queries == 1, shapes
+        assert total == 4, shapes
+    print("GIANT novelty-filter page times (ms):",
+          [round(ms, 1) for ms in timings])
+
+
+@pytest.mark.giant
+@pytest.mark.skipif(not GIANT, reason="giant build is opt-in: set TRACK6_GIANT=1")
+def test_giant_scale(giant_scale, scratch):
+    proj, stats = giant_scale
     assert stats["codings"] >= 10000
     assert stats["big_doc_chars"] == 500_000
     connect(proj, scratch / "sess_giant")
