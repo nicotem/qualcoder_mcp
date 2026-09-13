@@ -13,6 +13,7 @@ and the 3.8.2 tag, both verified with git rev-parse before being cited.
 
 import json
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -67,10 +68,13 @@ def _reopen(project_path):
     server.db = QualcoderDatabase(project_path)
 
 
-# The eleven database-writing tools that need an owner (D7 3.1). Each entry
-# is a callable taking the server module, so the ask can be pinned on all
-# of them with one parametrisation.
-ELEVEN_WRITES = {
+# Nine of the eleven database-writing tools that need an owner (D7 3.1).
+# Each entry is a callable taking the server module, so the ask can be
+# pinned on these nine with one parametrisation. The other two,
+# apply_codings and create_proposed_codes, need a saved session before
+# the call and are pinned by their own tests below, which also assert
+# that the approvals and the proposals survive the refusal.
+ASK_WRITES = {
     "import_text_file":
         lambda s: s.import_text_file("asked.txt", "Body.",
                                      create_backup=False),
@@ -91,6 +95,68 @@ ELEVEN_WRITES = {
         lambda s: s.set_attribute("case", 1, "Site", "x",
                                   create_backup=False),
 }
+
+# D7 3.1's full list, so a twelfth write tool cannot land uncovered and
+# the count in the comment above cannot drift away from the code again
+# (QA round 1, F9: the constant was called ELEVEN_WRITES and held nine).
+ELEVEN_WRITE_TOOLS = frozenset(ASK_WRITES) | {"apply_codings",
+                                              "create_proposed_codes"}
+
+
+# Every read surface B1.17 names, keyed by name so a failure says which
+# one asked. Both halves of the mandate are here: the read TOOLS and the
+# nine resource handlers, which nothing exercised before (QA round 1,
+# F10). No entry is guarded by hasattr: a guard that turns a missing
+# surface into a passing assertion is the defect, not the fix.
+READS_THAT_MUST_NEVER_ASK = {
+    # read tools
+    "get_current_project": lambda s: s.get_current_project(),
+    "get_project_summary": lambda s: s.get_project_summary(),
+    "get_coding_frequencies": lambda s: s.get_coding_frequencies(),
+    "search_files": lambda s: s.search_files("stress"),
+    "get_coded_segments": lambda s: s.get_coded_segments(1),
+    "search_coded_text": lambda s: s.search_coded_text("stress"),
+    "list_backups": lambda s: s.list_backups(),
+    "search_memos": lambda s: s.search_memos("x"),
+    "get_case_code_matrix": lambda s: s.get_case_code_matrix(),
+    "list_available_projects": lambda s: s.list_available_projects(),
+    # resource handlers (qualcoder://...)
+    "get_project_info": lambda s: s.get_project_info(),
+    "list_all_codes": lambda s: s.list_all_codes(),
+    "list_all_categories": lambda s: s.list_all_categories(),
+    "get_code_info": lambda s: s.get_code_info(1),
+    "list_all_files": lambda s: s.list_all_files(),
+    "get_file_content": lambda s: s.get_file_content(1),
+    "list_all_cases": lambda s: s.list_all_cases(),
+    "get_case_info": lambda s: s.get_case_info(1),
+    "get_journal_entries": lambda s: s.get_journal_entries(),
+}
+
+
+def _house_rules(texts, labels=None):
+    """No em dashes, British English, no forbidden vocabulary.
+
+    The house rules are pinned on every text this batch adds, in the
+    module that owns it, so a reworded string is checked where it is
+    written rather than in one distant place (the convention Batch A's D6
+    test 8 established).
+    """
+    forbidden_spellings = ("color", "colors", "behavior", "organize",
+                           "recognize", "authorization", "analyze",
+                           "labeled", "favor")
+    for index, text in enumerate(texts):
+        label = (labels[index] if labels else f"text {index}")
+        assert "\u2014" not in text, label
+        lowered = text.lower()
+        for word in forbidden_spellings:
+            # Identifiers are exempt by house rule (analyze_file_with_coding,
+            # honor_visibility, color): the word counts only when it is
+            # prose, that is, not glued to another identifier character.
+            pattern = r"(?<![A-Za-z_])" + word + r"(?![A-Za-z_])"
+            assert not re.search(pattern, lowered), (label, word)
+        for token in re.findall(r"(?<![A-Za-z_])session_id(?![A-Za-z_])",
+                                text):
+            raise AssertionError((label, "session_id"))
 
 
 def _approved_session(server_mod, project_path):
@@ -265,7 +331,7 @@ EXPECTED_ASK = (
 
 class TestTheAsk:
 
-    @pytest.mark.parametrize("tool", sorted(ELEVEN_WRITES))
+    @pytest.mark.parametrize("tool", sorted(ASK_WRITES))
     def test_every_write_tool_asks_once_and_writes_nothing(
             self, setup_server_unset, qualcoder_db_path, tool):
         counts_before = {
@@ -273,7 +339,7 @@ class TestTheAsk:
             for t in ("code_name", "code_cat", "cases", "journal",
                       "annotation", "source", "attribute", "attribute_type",
                       "case_text", "code_text")}
-        raw = ELEVEN_WRITES[tool](server)
+        raw = ASK_WRITES[tool](server)
         out = json.loads(raw)
         assert out["error"] == EXPECTED_ASK, tool
         assert out["action_required"] == "set_project_ai_coder_name"
@@ -313,6 +379,32 @@ class TestTheAsk:
         assert out["error"] == EXPECTED_ASK
         reloaded = server.session_manager.load_session(session.session_id)
         assert reloaded.proposed_codes[0].status == "approved"
+
+    def test_the_eleven_are_exactly_the_tools_that_resolve_an_owner(self):
+        """The drift guard the old constant's name was pretending to be.
+
+        ELEVEN_WRITES held nine entries while its comment said the ask
+        was pinned on all eleven (QA round 1, F9). The two the
+        parametrisation cannot carry are pinned by their own tests above,
+        and a twelfth write tool would land uncovered in silence, so the
+        list is now derived from the source: every function that calls
+        `_resolve_write_owner` must be one of the eleven.
+        """
+        import ast
+        source = (Path(server.__file__)).read_text(encoding="utf-8")
+        resolving = set()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "_resolve_write_owner"):
+                    resolving.add(node.name)
+                    break
+        assert resolving == set(ELEVEN_WRITE_TOOLS), (
+            resolving ^ set(ELEVEN_WRITE_TOOLS))
+        assert len(ELEVEN_WRITE_TOOLS) == 11
 
     def test_the_ask_repeats_byte_identically(self, setup_server_unset,
                                               qualcoder_db_path):
@@ -371,23 +463,31 @@ class TestTheAsk:
         assert "#####" not in text
         assert "private part" not in text
 
-    @pytest.mark.parametrize("read", [
-        lambda s: s.get_current_project(),
-        lambda s: s.get_project_summary(),
-        lambda s: s.list_codes() if hasattr(s, "list_codes") else "{}",
-        lambda s: s.get_coding_frequencies(),
-        lambda s: s.search_files("stress"),
-        lambda s: s.get_coded_segments(1),
-        lambda s: s.search_coded_text("stress"),
-        lambda s: s.list_backups(),
-        lambda s: s.get_code_info(1),
-        lambda s: s.search_memos("x"),
-    ], ids=lambda f: "read")
+    @pytest.mark.parametrize("read", sorted(READS_THAT_MUST_NEVER_ASK))
     def test_reads_never_ask(self, setup_server_unset, qualcoder_db_path,
                              read):
-        raw = read(server)
+        raw = READS_THAT_MUST_NEVER_ASK[read](server)
+        # The surface has to have answered: the parameter this replaced
+        # asserted on a literal "{}" it produced itself, so it could not
+        # fail whatever the code did (QA round 1, F10).
+        assert isinstance(raw, str) and raw, read
+        assert json.loads(raw) != {}, read
         assert "set_project_ai_coder_name" not in raw or \
-            "action_required" not in raw
+            "action_required" not in raw, read
+
+    def test_every_static_resource_is_in_that_matrix(self):
+        """B1.17 asks for reads AND resources. The matrix is keyed by
+        name so a failure says which surface asked, and this test says
+        the resource half is actually there: the parametrisation used to
+        carry an anonymous lambda for a tool that does not exist
+        (`hasattr(s, "list_codes")` is False), which asserted on the
+        literal string "{}" and could never fail (QA round 1, F10)."""
+        static = {"get_project_info", "list_all_codes", "list_all_categories",
+                  "list_all_files", "list_all_cases", "get_journal_entries"}
+        assert static <= set(READS_THAT_MUST_NEVER_ASK), \
+            static - set(READS_THAT_MUST_NEVER_ASK)
+        for name in static:
+            assert callable(getattr(server, name)), name
 
     def test_the_export_never_asks(self, setup_server_unset, tmp_path,
                                    monkeypatch):
@@ -1239,16 +1339,22 @@ class TestSurfacePins:
         assert "error" in error
 
     def test_british_english_and_no_em_dashes_in_the_new_texts(self):
+        """The same helper the batch's other three modules use.
+
+        This module hand-rolled a weaker check: plain substring matching
+        over six words, with "color " carrying a trailing space so
+        "color." slipped past. Planting "analyze" in UNSET_HINT, a string
+        returned to the model, passed the whole suite (QA round 1, F20).
+        """
         texts = [EXPECTED_ASK, ps.UNREADABLE_MESSAGE, ps.NEWER_FORMAT_MESSAGE,
                  ps.READ_ONLY_FOLDER_MESSAGE, ps.UNSET_HINT,
                  EXPECTED_OWNER_REFUSAL,
                  server.set_project_ai_coder_name.__doc__ or ""]
-        for text in texts:
-            assert "\u2014" not in text, text[:60]   # no em dashes
-            for americanism in ("color ", "colors", "behavior", "organize",
-                                "recognize", "authorization"):
-                assert americanism not in text.lower(), (americanism,
-                                                         text[:60])
+        labels = ["EXPECTED_ASK", "UNREADABLE_MESSAGE",
+                  "NEWER_FORMAT_MESSAGE", "READ_ONLY_FOLDER_MESSAGE",
+                  "UNSET_HINT", "EXPECTED_OWNER_REFUSAL",
+                  "set_project_ai_coder_name.__doc__"]
+        _house_rules(texts, labels)
 
     def test_the_setter_docstring_states_the_exact_comparison_rule(self):
         doc = server.set_project_ai_coder_name.__doc__ or ""
