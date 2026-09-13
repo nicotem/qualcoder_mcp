@@ -66,17 +66,26 @@ markers = [
 # which no runtime filter can see.
 filterwarnings = [
     "error:::qualcoder_mcp.*",
-    # An unclosed sqlite3.Connection is a ResourceWarning on 3.13, raised
-    # during finalisation, so pytest re-emits it as this warning FROM
-    # _pytest/unraisableexception.py. The module filter above matches on
-    # the module a warning is issued from, so it cannot see it, and the
-    # run stayed green over a leaked handle: on Windows an open handle
-    # also stops its directory being removed (fix round 2). Any
-    # unraisable exception is worth failing on, so this is not scoped to
-    # our own modules; the suite is clean under it on 3.10, 3.11 and
-    # 3.13.
-    "error::pytest.PytestUnraisableExceptionWarning",
 ]
+# One filter is deliberately NOT here (fix round 2): the one that turns
+# pytest's PytestUnraisableExceptionWarning into an error. An unclosed
+# sqlite3.Connection is a ResourceWarning on Python 3.13, raised during
+# FINALISATION, so pytest
+# re-emits it from _pytest/unraisableexception.py; the module filter
+# above matches on the module a warning is issued from and therefore
+# cannot see it. That filter is how the two unclosed connections in
+# tests/test_qa_round6_verify.py were found, and it is one flag away for
+# anyone hunting the class:
+#
+#     python -m pytest tests/ -W error::pytest.PytestUnraisableExceptionWarning
+#
+# It is not shipped as a gate because its ATTRIBUTION is not
+# deterministic: the warning lands on whichever test is running when the
+# collector next runs, so it turned about half of a series of runs red,
+# each at a different test, and a gate that fails at random is worse
+# than the leak it guards. The deterministic half of the same guard IS
+# shipped, in tests/conftest.py: nothing may be left OPEN at the end of
+# the run.
 
 [build-system]
 requires = ["setuptools>=77"]
