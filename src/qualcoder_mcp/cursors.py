@@ -39,6 +39,14 @@ TAG_SEARCH_CODED_TEXT = "sct"
 TAG_CODED_SEGMENTS = "gcs"
 
 CURSOR_TOO_LONG = "cursor is too long (limit 1024 characters)."
+# The running total a cursor carries is the caller's claim about the
+# pages BEFORE this one; nothing here can verify it, and it is reported
+# in the result as `returned_so_far`. Bound it so a tampered cursor
+# cannot put an arbitrary integer in front of a researcher as though
+# this server had counted it. The bound is far above any real walk: a
+# project with this many coded segments would exhaust the character
+# budget thousands of pages earlier (fix round 4).
+CURSOR_MAX_RETURNED_SO_FAR = 10_000_000
 
 DATABASE_CHANGED_NOTE = (
     "The project database changed after this cursor was issued; positions "
@@ -85,6 +93,10 @@ def fingerprint_arguments(tool: str, arguments: Dict[str, Any]) -> str:
 
 def database_stamp(qda_path: Any) -> Optional[List[int]]:
     """`(st_mtime_ns, st_size)` of data.qda, or None when unavailable.
+
+    Both values travel INSIDE the cursor and therefore into the
+    transcript; PRIVACY.md enumerates them, and `list_available_projects`
+    already reports the same two in plain form (fix round 4).
 
     A HEURISTIC (D4 3.2.5) and labelled as one wherever it is reported:
     mtime granularity, journal and WAL side files, and copy tools that
@@ -164,7 +176,8 @@ def decode_cursor(token: Any, tool_tag: str, fingerprint: str,
             if value is not None and not isinstance(value, str):
                 raise CursorError("cursor key has the wrong shape")
     n = data["n"]
-    if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+    if (not isinstance(n, int) or isinstance(n, bool) or n < 0
+            or n > CURSOR_MAX_RETURNED_SO_FAR):
         raise CursorError("cursor count is not a count")
     stamp = data["d"]
     if not isinstance(stamp, list) or not all(
@@ -176,7 +189,18 @@ def decode_cursor(token: Any, tool_tag: str, fingerprint: str,
 def page_block(limit: int, returned: int, returned_so_far: int,
                has_more: bool, next_cursor: Optional[str],
                exhaustive: bool) -> Dict[str, Any]:
-    """The `page` block every paged result carries (D4 3.2.7)."""
+    """The `page` block every paged result carries (D4 3.2.7).
+
+    `returned`, `has_more` and `exhaustive` are computed on this page.
+    `returned_so_far` is this page's `returned` added to the count the
+    CURSOR carried, so on any page but the first it rests on a value
+    the caller supplied and nothing here can check. It is bounded at
+    decode (CURSOR_MAX_RETURNED_SO_FAR) so a tampered cursor cannot put
+    an arbitrary integer in a result, and PRIVACY.md says plainly where
+    the number comes from; a stronger guarantee would mean signing
+    cursors, which D4 3.11 deliberately does not do, because a caller
+    who forges a POSITION only gets a page it could have asked for.
+    """
     return {
         "limit": limit,
         "returned": returned,

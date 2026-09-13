@@ -538,7 +538,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
-    { name = "mcp", specifier = ">=1.2.0" },
+    { name = "mcp", specifier = ">=1.17.0,<2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "xmlschema", marker = "extra == 'dev'", specifier = ">=3.0.0" },

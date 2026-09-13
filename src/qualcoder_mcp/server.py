@@ -9283,11 +9283,21 @@ TWO_STEP_PARAGRAPH = (
     "in between, the execute is refused and you must preview again. A "
     "backup is always created first.")
 
+# What the note may claim is exactly what the MAC covers: the tool, the
+# arguments that decide the effect, the project and a fingerprint of the
+# rows. It cannot establish that a PERSON saw anything, because nothing
+# in the token is about the user; saying it proved "the preview the user
+# saw" invited the reading that holding a token discharges the duty to
+# show the preview, which is the one rung the mechanism cannot enforce.
+# The second sentence restates that duty in the words the six docstrings
+# already use (fix round 4).
 DEPRECATED_CONFIRM_NOTE = (
     "confirm is deprecated and was ignored: an execute now needs the "
-    "preview_token this preview returns, which proves that the preview "
-    "the user saw is the operation being executed. confirm is removed in "
-    "v0.13.")
+    "preview_token this preview returns, which proves that the execute "
+    "is the operation this preview describes, on rows that have not "
+    "changed since. The token is proof about the operation, not about "
+    "the user: show the user this preview and every warning it carries, "
+    "and call again only if they agree. confirm is removed in v0.13.")
 
 
 def _qda_file_stamp(path) -> List[Any]:

@@ -575,6 +575,32 @@ withholds project data.
   trailing comment, a YAML anchor) fails the suite instead of escaping
   the check, and the jobs it found are compared with the jobs recorded.
 
+### Fixed: packaging and two texts that claimed too much
+
+- The source distribution carried 60 test modules without
+  `tests/conftest.py` or `tests/track5_helpers.py`, which every one of
+  them needs, so the suite it shipped could not run and the test bodies
+  arrived without the sandbox fixtures that keep a run out of
+  `~/.qualcoder_mcp` and the real workspace. A `MANIFEST.in` with
+  `prune tests` removes them; the wheel is unchanged, and the clone
+  stays the documented way to run the tests. Pre-existing: 0.11 builds
+  the same way.
+- `uv.lock` still recorded `mcp>=1.2.0` in its requirements after the
+  floor was raised to `mcp>=1.17.0,<2`, so the one file a reader
+  consults to learn what this package needs disagreed with the package.
+- The deprecation note on `confirm` said the preview token "proves that
+  the preview the user saw is the operation being executed". The token
+  is a MAC over the tool, the effect-deciding arguments, the project and
+  a row fingerprint; nothing in it is about a person. It now claims
+  exactly that, and repeats the duty it cannot enforce: show the user
+  the preview and call again only if they agree.
+- PRIVACY.md now enumerates everything a paging cursor carries,
+  including the `data.qda` modification time and byte size it uses as
+  its change heuristic, says plainly that a cursor is base64 rather than
+  encryption, and says that `returned_so_far` is carried by the cursor
+  rather than counted here. That figure is bounded on the way in, so a
+  tampered cursor cannot put an arbitrary number in a result.
+
 ### Fixed: the preview-token secret, and what counts as a token
 
 - The secret's first creation was atomic in EXISTENCE but not in

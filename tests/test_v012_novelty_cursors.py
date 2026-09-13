@@ -1144,3 +1144,77 @@ class TestTheFoldingChangeIsRecorded:
         assert not matches("i̇", "İ")    # i + combining dot
         assert matches("Σ", "ς")         # sigma, final sigma
         assert matches("K", "k")              # Kelvin sign
+
+
+# =============================================================================
+# WHAT A CURSOR CARRIES INTO A TRANSCRIPT (fix round 4)
+# =============================================================================
+
+class TestWhatTheCursorCarries:
+    """A cursor is base64, not encryption. Everything in it is legible
+    to anyone the conversation reaches, so PRIVACY.md has to enumerate
+    it, and the one figure the server repeats from a cursor has to be
+    labelled as the caller's claim."""
+
+    @staticmethod
+    def _decoded(token):
+        body = token[len(cursors.CURSOR_PREFIX):]
+        raw = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+        return json.loads(raw.decode("utf-8"))
+
+    def test_a_cursor_carries_the_stamp_and_nothing_else_new(self):
+        token = cursors.encode_cursor(
+            cursors.TAG_SEARCH_FILES, "f" * 16, ["a.txt", 3], 7,
+            [1234567890123456789, 4096])
+        assert set(self._decoded(token)) == {"t", "f", "k", "n", "d"}
+        assert self._decoded(token)["d"] == [1234567890123456789, 4096]
+
+    def test_privacy_md_enumerates_the_stamp(self):
+        text = (Path(__file__).resolve().parents[1]
+                / "PRIVACY.md").read_text(encoding="utf-8")
+        flat = " ".join(text.split())
+        assert "modification time and byte size of `data.qda`" in flat
+        assert "base64, not encryption" in flat
+        assert "returned_so_far" in flat
+
+    def test_a_forged_running_total_is_bounded(self):
+        """`returned_so_far` comes straight from the cursor. It cannot be
+        verified, so it is bounded: a tampered cursor cannot put an
+        arbitrary integer in a result as though the server counted it."""
+        huge = cursors.encode_cursor(
+            cursors.TAG_SEARCH_FILES, "f" * 16, ["a.txt", 3],
+            cursors.CURSOR_MAX_RETURNED_SO_FAR + 1, None)
+        with pytest.raises(cursors.CursorError):
+            cursors.decode_cursor(huge, cursors.TAG_SEARCH_FILES, "f" * 16,
+                                  [str, int])
+        ok = cursors.encode_cursor(
+            cursors.TAG_SEARCH_FILES, "f" * 16, ["a.txt", 3],
+            cursors.CURSOR_MAX_RETURNED_SO_FAR, None)
+        key, n, stamp = cursors.decode_cursor(
+            ok, cursors.TAG_SEARCH_FILES, "f" * 16, [str, int])
+        assert n == cursors.CURSOR_MAX_RETURNED_SO_FAR
+
+    def test_the_page_block_docstring_says_where_the_figure_comes_from(self):
+        doc = cursors.page_block.__doc__ or ""
+        assert "the caller supplied" in doc
+        assert "CURSOR_MAX_RETURNED_SO_FAR" in doc
+
+
+class TestTheDeprecationNoteClaimsOnlyWhatTheMacCovers:
+    """The note said the token "proves that the preview the user saw is
+    the operation being executed". The MAC covers the tool, the
+    arguments, the project and a row fingerprint; nothing in it is about
+    a person, so it cannot prove that anyone saw anything."""
+
+    def test_it_no_longer_claims_the_user_saw_the_preview(self):
+        note = server.DEPRECATED_CONFIRM_NOTE
+        assert "the preview the user saw" not in note
+        assert "proof about the operation, not about the user" in note
+        assert "show the user this preview" in note
+        assert "removed in v0.13" in note
+
+    def test_it_still_reaches_a_caller_who_passes_confirm(self,
+                                                          setup_server):
+        out = json.loads(server.delete_code(1, confirm=True))
+        assert out["deprecated_argument"] == server.DEPRECATED_CONFIRM_NOTE
+        assert out.get("requires_confirmation") is True

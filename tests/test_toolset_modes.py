@@ -545,3 +545,15 @@ class TestTheDeclaredMcpFloorSupportsCoreMode:
         entry = " ".join((REPO / "CHANGELOG.md").read_text(
             encoding="utf-8").split("## [0.11")[0].split())
         assert "`mcp>=1.17.0,<2`" in entry
+
+    def test_the_checked_in_lock_records_the_same_requirement(self):
+        """The lock file kept `>=1.2.0` in its requires-dist after the
+        floor was raised, so the one artefact a reader consults to learn
+        what this package requires disagreed with the package (fix round
+        4). Regenerating the whole lock is a separate decision: it would
+        add the dev extra's build and twine trees, which no gate has
+        reviewed."""
+        text = (REPO / "uv.lock").read_text(encoding="utf-8")
+        recorded = re.findall(r'\{ name = "mcp", specifier = "([^"]+)" \}',
+                              text)
+        assert recorded == [">=1.17.0,<2"], recorded

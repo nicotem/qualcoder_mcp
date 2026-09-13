@@ -508,3 +508,48 @@ class TestNoConnectionIsOpenedWithNothingToCloseIt:
         assert self._unclosable(good) == []
         assert self._unclosable(
             "conn = sqlite3.connect(str(p))\nconn.close()\n") == []
+
+
+class TestTheSourceDistributionCarriesNoSuite:
+    """The sdist shipped `tests/test_*.py` without `tests/conftest.py`
+    or `tests/track5_helpers.py`, which every one of those modules
+    needs: conftest holds the sandbox fixtures that keep a run out of
+    ~/.qualcoder_mcp and the real workspace, track5_helpers the project
+    builders and the REAL_WORKSPACE guards. A packager who downloaded it
+    to verify a release got a collection error, and anyone who then
+    reconstructed a runner had the test bodies WITHOUT the isolation.
+
+    Pinned by reading the manifest rather than by building, so it runs
+    everywhere in milliseconds; the build itself was run by hand in fix
+    round 4, before (61 test entries, no conftest) and after (none).
+    """
+
+    REPO = pathlib.Path(__file__).resolve().parents[1]
+
+    def test_the_manifest_prunes_the_tests(self):
+        manifest = self.REPO / "MANIFEST.in"
+        assert manifest.exists(), "MANIFEST.in is what keeps them out"
+        directives = [line.split("#", 1)[0].strip()
+                      for line in manifest.read_text(encoding="utf-8")
+                      .splitlines()]
+        assert "prune tests" in directives, directives
+
+    def test_the_tests_still_need_the_files_the_sdist_omitted(self):
+        """The reason the half-suite is useless, as a fact rather than a
+        claim: if these ever stop being needed, this pin is wrong and
+        should be revisited rather than deleted."""
+        tests_dir = self.REPO / "tests"
+        assert (tests_dir / "conftest.py").exists()
+        assert (tests_dir / "track5_helpers.py").exists()
+        users = [p.name for p in tests_dir.glob("test_*.py")
+                 if "track5_helpers" in p.read_text(encoding="utf-8")]
+        assert len(users) >= 10, users
+
+    def test_no_package_data_puts_them_back(self):
+        """A graft or a package-data glob added later would undo this
+        quietly, so the other half of the shape is pinned too."""
+        text = (self.REPO / "pyproject.toml").read_text(encoding="utf-8")
+        assert "graft tests" not in text
+        manifest = (self.REPO / "MANIFEST.in").read_text(encoding="utf-8")
+        assert "graft tests" not in manifest
+        assert "recursive-include tests" not in manifest

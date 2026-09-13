@@ -77,8 +77,21 @@ What stays local, always:
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
 travel only inside the conversation. What they encode is a position, a
-file name, character offsets, a count and a fingerprint of the arguments;
-never file text, memo text or anything about a coder.
+file name, character offsets, a count, a fingerprint of the arguments,
+and the modification time and byte size of `data.qda` at the moment the
+cursor was minted, which is the heuristic that lets a later page say the
+project may have changed under it; never file text, memo text, anything
+about a coder, or the project's path. A cursor is base64, not
+encryption: anyone the conversation reaches can read those values, and
+`list_available_projects` already reports the same project's path, size
+and modification time in plain form.
+
+The `returned_so_far` figure in a paged result is carried BY the cursor,
+so it is as trustworthy as the cursor the caller handed back and no
+more: it counts what earlier pages said they returned, not what this
+server has verified. It is bounded on the way in, so a tampered cursor
+cannot put an arbitrary number in front of you, and `returned` (this
+page) and `has_more` are computed here on every page.
 
 What leaves your machine: **only what tools return into the
 conversation**, but for qualitative research, that can be the most

@@ -1,0 +1,18 @@
+# The sdist's default file set (setuptools' add_defaults) picks up
+# `tests/test*.py` by its optional glob, but NOT tests/conftest.py or
+# tests/track5_helpers.py, which every one of those modules needs:
+# conftest holds the sandbox fixtures that keep a run out of
+# ~/.qualcoder_mcp and the real workspace, and track5_helpers holds the
+# project builders and the REAL_WORKSPACE / REAL_STATE_HOME guards. The
+# result was an sdist carrying a suite that cannot run, and whose test
+# bodies are exactly the ones whose isolation is missing.
+#
+# Pruning rather than grafting: the whole suite would also need the
+# shipped documents several modules read (CHANGELOG.md, PRIVACY.md and
+# the rest) and the .github workflows the pin ledger scans, which is a
+# much wider sdist for no gain. CONTRIBUTING documents the clone as the
+# way to run the tests, and CI runs them from the checkout.
+#
+# MANIFEST.in directives are applied AFTER add_defaults, so this removes
+# what the default glob added (fix round 4).
+prune tests
