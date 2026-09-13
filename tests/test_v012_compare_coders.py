@@ -553,6 +553,43 @@ class TestVisibility:
         assert SECOND not in text
 
 
+class TestFrequenciesExportRider:
+    """B3.7 (ruling Q11): the JSON result of export_frequencies_csv named
+    hidden coders in the conversation. The FILE is unchanged, for parity
+    with QualCoder's own report."""
+
+    @pytest.fixture
+    def hidden(self, setup_server, qualcoder_db_path):
+        from test_qc40_visibility import _apply_visibility_schema, HIDDEN
+        _apply_visibility_schema(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        return qualcoder_db_path, HIDDEN
+
+    def test_the_result_names_visible_coders_only(self, hidden, tmp_path):
+        project, name = hidden
+        raw = server.export_frequencies_csv(str(tmp_path / "freq.csv"))
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert name not in out["coders"]
+        assert "TestCoder" in out["coders"]
+        assert out["coder_visibility"]["hidden_coders"] == 1
+        assert name not in raw
+
+    def test_the_exported_file_still_carries_every_coder(self, hidden,
+                                                         tmp_path):
+        project, name = hidden
+        target = tmp_path / "freq.csv"
+        server.export_frequencies_csv(str(target))
+        text = target.read_text(encoding="utf-8")
+        assert name in text, "the FILE keeps QualCoder parity"
+
+    def test_a_project_with_nothing_hidden_carries_no_block(
+            self, setup_server, qualcoder_db_path, tmp_path):
+        out = json.loads(server.export_frequencies_csv(
+            str(tmp_path / "freq.csv")))
+        assert "coder_visibility" not in out
+
+
 class TestSurface:
 
     def test_absent_from_the_core_toolset(self):

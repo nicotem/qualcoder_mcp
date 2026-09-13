@@ -159,6 +159,19 @@ project's own coder name) is refused, and the `owner` argument of
 `apply_codings` and `import_text_file` can no longer be used to write
 rows under someone else's name.
 
+## Comparing coders
+
+`compare_coders` reports how much two named coders' text coding agrees.
+Its result carries counts, percentages and two agreement coefficients,
+and nothing else about the coding: no coded text, no memo, no character
+positions, no file paths. On a project that hides coders, naming a hidden
+coder is refused unless you pass `allow_hidden_coder=true`, and the
+refusal says only that a named coder is hidden, never which of the two,
+and never how many coders are hidden; the lists of coders in its other
+error messages name visible coders only and disclose the rest as a count.
+The log lines it writes carry the number of codes and files, never a
+coder's name.
+
 ## Coder visibility: reading and writing what the user sees
 
 QualCoder lets a project hide individual coders' work (a per-coder

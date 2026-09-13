@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-v0.12 Batch A: small, high-confidence items from the QualCoder 4.0
-ground-truth study (dossiers D5 and D6; owner rulings of 2026-09-10,
-including X2 on duplicate names). One resource was added. Batch B
-follows it with the careful items (dossiers D7, D3, D2, D4). Parity
-claims cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
+v0.12 in two batches from the QualCoder 4.0 ground-truth study, with the
+owner rulings of 2026-09-10. Batch A: colour snapping, idempotent
+creates, methodology vocabulary (dossiers D5 and D6, including X2 on
+duplicate names); one resource added. Batch B: the project's AI coder
+name, preview tokens with collateral disclosure, the coder comparison,
+and the novelty filter with cursors and sampling (dossiers D7, D3, D2,
+D4). Two tools added, `set_project_ai_coder_name` and `compare_coders`:
+69 in the full toolset, 21 in `core`. Parity claims cite QualCoder
+master at pinned commit 9bddf17 and the 3.8.2 tag.
 
 ### Added: the AI coder name is the project's, and you choose it
 
@@ -48,6 +52,46 @@ claims cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   (`app.py:1480-1494` at 9bddf17, byte-identical in the 3.8.2 tag at
   `__main__.py:1230-1244`), with visibility 1, so a new name appears in
   its coder list by itself.
+
+### Added: `compare_coders`, with both agreement coefficients named
+
+- `compare_coders(coder_a, coder_b, code_ids, file_ids, case_ids,
+  include_subcodes, per_file, allow_hidden_coder)` reports, per code, how
+  much of the text in scope each coder coded, how much they agreed, and
+  two agreement coefficients. Read-only: no backup, no token, no write,
+  and it works while QualCoder has the project open. Full toolset only;
+  `core` is unchanged apart from the AI coder name setter.
+- The unit of analysis is one character of one text file: for a given
+  code each coder either coded that character or did not, and a
+  character coded twice by the same coder with the same code counts
+  once. QualCoder's own report counts a character once per SEGMENT
+  (`reports.py:1061-1095` at `9bddf17`), so where a coder's own segments
+  of one code overlap its numbers differ from ours. That case is
+  disclosed rather than absorbed: the result names the files, and
+  reports what QualCoder's dialog would show, computed by a verbatim
+  port of its loop.
+- **Two kappas, both always present.** `kappa_qualcoder` reproduces
+  QualCoder's "Kappa" column expression for expression, so the value
+  matches its report where the counts match; it is not Cohen's kappa
+  (its chance term is a product over the coded characters alone, and its
+  own docstring at `reports.py:1124` describes a different formula from
+  the one the code computes at `:1147`). `kappa_cohen` is the textbook
+  statistic over every character in scope. No field of our own is ever
+  called plain `kappa`.
+- An undefined value is `null` with a `kappa_note` saying why, never the
+  string QualCoder's dialog puts in a number's place.
+- Naming a coder the project hides requires `allow_hidden_coder=true`,
+  because here the coder names are the subject rather than a filter; the
+  refusal names neither coder nor any count, and with the override the
+  result says the filter was bypassed, exactly as the v0.11 coder
+  override does.
+
+### Changed: `export_frequencies_csv` no longer names hidden coders in chat
+
+- Its JSON result listed every coder found in the base tables, hidden
+  ones included. It now lists the visible coders and reports the rest as
+  a count. The exported FILE is unchanged and still carries every
+  coder's column, which is QualCoder's own report's behaviour.
 
 ### Changed: destructive tools need a preview token, not a confirm flag
 

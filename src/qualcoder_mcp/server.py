@@ -7269,13 +7269,57 @@ def explain_ai_coding_tools(tool_name: Optional[str] = None) -> str:
                           "bound to the session's project, all-or-nothing, "
                           "automatic backup)",
                 "step_6": "Recover if needed: delete_coding removes a single "
-                          "coding (on QualCoder 4.0 projects it refuses a "
-                          "hidden coder's row without allow_hidden_coder, and "
-                          "a row whose memo carries a '#####' private note "
-                          "without confirm_private_note_deletion); "
-                          "list_backups + restore_backup roll the whole "
-                          "project back"
+                          "coding (on projects with the coder-visibility "
+                          "capability it refuses a hidden coder's row without "
+                          "allow_hidden_coder, and a row whose memo carries a "
+                          "'#####' private note without "
+                          "confirm_private_note_deletion); list_backups + "
+                          "restore_backup roll the whole project back. The "
+                          "destructive codebook tools, restore_backup and "
+                          "prune_backups are two-step: call without "
+                          "preview_token to see exactly what would change and "
+                          "whose work it is, show the user that preview and "
+                          "the warnings, then call again with the "
+                          "preview_token it returned. The token covers that "
+                          "operation on those rows, so if the project changed "
+                          "in between the execute is refused and you preview "
+                          "again."
             },
+            "ai_coder_name": "Rows this server writes carry the PROJECT's AI "
+                             "coder name, which the researcher chooses. The "
+                             "first write that needs it stops and asks: relay "
+                             "the question, and call "
+                             "set_project_ai_coder_name with the user's "
+                             "answer. A model name is a good answer, because "
+                             "codings by different models can then be "
+                             "compared later with compare_coders. Never pick "
+                             "the name yourself.",
+            "saturation_and_novelty": "To ask what is NOT yet coded, search "
+                                      "with exclude_code_ids set to the codes "
+                                      "you have already applied: matches that "
+                                      "overlap them are dropped, and a file "
+                                      "whose every match is excluded is "
+                                      "reported as such rather than silently "
+                                      "omitted. Page with the page block's "
+                                      "next_cursor until exhaustive is true. "
+                                      "A page that comes back empty is a "
+                                      "result, not a failure: say so plainly "
+                                      "rather than widening the search until "
+                                      "something turns up.",
+            "comparing_coders": "compare_coders reports how much two coders' "
+                                "text coding agrees, per code. Use it to "
+                                "compare a person with the AI, or two models "
+                                "the project has used. It returns two "
+                                "agreement coefficients and they answer "
+                                "different questions: kappa_qualcoder is "
+                                "QualCoder's own column, computed over the "
+                                "characters somebody coded, and sits just "
+                                "below the proportion of those characters "
+                                "both coders agreed on; kappa_cohen is the "
+                                "textbook statistic over all the text, and "
+                                "falls when most of the text is uncoded. "
+                                "Quote both, say which is which, and never "
+                                "call either one simply 'kappa'.",
             "grounding": "Every step expects evidence discipline: base claims on "
                          "the text, quote verbatim, treat a null result as a valid "
                          "result, and judge whether the request is sound for this "
@@ -10583,7 +10627,15 @@ def export_frequencies_csv(output_path: str,
 
     ro_db = get_db()
     raw = ro_db.get_raw_coding_counts()
+    # The FILE keeps every coder's columns, for parity with QualCoder's
+    # own frequencies report, which reads the base tables.
     coders = sorted({r["owner"] for r in raw if r["owner"] is not None})
+    # The JSON RESULT is a conversational surface, so it names only the
+    # coders the user can see and discloses the rest as a count (B3.7,
+    # ruling Q11). The file is unchanged either way.
+    visible_coders = [c for c in coders
+                      if ro_db.coder_name_visibility(c) != 0]
+    hidden_coders_in_file = len(coders) - len(visible_coders)
     counts: Dict[Any, int] = {}
     for r in raw:
         counts[(r["code_id"], r["owner"])] = r["count"]
@@ -10663,7 +10715,15 @@ def export_frequencies_csv(output_path: str,
         "output_path": str(out_file),
         "codes": len(codes),
         "categories": len(cats),
-        "coders": coders,
+        "coders": visible_coders,
+        **({"coder_visibility": {
+            "hidden_coder_filter": "not_applicable",
+            "hidden_coders": hidden_coders_in_file,
+            "note": ("The exported FILE carries every coder's counts, as "
+                     "QualCoder's own frequencies report does; the coders "
+                     "list above names only the coders visible in "
+                     "QualCoder."),
+        }} if hidden_coders_in_file else {}),
         "sanitization": _sanitization_note(sanitize_formulas),
         "counting_rule": "QualCoder Code Frequencies parity: one count "
                          "per coding row over code_text + code_image + "

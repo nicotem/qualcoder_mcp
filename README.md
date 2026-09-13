@@ -761,18 +761,19 @@ The MCP server exposes these resources (read-only data):
 ## Available Tools
 
 Claude can use these tools to analyse your data. The full toolset
-(the default, `QUALCODER_MCP_TOOLSET=full`) registers 67 tools; the
+(the default, `QUALCODER_MCP_TOOLSET=full`) registers 69 tools; the
 argument lists below are abbreviated, and each tool's own description
 carries the complete list.
 
 > **Reduced toolset for local models (Experimental):** with
 > `QUALCODER_MCP_TOOLSET=core` in the server's environment, only the
-> 20-tool supervised coding set is registered: list_available_projects,
+> 21-tool supervised coding set is registered: list_available_projects,
 > select_project, get_current_project, get_project_summary,
 > search_files, analyze_file_with_coding, search_coded_text,
 > get_coded_segments, get_coding_frequencies, analyze_for_coding,
 > record_suggestions, review_suggestions, edit_suggestion,
 > update_suggestion_status, apply_codings, create_code, set_memo,
+> set_project_ai_coder_name,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
 > loudly at startup. Measured for the 0.12 development branch (the
@@ -815,6 +816,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 
 **Co-occurrence Analysis:**
 - `find_cooccurring_codes(code_id, window_size, coder)` - Discover which codes appear together
+- `compare_coders(coder_a, coder_b, code_ids, file_ids, case_ids, include_subcodes, per_file, allow_hidden_coder)` - Compare two coders' text coding per code: agreement, dual-coded and uncoded percentages, and two agreement coefficients (`kappa_qualcoder`, which reproduces QualCoder's own column, and `kappa_cohen`). Read-only; full toolset only
 
 **Case-Code Matrix & Comparative Analysis:**
 - `get_case_code_matrix(coder)` - Create cross-tabulation of cases vs codes
