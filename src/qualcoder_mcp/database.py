@@ -217,6 +217,17 @@ DB_LOCKED_MESSAGE = (
 )
 
 
+class CoderVisibilityUnreadable(RuntimeError):
+    """`coder_names` did not answer on a project that has the capability.
+
+    The read-side twin of the fail-closed posture `_row_is_visible`
+    takes for writes, and for the same causes (schema drift, damage to
+    the coder_names pages, a locked database). A caller whose ANSWER
+    depends on who is hidden must refuse rather than treat everyone as
+    visible: the permissive reading publishes a hidden coder's work.
+    """
+
+
 class DatabaseLockedError(RuntimeError):
     """Raised when the SQLite database is locked by another process."""
 
@@ -1990,6 +2001,33 @@ class QualcoderDatabase:
         if row is None or row[0] is None:
             return None
         return int(row[0])
+
+    def coder_visibility_map(self) -> Optional[Dict[str, int]]:
+        """{name: visibility} for the whole `coder_names` table.
+
+        None when the project has no visibility capability (nothing is
+        hidden there). Raises `CoderVisibilityUnreadable` when the
+        capability is present but the table does not answer, so a caller
+        whose answer depends on who is hidden fails closed the way
+        `_row_is_visible` does for writes (:2018-2021), rather than
+        reading the permissive None that `coder_name_visibility` returns
+        per name. A row with a NULL visibility counts as visible, as
+        that method and the views do (app.py:1530-1540).
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_coder_visibility:
+            return None
+        try:
+            rows = self.conn.execute(
+                "SELECT name, visibility FROM coder_names").fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"Database error in coder_visibility_map: {e}")
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(its coder-visibility table did not answer)") from None
+        return {str(r["name"]): (1 if r["visibility"] is None
+                                 else int(r["visibility"]))
+                for r in rows if r["name"] is not None}
 
     def _row_is_visible(self, base: str, view: str, id_col: str,
                         row_id: int) -> bool:

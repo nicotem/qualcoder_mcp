@@ -20,6 +20,7 @@ from mcp.server.fastmcp import Context
 
 from .database import (
     QualcoderDatabase,
+    CoderVisibilityUnreadable,
     DatabaseLockedError,
     DatabaseOpenError,
     UnsupportedSchemaError,
@@ -4148,26 +4149,38 @@ HIDDEN_COMPARISON_REFUSAL = (
     "nothing was computed. Pass allow_hidden_coder=true to compare "
     "anyway, or ask the user to unhide the coder in QualCoder.")
 
+COMPARISON_VISIBILITY_UNREADABLE = (
+    "Could not determine coder visibility for this project (its "
+    "coder-visibility table did not answer); nothing was computed.")
 
-def _eligible_coders(db_, include_hidden: bool = False) -> List[str]:
+
+def _eligible_coders(db_, visibility: Optional[Dict[str, int]],
+                     include_hidden: bool = False) -> List[str]:
     """Coders with text codings that a comparison may name (D2 3.12).
 
-    A coder with rows but no `coder_names` row counts as visible, exactly
-    as the views treat it (app.py:1530-1540). The speaker-segmentation
-    coder is never eligible: its rows are speaker turns, not analysis.
+    `visibility` is one `coder_visibility_map()` read for the whole
+    call, so eligibility is decided from a table that answered once,
+    never from a per-name lookup that reports "visible" when the read
+    failed. None means the project has no visibility capability, where
+    nothing is hidden. A coder with rows but no `coder_names` row counts
+    as visible, exactly as the views treat it (app.py:1530-1540). The
+    speaker-segmentation coder is never eligible: its rows are speaker
+    turns, not analysis.
     """
     names = [n for n in db_.coders_with_text_codings()
              if n != SPEAKER_SYSTEM_CODER]
-    if include_hidden:
+    if include_hidden or visibility is None:
         return names
-    return [n for n in names if db_.coder_name_visibility(n) != 0]
+    return [n for n in names if visibility.get(n, 1) != 0]
 
 
-def _hidden_eligible_count(db_) -> int:
+def _hidden_eligible_count(db_, visibility: Optional[Dict[str, int]]) -> int:
     """How many coders with text codings the project hides (a count)."""
+    if visibility is None:
+        return 0
     return len([n for n in db_.coders_with_text_codings()
                 if n != SPEAKER_SYSTEM_CODER
-                and db_.coder_name_visibility(n) == 0])
+                and visibility.get(n, 1) == 0])
 
 
 def _coder_listing(names: List[str]) -> str:
@@ -4180,6 +4193,20 @@ def _hidden_clause(count: int) -> str:
     noun = "coder" if count == 1 else "coders"
     return (f" (and {count} more {noun} hidden in QualCoder; pass "
             f"allow_hidden_coder=true to include hidden coders)")
+
+
+def _listing_scope(listed_hidden: bool) -> str:
+    """What the coder listing that follows actually contains (X1).
+
+    With `allow_hidden_coder=true` the listing includes hidden coders by
+    design (D2 3.12 item 1), so it must not be labelled "visible in
+    QualCoder" and must not carry the hidden clause, which would both
+    double-count those coders and advise passing a flag the caller has
+    already passed. Without the override the D2 3.11 text stands
+    verbatim.
+    """
+    return ("with text codings, hidden coders included" if listed_hidden
+            else "with text codings visible in QualCoder")
 
 
 def _coder_role(name: str, ai_names: Sequence[str]) -> str:
@@ -4267,8 +4294,21 @@ def compare_coders(coder_a: Optional[str] = None,
             return json.dumps({"error": (
                 "coder_a and coder_b must be two different coder names.")})
 
-    hidden_count = _hidden_eligible_count(db_)
-    eligible = _eligible_coders(db_, include_hidden=allow_hidden_coder)
+    # One visibility read for the whole call, and it fails closed: on a
+    # project whose probe says the capability is present but whose
+    # coder_names does not answer, eligibility cannot be decided, and
+    # the permissive reading would publish a hidden coder's statistics
+    # (B3.4, D2 5.2; the same posture the write guards take).
+    try:
+        visibility = db_.coder_visibility_map()
+    except CoderVisibilityUnreadable:
+        return json.dumps({"error": COMPARISON_VISIBILITY_UNREADABLE})
+
+    hidden_count = _hidden_eligible_count(db_, visibility)
+    eligible = _eligible_coders(db_, visibility,
+                               include_hidden=allow_hidden_coder)
+    listed_hidden = allow_hidden_coder and hidden_count > 0
+    hidden_clause = "" if listed_hidden else _hidden_clause(hidden_count)
     if coder_a is None:
         # Auto-selection: upstream pre-selects when a project has exactly
         # two coders (reports.py:862-864), narrowed to text codings and
@@ -4280,9 +4320,9 @@ def compare_coders(coder_a: Optional[str] = None,
                     else ". Name two of them.")
             return json.dumps({"error": (
                 f"coder_a and coder_b are required: this project has "
-                f"{count} {noun} with text codings visible in QualCoder: "
+                f"{count} {noun} {_listing_scope(listed_hidden)}: "
                 f"{_coder_listing(eligible)}"
-                f"{_hidden_clause(hidden_count)}{tail}")})
+                f"{hidden_clause}{tail}")})
         coder_a, coder_b = eligible[0], eligible[1]
 
     for value, label in ((coder_a, "coder_a"), (coder_b, "coder_b")):
@@ -4298,8 +4338,8 @@ def compare_coders(coder_a: Optional[str] = None,
     caps = getattr(db_, "capabilities", None)
     has_visibility = caps is not None and caps.has_coder_visibility
     if has_visibility and not allow_hidden_coder:
-        if db_.coder_name_visibility(coder_a) == 0 or \
-                db_.coder_name_visibility(coder_b) == 0:
+        if (visibility or {}).get(coder_a, 1) == 0 or \
+                (visibility or {}).get(coder_b, 1) == 0:
             return json.dumps({"error": HIDDEN_COMPARISON_REFUSAL})
 
     known_coders = set(db_.coders_with_text_codings())
@@ -4307,9 +4347,9 @@ def compare_coders(coder_a: Optional[str] = None,
         if value not in known_coders:
             return json.dumps({"error": (
                 f"{label} '{value}' has no text codings in this project. "
-                f"Coders with text codings visible in QualCoder: "
-                f"{_coder_listing(_eligible_coders(db_))}"
-                f"{_hidden_clause(hidden_count)}.")})
+                f"Coders {_listing_scope(listed_hidden)}: "
+                f"{_coder_listing(eligible)}"
+                f"{hidden_clause}.")})
 
     # --- the scope ------------------------------------------------------
     try:
@@ -4533,8 +4573,8 @@ def compare_coders(coder_a: Optional[str] = None,
     note = _coder_visibility_note(coder_a if allow_hidden_coder else None)
     if note is not None:
         if allow_hidden_coder and (
-                db_.coder_name_visibility(coder_a) == 0
-                or db_.coder_name_visibility(coder_b) == 0):
+                (visibility or {}).get(coder_a, 1) == 0
+                or (visibility or {}).get(coder_b, 1) == 0):
             result["coder_visibility"] = note
         else:
             result["coder_visibility"] = {

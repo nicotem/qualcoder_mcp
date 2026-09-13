@@ -21,7 +21,8 @@ from hypothesis import HealthCheck, assume, given, settings, strategies as st
 import qualcoder_mcp.server as server
 import track5_helpers as H
 from qualcoder_mcp import coder_comparison as cc
-from qualcoder_mcp.database import QualcoderDatabase
+from qualcoder_mcp.database import (CoderVisibilityUnreadable,
+                                    QualcoderDatabase)
 
 SECOND = "Second Coder"
 
@@ -563,6 +564,58 @@ class TestVisibility:
             "not_applicable"
         assert out["coder_visibility"]["hidden_coders"] >= 1
 
+    def test_the_override_listing_does_not_call_hidden_coders_visible(
+            self, hidden):
+        """X1, fix round 1 (F3): with the override the auto-selection
+        listing includes hidden coders (D2 3.12 item 1), so it must not
+        label them visible, must not count them twice in the trailing
+        clause, and must not advise passing a flag already passed."""
+        project, name = hidden
+        _code(project, 90, 1, 1, 31, 60, SECOND)
+        _reopen(project)
+        out = _compare(allow_hidden_coder=True)
+        error = out["error"]
+        assert "visible in QualCoder" not in error, error
+        assert "hidden coders included" in error, error
+        assert "more coders hidden in QualCoder" not in error, error
+        assert "allow_hidden_coder=true to include hidden coders" not in error
+        # Three coders listed, three counted: the old text said three and
+        # then added "and 1 more hidden", for a project with three.
+        assert "has 3 coders" in error, error
+        assert error.count("'") == 6, error
+        assert name in error          # the override is what lists them
+
+    def test_the_unknown_coder_listing_follows_the_same_rule(self, hidden):
+        project, name = hidden
+        out = _compare("Nobody", SECOND, allow_hidden_coder=True)
+        error = out["error"]
+        assert "visible in QualCoder" not in error, error
+        assert "hidden coders included" in error, error
+        assert "more coders hidden in QualCoder" not in error, error
+
+    def test_without_the_override_both_listings_stay_verbatim(self, hidden):
+        """The control for the two above: the D2 3.11 texts are pinned
+        verbatim, so the honest label must appear only under the
+        override."""
+        project, name = hidden
+        _code(project, 90, 1, 1, 31, 60, SECOND)
+        _code(project, 91, 1, 1, 61, 70, "Third Coder")
+        _reopen(project)
+        auto = _compare()["error"]
+        assert ("coder_a and coder_b are required: this project has 3 "
+                "coders with text codings visible in QualCoder: "
+                "['Second Coder', 'TestCoder', 'Third Coder'] (and 1 more "
+                "coder hidden in QualCoder; pass allow_hidden_coder=true "
+                "to include hidden coders). Name two of them.") == auto
+        assert name not in auto
+        unknown = _compare("Nobody", SECOND)["error"]
+        assert ("coder_a 'Nobody' has no text codings in this project. "
+                "Coders with text codings visible in QualCoder: "
+                "['Second Coder', 'TestCoder', 'Third Coder'] (and 1 more "
+                "coder hidden in QualCoder; pass allow_hidden_coder=true "
+                "to include hidden coders).") == unknown
+        assert name not in unknown
+
     def test_without_the_capability_the_boolean_is_accepted_and_ignored(
             self, two_coders):
         out = _compare("TestCoder", SECOND, allow_hidden_coder=True)
@@ -576,6 +629,130 @@ class TestVisibility:
         text = "\n".join(r.getMessage() for r in caplog.records)
         assert "TestCoder" not in text
         assert SECOND not in text
+
+
+class TestTheVisibilityTableFailsClosed:
+    """B3.4 / D2 5.2, fix round 1 (F4).
+
+    When the capability probe says a project has coder visibility but
+    `coder_names` does not answer, eligibility cannot be decided. The
+    permissive reading (a per-name lookup that returns None on
+    sqlite3.Error, which `!= 0` then reads as "visible") published a
+    hidden coder's statistics with no override, which is what X1's
+    count-only rule exists to prevent. The tool now computes nothing and
+    says so, the way the write guards do.
+
+    Every test here comes with its intact-table control, so the refusal
+    cannot be passing for an unrelated reason.
+    """
+
+    @pytest.fixture
+    def intact(self, setup_server, qualcoder_db_path):
+        from test_qc40_visibility import _apply_visibility_schema, HIDDEN
+        _apply_visibility_schema(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        return qualcoder_db_path, HIDDEN
+
+    @staticmethod
+    def _damage(project):
+        """Drop coder_names AFTER the capability probe has run.
+
+        The probe is done at connection time, so capabilities still say
+        the project has coder visibility while every read of the table
+        raises: schema drift and damaged pages look like this, and so
+        does a project whose table a concurrent QualCoder is rebuilding.
+        """
+        H.execute(project, "DROP TABLE coder_names")
+
+    def test_the_probe_still_says_the_capability_is_present(self, intact):
+        """Otherwise the refusals below would prove nothing: a project
+        with no capability is allowed to compare anyone."""
+        project, name = intact
+        self._damage(project)
+        assert server.db.capabilities.has_coder_visibility is True
+
+    def test_naming_a_hidden_coder_is_not_computed_when_the_table_is_gone(
+            self, intact):
+        project, name = intact
+        control = _compare("TestCoder", name)
+        assert control["error"] == server.HIDDEN_COMPARISON_REFUSAL
+
+        self._damage(project)
+        raw = server.compare_coders("TestCoder", name)
+        out = json.loads(raw)
+        assert out["error"] == server.COMPARISON_VISIBILITY_UNREADABLE
+        assert "per_code" not in out
+        assert "overall" not in out
+        assert name not in raw
+
+    def test_auto_selection_does_not_fall_back_to_everyone(self, intact):
+        project, name = intact
+        _code(project, 90, 1, 1, 31, 60, SECOND)
+        _reopen(project)
+        control = _compare()
+        # Two visible coders, so the comparison runs and the hidden one
+        # is not in it.
+        assert {control["coder_a"], control["coder_b"]} == {"TestCoder",
+                                                            SECOND}
+
+        self._damage(project)
+        raw = server.compare_coders()
+        out = json.loads(raw)
+        assert out["error"] == server.COMPARISON_VISIBILITY_UNREADABLE
+        assert name not in raw
+
+    def test_the_override_is_refused_too_because_nothing_can_be_decided(
+            self, intact):
+        """The override says "compare a hidden coder", not "compare
+        whatever you find": with no readable table the tool cannot tell
+        the researcher what the numbers cover."""
+        project, name = intact
+        control = _compare("TestCoder", name, allow_hidden_coder=True)
+        assert control["coder_visibility"]["hidden_coder_filter"] == \
+            "bypassed"
+
+        self._damage(project)
+        out = json.loads(
+            server.compare_coders("TestCoder", name, allow_hidden_coder=True))
+        assert out["error"] == server.COMPARISON_VISIBILITY_UNREADABLE
+
+    def test_a_project_without_the_capability_is_unaffected(
+            self, two_coders):
+        """The fixture project has coder_names but no views, so the
+        probe says no capability: there is nothing to fail closed on and
+        the comparison runs."""
+        assert server.db.capabilities.has_coder_visibility is False
+        assert server.db.coder_visibility_map() is None
+        assert _compare("TestCoder", SECOND)["per_code"]
+
+    def test_the_map_raises_rather_than_reporting_everyone_visible(
+            self, intact):
+        project, name = intact
+        assert server.db.coder_visibility_map()[name] == 0
+        self._damage(project)
+        with pytest.raises(CoderVisibilityUnreadable):
+            server.db.coder_visibility_map()
+        # The permissive per-name reading, which is what the tool used
+        # to decide eligibility with, still answers "not hidden": that is
+        # the defect, and it is why the map exists.
+        assert server.db.coder_name_visibility(name) is None
+
+    def test_a_coder_with_no_row_at_all_counts_as_visible(self, intact):
+        """The views drop only rows present with visibility = 0
+        (app.py:1530-1540), so a coder the table does not mention is
+        eligible, and the map must not invent a hidden one."""
+        project, name = intact
+        _code(project, 90, 1, 1, 31, 60, SECOND)
+        _reopen(project)
+        assert SECOND not in server.db.coder_visibility_map()
+        assert SECOND in _compare()["coder_a"] + _compare()["coder_b"]
+
+    def test_the_refusal_text_is_the_fixed_one(self):
+        assert server.COMPARISON_VISIBILITY_UNREADABLE == (
+            "Could not determine coder visibility for this project (its "
+            "coder-visibility table did not answer); nothing was computed.")
+        _house_rules([server.COMPARISON_VISIBILITY_UNREADABLE],
+                     ["COMPARISON_VISIBILITY_UNREADABLE"])
 
 
 class TestFrequenciesExportRider:

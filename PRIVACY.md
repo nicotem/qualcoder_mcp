@@ -168,7 +168,12 @@ positions, no file paths. On a project that hides coders, naming a hidden
 coder is refused unless you pass `allow_hidden_coder=true`, and the
 refusal says only that a named coder is hidden, never which of the two,
 and never how many coders are hidden; the lists of coders in its other
-error messages name visible coders only and disclose the rest as a count.
+error messages name visible coders only and disclose the rest as a
+count. With `allow_hidden_coder=true` those lists do name hidden coders,
+because the override is what makes them eligible, and the list then says
+so instead of calling them visible. If the project's coder-visibility
+table cannot be read at all, the tool computes nothing and says so,
+rather than treating every coder as visible.
 The log lines it writes carry the number of codes and files, never a
 coder's name.
 
