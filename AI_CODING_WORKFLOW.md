@@ -250,8 +250,10 @@ Apply the approved codings to the project
 2. Loops through all approved suggestions
 3. Writes each as a coding to the database
 4. Includes reasoning and confidence in memo
-5. Records the configured AI coder name as owner (`AI Coding Assistant`
-   by default; see `QUALCODER_MCP_AI_CODER_NAME` in INSTALL.md)
+5. Records the PROJECT's AI coder name as owner, which the researcher
+   chooses the first time a write needs it (`set_project_ai_coder_name`;
+   see "Choosing the AI coder name" in README.md). Before that choice is
+   made the write stops and asks rather than guessing.
 6. Reports success with coding IDs (ctids)
 
 **What you'll see:**

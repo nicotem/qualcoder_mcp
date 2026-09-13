@@ -1237,7 +1237,7 @@ class TestSurfacePins:
                  EXPECTED_OWNER_REFUSAL,
                  server.set_project_ai_coder_name.__doc__ or ""]
         for text in texts:
-            assert "—" not in text, text[:60]
+            assert "\u2014" not in text, text[:60]   # no em dashes
             for americanism in ("color ", "colors", "behavior", "organize",
                                 "recognize", "authorization"):
                 assert americanism not in text.lower(), (americanism,
