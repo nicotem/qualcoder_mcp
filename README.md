@@ -431,6 +431,15 @@ chosen for parity with QualCoder's own exports: exported files
 carry full memos, marker and private section included, and those tools
 say so. `export_code_report` returns into the conversation and strips.
 
+**The novelty filter and coder visibility.** `exclude_code_ids` on
+`search_files` and `search_coded_text` drops candidates that overlap a
+coding of one of those codes in the same file, which is how you ask what
+is not yet coded. The spans it excludes are the ones the caller can see:
+on a project that hides coders, a hidden coder's codings do not suppress
+a passage, so the filter cannot be used to find out that hidden work
+exists. QualCoder's own search reads the full table there
+(`ai_mcp_server.py:5228` at `9bddf17`); this is a deliberate difference.
+
 **Coder visibility.** When a project with the coder-visibility
 capability (QualCoder 3.8.2 and 4.0, schema v14 and later) hides some
 coders' work, a setting stored in the project database, coded-segment
@@ -782,9 +791,9 @@ carries the complete list.
 - `get_current_project()` - Show which project is open, whether a released QualCoder has it open (`qualcoder_open`), and the 4.0 heuristics (`qualcoder_gui_signals`)
 
 **Core Data Analysis:**
-- `search_files(pattern, search_filename, search_content, search_memo)` - Find files by name, content, or memo with smart clarification workflow
-- `search_coded_text(query, code_name, limit, coder)` - Search coded segments
-- `get_coded_segments(code_id, limit, coder)` - Get all segments for a code
+- `search_files(pattern, search_filename, search_content, search_memo, limit, exclude_code_ids, cursor, max_matches_per_file)` - Find files by name, content, or memo with smart clarification workflow; `exclude_code_ids` hides content matches that are already coded under those codes, and `cursor` walks the results page by page
+- `search_coded_text(query, code_name, limit, coder, exclude_code_ids, cursor)` - Search coded segments, with the same novelty filter and paging
+- `get_coded_segments(code_id, limit, coder, strategy, max_chars, file_ids, cursor)` - Segments for a code, sampled by strategy (`by_document`, `diverse_by_document`, `recent_first`, `sequential`) under an optional character budget
 - `get_coding_frequencies(coder)` - Coding statistics
 - `search_memos(query, limit)` - Search memos and annotations (public memo text only)
 - `export_code_report(code_name)` - Detailed code report returned into the conversation (public memo text only)

@@ -49,6 +49,66 @@ claims cite QualCoder master at pinned commit 9bddf17 and the 3.8.2 tag.
   `__main__.py:1230-1244`), with visibility 1, so a new name appears in
   its coder list by itself.
 
+### Added: ask what is NOT already coded, and page through the answer
+
+- `exclude_code_ids` on `search_files` (with `search_content=true`) and
+  `search_coded_text` drops candidates that overlap a coding of one of
+  those codes in the same file. This is QualCoder 4.0's own rule
+  (`ai_mcp_server.py:5245-5257` at `9bddf17`): spans are half-open, so a
+  candidate that begins exactly where an excluded coding ends is kept,
+  and codings with `pos1 <= pos0` are ignored as upstream ignores them.
+  A file whose every content match is excluded is not a result and is
+  counted in `files_with_all_matches_excluded`, so saturation shows as a
+  number rather than as silence.
+  - Two deliberate differences from upstream, both documented in the
+    tool descriptions: an unknown code id is refused rather than
+    ignored, because a dropped id would report coded passages as novel;
+    and the spans that exclude are the ones the caller can see, so a
+    hidden coder's codings never suppress a passage (upstream reads the
+    full table, `:5228`).
+- **Cursors.** `search_files`, `search_coded_text` and
+  `get_coded_segments` return a `page` block with `next_cursor`; pass it
+  back as `cursor` with the same other arguments to continue. Nothing is
+  stored between calls: the next page is recomputed from the position in
+  the token, so a cursor survives a host recycling the server process
+  and works from a second host. A cursor is bound to the tool and the
+  call's arguments and is refused after any change, with one message
+  that never echoes the token. Every paged result also carries `request`
+  and, when more remains, `next_request`, so a compacted conversation
+  keeps the recipe for the next page.
+- **Sampling and budgets on `get_coded_segments`**: `strategy`
+  (`by_document`, the default and today's order made total;
+  `diverse_by_document`, the round-robin across files that upstream uses
+  for overview work, `:5334-5354`; `recent_first`, `:5322`;
+  `sequential`, `:5329`), `file_ids` to scope the sample, and
+  `max_chars` (1 to 50000) to cap the characters of segment text one
+  page returns. The first segment of a page is always returned, and is
+  truncated with `text_truncated` and `text_full_length` if it alone
+  exceeds the budget, so a cursor never returns an empty page while
+  segments remain (a deliberate difference from `:5367-5372`).
+- **`search_files` riders**: `max_matches_per_file` (1 to 50, default 5)
+  replaces the fixed cap, and content matches carry `match_start`,
+  `match_end`, `match_text` and `preview_start`, so a hit can become a
+  coding without arithmetic on the preview.
+- Serialised tool JSON after this batch: full = 136,285 characters
+  (about 34.1k tokens at chars/4), core = 56,275 (about 14.1k). Before
+  the batch: 128,163 and 48,755. The three paged read tools account for
+  5,104 characters of the growth and the new setter for most of the
+  rest.
+
+### Changed: tied rows have a defined order
+
+- `search_coded_text` ordered by file name and start position only, so
+  two codings at the same position in the same file could come back in
+  either order, and a paged walk over them could repeat or skip one. The
+  order is now file name, file id, start, end, coding id, which is total.
+  `get_coded_segments` does the same. Results that were already unique
+  are unaffected; a script that depended on the old order of tied rows
+  may see them swapped.
+- `search_files` reports `files_examined_this_page`, and its
+  `total_files_searched` and `total_matches` are described honestly as
+  per-page numbers and marked deprecated in favour of `page.*`.
+
 ### Changed: `QUALCODER_MCP_AI_CODER_NAME` declares, it no longer attributes
 
 - The variable is now this HOST's declaration of the name it would like

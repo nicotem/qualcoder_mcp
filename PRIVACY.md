@@ -66,6 +66,12 @@ What stays local, always:
   QualCoder never reads or writes this file. Deleting it makes the next
   AI write ask for the name again.
 
+Paging cursors (the `c1.` tokens the search and segment tools return)
+are not stored anywhere: they are handed to the model in a result and
+travel only inside the conversation. What they encode is a position, a
+file name, character offsets, a count and a fingerprint of the arguments;
+never file text, memo text or anything about a coder.
+
 What leaves your machine: **only what tools return into the
 conversation**, but for qualitative research, that can be the most
 sensitive content you hold.
