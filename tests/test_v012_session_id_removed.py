@@ -132,8 +132,18 @@ def _available_session_lists(value):
 
 
 def _package_modules():
-    """Every module of the package sys.modules already holds, by leaf name."""
-    return {name.rpartition(".")[2]: module
+    """Every module of the package sys.modules already holds, by DOTTED name.
+
+    Keyed by the dotted name rather than the leaf (carried from Batch A):
+    two modules whose dotted names share a leaf collided, and because
+    sys.modules is walked in sorted order the deeper one won, evicting
+    the shallower one from the sweep while the loud
+    `modules.get("server") is not None` assertion still passed, since the
+    key existed and merely pointed at the wrong module. v0.12 added four
+    modules to this package, so the collision was no longer hypothetical
+    enough to leave.
+    """
+    return {name: module
             for name, module in sorted(sys.modules.items())
             if name == "qualcoder_mcp" or name.startswith("qualcoder_mcp.")}
 
@@ -192,19 +202,25 @@ def _module_paths_under(root, sandbox):
     yet imported is deliberately out of scope: refi_export is imported
     inside export_refi_qda, long after the caller's setenv has moved
     Path.home(), so the setenv is its guard and importing it here would
-    only hide that. database and sessions are asserted present, so an
-    import change that shrinks the walk fails loudly rather than
-    quietly.
+    only hide that. In a FULL-suite run refi_export is in fact already in
+    sys.modules, because tests/test_refi_export.py imports it at module
+    scope and collects earlier, so the walk does cover it there; the rule
+    above is what holds when this file runs alone (carried from Batch A:
+    the example did not survive measurement). The six modules asserted
+    present below make an import change that shrinks the walk fail loudly
+    rather than quietly.
     """
     repo_root = Path(server.__file__).resolve().parent.parent.parent
     sandbox = Path(sandbox).expanduser().resolve()
     root = Path(root).expanduser().resolve()
     found = []
     modules = _package_modules()
-    for label in ("server", "database", "sessions"):
+    for label in ("qualcoder_mcp.server", "qualcoder_mcp.database",
+                  "qualcoder_mcp.sessions", "qualcoder_mcp.project_settings",
+                  "qualcoder_mcp.preview_tokens", "qualcoder_mcp.cursors"):
         assert modules.get(label) is not None, (
-            f"qualcoder_mcp.{label} is not imported, so this sweep is "
-            f"walking less of the package than it claims to")
+            f"{label} is not imported, so this sweep is walking less of "
+            f"the package than it claims to")
     candidates = [(f"{label}.{name}", value)
                   for label, module in modules.items()
                   for name, value in sorted(vars(module).items())
@@ -319,12 +335,16 @@ class TestNoResponseCarriesSessionId:
         assert Path(database.DEFAULT_WORKSPACE).is_relative_to(tmp_path)
         assert Path(server._MRU_FILE).is_relative_to(tmp_path)
         assert Path(server.session_manager.storage_dir).is_relative_to(tmp_path)
-        # And nothing else in any imported module of the package still
-        # points into the real home, whether it is typed as a Path or as
-        # an absolute string: a constant added later would rot this pin
-        # in silence, which is exactly how the environment-only version
-        # of it came to protect nothing (fix round 4, T9 widened the walk
-        # from three hand-listed modules and Path alone).
+        # And no module-level constant of any imported module of the
+        # package still points into the real home, whether it is typed as
+        # a Path or as an absolute string: a constant added later would
+        # rot this pin in silence, which is exactly how the
+        # environment-only version of it came to protect nothing (fix
+        # round 4, T9 widened the walk from three hand-listed modules and
+        # Path alone). A Path held INSIDE a module-level list, tuple, set
+        # or dict is still invisible to the walk; the sentence says
+        # "constant" rather than "anything" for that reason (carried from
+        # Batch A: the shipped comment claimed more than the code covers).
         # tmp_path is handed over as the sandbox because on a machine
         # whose temporary root lives under the home directory (every
         # Windows CI runner) the redirections above are inside BOTH, and
@@ -470,7 +490,8 @@ class TestTheRotGuardSurvivesATempRootInsideHome:
                             home / ".qualcoder_mcp" / "mru_project.json")
         reported = _module_paths_under(home, sandbox)
         assert len(reported) == 1, reported
-        assert reported[0].startswith("server._MRU_FILE = "), reported
+        assert reported[0].startswith("qualcoder_mcp.server._MRU_FILE = "), \
+            reported
 
 
 class TestTheRotGuardWalksThePackageItClaims:
@@ -498,8 +519,13 @@ class TestTheRotGuardWalksThePackageItClaims:
     def test_the_walk_covers_every_imported_module_of_the_package(self):
         """Non-vacuity for the walk itself, not only for what it found."""
         walked = set(_package_modules())
-        assert {"qualcoder_mcp", "server", "database", "sessions",
-                "memo_privacy"} <= walked, walked
+        assert {"qualcoder_mcp", "qualcoder_mcp.server",
+                "qualcoder_mcp.database", "qualcoder_mcp.sessions",
+                "qualcoder_mcp.memo_privacy",
+                "qualcoder_mcp.project_settings",
+                "qualcoder_mcp.preview_tokens",
+                "qualcoder_mcp.cursors",
+                "qualcoder_mcp.coder_comparison"} <= walked, walked
 
     def test_a_path_in_a_module_the_old_walk_missed_is_reported(
         self, tmp_path, monkeypatch
@@ -513,8 +539,8 @@ class TestTheRotGuardWalksThePackageItClaims:
                             raising=False)
         reported = _module_paths_under(home, sandbox)
         assert len(reported) == 1, reported
-        assert reported[0].startswith("memo_privacy._PLANTED_CACHE = "), \
-            reported
+        assert reported[0].startswith(
+            "qualcoder_mcp.memo_privacy._PLANTED_CACHE = "), reported
 
     def test_an_absolute_string_constant_is_reported_too(
         self, tmp_path, monkeypatch
@@ -526,7 +552,8 @@ class TestTheRotGuardWalksThePackageItClaims:
                             raising=False)
         reported = _module_paths_under(home, sandbox)
         assert len(reported) == 1, reported
-        assert reported[0].startswith("server._PLANTED_DIR = "), reported
+        assert reported[0].startswith(
+            "qualcoder_mcp.server._PLANTED_DIR = "), reported
 
     def test_a_relative_string_is_not_mistaken_for_a_path(
         self, tmp_path, monkeypatch
