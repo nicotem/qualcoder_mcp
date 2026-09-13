@@ -786,7 +786,8 @@ carries the complete list.
 > Required for local models, optional elsewhere; unknown values fail
 > loudly at startup. Measured for the 0.12 development branch (the
 > serialised tool definitions: name, description and input schema, the
-> same method as the CHANGELOG, under Python 3.13 with mcp 1.30.0), the
+> same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
+> the repository's own `venv/`), the
 > definitions run to about 144,000 characters for `full`, roughly 36k
 > tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same

@@ -205,16 +205,25 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after this batch: full = 143,610 characters
-  (about 35.9k tokens at chars/4), core = 56,245 (about 14.1k). Before
-  the batch: 128,118 and 48,725. Both trees measured the same way, in
-  one interpreter and one environment (the tool definitions' name,
-  description and input schema, Python 3.13 with mcp 1.30.0), because
-  the figure moves with both: on Python 3.10 to 3.12, which keep the
-  docstring indentation 3.13 strips, the same definitions measure about
-  five per cent more (150,870 and 59,181). The three paged read tools
-  account for 5,104 characters of the growth, `compare_coders` and the
-  new setter for most of the rest.
+- Serialised tool JSON after this batch: full = 143,793 characters
+  (about 35.9k tokens at chars/4) over 69 tools, core = 56,317 (about
+  14.1k) over 21. At the Batch A point, before this batch: 128,297 and
+  48,795, over 67 tools and 20. Every figure here is measured on the
+  final tree through the toolset gate, as the `tools/list` payload
+  carries them: the name, description and input schema of every
+  registered tool, serialised together with `json.dumps` defaults. The
+  number moves with the interpreter AND with the installed mcp, so both
+  are named, with the environment they were taken in: Python 3.13.5
+  with mcp 1.30.0, in the repository's own `venv/`, the one
+  CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
+  3.12, which keep the docstring indentation 3.13 strips at compile
+  time, the same definitions measure about five per cent more (151,053
+  and 59,253, taken on Python 3.11.13 with the same mcp, in the
+  repository's `.venv/`). The three paged read tools account for 5,104
+  characters of the growth, `compare_coders` and the new setter for
+  most of the rest. `tests/test_toolset_modes.py` re-measures all four
+  figures on every run, so a docstring edit that moves them cannot
+  leave them standing.
 
 ### Changed: tied rows have a defined order
 
@@ -435,14 +444,15 @@ withholds project data.
   that governs coding suggestions and code proposals; the direct write
   tools write on the call itself, after a backup); whether a host shows
   it to the model is host behaviour.
-- Serialised tool definitions measure about 128,000 characters for the
-  full toolset (roughly 32k tokens) and 49,000 for `core` (roughly 12k
-  tokens), up from 118,000 and 44,000 in 0.11. Measured under Python
-  3.13; Python 3.10 to 3.12 keep the docstring indentation that 3.13
-  strips at compile time, so the same definitions measure about five
-  per cent more there. Rather more of the growth comes from the palette
-  and idempotency notes on the codebook tools than from the methodology
-  guidance.
+- Serialised tool definitions at the Batch A point, which is where this
+  section stops and NOT the size of the release: 128,297 characters for
+  the full toolset (roughly 32k tokens) and 48,795 for `core` (roughly
+  12k tokens), up from 118,170 and 44,076 in 0.11. The release figures
+  are in the Batch B section above; these are kept because they show
+  where the growth came from. Same method, same environment, same
+  five-per-cent interpreter difference. Rather more of the Batch A
+  growth comes from the palette and idempotency notes on the codebook
+  tools than from the methodology guidance.
 
 ### Removed: the deprecated `session_id` duplicate in session-tool responses
 

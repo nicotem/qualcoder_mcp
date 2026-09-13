@@ -285,18 +285,55 @@ class TestThePublishedSchemaBudget:
     was never updated at all: it still quoted the pre-batch figures while
     claiming to be the 0.12 measurement.
 
-    The numbers themselves cannot be asserted here, because they move
-    with the interpreter AND with the installed mcp and pydantic, which
-    is the trap the last round fell into. What can be pinned is that the
-    sites agree with each other, so updating one and forgetting another
-    fails rather than ships.
+    Fix round 2 goes further, because agreement between three stale
+    documents is still three stale documents: the figures published were
+    reproducible at no commit on the branch, and the previous version of
+    this class could not tell, which a verifier demonstrated by adding a
+    docstring and watching it stay green. These tests now RE-MEASURE the
+    tool surface and compare the result with what the documents say.
+
+    The measurement is the one the documents describe, on the final tree
+    through the toolset gate: the `tools/list` payload, which is the
+    name, description and input schema of every registered tool,
+    serialised together with `json.dumps` defaults.
+
+    The figure moves with the interpreter (3.13 strips docstring
+    indentation that 3.10 to 3.12 keep, worth about five per cent) and
+    with the installed mcp and pydantic, which is the trap the last
+    round fell into. So the comparison is EXACT on the interpreter the
+    documents name, Python 3.13, and within a stated tolerance on 3.10
+    to 3.12.
     """
 
-    # The measurement the 0.12 CHANGELOG entry records: Python 3.13 with
-    # mcp 1.30.0, the tool definitions' name, description and input
-    # schema. Re-measure both trees the same way before changing these.
-    FULL_CHARS = "143,610"
-    CORE_CHARS = "56,245"
+    # The published measurement, to the character. Re-measure every tree
+    # the same way before changing these, and say in the CHANGELOG which
+    # interpreter and which environment directory it was taken in.
+    FULL_MEASURED = 143_793          # 69 tools, Python 3.13.5, mcp 1.30.0
+    CORE_MEASURED = 56_317           # 21 tools, same environment
+    FULL_MEASURED_310 = 151_053      # the same tree on Python 3.11.13
+    CORE_MEASURED_310 = 59_253
+
+    # Why two per cent, away from the reference environment.
+    #
+    # Within one interpreter band the only thing that moves this number
+    # without a source change is the schema generation in mcp and
+    # pydantic, which perturbs field descriptions and key ordering by a
+    # few hundred characters: 0.1 to 0.5 per cent across the versions
+    # measured. Two per cent is four times that, so a dependency bump
+    # inside `mcp>=1.2.0,<2` does not fail a green suite for a reason no
+    # reader of the figure would care about.
+    #
+    # It is still tight enough to catch what a reader WOULD care about:
+    # the average tool contributes 2,081 characters, about 1.5 per cent,
+    # so a tool added or removed without re-measuring is reported. And
+    # nothing smaller escapes either, because away from the reference
+    # environment is the loose half: on the environment the documents
+    # name the comparison is exact, and CI runs 3.13 on all three
+    # platforms, so a single added docstring turns those jobs red.
+    TOLERANCE = 0.02
+
+    FULL_CHARS = "143,793"
+    CORE_CHARS = "56,317"
     FULL_ROUNDED = "144,000"
     CORE_ROUNDED = "56,000"
     FULL_TOKENS = "36k"
@@ -309,11 +346,105 @@ class TestThePublishedSchemaBudget:
         text = (REPO / name).read_text(encoding="utf-8")
         return " ".join(text.replace("\n>", " ").split())
 
+    @staticmethod
+    def _measure(mode):
+        """The published measurement, recomputed.
+
+        Through `_apply_toolset`, the call that actually gates the
+        surface, and restoring what it removed so the rest of the suite
+        sees the tools it expects.
+        """
+        removed = server._apply_toolset(mode)
+        try:
+            tools = asyncio.run(server.mcp.list_tools())
+            payload = [{"name": t.name,
+                        "description": t.description or "",
+                        "inputSchema": t.inputSchema} for t in tools]
+            return len(tools), len(json.dumps(payload))
+        finally:
+            for name, tool in removed.items():
+                server.mcp._tool_manager._tools[name] = tool
+
+    # The mcp the documents say the figure was taken with. Deliberately
+    # NOT part of the exactness test: keying exactness on the installed
+    # mcp would mean a dependency bump silently drops the comparison to
+    # the loose half, which is the same silent-degradation shape this
+    # round is fixing. On 3.13 the comparison is exact whatever mcp is
+    # installed, so a bump that moves the schema turns the three 3.13 CI
+    # jobs red and says to re-measure. That is intended: the documents
+    # publish the figure TOGETHER with the mcp version, so if mcp moves,
+    # both lines are stale and both are one edit.
+    REFERENCE_MCP = "1.30.0"
+
+    @staticmethod
+    def _reference_environment():
+        """Whether this is the interpreter the documents name."""
+        return sys.version_info[:2] == (3, 13)
+
+    def _assert_matches(self, mode, expected, expected_310, tools_expected):
+        count, measured = self._measure(mode)
+        assert count == tools_expected
+        if self._reference_environment():
+            assert measured == expected, (
+                f"the {mode} toolset now measures {measured:,} characters "
+                f"and the documents say {expected:,}. This is the "
+                f"environment they name, so the figure has rotted: "
+                f"re-measure both toolsets and update CHANGELOG.md, "
+                f"README.md, INSTALL.md and this class together. If the "
+                f"installed mcp is no longer {self.REFERENCE_MCP}, the "
+                f"version those documents name is stale as well.")
+            return
+        target = expected_310 if sys.version_info[:2] < (3, 13) else expected
+        drift = abs(measured - target) / target
+        assert drift <= self.TOLERANCE, (
+            f"the {mode} toolset measures {measured:,} characters against "
+            f"the documented {target:,}, a drift of {drift:.1%}, past the "
+            f"{self.TOLERANCE:.0%} allowed away from the reference "
+            f"interpreter. Re-measure on Python 3.13 with mcp "
+            f"{self.REFERENCE_MCP}.")
+
+    def test_the_full_toolset_measures_what_the_documents_say(self):
+        self._assert_matches("full", self.FULL_MEASURED,
+                             self.FULL_MEASURED_310, 69)
+
+    def test_the_core_toolset_measures_what_the_documents_say(self):
+        self._assert_matches("core", self.CORE_MEASURED,
+                             self.CORE_MEASURED_310, 21)
+
+    def test_the_tolerance_is_a_real_comparison(self):
+        """A tolerance nobody drives is a tolerance that passes anything.
+
+        Both directions, against the reference figure, with no tool
+        surface involved: one drift inside the band and one outside it.
+        """
+        inside = self.FULL_MEASURED + int(self.FULL_MEASURED * 0.01)
+        outside = self.FULL_MEASURED + int(self.FULL_MEASURED * 0.03)
+        assert abs(inside - self.FULL_MEASURED) / self.FULL_MEASURED \
+            <= self.TOLERANCE
+        assert abs(outside - self.FULL_MEASURED) / self.FULL_MEASURED \
+            > self.TOLERANCE
+        # ... and one average tool is inside the band it must report
+        assert 2000 / self.FULL_MEASURED < self.TOLERANCE
+
     def test_the_changelog_entry_carries_the_measurement(self):
         entry = self._read("CHANGELOG.md").split("## [0.11")[0]
         assert f"full = {self.FULL_CHARS} characters" in entry
         assert f"core = {self.CORE_CHARS}" in entry
-        assert "Python 3.13 with mcp 1.30.0" in entry
+        assert f"Python 3.13.5 with mcp {self.REFERENCE_MCP}" in entry
+        # The environment, by path: this repository holds two, at
+        # different interpreters, and a version alone does not say which
+        # was used.
+        assert "repository's own `venv/`" in entry
+        assert "Python 3.11.13" in entry and "`.venv/`" in entry
+
+    def test_the_release_entry_carries_one_current_measurement(self):
+        """The 0.12 entry used to state two, a batch apart, both in the
+        present tense; a reader sizing a context window met whichever
+        they read first."""
+        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
+        assert entry.count("Serialised tool") == 2
+        assert "at the Batch A point, which is where this section stops " \
+               "and NOT the size of the release" in entry
 
     def test_the_readme_quotes_the_same_measurement(self):
         readme = self._read("README.md")
