@@ -8,6 +8,7 @@ those objects, never from version strings; pre-4.0 projects read base
 tables as before, and the view is never hard-required.
 """
 
+import ast
 import json
 import re
 import sqlite3
@@ -1272,6 +1273,27 @@ class TestTheClassCannotComeBack:
     times. These pin that the package keeps exactly one decision-making
     reader of the table, so a sixth arrives as a failing test rather
     than as a review finding.
+
+    The sweep reads the SYNTAX rather than the lines. It used to read
+    lines, and a verifier walked straight past it by wrapping the query
+    in the way this package wraps long queries anyway:
+
+        cur.execute("SELECT visibility FROM "
+                    "coder_names WHERE name = ?", (name,))
+
+    which is one string to Python and two lines to a line-based sweep,
+    so neither line held `FROM coder_names` and the sweep stayed green
+    over the exact read it exists to forbid. Python's parser joins
+    adjacent literals for us; `+` between two literals and the constant
+    parts of an f-string are joined below.
+
+    Its limits, stated because a sweep that overclaims is worse than
+    none: it sees string literals, so a query assembled at runtime from
+    variables, or one whose table name arrives through `.format()` or a
+    parameter, is invisible to it. What makes that acceptable here is
+    that the sweep is not the only pin. Every decision this class is
+    about has a damaged-table test beside it that fails if the decision
+    goes permissive again, whatever spelling the query is written in.
     """
 
     PACKAGE = Path(__file__).resolve().parents[1] / "src" / "qualcoder_mcp"
@@ -1290,18 +1312,56 @@ class TestTheClassCannotComeBack:
         },
     }
 
-    QUOTED = re.compile(r"""["']([^"']*FROM\s+coder_names[^"']*)["']""",
-                        re.IGNORECASE)
+    @classmethod
+    def _string(cls, node):
+        """The value of a string expression, or None if it is not one.
 
-    def _reads(self):
+        Adjacent literals are already one `Constant` by the time the
+        parser is done, which is the wrap that walked past the old
+        sweep. `+` between two literals and the fixed parts of an
+        f-string are joined here; a runtime value inside an f-string
+        becomes a marker rather than nothing, so two halves either side
+        of it cannot be glued into a match that the source does not
+        contain.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                part.value if isinstance(part, ast.Constant)
+                and isinstance(part.value, str) else "\x00"
+                for part in node.values)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = cls._string(node.left), cls._string(node.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
+
+    @classmethod
+    def _strings(cls, source):
+        for node in ast.walk(ast.parse(source)):
+            value = cls._string(node)
+            if value is not None:
+                yield value
+
+    def _reads(self, source=None):
+        """Every SQL read of the table, keyed by file name.
+
+        With a `source` it sweeps that text under the name "sample",
+        which is how the known-bad and known-good samples below drive
+        the same code the real sweep runs.
+        """
+        if source is not None:
+            pairs = [("sample", source)]
+        else:
+            pairs = [(path.name, path.read_text(encoding="utf-8"))
+                     for path in sorted(self.PACKAGE.rglob("*.py"))]
         found = {}
-        for path in sorted(self.PACKAGE.rglob("*.py")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not self.PATTERN.search(line):
-                    continue
-                quoted = self.QUOTED.search(line)
-                found.setdefault(path.name, set()).add(
-                    quoted.group(1).strip() if quoted else line.strip())
+        for name, source_text in pairs:
+            for value in self._strings(source_text):
+                if self.PATTERN.search(value):
+                    found.setdefault(name, set()).add(
+                        " ".join(value.split()))
         return found
 
     def test_the_table_is_read_in_exactly_the_two_known_places(self):
@@ -1313,8 +1373,37 @@ class TestTheClassCannotComeBack:
         assert sum(len(v) for v in self._reads().values()) == 2
 
     def test_the_sweep_would_notice_a_per_name_read(self):
-        assert self.PATTERN.search(
-            '"SELECT visibility FROM coder_names WHERE name = ?"')
+        assert self._reads(
+            'cur.execute("SELECT visibility FROM coder_names '
+            'WHERE name = ?", (name,))') == {
+                "sample": {"SELECT visibility FROM coder_names "
+                           "WHERE name = ?"}}
+
+    def test_the_sweep_would_notice_one_written_across_two_lines(self):
+        """The mutant that walked past the line-based version, in this
+        package's own wrapping style, and the two other spellings of the
+        same escape."""
+        wrapped = ('cur.execute("SELECT visibility FROM "\n'
+                   '            "coder_names WHERE name = ?", (name,))')
+        assert self._reads(wrapped) == {
+            "sample": {"SELECT visibility FROM coder_names WHERE name = ?"}}
+
+        added = ('cur.execute("SELECT visibility FROM " +\n'
+                 '            "coder_names WHERE name = ?", (name,))')
+        assert self._reads(added) != {}
+
+        formatted = 'cur.execute(f"SELECT {col} FROM coder_names")'
+        assert self._reads(formatted) != {}
+
+    def test_the_sweep_does_not_fire_on_the_wrong_thing(self):
+        """Known-good: the views, which are not the table, and an
+        f-string whose runtime value sits where the table name would be,
+        so the halves must not be glued together."""
+        assert self._reads(
+            'cur.execute("SELECT * FROM code_text_visible")') == {}
+        assert self._reads(
+            'cur.execute(f"SELECT * FROM {table}coder_names_unrelated")'
+        ) == {}
 
     def test_a_non_integer_visibility_fails_closed_rather_than_raising(
             self, setup_server, qualcoder_db_path):
