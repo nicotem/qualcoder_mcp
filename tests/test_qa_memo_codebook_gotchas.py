@@ -442,6 +442,13 @@ class TestMergeGotchas:
         for bad in ("#zzzzzz", "#FFF", "red", "FF0000", "#12345G", ""):
             out = json.loads(server.recolor_code(cid, bad))
             assert "error" in out, bad
+        # The default colour above is RANDOM, so one run in 120 it already
+        # is the colour the lower-case probe asks for, and this batch's
+        # no-op rule then answers `changed: false` and fails the probe.
+        # Observed once in a full run. Start from a known other colour;
+        # the assertion below is about the case rule, not about which
+        # colour the create happened to pick.
+        json.loads(server.recolor_code(cid, "#F5F6CE"))
         # v0.12 (D5): a palette member given in lower case is stored in the
         # palette's own upper-case spelling; QualCoder compares colour
         # strings, so '#0d47a1' would have been off-palette to it
