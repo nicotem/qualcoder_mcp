@@ -169,13 +169,23 @@ def _no_database_connection_outlives_the_run():
 
     Measured rather than assumed: sampled every 300 tests, this suite
     holds between nought and two open sqlite3 connections at any point
-    and one at the end, so it does not ACCUMULATE them, and the reported
-    leak of the flake hunt is not reproducible on this tree. What is
-    real is that one: `server.db` is a module-level global, the last
-    test to select a project leaves it set, and it is an open handle on
-    a file inside tmp_path. On Windows that blocks the removal of the
-    directory holding it, which is the same rule the sharing guard below
-    emulates.
+    and one at the end, so it does not ACCUMULATE them. Sampling is the
+    wrong instrument for the leak itself, and this sentence used to end
+    by saying the reported leak was not reproducible on this tree, which
+    later work in the same round disproved: five connections really were
+    opened with nothing that could close them, and a connection created,
+    dropped and collected a few tests later is one a sample almost never
+    sees. All five are closed, and what pins the class now is
+    TestNoConnectionIsOpenedWithNothingToCloseIt in
+    tests/test_suite_hygiene.py, which reads the syntax rather than
+    waiting for a finalisation. This fixture is the other half of that
+    pin, at runtime and at the end of the run.
+
+    The one this fixture was written for: `server.db` is a module-level
+    global, the last test to select a project leaves it set, and it is
+    an open handle on a file inside tmp_path. On Windows that blocks the
+    removal of the directory holding it, which is the same rule the
+    sharing guard below emulates.
 
     The assertion is the point rather than the close: it pins the
     ABSENCE, so a future fixture that stops closing its own connection

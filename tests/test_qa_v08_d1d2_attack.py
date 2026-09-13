@@ -11,6 +11,7 @@ dedupe across both pos1 conventions).
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -53,10 +54,8 @@ def _rows(p, sql, args=()):
 
 
 def _dump(p):
-    conn = sqlite3.connect(str(_db(p)))
-    lines = list(conn.iterdump())
-    conn.close()
-    return lines
+    with closing(sqlite3.connect(str(_db(p)))) as conn:
+        return list(conn.iterdump())
 
 
 def _reload():
@@ -194,8 +193,13 @@ class TestMergeCategory:
         conn.commit()
         conn.close()
 
+        # Both sides through `_dump`, which closes. This one used to be a
+        # bare `sqlite3.connect(...).iterdump()`: the connection is never
+        # bound, so nothing closes it. That is a ResourceWarning on 3.13
+        # and an open handle on Windows, and it was the fifth and last
+        # instance of the shape in this suite.
         a = [l for l in _dump(qualcoder_db_path) if "code_cat" in l or "code_name" in l]
-        b = [l for l in list(sqlite3.connect(str(twin / "data.qda")).iterdump())
+        b = [l for l in _dump(twin)
              if "code_cat" in l or "code_name" in l]
         assert a == b
         # semantics: code1 -> target cat; Subcat -> target; codings untouched

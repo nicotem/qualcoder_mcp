@@ -73,22 +73,28 @@ filterwarnings = [
 # FINALISATION, so pytest
 # re-emits it from _pytest/unraisableexception.py; the module filter
 # above matches on the module a warning is issued from and therefore
-# cannot see it. That filter is how the two unclosed connections in
-# tests/test_qa_round6_verify.py were found, and it is one flag away for
+# cannot see it. That filter is how four of the five unclosed
+# connections in this suite were found, and it is one flag away for
 # anyone hunting the class:
 #
 #     python -m pytest tests/ -W error::pytest.PytestUnraisableExceptionWarning
 #
-# It is not shipped as a gate for two measured reasons. Its ATTRIBUTION
-# is not deterministic: the warning lands on whichever test is running
-# when the collector next runs, so it names a different test each time.
-# And the class is not empty yet: with the four connections fix round 2
-# closed still open, about half of a series of full runs went red; with
-# them closed, about one run in five does, so at least one more leak
-# remains and it does not surface every run. A gate that fails at random
-# is worse than the leak it guards. The deterministic half of the same
-# guard IS shipped, in tests/conftest.py: nothing may be left OPEN at
-# the end of the run.
+# It is not shipped as a gate because its ATTRIBUTION is not
+# deterministic: the warning lands on whichever test is running when the
+# collector next runs, so it names a different test each time, and it
+# needs both an interpreter that emits the warning and a run long enough
+# for a collection to happen. A gate has to name the line every time.
+#
+# Fix round 3 replaced the argument that used to sit here. It said the
+# class was not empty and the next instance would have to be caught by
+# running under this flag until it fired. The fifth and last instance
+# was found instead by reading the syntax, in milliseconds: a
+# sqlite3.connect(...) whose result is never bound, so nothing can close
+# it. That sweep is what ships as the gate, in tests/test_suite_hygiene.py
+# (TestNoConnectionIsOpenedWithNothingToCloseIt); run against the
+# fix-round-1 tree it returns all five sites, and against this one it
+# returns none. The runtime half ships too, in tests/conftest.py:
+# nothing may be left OPEN at the end of the run.
 
 [build-system]
 requires = ["setuptools>=77"]

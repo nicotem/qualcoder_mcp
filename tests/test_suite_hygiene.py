@@ -415,3 +415,92 @@ class TestTheSuiteLeavesNoTemporaryDirectoryBehind:
         assert created.name.startswith("qc_scale_")
         assert not created.exists(), (
             f"{created} survived the interpreter that made it")
+
+
+class TestNoConnectionIsOpenedWithNothingToCloseIt:
+    """The unclosed-connection class, pinned by syntax rather than by luck.
+
+    The shape: `sqlite3.connect(...)` whose result is never bound to a
+    name, so no `close()` and no `with` can ever reach it, and the
+    handle stays open until the garbage collector happens to take it.
+    Five of them were in this suite. Four were found by running the
+    whole suite on Python 3.13 under
+    `-W error::pytest.PytestUnraisableExceptionWarning`, which is the
+    only interpreter in the matrix whose sqlite3 emits
+    `ResourceWarning: unclosed database` at finalisation, and fix round 2
+    concluded from that hunt that the next instance would have to be
+    found the same way, by running under the flag until it fired.
+
+    That conclusion was wrong and this class is the correction. The
+    runtime hunt needs an interpreter that emits the warning, a run long
+    enough for a collection to happen (a single-module run stays green
+    over a real leak), and it names a different test each time, because
+    the warning lands on whoever is running when the collector next
+    runs. Reading the syntax needs none of those: it costs milliseconds,
+    it behaves identically on every platform and every interpreter, and
+    it names the line. Run against the fix-round-1 tip `cda4eeb` it
+    returns exactly the five sites that were there, and against this
+    tree it returns none.
+
+    The honest limit, because a sweep that overclaims is worse than no
+    sweep: this reads the CALL shape, so it sees a connection nothing
+    could close, and it does not see a connection bound to a name and
+    then dropped without `close()`, nor one opened through an alias for
+    the `sqlite3` module. Neither exists in this tree, and both are
+    shapes where a reader can at least see the handle. The complementary
+    runtime pin is in tests/conftest.py: nothing may be left OPEN at the
+    end of the run.
+    """
+
+    ROOTS = (pathlib.Path(__file__).resolve().parent, PACKAGE)
+
+    @staticmethod
+    def _is_connect(node):
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sqlite3")
+
+    @classmethod
+    def _unclosable(cls, source):
+        """Line numbers where a connection is opened with nothing that
+        could ever close it: chained straight into a method call, or
+        evaluated as a statement and dropped."""
+        hits = []
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and cls._is_connect(node.value):
+                hits.append(node.lineno)
+            elif isinstance(node, ast.Expr) and cls._is_connect(node.value):
+                hits.append(node.lineno)
+        return sorted(set(hits))
+
+    def test_nothing_opens_a_connection_it_cannot_close(self):
+        offenders = []
+        for root in self.ROOTS:
+            for path in sorted(root.rglob("*.py")):
+                for line in self._unclosable(
+                        path.read_text(encoding="utf-8")):
+                    offenders.append(f"{path.name}:{line}")
+        assert offenders == [], offenders
+
+    def test_there_are_modules_to_sweep(self):
+        assert sum(len(list(root.rglob("*.py"))) for root in self.ROOTS) >= 20
+
+    def test_the_sweep_would_notice(self):
+        """Driven against a known-bad and a known-good sample, as the
+        other sweeps here are: the bad one is the fifth instance,
+        verbatim from tests/test_qa_v08_d1d2_attack.py before it was
+        closed; the good ones are how the same work is written now."""
+        bad = ('b = [l for l in list(sqlite3.connect(str(twin / "data.qda"))'
+               '.iterdump()) if "code_cat" in l]')
+        assert self._unclosable(bad) == [1]
+        assert self._unclosable(
+            "sqlite3.connect(str(p)).execute('PRAGMA writable_schema = ON')"
+        ) == [1]
+
+        good = ("with closing(sqlite3.connect(str(p))) as conn:\n"
+                "    lines = list(conn.iterdump())\n")
+        assert self._unclosable(good) == []
+        assert self._unclosable(
+            "conn = sqlite3.connect(str(p))\nconn.close()\n") == []
