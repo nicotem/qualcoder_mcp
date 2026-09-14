@@ -6847,6 +6847,14 @@ def prune_backups(keep_last: Optional[int] = None,
     - At least the newest MCP backup is always kept, unless you
       explicitly pass keep_last=0.
 
+    A reason to prune beyond disk space: a backup taken before a
+    `pseudonymise_source` run holds the text as it was, real names
+    included, and so does any `pseudonyms.json` the project carries,
+    since a backup copies the whole tree. A project is not pseudonymised
+    while those copies sit beside it, so once a run is verified, pruning
+    is part of finishing it. Removing them also removes your recovery
+    point, which is the trade; keep at least one until you are sure.
+
     Two-step by design. Call without preview_token: nothing is removed and
     the result is a preview of exactly which folders would go and how much
     space is reclaimed, with a preview_token. Show the user the preview and

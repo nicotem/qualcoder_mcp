@@ -509,6 +509,42 @@ will ask, and the summary above depends on them:
   from context (role, locality, events, relationships, distinctive
   phrasing). Treat pseudonymisation as risk-reduction only; synthetic or
   genuinely anonymised data is the safe path for experimentation.
+- **Pseudonymising a project does not empty it of names.** The v0.12
+  `pseudonymise_source` tool rewrites the stored text of the text
+  sources you choose and moves every coding with it. What it does NOT
+  touch, and where the names therefore stay, is stated by the tool's own
+  preview as counts, and repeated here because it decides what you may
+  send afterwards:
+  - **The backup.** Every run copies the whole project first, and that
+    copy holds the text as it was, real names included. Backups sit
+    beside the project until you remove them; `list_backups` shows them
+    and `prune_backups` removes this server's own. A project you are
+    about to share is not pseudonymised while its backups are beside it.
+  - **`pseudonyms.json`**, if you keep one. It is QualCoder's own
+    import-time list and it is the reverse key in plain text at the
+    project root, so it travels into every backup either tool makes.
+    This server never writes it and never deletes it. QualCoder's own
+    guidance is to remove it and store it securely once the import is
+    done (`manage_files.py` at the 9bddf17 pin), and that applies here
+    too. `speakers.json` and `speaker_regex.json` can hold names as
+    well; the preview reports whether they are present and never reads
+    them.
+  - **Memos, journal entries, case names, file names and attribute
+    values.** Scanned and counted, never rewritten. The count is in the
+    preview's `residue` block, and a name that occurs only in a
+    `#####` private note is neither read nor counted.
+  - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
+    previous text and its search index still holds it until QualCoder
+    reopens the project and re-indexes. This server never reads or
+    writes anything in there.
+  - **This server's own session files** in `~/.qualcoder_mcp/sessions/`.
+    A coding session records the excerpt each suggestion refers to, so a
+    session made before a run keeps the pre-pseudonymisation text on
+    disk. The run lists the affected sessions and never deletes one;
+    `delete_coding_session` is yours to call.
+  - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` and the
+    journal entry inside the project carry pseudonyms, counts and row
+    ids only, never an original name.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is
   asked for: a session that never touches file 7 never transmits

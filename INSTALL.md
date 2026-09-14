@@ -440,7 +440,7 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 70 tools by
 default, and the serialised tool definitions alone measure about
-152,000 characters, roughly 38k tokens (measured for the 0.12
+153,000 characters, roughly 38k tokens (measured for the 0.12
 development branch under Python 3.13.5 with mcp 1.30.0, in the
 repository's own `venv/`; the paging,
 novelty-filter and sampling arguments added in 0.12 account for about

@@ -7,15 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-v0.12 in two batches from the QualCoder 4.0 ground-truth study, with the
-owner rulings of 2026-09-10. Batch A: colour snapping, idempotent
-creates, methodology vocabulary (dossiers D5 and D6, including X2 on
-duplicate names); one resource added. Batch B: the project's AI coder
-name, preview tokens with collateral disclosure, the coder comparison,
-and the novelty filter with cursors and sampling (dossiers D7, D3, D2,
-D4). Two tools added, `set_project_ai_coder_name` and `compare_coders`:
-69 in the full toolset, 21 in `core`. Parity claims cite QualCoder
+v0.12 in two batches and a flagship, from the QualCoder 4.0 ground-truth
+study, with the owner rulings of 2026-09-10 and the interface ruling of
+2026-09-14. Batch A: colour snapping, idempotent creates, methodology
+vocabulary (dossiers D5 and D6, including X2 on duplicate names); one
+resource added. Batch B: the project's AI coder name, preview tokens
+with collateral disclosure, the coder comparison, and the novelty filter
+with cursors and sampling (dossiers D7, D3, D2, D4). The flagship:
+`pseudonymise_source` (dossier D1). Three tools added,
+`set_project_ai_coder_name`, `compare_coders` and `pseudonymise_source`:
+70 in the full toolset, 21 in `core`. Parity claims cite QualCoder
 master at pinned commit 9bddf17 and the 3.8.2 tag.
+
+### Added: retroactive pseudonymisation that keeps the coding
+
+- `pseudonymise_source(mapping, ...)` replaces names with pseudonyms in
+  the stored text of chosen text sources and moves every coding,
+  annotation and case link with the text, all files in one transaction.
+  It is the only tool in this server that rewrites the text stored
+  positions are measured against, and it carries every guard the server
+  has at once: a preview, an authorisation token bound to that exact
+  operation and to the rows it covers, a mandatory backup, SQLite's
+  RESERVED lock, a second recomputation of the signed state inside the
+  transaction, and a per-file fingerprint check before the first write.
+  QualCoder pseudonymises only at import, from `pseudonyms.json`, and
+  has never had a way to pseudonymise a source that is already coded.
+- Deterministic and rule-based. Only the names given are replaced, as
+  whole words, using QualCoder's own boundary rule
+  (`manage_files.py:3348`), so "Ann" does not match inside "Anna" while
+  "Tom" does match inside "Tom's". No name detection and no guessing.
+  `variants` maps nicknames and inflections onto one pseudonym.
+  `case_mode` offers QualCoder's exact matching (the default),
+  case-insensitive matching, and a case-preserving heuristic that is
+  described as a heuristic wherever it is named.
+- One pass, not a chain. QualCoder applies each entry as its own
+  substitution over the whole text, so a later entry can rewrite what an
+  earlier one produced, and whether it does depends on the order of the
+  list. Here every name is matched in a single leftmost-longest pass and
+  a mapping whose pseudonym is also one of its own names is refused
+  outright, so nothing this tool writes is ever replaced again and a
+  second run of the same mapping finds nothing.
+- What happens to a coding that cut into a name is a choice, and both
+  answers are offered. `snap_to_pseudonym`, the default, treats the
+  pseudonym as the same token as the name: a coding that marked the name
+  marks the pseudonym, a coding that cut into one grows to contain the
+  whole pseudonym, and no row is ever emptied or deleted.
+  `qualcoder_edit_parity` reproduces the walk QualCoder's own coding-view
+  editor applies (`code_text.py:5893-5950`), which DELETES a coding
+  sitting exactly on a name and trims one that merely touches it. The
+  preview counts what each would do before you choose.
+- What is NOT rewritten is counted rather than left to be discovered:
+  the ten memo fields, case names, file names, code names and text
+  attribute values, plus which of `pseudonyms.json`, `speakers.json` and
+  `speaker_regex.json` are present. Public memo parts only: a name that
+  occurs only inside a `#####` private note is neither read nor counted,
+  and how many memos carry such a note is reported as a number. PDFs,
+  media files and QualCoder 4.0's `ai_data/` are out of scope and said
+  to be.
+- Hidden coders, under owner ruling X1: a pure position shift of a
+  hidden coder's row proceeds, because it changes no coding decision,
+  and a resize, a snap or a deletion requires `allow_hidden_coder`. The
+  preview reports what the run would do to those rows as counts, never
+  names.
+- Two rows that would land on the same span after the remap would break
+  QualCoder's own unique keys on `code_text` and `annotation`. The
+  preview lists them and the execute refuses before taking a backup.
+  Separately, and invisibly, a set of moves whose FINAL state is legal
+  can still break a unique key part way through, because SQLite checks
+  per statement rather than at commit; those rows are parked out of the
+  way first.
+- Every run writes a manifest to
+  `~/.qualcoder_mcp/pseudonymisation/`, owner-only, recording the
+  pseudonyms, the new spans and the old and new offsets of every row it
+  moved: enough for a later release to reverse the run exactly, over
+  spans rather than by matching text, and never enough to reconstruct a
+  name. By default it also writes a journal entry in the project, which
+  upstream's own PDF restructure does (`code_pdf.py:6004-6053`). Neither
+  carries an original name, a file name that contains one, or any slice
+  of text. Reversal in this release is `restore_backup`; the backup does
+  hold the real names, and the result says so.
+- `import_text_file` gains `apply_project_pseudonyms=False`, which
+  applies the project's own `pseudonyms.json` to the text on the way in,
+  as QualCoder does to every text file it imports. Default off. The
+  sidecar is read from the resolved project folder only, UTF-8 first and
+  the platform default after, and the result says which it turned out to
+  be: QualCoder writes that file with no encoding argument
+  (`pseudonyms.py:92`), so one written on Windows cannot be read on
+  macOS, and the refusal says so rather than failing obscurely.
 
 ### Added: the AI coder name is the project's, and you choose it
 
@@ -215,8 +293,8 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after the flagship: full = 151,923 characters
-  (about 38.0k tokens at chars/4) over 70 tools, core = 56,317 (about
+- Serialised tool JSON after the flagship: full = 153,344 characters
+  (about 38.3k tokens at chars/4) over 70 tools, core = 56,317 (about
   14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
@@ -228,12 +306,13 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (159,607
+  time, the same definitions measure about five per cent more (161,108
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
   characters of the Batch B growth, `compare_coders` and the new setter
-  for most of the rest. `pseudonymise_source` alone accounts for the
-  8,130 characters added since: it is one tool with a long description
+  for most of the rest. `pseudonymise_source` alone accounts for 8,130
+  of the 9,551 characters added since, and the rider on
+  `import_text_file` and the pruning note for the rest: it is one tool with a long description
   by necessity, because a tool that rewrites the researcher's text has
   to state in its own definition what it rewrites, what it leaves, and
   what the backup then holds. `core` is unchanged, because the flagship

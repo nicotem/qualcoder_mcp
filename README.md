@@ -795,7 +795,7 @@ carries the complete list.
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 152,000 characters for `full`, roughly 38k
+> definitions run to about 153,000 characters for `full`, roughly 38k
 > tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those
@@ -863,7 +863,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `create_proposed_codes(coding_session_id, apply_coded_segments, create_backup)` - **WRITES TO DATABASE** - Create the approved proposals in the codebook, optionally writing their evidence spans as codings
 
 **Data Import, Cases & Attributes (Write Operations):**
-- `import_text_file(filename, content, memo, owner, create_backup, case_name)` - **WRITES TO DATABASE** - Add a new text source, optionally linked to a case
+- `import_text_file(filename, content, memo, owner, create_backup, case_name, apply_project_pseudonyms)` - **WRITES TO DATABASE** - Add a new text source, optionally linked to a case. With `apply_project_pseudonyms=true` the project's own `pseudonyms.json` is applied to the text before it is stored, which is what QualCoder does to every text file it imports; default off
 - `link_file_to_case(file_id, case_id, case_name, create_backup)` - **WRITES TO DATABASE** - Make a file visible to case-based analyses
 - `create_case(name, memo, create_backup)` - **WRITES TO DATABASE** - Create a new case (idempotent: an existing name, case-insensitively, answers `created: false` with the existing case)
 - `create_attribute_type(name, applies_to, value_type, memo, create_backup)` - **WRITES TO DATABASE** - Define a new attribute for cases, files or journals
@@ -899,14 +899,17 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `rename_category(category_id, new_name)` - **WRITES TO DATABASE** - Rename a category (same collision and no-op rules as `rename_code`)
 - `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
+**Source Text, Destructive (preview, then token, then safety backup):**
+- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces QualCoder's own text editor, which deletes a coding sitting on a name. Memos, journal entries, case names, file names, attribute values, PDFs, media and `ai_data/` are scanned and counted, never rewritten, and the preview's `residue` block says where names remain. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name. The mandatory backup does contain them
+
 **Codebook, Destructive (preview, then token, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
 - `delete_code(code_id, preview_token, cascade, allow_hidden_coder)` - **WRITES TO DATABASE** - Delete a code and all its coded segments (`cascade=true` is required for a code that has sub-codes)
 - `delete_category(category_id, preview_token)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data)
 - `merge_category(from_category_id, into_category, preview_token)` - **WRITES TO DATABASE** - Merge a category into another (or into the top level); its codes and sub-categories move to the target
 
-Since v0.12 these four, and `restore_backup` and `prune_backups`, are
-two-step: call without `preview_token` for a preview of exactly what
+Since v0.12 these four, `pseudonymise_source`, `restore_backup` and
+`prune_backups`, are two-step: call without `preview_token` for a preview of exactly what
 would change, then call again with the token the preview returned. The
 token is bound to that operation, those arguments, that project and the
 rows the preview covered, so a preview the user approved cannot
@@ -1141,9 +1144,18 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Backups and workspace copies include `ai_data/` minus QualCoder's own ignore set; symlinks pointing outside the project are not followed
 - ✅ Best-effort detection of an open QualCoder 4.0 window (`qualcoder_gui_signals`), and the last-used project named in "no project selected" errors
 
+**In the v0.12 development branch:**
+- ✅ 🕵️ Pseudonymisation tooling, retroactive and position-preserving
+  (`pseudonymise_source`): rewrites the stored text of chosen text
+  sources and moves every coding, annotation and case link with it, in
+  one transaction, behind a preview and a mandatory backup. Rule-based
+  and deterministic: only the names you list are replaced, as whole
+  words. Memos, journal entries, case names, file names, attribute
+  values, PDFs and media are scanned and counted, never rewritten, so
+  the preview tells you where names remain.
+
 **Planned for v0.12 and later:**
 - 🤝 Further QualCoder 4.0 interoperability (later phases)
-- 🕵️ Pseudonymisation tooling (retroactive, position-preserving)
 - 🤝 Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
 - 🖼️ Media region coding (images, audio/video, PDF)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
