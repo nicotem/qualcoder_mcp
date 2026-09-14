@@ -6298,7 +6298,8 @@ def import_text_file(
     memo: str = "",
     owner: Optional[str] = None,
     create_backup: bool = True,
-    case_name: Optional[str] = None
+    case_name: Optional[str] = None,
+    apply_project_pseudonyms: bool = False
 ) -> str:
     """Import text content as a new source file in the QualCoder project.
 
@@ -6331,6 +6332,19 @@ def import_text_file(
         create_backup: Create timestamped backup before writing (default: True)
         case_name: Optional existing case to link the new file to
                    (matched case-insensitively)
+        apply_project_pseudonyms: Apply the project's own pseudonyms.json
+                   to the text before storing it, which is what QualCoder
+                   does to every text file IT imports
+                   (manage_files.py:3344-3349). Default false, so the
+                   text is stored exactly as given unless you ask.
+                   Case-sensitive, whole-word, like QualCoder. One
+                   difference, stated because it is a real one: QualCoder
+                   applies the entries one after another, so a later
+                   entry can rewrite what an earlier one produced; this
+                   applies them all in a single pass, longest form first,
+                   so nothing it writes is ever replaced again. The
+                   result carries per-pseudonym counts and which encoding
+                   the sidecar turned out to be in.
 
     Returns:
         JSON with the new file's ID, name, and confirmation details
@@ -6340,6 +6354,54 @@ def import_text_file(
         return json.dumps({"error": "filename must not be empty"})
     if not content or not content.strip():
         return json.dumps({"error": "content must not be empty"})
+
+    # The import-time parity the server has never had (D1 3.10, owner
+    # ruling Q9). Applied here, before the database layer sees the text,
+    # and in upstream's own order: the line endings and any leading
+    # byte-order mark are normalised FIRST and the replacement runs on
+    # the normalised text (manage_files.py:3336-3349). The database layer
+    # normalises again on the way in, which is why passing the already
+    # normalised text through changes nothing.
+    pseudonym_report = None
+    if apply_project_pseudonyms:
+        if current_project_path is None:
+            return json.dumps({"error": _no_project_message()}, indent=2)
+        try:
+            entries, sidecar_encoding = read_project_pseudonyms(
+                _current_project_folder())
+            validated = pseudo.validate_mapping(entries, "exact")
+        except FileNotFoundError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError, pseudo.MappingError) as e:
+            return json.dumps({"error": str(e)}, indent=2)
+        if content.startswith("﻿"):
+            content = content[1:]
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        compiled = pseudo.Compiled(validated)
+        replacements = pseudo.find_replacements(compiled, content)
+        content = pseudo.apply_replacements(content, replacements)
+        counts: Dict[int, int] = {}
+        for replacement in replacements:
+            counts[replacement.entry] = counts.get(replacement.entry, 0) + 1
+        pseudonym_report = {
+            "applied": len(replacements),
+            "entries": len(validated),
+            "pseudonyms_json_encoding": sidecar_encoding,
+            "per_pseudonym": [
+                {"pseudonym": validated.entries[index].pseudonym,
+                 "count": count}
+                for index, count in sorted(counts.items())],
+            "note": ("Only the names in this project's pseudonyms.json "
+                     "were replaced, as whole words and case-sensitively, "
+                     "which is QualCoder's own rule. Entries were applied "
+                     "in one pass rather than one after another, so "
+                     "nothing this import wrote was replaced again."),
+        }
+        if not content.strip():
+            return json.dumps({
+                "error": ("After applying this project's pseudonyms the "
+                          "content is empty; nothing was imported.")},
+                indent=2)
     # Validated first, restricted second (Appendix A, R1); the rows this
     # import writes carry the project's AI coder name.
     # validate_text_file_import repeats the character check as defence in
@@ -6466,6 +6528,8 @@ def import_text_file(
     }
     if case_link is not None:
         output["linked_to_case"] = case_link
+    if pseudonym_report is not None:
+        output["project_pseudonyms"] = pseudonym_report
     if backup_path:
         output["backup_path"] = str(backup_path)
         _attach_skipped_symlinks(

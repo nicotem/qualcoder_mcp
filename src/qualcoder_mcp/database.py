@@ -1419,8 +1419,11 @@ def read_project_pseudonyms(project_folder: Union[str, Path]
             raise ValueError(
                 f"{PSEUDONYMS_JSON_NAME} could not be parsed as QualCoder's "
                 f"list of {{original, pseudonym}} entries: it is neither "
-                f"UTF-8 nor this machine's default encoding "
-                f"({encoding}).") from None
+                f"UTF-8 nor this machine's default encoding ({encoding}). A "
+                f"file QualCoder wrote on Windows is usually in the Windows "
+                f"default encoding, which this machine cannot read; open it "
+                f"in a text editor and save it as UTF-8, or give the mapping "
+                f"in the call instead.") from None
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
