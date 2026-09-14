@@ -59,7 +59,14 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
 - What is NOT rewritten is counted rather than left to be discovered:
   the ten memo fields, case names, file names, code names and text
   attribute values, plus which of `pseudonyms.json`, `speakers.json` and
-  `speaker_regex.json` are present. Public memo parts only: a name that
+  `speaker_regex.json` are present. Those counts read WIDER than the
+  rewrite, deliberately: the rewrite replaces whole words only, as
+  QualCoder's own import does, and the count is of anything a person
+  reading the label or the memo would see, including inside a longer
+  word (`Thomas_P01`, `Mary_Ann`) and in any letter case. A report whose
+  job is to say where the names remain has to be at least as wide as a
+  reader, and the block says which reading its counts are. Public memo
+  parts only: a name that
   occurs only inside a `#####` private note is neither read nor counted,
   and how many memos carry such a note is reported as a number. PDFs,
   media files and QualCoder 4.0's `ai_data/` are out of scope and said
@@ -68,7 +75,19 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   hidden coder's row proceeds, because it changes no coding decision,
   and a resize, a snap or a deletion requires `allow_hidden_coder`. The
   preview reports what the run would do to those rows as counts, never
-  names.
+  names. A row whose stored end lies past the end of the text is clamped
+  to it, as QualCoder clamps its own, and a clamp is counted as a resize
+  rather than a shift, because it changes the span's length: so a
+  hidden coder's damaged row is not carried through the exemption.
+- The limits a mapping has to live within, all refused with their own
+  text: at most 500 entries, at most 2,000 surface forms in total and 50
+  variants per entry, an original or variant of 2 to 200 characters, a
+  pseudonym of 3 to 200. A surface form's length sets the width of the
+  window the overlap diagnostic scans around every match, so an uncapped
+  one made a read-only preview arbitrarily slow. `max_spans_per_entry`
+  is capped at 500 and the context windows share one budget for the
+  whole preview, which is what stops `include_context` returning more
+  text than the file it came from.
 - Two rows that would land on the same span after the remap would break
   QualCoder's own unique keys on `code_text` and `annotation`. The
   preview lists them and the execute refuses before taking a backup.
@@ -83,8 +102,10 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   spans rather than by matching text, and never enough to reconstruct a
   name. By default it also writes a journal entry in the project, which
   upstream's own PDF restructure does (`code_pdf.py:6004-6053`). Neither
-  carries an original name, a file name that contains one, or any slice
-  of text. Reversal in this release is `restore_backup`; the backup does
+  carries an original name, a file name that contains one, a project or
+  backup FOLDER name that contains one, or any slice of text: each of
+  those is withheld and the file id or the run's token binding is used
+  instead. Reversal in this release is `restore_backup`; the backup does
   hold the real names, and the result says so.
 - `import_text_file` gains `apply_project_pseudonyms=False`, which
   applies the project's own `pseudonyms.json` to the text on the way in,
@@ -293,9 +314,9 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after the flagship: full = 153,344 characters
-  (about 38.3k tokens at chars/4) over 70 tools, core = 56,317 (about
-  14.1k) over 21. Before the flagship, after Batch B: 143,793 and
+- Serialised tool JSON after the flagship and its fix round: full =
+  154,276 characters (about 38.6k tokens at chars/4) over 70 tools,
+  core = 56,317 (about 14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
   final tree through the toolset gate, as the `tools/list` payload
@@ -306,12 +327,12 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (161,108
+  time, the same definitions measure about five per cent more (162,100
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
   characters of the Batch B growth, `compare_coders` and the new setter
-  for most of the rest. `pseudonymise_source` alone accounts for 8,130
-  of the 9,551 characters added since, and the rider on
+  for most of the rest. `pseudonymise_source` alone accounts for 9,060
+  of the 10,483 characters added since, and the rider on
   `import_text_file` and the pruning note for the rest: it is one tool with a long description
   by necessity, because a tool that rewrites the researcher's text has
   to state in its own definition what it rewrites, what it leaves, and

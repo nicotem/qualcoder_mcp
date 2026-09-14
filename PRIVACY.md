@@ -532,7 +532,14 @@ will ask, and the summary above depends on them:
   - **Memos, journal entries, case names, file names and attribute
     values.** Scanned and counted, never rewritten. The count is in the
     preview's `residue` block, and a name that occurs only in a
-    `#####` private note is neither read nor counted.
+    `#####` private note is neither read nor counted. Those counts read
+    wider than the rewrite does: the rewrite replaces whole words only,
+    as QualCoder's own import does, while the count is of anything a
+    person reading the label or the memo would see, including inside a
+    longer word (`Thomas_P01`) and in any letter case. So a label the
+    count reports is not always one the rewrite would have changed, and
+    that is the safe direction for a report whose job is to tell you
+    where the names remain.
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or
@@ -544,7 +551,12 @@ will ask, and the summary above depends on them:
     `delete_coding_session` is yours to call.
   - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` and the
     journal entry inside the project carry pseudonyms, counts and row
-    ids only, never an original name.
+    ids only, never an original name. That covers the names of things
+    as well as the names in the mapping: a file called
+    `Thomas_interview.txt`, a project folder called `Thomas study.qda`
+    and the backup folder derived from it are all withheld from those
+    two records, which then identify the file by its id and the run by
+    its token binding.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is
   asked for: a session that never touches file 7 never transmits

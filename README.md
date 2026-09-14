@@ -795,7 +795,7 @@ carries the complete list.
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 153,000 characters for `full`, roughly 38k
+> definitions run to about 154,000 characters for `full`, roughly 39k
 > tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those
@@ -900,7 +900,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
 **Source Text, Destructive (preview, then token, then safety backup):**
-- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces QualCoder's own text editor, which deletes a coding sitting on a name. Memos, journal entries, case names, file names, attribute values, PDFs, media and `ai_data/` are scanned and counted, never rewritten, and the preview's `residue` block says where names remain. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name. The mandatory backup does contain them
+- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces QualCoder's own text editor, which deletes a coding sitting on a name. Memos, journal entries, case names, file names, attribute values, PDFs, media and `ai_data/` are scanned and counted, never rewritten, and the preview's `residue` block says where names remain. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name, and a file name, folder name or path that carries one is withheld from both in favour of the file id. The `residue` counts read wider than the rewrite does: any occurrence a person would see, including inside a longer word and in any case. The mandatory backup does contain the real names
 
 **Codebook, Destructive (preview, then token, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
@@ -1156,7 +1156,6 @@ Contributions are welcome! Some ideas for enhancements:
 
 **Planned for v0.12 and later:**
 - 🤝 Further QualCoder 4.0 interoperability (later phases)
-- 🤝 Inter-coder agreement / multi-coder comparison (Cohen's Kappa)
 - 🖼️ Media region coding (images, audio/video, PDF)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
 
