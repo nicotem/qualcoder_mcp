@@ -7598,3 +7598,808 @@ class QualcoderDatabase:
         """
         self.last_backup_report = {}
         return backup_project(self.db_path, report=self.last_backup_report)
+
+    # ======================================================================
+    # PSEUDONYMISATION (v0.12 flagship, D1): plan, preview, residue, write
+    # ======================================================================
+    #
+    # The engine in `pseudonymise.py` decides WHAT happens to a string and
+    # to a span; everything here is about which rows are in scope, what the
+    # preview says, and the order the writes go in. The split is what lets
+    # the parity oracles drive the engine with no database at all.
+    #
+    # One rule runs through all of it: the remap reads the BASE tables, not
+    # the visibility views. A hidden coder's spans share the coordinate
+    # system this run rewrites, so leaving them where they were would
+    # silently corrupt that coder's work; upstream's own editor is
+    # owner-blind for the same reason (code_text.py:6174 selects every
+    # coder's rows). What keeps the promise is the OUTPUT: names come from
+    # the visibility map through `coder_is_hidden`, and a hidden coder is
+    # only ever a count.
+
+    def pseudonymise_sources(self, file_ids: Optional[Sequence[int]] = None
+                             ) -> Tuple[List[Dict[str, Any]],
+                                        List[Dict[str, Any]]]:
+        """The text sources a run may rewrite, and the ones it may not.
+
+        Eligibility is decided by DATA, never by a file-type label: a
+        source with stored text that is not a PDF can be rewritten, which
+        is exactly the gate QualCoder's own editor applies
+        (`code_text.py:5673-5684` refuses a PDF and nothing else). So an
+        audio or video row, whose fulltext is NULL, is skipped as having
+        no text, while the transcript beside it is ordinary text and is
+        in scope.
+
+        Returns (eligible, skipped); a skipped entry carries a machine
+        readable `reason` and never fails the preview.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT id, name, fulltext, mediapath FROM source "
+                "ORDER BY id").fetchall()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "pseudonymise_sources",
+                               "Could not read this project's files")
+        by_id = {int(row["id"]): row for row in rows}
+        if file_ids is None:
+            wanted = sorted(by_id)
+        else:
+            wanted = [int(fid) for fid in file_ids]
+
+        eligible: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for fid in wanted:
+            row = by_id.get(fid)
+            if row is None:
+                skipped.append({"file_id": fid,
+                                "reason": "unknown_file_id"})
+                continue
+            name = row["name"]
+            mediapath = row["mediapath"] or ""
+            if str(mediapath).lower().endswith(".pdf"):
+                skipped.append({"file_id": fid, "name": name,
+                                "reason": "pdf_source"})
+                continue
+            text = row["fulltext"]
+            if not isinstance(text, str) or text == "":
+                skipped.append({"file_id": fid, "name": name,
+                                "reason": "no_fulltext"})
+                continue
+            eligible.append({"file_id": fid, "name": name, "text": text})
+        return eligible, skipped
+
+    def _pseudonymise_rows(self, file_id: int) -> Dict[str, List[Dict]]:
+        """Every span row of one file, from the BASE tables.
+
+        `important`, `owner` and the two memo FLAGS travel with each row
+        because the authorisation token digests them; memo TEXT never
+        does, on principle (D3 3.2).
+        """
+        mark = PERSONAL_NOTE_MARK
+        out: Dict[str, List[Dict]] = {}
+        try:
+            out["code_text"] = [
+                {"id": r[0], "cid": r[1], "pos0": r[2], "pos1": r[3],
+                 "seltext": r[4], "owner": r[5], "important": r[6],
+                 "has_memo": bool(r[7]), "has_private": bool(r[8])}
+                for r in self.conn.execute(
+                    "SELECT ctid, cid, pos0, pos1, seltext, owner, important, "
+                    "(memo IS NOT NULL AND memo != ''), "
+                    "(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                    "FROM code_text WHERE fid = ? ORDER BY ctid",
+                    (mark, file_id)).fetchall()]
+            out["annotation"] = [
+                {"id": r[0], "pos0": r[1], "pos1": r[2], "owner": r[3],
+                 "has_memo": bool(r[4]), "has_private": bool(r[5])}
+                for r in self.conn.execute(
+                    "SELECT anid, pos0, pos1, owner, "
+                    "(memo IS NOT NULL AND memo != ''), "
+                    "(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                    "FROM annotation WHERE fid = ? ORDER BY anid",
+                    (mark, file_id)).fetchall()]
+            out["case_text"] = [
+                {"id": r[0], "caseid": r[1], "pos0": r[2], "pos1": r[3],
+                 "owner": r[4], "has_memo": bool(r[5]),
+                 "has_private": bool(r[6])}
+                for r in self.conn.execute(
+                    "SELECT id, caseid, pos0, pos1, owner, "
+                    "(memo IS NOT NULL AND memo != ''), "
+                    "(memo IS NOT NULL AND instr(memo, ?) > 0) "
+                    "FROM case_text WHERE fid = ? ORDER BY id",
+                    (mark, file_id)).fetchall()]
+        except sqlite3.Error as e:
+            _raise_query_error(
+                e, "_pseudonymise_rows",
+                "Could not read the coded rows this run would move; "
+                "nothing was changed")
+        return out
+
+    # Which tables a hidden coder can own a row in. QualCoder creates
+    # exactly four visibility views (app.py:1518-1561 at 9bddf17) and
+    # `case_text` has none, so a case link is never hidden and never
+    # enters the hidden-coder accounting.
+    PSEUDONYMISE_HIDEABLE = ("code_text", "annotation")
+    # `keep_start_anchor` per table, which is master's own split:
+    # codings and case links keep a span anchored at the file start,
+    # annotations do not (code_text.py:5940-5942).
+    PSEUDONYMISE_ANCHOR = {"code_text": True, "annotation": False,
+                           "case_text": True}
+
+    def pseudonymise_plan(self, compiled, overlap_policy: str,
+                          file_ids: Optional[Sequence[int]] = None
+                          ) -> Dict[str, Any]:
+        """Everything one run would do, computed without writing anything.
+
+        The same function builds the plan on the read-only connection for
+        the preview and again on the write connection inside the
+        transaction, so what is signed and what is written are two
+        answers to the same question rather than a question and its hash.
+        It is deliberately NOT cached between those calls: a cached plan
+        is a plan computed against text that may have moved, which is the
+        one failure this tool cannot afford.
+        """
+        from . import pseudonymise as engine
+
+        eligible, skipped = self.pseudonymise_sources(file_ids)
+        visibility = self.coder_visibility_map()
+        files: List[Dict[str, Any]] = []
+        digest_files: List[List[Any]] = []
+        for source in eligible:
+            text = source["text"]
+            length, sha = self.fingerprint_of_text(text)
+            digest_files.append([source["file_id"], length, sha])
+            replacements = engine.find_replacements(compiled, text)
+            if not replacements:
+                # A file with no match is not touched at all: no rewrite,
+                # no row update, no row read beyond the fingerprint.
+                continue
+            mapper = engine.SpanMapper(replacements, len(text))
+            rows = self._pseudonymise_rows(source["file_id"])
+            for table, items in rows.items():
+                anchor = self.PSEUDONYMISE_ANCHOR[table]
+                hideable = table in self.PSEUDONYMISE_HIDEABLE
+                for row in items:
+                    row["hidden"] = bool(
+                        hideable and coder_is_hidden(visibility, row["owner"]))
+                    row["map"] = mapper.map_row(row["pos0"], row["pos1"],
+                                                overlap_policy, anchor)
+            conflicts, truncated = engine.overlap_conflicts(
+                compiled, text, replacements)
+            files.append({
+                "file_id": source["file_id"],
+                "name": source["name"],
+                "old_text": text,
+                "new_text": engine.apply_replacements(text, replacements),
+                "old_fingerprint": (length, sha),
+                "position_safe": position_safe(text),
+                "replacements": replacements,
+                "rows": rows,
+                "overlap_conflicts": conflicts,
+                "overlap_conflicts_truncated": truncated,
+                "collisions": self._pseudonymise_collisions(
+                    source["file_id"], rows),
+            })
+        return {"eligible": digest_files, "skipped": skipped, "files": files,
+                "overlap_policy": overlap_policy,
+                "case_mode": compiled.case_mode,
+                "compiled": compiled}
+
+    @staticmethod
+    def _pseudonymise_collisions(file_id: int,
+                                 rows: Dict[str, List[Dict]]
+                                 ) -> Dict[str, List[Dict[str, Any]]]:
+        """Rows that would land on one another's unique key.
+
+        `code_text` is unique on (cid, fid, pos0, pos1, owner) and
+        `annotation` on (fid, pos0, pos1, owner) in QualCoder's schema
+        (`__main__.py:1800-1801`, `:1819-1821`; identical at the 3.8.2
+        tag). `case_text` has no unique constraint at either pin and is
+        not checked.
+
+        Every surviving row of the file takes part, not only the moving
+        ones: a row that does not move is still sitting on a key another
+        row could land on. A row with a NULL in any key column is left
+        out, because SQLite treats NULLs as distinct and such rows
+        cannot violate the constraint.
+        """
+        from . import pseudonymise as engine
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for table, key_of in (
+                ("code_text",
+                 lambda r, p0, p1: (r["cid"], file_id, p0, p1, r["owner"])),
+                ("annotation",
+                 lambda r, p0, p1: (file_id, p0, p1, r["owner"]))):
+            keys, ids = [], []
+            for row in rows.get(table, ()):
+                mapped = row["map"]
+                if mapped is not None and mapped.pos0 is None:
+                    continue                      # deleted by the run
+                if mapped is None:
+                    pos0, pos1 = row["pos0"], row["pos1"]
+                else:
+                    pos0, pos1 = mapped.pos0, mapped.pos1
+                key = key_of(row, pos0, pos1)
+                if any(part is None for part in key):
+                    continue
+                keys.append(key)
+                ids.append(row["id"])
+            out[table] = engine.unique_constraint_collisions(keys, ids)
+        return out
+
+    @staticmethod
+    def _pseudonymise_counts(items: Sequence[Dict[str, Any]],
+                             whole_file_length: Optional[int] = None,
+                             has_seltext: bool = False) -> Dict[str, Any]:
+        """How a run would change one table's rows, by kind of change.
+
+        `seltext_refreshed` appears for `code_text` alone, because it is
+        the only one of the three tables with a stored quote. Master
+        rewrites that quote for EVERY row of the file on each edit-mode
+        exit (`code_text.py:6234-6235`); this run rewrites it only where
+        the row moved or its text changed, so a row the run does not
+        affect is not touched at all, and the count says how many were.
+        """
+        counts = {"total": len(items), "shifted": 0, "resized": 0,
+                  "snapped": 0, "deleted": 0, "unchanged": 0, "clamped": 0,
+                  "not_mapped": 0}
+        if has_seltext:
+            counts["seltext_refreshed"] = 0
+        if whole_file_length is not None:
+            counts["whole_file"] = 0
+        for row in items:
+            mapped = row["map"]
+            if mapped is None:
+                counts["not_mapped"] += 1
+                continue
+            counts[mapped.change] += 1
+            if mapped.clamped:
+                counts["clamped"] += 1
+            if has_seltext and (
+                    mapped.touched
+                    or (mapped.pos0, mapped.pos1) != (row["pos0"],
+                                                      row["pos1"])):
+                counts["seltext_refreshed"] += 1
+            if whole_file_length is not None and row["pos0"] is not None \
+                    and row["pos1"] is not None:
+                try:
+                    # Both upstream spellings of a whole-file case link:
+                    # master writes len, 3.8.2's file manager wrote len-1
+                    # (database.py link_file_to_case says the same).
+                    if row["pos0"] <= 0 and row["pos1"] >= whole_file_length - 1:
+                        counts["whole_file"] += 1
+                except TypeError:
+                    pass
+        return counts
+
+    def pseudonymise_effect(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """The part of a preview an authorisation token signs (D1 3.8).
+
+        Effect only: what the run would DO. The presentation-only parts
+        of the preview are left out on purpose, because none of them
+        changes the outcome and signing them would make a token depend on
+        arguments that are not bound. So `include_context`,
+        `max_spans_per_entry`, `scan_residue` and `case_variants_seen` are
+        absent, and the replacement spans here are the FULL set rather
+        than the truncated list the model reads.
+        """
+        files = []
+        for item in plan["files"]:
+            per_entry: Dict[int, List[List[int]]] = {}
+            for replacement in item["replacements"]:
+                per_entry.setdefault(replacement.entry, []).append(
+                    [replacement.start, replacement.end])
+            files.append({
+                "file_id": item["file_id"],
+                "replacements": [{"entry": index, "count": len(spans),
+                                  "spans": spans}
+                                 for index, spans in sorted(per_entry.items())],
+                "codings": self._pseudonymise_counts(item["rows"]["code_text"],
+                                                     has_seltext=True),
+                "annotations": self._pseudonymise_counts(
+                    item["rows"]["annotation"]),
+                "case_links": self._pseudonymise_counts(
+                    item["rows"]["case_text"], len(item["old_text"])),
+                "overlap_conflicts": item["overlap_conflicts"],
+                "overlap_conflicts_truncated":
+                    item["overlap_conflicts_truncated"],
+                "unique_constraint_collisions": item["collisions"],
+                "hidden_coder_rows": self.pseudonymise_hidden_rows(item),
+                "null_position_rows": self._pseudonymise_null_rows(item),
+            })
+        return {"overlap_policy": plan["overlap_policy"],
+                "case_mode": plan["case_mode"],
+                "eligible_files": plan["eligible"],
+                "skipped_files": plan["skipped"],
+                "files": files}
+
+    @staticmethod
+    def _pseudonymise_null_rows(item: Dict[str, Any]) -> Dict[str, List]:
+        """Row ids the run leaves exactly as they are, by table."""
+        return {table: sorted(row["id"] for row in rows
+                              if row["map"] is None)
+                for table, rows in item["rows"].items()}
+
+    @staticmethod
+    def pseudonymise_hidden_rows(item: Dict[str, Any]) -> Dict[str, Any]:
+        """What the run would do to hidden coders' rows, as counts (X1).
+
+        Never names, and never a total number of hidden coders: the
+        cascade previews set that convention (`database.py` at
+        `collateral_for_cids`) and a pseudonymisation preview keeps it.
+        `override_required` is the owner's ruling X1 in one boolean: a
+        pure position shift changes no coding decision and is exempt; a
+        resize, a snap or a deletion changes what the coder marked and is
+        not.
+        """
+        from . import pseudonymise as engine
+
+        counts = {"shifted": 0, "resized": 0, "snapped": 0, "deleted": 0}
+        for table in QualcoderDatabase.PSEUDONYMISE_HIDEABLE:
+            for row in item["rows"].get(table, ()):
+                mapped = row["map"]
+                if not row.get("hidden") or mapped is None:
+                    continue
+                if mapped.change in counts:
+                    counts[mapped.change] += 1
+        counts["override_required"] = bool(
+            counts["resized"] or counts["snapped"] or counts["deleted"])
+        return counts
+
+    def pseudonymise_row_digests(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """The rows a token covers: every span row of every touched file.
+
+        Every row, not only the rows that move. They share the coordinate
+        system the run rewrites, and a row added or removed since the
+        preview changes the counts the researcher approved.
+        """
+        digests: Dict[str, Any] = {"files": plan["eligible"]}
+        for item in plan["files"]:
+            fid = item["file_id"]
+            digests[f"code_text:{fid}"] = [
+                [r["id"], r["cid"], fid, r["pos0"], r["pos1"], r["owner"],
+                 r["important"], r["has_memo"], r["has_private"]]
+                for r in item["rows"]["code_text"]]
+            digests[f"annotation:{fid}"] = [
+                [r["id"], fid, r["pos0"], r["pos1"], r["owner"],
+                 r["has_memo"], r["has_private"]]
+                for r in item["rows"]["annotation"]]
+            digests[f"case_text:{fid}"] = [
+                [r["id"], r["caseid"], fid, r["pos0"], r["pos1"], r["owner"],
+                 r["has_memo"], r["has_private"]]
+                for r in item["rows"]["case_text"]]
+        return digests
+
+    # The ten memo fields a name can survive in, and the label columns
+    # beside them (D1 3.9). Scanned and COUNTED in v0.12, never rewritten:
+    # memos are the researcher's own notes and rewriting them crosses into
+    # the private-zone convention, which the owner ruled needs its own
+    # dossier (Q4, ruling (a)).
+    PSEUDONYMISE_MEMO_FIELDS = (
+        ("code_text", "memo"), ("annotation", "memo"), ("case_text", "memo"),
+        ("source", "memo"), ("cases", "memo"), ("code_name", "memo"),
+        ("code_cat", "memo"), ("project", "memo"),
+        ("attribute_type", "memo"), ("journal", "jentry"),
+    )
+    PSEUDONYMISE_LABEL_FIELDS = (
+        ("cases", "name", "case_names"),
+        ("source", "name", "file_names"),
+        ("code_name", "name", "code_names"),
+    )
+    # Presence only, never parsed: `speakers.json` is not ours to read and
+    # `pseudonyms.json` IS the mapping (view_av.py:149, speakers.py:719-731).
+    PSEUDONYMISE_SIDECARS = ("pseudonyms.json", "speakers.json",
+                             "speaker_regex.json")
+
+    def pseudonymise_residue(self, compiled) -> Dict[str, Any]:
+        """Where the names would still be after the run (D1 3.9).
+
+        Counts, never content, and PUBLIC memo parts only: a private
+        zone is never read, so a name that only occurs there is not
+        counted and not mentioned. How many memos carry such a zone IS
+        reported, as a number, which is the trade S-P2(c) already makes
+        elsewhere.
+        """
+        residue: Dict[str, Any] = {"memos": {}, "unreadable": []}
+        private_zones = 0
+        for table, column in self.PSEUDONYMISE_MEMO_FIELDS:
+            key = table
+            try:
+                rows = self.conn.execute(
+                    f"SELECT {column} FROM {table} "
+                    f"WHERE {column} IS NOT NULL AND {column} != ''"
+                ).fetchall()
+            except sqlite3.Error:
+                # A table or column this schema does not have. Saying so
+                # is better than a zero that reads as "no names here".
+                residue["unreadable"].append(f"{table}.{column}")
+                continue
+            hits = 0
+            for row in rows:
+                value = row[0]
+                if not isinstance(value, str):
+                    continue
+                if memo_has_private_zone(value):
+                    private_zones += 1
+                if compiled.pattern.search(extract_ai_memo(value)):
+                    hits += 1
+            residue["memos"][key] = hits
+        residue["memos_with_private_zones_not_scanned"] = private_zones
+
+        for table, column, key in self.PSEUDONYMISE_LABEL_FIELDS:
+            try:
+                rows = self.conn.execute(
+                    f"SELECT {column} FROM {table} "
+                    f"WHERE {column} IS NOT NULL").fetchall()
+            except sqlite3.Error:
+                residue["unreadable"].append(f"{table}.{column}")
+                continue
+            residue[key] = sum(
+                1 for row in rows if isinstance(row[0], str)
+                and compiled.pattern.search(row[0]))
+
+        try:
+            rows = self.conn.execute(
+                "SELECT a.value FROM attribute a JOIN attribute_type t "
+                "ON t.name = a.name WHERE t.valuetype != 'numeric' "
+                "AND a.value IS NOT NULL AND a.value != ''").fetchall()
+            residue["attribute_values"] = sum(
+                1 for row in rows if isinstance(row[0], str)
+                and compiled.pattern.search(row[0]))
+        except sqlite3.Error:
+            residue["unreadable"].append("attribute.value")
+
+        folder = Path(self.db_path).parent
+        present = []
+        for name in self.PSEUDONYMISE_SIDECARS:
+            try:
+                if (folder / name).is_file():
+                    present.append(name)
+            except OSError:
+                continue
+        residue["sidecars_present"] = present
+        residue["ai_data_note"] = (
+            "QualCoder 4.0's ai_data folder (chat history and the search "
+            "index) is never read or written by this server and is not "
+            "scanned; it may still hold the previous text.")
+        if not residue["unreadable"]:
+            residue.pop("unreadable")
+        return residue
+
+    def _pseudonymise_by_owner(self, item: Dict[str, Any],
+                               ai_coder_names: Sequence[str]
+                               ) -> Dict[str, Any]:
+        """Whose codings this run would CHANGE, by owner.
+
+        Changed rows, not every row of the file: the question a preview
+        exists to answer is whose work is at stake, and a row the run
+        leaves exactly where it is is not at stake. D1 3.5's worked
+        example adds `ai_owned` and `by_owner` up to the file's total,
+        which would report thirty codings as affected on a run that
+        moves two; `changed` is stated beside them so the reading is not
+        left to arithmetic.
+
+        Names come from the visibility map: a hidden coder never appears
+        here and is counted in `hidden_coder_rows` instead. Rows under
+        this server's own AI coder names fold into `ai_owned` through the
+        one helper that defines them (D7), never a literal; QualCoder
+        4.0's own assistant string is another tool's work and stays in
+        `by_owner` under a heuristic label.
+        """
+        ai_names = set(ai_coder_names)
+        per_owner: Dict[str, int] = {}
+        ai_owned = 0
+        changed = 0
+        for row in item["rows"]["code_text"]:
+            mapped = row["map"]
+            if mapped is None or mapped.change == "unchanged":
+                continue
+            changed += 1
+            if row.get("hidden"):
+                continue                      # counted, never named
+            owner = row["owner"] or ""
+            if owner in ai_names:
+                ai_owned += 1
+            else:
+                per_owner[owner] = per_owner.get(owner, 0) + 1
+        by_owner = [{"owner": owner, "codings": count}
+                    for owner, count in sorted(per_owner.items(),
+                                               key=lambda kv: (-kv[1], kv[0]))]
+        for entry in by_owner:
+            if entry["owner"] == KNOWN_AI_ASSISTANT_OWNER:
+                entry["known_ai_assistant"] = True
+        block: Dict[str, Any] = {
+            "changed": changed,
+            "ai_coder_names": list(ai_coder_names),
+            "ai_owned": ai_owned,
+            "by_owner": by_owner[:20],
+        }
+        if len(by_owner) > 20:
+            block["more_owners"] = len(by_owner) - 20
+        return block
+
+    def pseudonymise_preview(self, plan: Dict[str, Any],
+                             ai_coder_names: Sequence[str],
+                             include_context: bool = False,
+                             context_chars: int = 30,
+                             scan_residue: bool = True,
+                             max_spans_per_entry: int = 50
+                             ) -> Dict[str, Any]:
+        """What the researcher is shown before approving a run (D1 3.5).
+
+        Read-only, and everything in it is a count, a span or a name the
+        caller already supplied. The only file CONTENT it can return is
+        the optional context around each match, which is off by default
+        and capped when it is on.
+        """
+        from . import pseudonymise as engine
+
+        compiled = plan["compiled"]
+        entries = compiled.mapping.entries
+        files = []
+        totals = {"replacements": 0, "files": 0, "codings_changed": 0,
+                  "annotations_changed": 0, "case_links_changed": 0,
+                  "rows_deleted": 0, "unique_constraint_collisions": 0}
+        hidden_totals = {"shifted": 0, "resized": 0, "snapped": 0,
+                         "deleted": 0, "override_required": False}
+        for item in plan["files"]:
+            text = item["old_text"]
+            per_entry: Dict[int, List[Dict[str, Any]]] = {}
+            for replacement in item["replacements"]:
+                per_entry.setdefault(replacement.entry, []).append(replacement)
+            replacements = []
+            for index in sorted(per_entry):
+                spans = per_entry[index]
+                shown = spans[:max_spans_per_entry]
+                block: Dict[str, Any] = {
+                    "entry": index,
+                    "pseudonym": entries[index].pseudonym,
+                    "count": len(spans),
+                    "spans": [[s.start, s.end] for s in shown],
+                }
+                if len(spans) > len(shown):
+                    block["spans_truncated"] = True
+                if include_context:
+                    block["context"] = [
+                        engine.context_for(text, s.start, s.end,
+                                           context_chars) for s in shown]
+                replacements.append(block)
+                totals["replacements"] += len(spans)
+
+            codings = self._pseudonymise_counts(item["rows"]["code_text"],
+                                                has_seltext=True)
+            codings.update(self._pseudonymise_by_owner(item, ai_coder_names))
+            annotations = self._pseudonymise_counts(item["rows"]["annotation"])
+            case_links = self._pseudonymise_counts(item["rows"]["case_text"],
+                                                  len(text))
+            hidden = self.pseudonymise_hidden_rows(item)
+            for key in ("shifted", "resized", "snapped", "deleted"):
+                hidden_totals[key] += hidden[key]
+            hidden_totals["override_required"] = (
+                hidden_totals["override_required"] or
+                hidden["override_required"])
+            collisions = {table: rows for table, rows
+                          in item["collisions"].items() if rows}
+            totals["files"] += 1
+            totals["codings_changed"] += codings["changed"]
+            totals["annotations_changed"] += (
+                annotations["total"] - annotations["unchanged"]
+                - annotations["not_mapped"])
+            totals["case_links_changed"] += (
+                case_links["total"] - case_links["unchanged"]
+                - case_links["not_mapped"])
+            totals["rows_deleted"] += (codings["deleted"]
+                                       + annotations["deleted"]
+                                       + case_links["deleted"])
+            totals["unique_constraint_collisions"] += sum(
+                len(rows) for rows in collisions.values())
+            files.append({
+                "file_id": item["file_id"],
+                "name": item["name"],
+                "text_length": len(text),
+                "new_text_length": len(item["new_text"]),
+                "position_safe": item["position_safe"],
+                "replacements": replacements,
+                "pre_existing_pseudonym_occurrences":
+                    engine.pre_existing_pseudonym_occurrences(
+                        compiled, text, max_spans_per_entry),
+                "overlap_conflicts": item["overlap_conflicts"],
+                "overlap_conflicts_truncated":
+                    item["overlap_conflicts_truncated"],
+                "case_variants_seen": engine.case_variants_seen(compiled,
+                                                                text),
+                "codings": codings,
+                "annotations": annotations,
+                "case_links": case_links,
+                # File level, not inside `codings` as D1 3.5 draws it:
+                # an annotation can belong to a hidden coder too
+                # (QualCoder creates an annotation_visible view), so a
+                # count nested under codings would be wrong.
+                "hidden_coder_rows": hidden,
+                "null_position_rows": self._pseudonymise_null_rows(item),
+                "unique_constraint_collisions": collisions,
+            })
+
+        preview: Dict[str, Any] = {
+            "project": str(self.db_path),
+            "mapping_entries": len(entries),
+            "case_mode": plan["case_mode"],
+            "overlap_policy": plan["overlap_policy"],
+            "files": files,
+            "skipped_files": plan["skipped"],
+            "totals": totals,
+            "hidden_coder_rows": hidden_totals,
+        }
+        if compiled.mapping.shared_pseudonyms:
+            preview["shared_pseudonyms"] = [
+                dict(item) for item in compiled.mapping.shared_pseudonyms]
+        if scan_residue:
+            preview["residue"] = self.pseudonymise_residue(compiled)
+        return preview
+
+    # ------------------------------------------------------------------
+    # The write
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pseudonymise_needs_parking(rows: Sequence[Dict[str, Any]],
+                                    key_of) -> bool:
+        """Whether moving these rows one at a time could break UNIQUE.
+
+        SQLite checks a unique constraint per STATEMENT, not at commit,
+        so a set of moves whose FINAL state is legal can still fail part
+        way through: row X moving onto the key row Y is about to vacate
+        raises IntegrityError if X is updated first. Upstream hits the
+        same hazard and does not handle it; here the rows are parked out
+        of the way first whenever the hazard exists, which is decided by
+        the keys rather than by the schema, so it costs nothing on the
+        ordinary run where no key is contested.
+        """
+        occupied: Dict[Any, Any] = {}
+        for row in rows:
+            key = key_of(row, row["pos0"], row["pos1"])
+            if any(part is None for part in key):
+                continue
+            occupied.setdefault(key, set()).add(row["id"])
+        for row in rows:
+            mapped = row["map"]
+            if mapped is None or mapped.pos0 is None:
+                continue
+            if (mapped.pos0, mapped.pos1) == (row["pos0"], row["pos1"]):
+                continue
+            key = key_of(row, mapped.pos0, mapped.pos1)
+            if any(part is None for part in key):
+                continue
+            holders = occupied.get(key)
+            if holders and holders != {row["id"]}:
+                return True
+        return False
+
+    def _pseudonymise_park(self, table: str, id_column: str,
+                           rows: Sequence[Dict[str, Any]]) -> None:
+        """Move rows to unique, out-of-range positions before the real move.
+
+        The parked values sit below every stored position in the file, so
+        they collide with nothing, and each row gets its own, so they
+        collide with nothing parked either. The transaction makes them
+        invisible: either the real positions land or the whole run rolls
+        back.
+        """
+        floor = 0
+        for row in rows:
+            for value in (row["pos0"], row["pos1"]):
+                if isinstance(value, int) and not isinstance(value, bool):
+                    floor = min(floor, value)
+        base = floor - 1
+        for offset, row in enumerate(rows):
+            self.conn.execute(
+                f"UPDATE {table} SET pos0 = ?, pos1 = ? WHERE {id_column} = ?",
+                (base - 2 * offset - 1, base - 2 * offset, row["id"]))
+
+    def pseudonymise_write(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """Rewrite every touched file and move every span, in one go.
+
+        Order, which is D1 3.6's and master's: the C7 fingerprint of each
+        touched file is re-verified while nothing has been written yet,
+        then per file the queued deletions, then `source.fulltext`, then
+        `code_text`, `annotation` and `case_text`. The caller has already
+        taken SQLite's RESERVED lock and re-checked the signed state, so
+        between that check and these statements no other writer can
+        commit against the text.
+
+        Never touched, at either pin and under either policy:
+        `important`, `owner`, `date`, `memo` and `avid` on a coding, and
+        `memo`, `owner` and `date` on an annotation or a case link.
+        """
+        self._require_write_access()
+        # Nothing is written until every touched file still reads exactly
+        # as it did when the preview was computed (C7).
+        for item in plan["files"]:
+            self.verify_fulltext_unchanged(item["file_id"],
+                                           item["old_fingerprint"])
+
+        report = []
+        for item in plan["files"]:
+            fid = item["file_id"]
+            new_text = item["new_text"]
+            deleted = {table: [row["id"] for row in item["rows"][table]
+                               if row["map"] is not None
+                               and row["map"].pos0 is None]
+                       for table in ("code_text", "annotation", "case_text")}
+            try:
+                for table, id_column in (("code_text", "ctid"),
+                                         ("annotation", "anid"),
+                                         ("case_text", "id")):
+                    for row_id in deleted[table]:
+                        self.conn.execute(
+                            f"DELETE FROM {table} WHERE {id_column} = ?",
+                            (row_id,))
+                self.conn.execute(
+                    "UPDATE source SET fulltext = ? WHERE id = ?",
+                    (new_text, fid))
+                counts = self._pseudonymise_move_rows(item, new_text, fid)
+            except sqlite3.Error as e:
+                logger.error("Database error in pseudonymise_write: %s", e)
+                raise RuntimeError(
+                    "Could not rewrite this project's text; nothing was "
+                    "written.") from None
+            length, sha = self.fingerprint_of_text(new_text)
+            report.append({
+                "file_id": fid,
+                "name": item["name"],
+                "replacements": len(item["replacements"]),
+                "old_length": len(item["old_text"]),
+                "new_length": length,
+                "old_sha256": item["old_fingerprint"][1],
+                "new_sha256": sha,
+                "codings_updated": counts["code_text"],
+                "annotations_updated": counts["annotation"],
+                "case_links_updated": counts["case_text"],
+                "codings_deleted": len(deleted["code_text"]),
+                "annotations_deleted": len(deleted["annotation"]),
+                "case_links_deleted": len(deleted["case_text"]),
+                "position_safe": position_safe(new_text),
+            })
+        return {"files": report}
+
+    def _pseudonymise_move_rows(self, item: Dict[str, Any], new_text: str,
+                                fid: int) -> Dict[str, int]:
+        """The position and quote updates for one file."""
+        key_for = {
+            "code_text": lambda r, p0, p1: (r["cid"], fid, p0, p1, r["owner"]),
+            "annotation": lambda r, p0, p1: (fid, p0, p1, r["owner"]),
+        }
+        counts = {}
+        for table, id_column in (("code_text", "ctid"),
+                                 ("annotation", "anid"),
+                                 ("case_text", "id")):
+            moving = []
+            for row in item["rows"][table]:
+                mapped = row["map"]
+                if mapped is None or mapped.pos0 is None:
+                    continue
+                positions_changed = (mapped.pos0, mapped.pos1) != (row["pos0"],
+                                                                   row["pos1"])
+                refresh = table == "code_text" and (positions_changed
+                                                    or mapped.touched)
+                if positions_changed or refresh:
+                    moving.append((row, mapped, refresh))
+            key_of = key_for.get(table)
+            if key_of is not None and self._pseudonymise_needs_parking(
+                    [row for row, _, _ in moving], key_of):
+                self._pseudonymise_park(table, id_column,
+                                        [row for row, _, _ in moving])
+            for row, mapped, refresh in moving:
+                if refresh:
+                    self.conn.execute(
+                        f"UPDATE {table} SET pos0 = ?, pos1 = ?, seltext = ? "
+                        f"WHERE {id_column} = ?",
+                        (mapped.pos0, mapped.pos1,
+                         new_text[mapped.pos0:mapped.pos1], row["id"]))
+                else:
+                    self.conn.execute(
+                        f"UPDATE {table} SET pos0 = ?, pos1 = ? "
+                        f"WHERE {id_column} = ?",
+                        (mapped.pos0, mapped.pos1, row["id"]))
+            counts[table] = len(moving)
+        return counts
