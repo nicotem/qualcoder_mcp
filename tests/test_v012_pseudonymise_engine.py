@@ -299,8 +299,25 @@ def _valid_spans(raw, length):
 class TestEditWalkParityOracle:
     """D1 6.1: `qualcoder_edit_parity` is master's walk, row by row."""
 
+    # `filter_too_much` is suppressed because `assume(spans)` below
+    # rejects a generated span set that is legitimately empty, and on an
+    # unlucky seed hypothesis rejects enough of them to raise
+    # FailedHealthCheck. Measured at re-verification: about 1.5 per cent
+    # of runs, which is roughly a nine per cent chance of a spurious red
+    # per push across six CI jobs, and it is reported as this oracle
+    # failing, which is this branch's central correctness claim.
+    # `filter_too_much` is a performance warning, not a correctness
+    # signal, and nothing here is filtered for a reason that could hide
+    # a defect. Reshaping `_SPAN_SOURCE` so the `assume` is unnecessary
+    # is the better fix and is a v0.13 item; it changes what this test
+    # generates, which a fix round should not.
+    # Deterministic reproduction of the failure this suppresses (delete
+    # `.hypothesis` first, or the stored example replays and hides the
+    # seed):
+    #   --hypothesis-seed=22456547744127925701047518566622594684
     @settings(max_examples=300, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+              suppress_health_check=[HealthCheck.too_slow,
+                                     HealthCheck.filter_too_much])
     @given(text=_TEXT, raw=_SPAN_SOURCE, anchor=st.booleans())
     def test_the_engine_agrees_with_masters_walk(self, text, raw, anchor):
         mapping = P.validate_mapping([
@@ -1284,8 +1301,14 @@ class TestRoundTripOracle:
     this is the property the later tool has to satisfy.
     """
 
+    # Suppressed for the same reason as the parity oracle above: both
+    # `assume` calls here reject inputs that are legitimately
+    # uninteresting rather than wrong. This one filters far less often
+    # (120 runs without a discovery) and is suppressed anyway, because
+    # the rate is a property of the seed and not of the test.
     @settings(max_examples=200, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow])
+              suppress_health_check=[HealthCheck.too_slow,
+                                     HealthCheck.filter_too_much])
     @given(text=_TEXT, raw=_SPAN_SOURCE)
     def test_reversing_over_the_spans_restores_the_text_and_the_rows(
             self, text, raw):
