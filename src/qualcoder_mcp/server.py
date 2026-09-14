@@ -1746,9 +1746,15 @@ def _resolve_segment_positions(
     )
 
     # Qt's selectedText() stores U+2029 (paragraph separator) where the
-    # fulltext has \n, and QualCoder never normalizes (code_text.py:3763) —
-    # so text copied from GUI-created codings may carry U+2029. Positions
-    # are authoritative; tolerate the substitution when comparing.
+    # fulltext has \n, and QualCoder stores it verbatim: `mark()` reads
+    # the selection at code_text.py:4869 and inserts it unchanged at
+    # :4898-4902 (9bddf17). So text copied from GUI-created codings may
+    # carry U+2029. Positions are authoritative; tolerate the
+    # substitution when comparing.
+    #
+    # The citation used to read code_text.py:3763, which at the pin is
+    # drag-and-drop code in the code tree. The behaviour claim was right
+    # and the line was not; D1 2.2 caught it and this is the correction.
     needle = segment_text.replace("\u2029", "\n")
 
     if have_positions and 0 <= start_pos < end_pos <= n:
@@ -10204,14 +10210,22 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
 
 
 def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
-    """What is true after a run, whether or not anyone asks (D1 3.5)."""
+    """What is true after a run, whether or not anyone asks (D1 3.5).
+
+    The backup is named rather than merely alluded to: a note that
+    says "the backup holds the real names" is only actionable if the
+    reader can tell which folder that is.
+    """
+    backup = (f"The backup taken before this run ({backup_name}) contains"
+              if backup_name else "The backup taken before this run "
+                                   "contains")
     return [
         "Positions in these files have changed: re-read them before any "
         "further coding, and treat any pending coding suggestion for them "
         "as stale.",
-        "The backup contains the pre-pseudonymisation text and, if the "
-        "researcher keeps one, pseudonyms.json; both hold the real names. "
-        "Secure or prune the backup once the run is verified.",
+        f"{backup} the pre-pseudonymisation text and, if the researcher "
+        f"keeps one, pseudonyms.json; both hold the real names. Secure or "
+        f"prune it with prune_backups once the run is verified.",
         "An open QualCoder window will not refresh from this write until "
         "the project is reopened.",
         "QualCoder 4.0's AI search index (ai_data/search.sqlite), if this "

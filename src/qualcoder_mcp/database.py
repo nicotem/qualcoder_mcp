@@ -1844,8 +1844,24 @@ class QualcoderDatabase:
 
     def verify_fulltext_unchanged(self, file_id: int, fingerprint) -> None:
         """Raise if the file's fulltext no longer matches the captured
-        fingerprint (C7). Call inside the write transaction, after the
-        write statements, before commit."""
+        fingerprint (C7).
+
+        Call it inside the write transaction. WHERE inside depends on
+        what the write does to the text, and both placements are in use:
+
+        - a write that only ANCHORS to the text (a coding, an
+          annotation, a case link) calls it after its own statements and
+          before the commit, because its inserts do not change the text
+          and the last possible moment is the strongest one;
+        - a write that REWRITES the text calls it before its first
+          statement, because the fingerprint it holds is of the OLD
+          text and its own update would make the comparison meaningless.
+          The v0.12 pseudonymisation is the only write of that kind.
+
+        Either way it is the RESERVED lock, taken by `begin_immediate`,
+        that makes the check mean anything: between it and the commit no
+        other writer can commit against the text.
+        """
         current = self.fulltext_fingerprint(file_id)
         if current != fingerprint:
             raise ValueError(
