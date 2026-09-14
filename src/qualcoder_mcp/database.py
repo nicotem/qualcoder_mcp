@@ -1211,7 +1211,27 @@ def backup_project(project_path: Union[str, Path],
         backup_path = project_path.parent / backup_name
         counter += 1
 
-    logger.info(f"Creating backup: {backup_path}")
+    # The seventh route (re-verification R-5). A backup folder's name is
+    # `<project folder stem>_backup_<timestamp>.qda`, so logging it in
+    # full logs the project folder's own name, and a single-case study
+    # is called after its participant. Fix round 1 closed that name out
+    # of the journal row, the journal body, the manifest's two paths and
+    # the file label; this pair of lines was missed, and the audit that
+    # claimed to have followed every route to a log did not reach it.
+    #
+    # It is shared with every other backup-taking tool, so it is closed
+    # here rather than in the flagship, and it is closed by dropping the
+    # part that carries the name rather than the line: what identifies
+    # WHICH backup among a project's backups is the timestamped suffix,
+    # and that is what is kept. The folder lives beside the project, so
+    # nothing that could be found before is unfindable now.
+    #
+    # Still open, deliberately, and carried as a written item: the two
+    # `Failed to create backup` lines below log the exception, whose
+    # text can carry the whole path. They fire only when the backup
+    # failed, and there the path is the diagnostic.
+    suffix = backup_name[len(project_path.stem):]
+    logger.info("Creating backup: (project folder name withheld)%s", suffix)
 
     skipped: List[str] = []
     try:
@@ -1219,7 +1239,8 @@ def backup_project(project_path: Union[str, Path],
             project_path, backup_path,
             ignore=_copy_ignore(project_path, skipped)
         )
-        logger.info(f"Backup created successfully: {backup_path}")
+        logger.info("Backup created successfully: (project folder name "
+                    "withheld)%s", suffix)
         if report is not None:
             report["skipped_symlinks"] = skipped
         return backup_path
@@ -2275,6 +2296,7 @@ class QualcoderDatabase:
         back. Read-only either way: this server never inserts into
         `coder_names`; QualCoder enrols names through its own harvest
         the next time it opens the project (app.py:1480-1494).
+
         """
         caps = getattr(self, "capabilities", None)
         if caps is None or not caps.visibility_declared():
@@ -8223,8 +8245,18 @@ class QualcoderDatabase:
             "These counts read wider than the rewrite: any occurrence a "
             "person would see, including inside a longer word and in any "
             "case, and a name of several words however its parts are "
-            "joined. So they can be generous (an entry for 'Lee' counts a "
-            "label that says 'Leeds'), and they never under-report.")
+            "joined. That is deliberate, because a report that says where "
+            "names remain must never under-report. It does mean a short "
+            "name is generous: an entry for 'Ed' counts every memo that "
+            "says 'edited' or 'provided'. Read a high count as a list of "
+            "fields to check, not as a count of names.")
+        residue["scope_note"] = (
+            "This block covers memos, labels and attribute values. It does "
+            "NOT count what remains in the file text itself: the rewrite "
+            "replaces whole words in the case mode you chose, so a "
+            "spelling it did not match is still in the text and is not "
+            "reported here. Use include_context or read the file to check "
+            "that.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
@@ -8319,14 +8351,27 @@ class QualcoderDatabase:
         `may_echo_names=False` when the mapping was read from the
         project's own `pseudonyms.json` rather than supplied by the
         caller: the two diagnostics that carry a surface form then carry
-        the entry index alone. The signed effect block is NOT narrowed
-        with it, because it is never serialised and a token must bind the
-        same value from either mapping source.
+        the entry index alone, and `include_context` returns nothing.
+        A context window is a slice of the file text around a match, so
+        by construction it contains the name that matched: on this path
+        that is the researcher's reverse key going into the conversation
+        one window at a time, opted into by the model rather than by the
+        researcher (Security S3, re-verification R-2). The signed effect
+        block is NOT narrowed with any of this, because it is never
+        serialised and a token must bind the same value from either
+        mapping source.
+
+        What is still returned as it stands, on either path, is the
+        project path and each file's own name. The tool description says
+        so rather than promising otherwise: a model that cannot name the
+        file it is previewing cannot relay a preview.
         """
         from . import pseudonymise as engine
 
         compiled = plan["compiled"]
         entries = compiled.mapping.entries
+        context_withheld = include_context and not may_echo_names
+        include_context = include_context and may_echo_names
         files = []
         totals = {"replacements": 0, "files": 0, "codings_changed": 0,
                   "annotations_changed": 0, "case_links_changed": 0,
@@ -8441,6 +8486,13 @@ class QualcoderDatabase:
             "totals": totals,
             "hidden_coder_rows": hidden_totals,
         }
+        if context_withheld:
+            preview["context_withheld"] = (
+                "include_context was asked for and is not returned on this "
+                "run: the mapping came from the project's own "
+                "pseudonyms.json, so the text around each match would quote "
+                "names you did not supply. The counts, the spans and every "
+                "other part of this preview are unaffected.")
         if compiled.mapping.shared_pseudonyms:
             preview["shared_pseudonyms"] = [
                 dict(item) for item in compiled.mapping.shared_pseudonyms]

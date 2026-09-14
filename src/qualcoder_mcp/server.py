@@ -10257,11 +10257,20 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         residue.get(key, 0) for key in
         ("case_names", "file_names", "code_names", "attribute_values"))
     if residue_total:
+        # What this count MEASURES, rather than what it would be nice to
+        # say it measures (re-verification 6.1). The detector reads
+        # wider than the rewrite on purpose, so "the names occur in N
+        # memos" is false wherever the wide reading fired: with an entry
+        # for 'Ed' the names do not occur in eleven memos, the letters
+        # do. Shipped prose does not claim more than the code does.
         warnings.append(
-            f"Warning: the names in this mapping also occur in "
-            f"{residue_total} memo(s), label(s) or attribute value(s), "
-            f"which this tool does NOT rewrite. See residue; tell the user "
-            f"where the names would remain.")
+            f"Warning: {residue_total} memo(s), label(s) or attribute "
+            f"value(s) may still show one of these names, and this tool "
+            f"does not rewrite any of them. The count is deliberately "
+            f"wide: it reports anything a reader might see, including "
+            f"inside a longer word and in any letter case, so it "
+            f"over-reports rather than under-reports. See residue, and "
+            f"tell the user which fields to check.")
     if not totals.get("replacements"):
         warnings.append(
             "None of the names in this mapping occurs in the selected "
@@ -10606,9 +10615,14 @@ def pseudonymise_source(
                  pseudonyms.json instead (QualCoder's import-time list).
                  Give this or `mapping`, not both. The names in that file
                  are the researcher's reverse key and you did not supply
-                 them, so on this path the preview and every refusal name
-                 entry indices and pseudonyms only, never an original or
-                 a variant.
+                 them, so on this path no diagnostic and no refusal
+                 quotes one, and include_context returns no context at
+                 all rather than the text around each match. Two things
+                 are still returned exactly as they stand, because a
+                 preview you cannot name the files in is not a preview
+                 you can relay: the project path and each file's own
+                 name, either of which can itself contain one of those
+                 names.
         case_mode: "exact" (default, QualCoder's own rule: TOM, Tom and
                  tom are three different names), "insensitive" (all three
                  get the pseudonym exactly as written), or
@@ -10639,7 +10653,8 @@ def pseudonymise_source(
         include_context: Return the text around each match in the
                  preview. Off by default because it returns FILE CONTENT
                  into the conversation; the counts are usually enough to
-                 approve a run.
+                 approve a run. It returns nothing at all with
+                 use_project_pseudonyms, which says why.
         context_chars: Characters of context each side when
                  include_context is on (capped at 120).
         scan_residue: Count where the names also occur in memos, labels

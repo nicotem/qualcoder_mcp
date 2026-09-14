@@ -556,7 +556,22 @@ will ask, and the summary above depends on them:
     `Thomas_interview.txt`, a project folder called `Thomas study.qda`
     and the backup folder derived from it are all withheld from those
     two records, which then identify the file by its id and the run by
-    its token binding.
+    its token binding. The test is applied to the whole path, so if any
+    folder above the project happens to contain one of the names, the
+    manifest records `paths_withheld` instead of the project path and
+    the backup path. That errs towards recording less, and `token_bind`
+    still identifies the run and the project. The same test is
+    normalised to Unicode NFC, so a fullwidth or otherwise
+    compatibility-equivalent spelling of a name is not detected by it;
+    the rewrite would not match such a spelling either.
+  - **The preview's own reply.** On the `use_project_pseudonyms` path
+    the mapping is the researcher's own reverse key and the model never
+    supplied it, so no diagnostic and no refusal quotes a name from it
+    and `include_context` returns nothing at all. Two things are still
+    returned as they stand, because a preview whose files cannot be
+    named cannot be relayed: the project path and each file's own name,
+    either of which can itself contain one of those names. The tool's
+    description says so.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is
   asked for: a session that never touches file 7 never transmits

@@ -1466,7 +1466,25 @@ class TestTheLabelsAndMemosTheResidueCounts:
 
     def test_the_block_says_which_reading_its_counts_are(self, project):
         residue = preview_of()["preview"]["residue"]
-        assert "wider than the rewrite" in residue["reading_note"]
+        note = residue["reading_note"]
+        assert "wider than the rewrite" in note
+        # The example is the one that shows the cost, not a near miss:
+        # 'Lee' inside 'Leeds' reads as bad luck, 'Ed' inside 'edited'
+        # reads as what it is (re-verification 6.1).
+        assert ("It does mean a short name is generous: an entry for 'Ed' "
+                "counts every memo that says 'edited' or 'provided'." in note)
+        assert ("Read a high count as a list of fields to check, not as a "
+                "count of names." in note)
+
+    def test_the_block_says_what_it_does_not_cover(self, project):
+        """`residue` is presented as the answer to "where do the names
+        remain", and it does not read the file text at all: a spelling
+        the rewrite did not match is still in the text and is counted
+        nowhere. A count for the fulltext is a v0.13 item; saying so is
+        not (re-verification, declined item (b))."""
+        note = preview_of()["preview"]["residue"]["scope_note"]
+        assert "covers memos, labels and attribute values" in note
+        assert "does NOT count what remains in the file text itself" in note
 
     def test_the_counts_reach_the_warning_the_researcher_is_read(
             self, project):
@@ -1474,6 +1492,44 @@ class TestTheLabelsAndMemosTheResidueCounts:
         out = preview_of()
         assert any("memo(s), label(s) or attribute value(s)" in warning
                    for warning in out["warnings"])
+
+    def test_the_warning_says_what_the_count_measures(self, project):
+        """Re-verification 6.1. The warning is the one string the
+        description tells the model to relay, and it was the one string
+        fix round 1 did not update with the detector: it still said the
+        names "occur" in N places. Under the wide reading that is a
+        false statement about what was measured, and this project's
+        standing rule is that shipped prose must not claim more than the
+        code does.
+
+        Driven at the shape that makes it false: an entry for 'Ed', a
+        memo that merely says 'edited'. The name does not occur there.
+        """
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET memo=? WHERE id=1",
+                    ("I edited this transcript after the visit.",))
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of(mapping=[{"original": "Ed", "pseudonym": "Kim"}])
+        assert out["preview"]["residue"]["memos"]["source"] == 1
+        warning = [text for text in out["warnings"]
+                   if "attribute value(s)" in text]
+        assert len(warning) == 1, out["warnings"]
+        warning = warning[0]
+        assert warning.startswith(
+            "Warning: 1 memo(s), label(s) or attribute value(s) may still "
+            "show one of these names, and this tool does not rewrite any "
+            "of them.")
+        assert ("The count is deliberately wide: it reports anything a "
+                "reader might see, including inside a longer word and in "
+                "any letter case, so it over-reports rather than "
+                "under-reports." in warning)
+        assert "tell the user which fields to check" in warning
+        # The claim that is now false, in the exact words it used.
+        assert "the names in this mapping also occur in" not in warning
+        _house_rules([warning], ["residue warning"])
 
 
 class TestTheProjectFolderName:
@@ -1515,6 +1571,30 @@ class TestTheProjectFolderName:
             assert "token_bind identifies the project" in \
                 manifest["paths_withheld"]
             assert re.fullmatch(r"[0-9a-f]{8}", manifest["token_bind"])
+
+    def test_the_log_carries_the_project_folder_name_nowhere(
+            self, tmp_path, caplog):
+        """Re-verification R-5, the seventh route. `backup_project` logs
+        the backup folder's path twice at INFO, and that path carries
+        the PROJECT folder's own name, which is the route Security
+        called wholly unmitigated and fix round 1 closed everywhere
+        else.
+
+        `TestAFileNameThatCarriesAName::test_the_log_carries_neither`
+        passed over this because its fixture project is called
+        `study.qda`: the leak is the folder's name, not the file's.
+        """
+        import logging
+        with wired(self._build(tmp_path, "Thomas study.qda")) as folder:
+            caplog.set_level(logging.DEBUG)
+            result = execute_from(preview_of())
+            assert result.get("success") is True, result
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "Creating backup" in logged, "the run took no backup"
+        assert_carries_no_name(logged, "log")
+        # What is kept is the part that says WHICH backup.
+        assert re.search(r"_backup_\d{8}_\d{6}(_\d+)?\.qda", logged)
+        assert str(folder) not in logged
 
     def test_an_ordinary_project_folder_is_recorded_in_full(self, tmp_path):
         with wired(self._build(tmp_path, "fieldwork.qda")) as folder:
@@ -1812,6 +1892,16 @@ class TestTheFingerprintCheckIsACheck:
     (id, length, sha256), so a fulltext change between the preview and
     the execute is refused before C7 is reached. That path has its own
     pin in `test_a_racing_write_is_caught_inside_the_transaction`.
+
+    The last two tests in this class are about the CALLER rather than
+    the check, and they exist because the database layer's tests could
+    not tell: re-verification restored the tautology at
+    `_op` alone, by taking the fingerprints from the write phase's own
+    plan instead of the read-only phase's, and the whole suite stayed
+    green. `pseudonymise_write`'s signature did not change, its own
+    tests pass the fingerprints they choose, and nothing anywhere
+    watched which dictionary the tool handed it. That is the second time
+    this guard has been able to be a no-op on this feature.
     """
 
     def _plan(self, db):
@@ -1865,6 +1955,113 @@ class TestTheFingerprintCheckIsACheck:
             project, "SELECT fulltext FROM source WHERE id=1"
             )[0]["fulltext"]
 
+    def test_the_write_is_checked_against_the_read_phases_own_tuples(
+            self, project, monkeypatch):
+        """Which dictionary `_op` hands to `pseudonymise_write`, pinned
+        by provenance rather than by value.
+
+        On an unchanged project the read phase's fingerprints and the
+        write phase's are EQUAL, which is why a value comparison cannot
+        tell them apart and why the revert went unnoticed. The tuples
+        are not the same objects, though: each plan builds its own. So
+        the assertion is `is`, against the plan built on the read-only
+        connection before the backup, and `is not` against the plan the
+        state check built inside the transaction.
+        """
+        plans = []
+        plan_original = QualcoderDatabase.pseudonymise_plan
+        write_original = QualcoderDatabase.pseudonymise_write
+        handed = []
+
+        def remember(self, *args, **kwargs):
+            plan = plan_original(self, *args, **kwargs)
+            plans.append((bool(self.conn.in_transaction), plan))
+            return plan
+
+        def watch(self, plan, fingerprints):
+            handed.append(fingerprints)
+            return write_original(self, plan, fingerprints)
+
+        out = preview_of()
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_plan", remember)
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_write", watch)
+        assert execute_from(out)["success"] is True
+
+        read_phase = [plan for in_transaction, plan in plans
+                      if not in_transaction]
+        write_phase = [plan for in_transaction, plan in plans
+                       if in_transaction]
+        assert len(read_phase) == 1 and len(write_phase) == 1, plans
+        assert len(handed) == 1
+        fingerprints = handed[0]
+
+        read_tuples = {item["file_id"]: item["old_fingerprint"]
+                       for item in read_phase[0]["files"]}
+        write_tuples = {item["file_id"]: item["old_fingerprint"]
+                        for item in write_phase[0]["files"]}
+        assert set(fingerprints) == set(read_tuples) == {1}
+        assert fingerprints == read_tuples == write_tuples, (
+            "the two phases disagree about the text, so this test is "
+            "measuring something other than provenance")
+        for file_id, value in read_tuples.items():
+            assert fingerprints[file_id] is value, (
+                "the write was checked against fingerprints the READ-ONLY "
+                "phase did not capture")
+            assert fingerprints[file_id] is not write_tuples[file_id], (
+                "the write was checked against its own plan's "
+                "fingerprints, which is the F-3 tautology")
+
+    def test_a_write_that_lands_after_the_read_phase_is_caught_by_c7(
+            self, project, monkeypatch):
+        """C7 at tool level, driven, with the signed state blinded.
+
+        The signed state normally answers this first and more cheaply
+        (`test_a_racing_write_is_caught_inside_the_transaction`), which
+        is why the tautology could be restored here with the suite
+        green. So both halves of the signed state are replaced by a
+        constant for this test, in the preview call and in the execute
+        call alike, which leaves C7 as the only thing between a racing
+        writer and a rewrite computed over text that writer has already
+        replaced.
+
+        The race is committed from a second connection at
+        BEGIN IMMEDIATE, so it lands after the read-only phase captured
+        its fingerprints and before the write phase builds its plan. The
+        read phase's fingerprints no longer describe the file; the write
+        phase's describe it exactly. Only one of those two answers
+        refuses.
+        """
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_effect",
+                            lambda self, plan: {"blinded": True})
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_row_digests",
+                            lambda self, plan: {"blinded": True})
+        out = preview_of()
+        assert "preview_token" in out
+
+        raced = TEXT + " A later note about Thomas."
+        begin_original = QualcoderDatabase.begin_immediate
+        fired = []
+
+        def racing_begin(self):
+            if not fired:
+                fired.append(True)
+                con = sqlite3.connect(str(project / "data.qda"))
+                con.execute("UPDATE source SET fulltext = ? WHERE id = 1",
+                            (raced,))
+                con.commit()
+                con.close()
+            return begin_original(self)
+
+        monkeypatch.setattr(QualcoderDatabase, "begin_immediate",
+                            racing_begin)
+        refused = execute_from(out)
+        assert fired, "the race never happened; the test proves nothing"
+        assert "success" not in refused, refused
+        assert "The text of file id 1 changed while this write was being " \
+               "prepared" in refused["error"]
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == raced
+
 
 class TestWhatTheRunRecomputes:
     """The performance shape, pinned rather than measured (QA F-14,
@@ -1916,6 +2113,58 @@ class TestWhatTheRunRecomputes:
         calls = self._instrument(monkeypatch)
         execute_from(out)
         assert calls["residue"] == [False]
+
+    def test_the_read_phase_plan_cache_is_keyed_on_the_connection(
+            self, project, monkeypatch):
+        """Re-verification R-7. The cache exists so the preview and the
+        row digests describe ONE read of the project, and it is keyed on
+        the connection that filled it so a cached plan can never be
+        handed to the write connection inside the transaction: that
+        would make the state check compare a read to itself, which is
+        the shape of the defect this round exists to remove.
+
+        Reverting the key to `if "plan" in read_phase` leaves the whole
+        suite green today, because `state_of_fn` means the write
+        connection never asks the cache. The property is therefore
+        driven directly, on the closure the tool hands the gate: the
+        same connection is answered from the cache, a different one is
+        not.
+        """
+        captured = {}
+        guard_original = server._guarded_destructive
+
+        def capture(**kwargs):
+            captured.update(kwargs)
+            return guard_original(**kwargs)
+
+        plans = []
+        plan_original = QualcoderDatabase.pseudonymise_plan
+
+        def remember(self, *args, **kwargs):
+            plan = plan_original(self, *args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(server, "_guarded_destructive", capture)
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_plan", remember)
+        preview_of()
+        assert len(plans) == 1, "the preview built more than one plan"
+        preview_fn = captured["preview_fn"]
+
+        preview_fn(server.db)
+        assert len(plans) == 1, (
+            "the connection that filled the cache asked again and was not "
+            "answered from it")
+
+        other = QualcoderDatabase(str(project))
+        try:
+            preview_fn(other)
+        finally:
+            other.close()
+        assert len(plans) == 2, (
+            "a DIFFERENT connection was handed the cached plan; that is the "
+            "route by which the state check could compare a read to itself")
+        assert plans[1] is not plans[0]
 
     def test_the_run_writes_the_plan_whose_effect_was_verified(
             self, project, monkeypatch):
@@ -2110,6 +2359,37 @@ class TestThePresentationArguments:
         out = preview_of(max_spans_per_entry=10 ** 9)
         assert "error" not in out
 
+    def test_the_span_cap_is_five_hundred(self, tmp_path):
+        """Re-verification R-6. This cap was added in fix round 1 in
+        answer to Security S8 and then appeared nowhere in `tests/`:
+        lifting it from 500 to 1,000,000 left the whole suite green,
+        which is F-20's own failure mode on the cap that round
+        introduced. The other four caps pin the literal AND drive the
+        boundary, so this one does too.
+
+        It is a silent cap in the house `validate_limit` shape, not a
+        refusal, so the boundary is driven by counting what comes back:
+        600 matches, and no argument gets more than 500 of them.
+        """
+        assert P.MAX_SPANS_PER_ENTRY == 500
+        folder = build_project(tmp_path / "many.qda", "Thomas. " * 600)
+        write_fixture_sidecar(str(folder))
+        with wired(folder):
+            def block(requested):
+                out = preview_of(mapping=[{"original": "Thomas",
+                                           "pseudonym": "Alex"}],
+                                 max_spans_per_entry=requested)
+                return out["preview"]["files"][0]["replacements"][0]
+
+            asked_for_everything = block(10 ** 9)
+            assert asked_for_everything["count"] == 600
+            assert len(asked_for_everything["spans"]) == 500
+            assert asked_for_everything["spans_truncated"] is True
+            # One below the cap, at it, and one above it.
+            assert len(block(499)["spans"]) == 499
+            assert len(block(500)["spans"]) == 500
+            assert len(block(501)["spans"]) == 500
+
     def test_the_context_budget_bounds_the_whole_preview(self, tmp_path):
         """Not each window: the windows overlap, so 400 of them returned
         4.7 times the file."""
@@ -2205,6 +2485,58 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
                                    "pseudonym": "Robin"}])
         conflicts = out["preview"]["files"][0]["overlap_conflicts"]
         assert conflicts[0]["form"] == "Marie Curie"
+
+    def test_the_context_windows_are_withheld_on_the_sidecar_path(
+            self, project):
+        """Re-verification R-2, route 1. A context window is a slice of
+        the file text around a match, so it contains the name that
+        matched by construction. On the sidecar path that is the
+        reverse key going into the conversation one window at a time,
+        and the model opts into it, not the researcher.
+        """
+        self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"},
+                                {"original": "Mary Ann", "pseudonym": "Sam"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True,
+                         include_context=True, context_chars=60)
+        blocks = out["preview"]["files"][0]["replacements"]
+        assert blocks, "nothing matched, so this test proves nothing"
+        for block in blocks:
+            assert "context" not in block, block
+            assert "context_truncated" not in block, block
+        assert "include_context was asked for and is not returned" in \
+            out["preview"]["context_withheld"]
+        assert_carries_no_name(json.dumps(out["preview"]), "preview")
+
+    def test_a_typed_mapping_still_gets_the_context_it_asked_for(
+            self, project):
+        """The other direction, so the suppression did not become a
+        removal: the caller who typed the names is shown the text."""
+        out = preview_of(include_context=True, context_chars=20)
+        blocks = out["preview"]["files"][0]["replacements"]
+        assert any(block.get("context") for block in blocks)
+        assert "context_withheld" not in out["preview"]
+        assert any("Thomas" in window for block in blocks
+                   for window in block.get("context", []))
+
+    def test_the_file_names_this_path_does_return_are_declared(
+            self, project):
+        """Re-verification R-2, route 2, kept open deliberately.
+
+        A preview whose files have no names cannot be relayed, so file
+        names stay. What changed is the promise beside them: the
+        description now says the project path and each file's name are
+        returned as they stand and can themselves carry one of these
+        names, instead of promising that nothing here ever does. Both
+        halves are pinned, this one and the sentence
+        (`TestTheDescriptionCarriesWhatD1Requires`), so the absolute
+        promise cannot come back without one of them failing.
+        """
+        rename_file(project, "Thomas_interview.txt")
+        self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        assert out["preview"]["files"][0]["name"] == "Thomas_interview.txt"
+        assert out["preview"]["project"] == str(project / "data.qda")
+        assert out["preview"]["residue"]["file_names"] == 1
 
     def test_the_two_mapping_sources_still_bind_the_same_token(
             self, project):
@@ -2389,6 +2721,31 @@ class TestImportRider:
             filename="new.txt", content="Thomas and Alex.",
             create_backup=False, apply_project_pseudonyms=True))
         assert "chain" in out["error"]
+        assert query(project, "SELECT id FROM source WHERE name='new.txt'") \
+            == []
+
+    def test_the_chaining_refusal_here_quotes_no_name_from_the_sidecar(
+            self, project):
+        """Re-verification N9. The rider reads the researcher's own
+        `pseudonyms.json`, so its refusals are under the same rule as
+        the flagship's, and the half that enforces it
+        (`may_echo_names=False`) was unpinned: the test above asserts
+        only that the word "chain" appears, which is true either way.
+
+        Distinct values, so the assertion cannot pass by accident: the
+        refusal names entry 0 and quotes nothing.
+        """
+        (project / "pseudonyms.json").write_text(
+            json.dumps([{"original": "Zenobia", "pseudonym": "Quillon"},
+                        {"original": "Quillon", "pseudonym": "Rowan"}]),
+            encoding="utf-8")
+        out = json.loads(server.import_text_file(
+            filename="new.txt", content="Zenobia and Quillon.",
+            create_backup=False, apply_project_pseudonyms=True))
+        assert "mapping entry 0: the pseudonym of entry 0 is also an " \
+               "original or variant" in out["error"]
+        for forbidden in ("Zenobia", "Quillon", "Rowan"):
+            assert forbidden not in out["error"], forbidden
         assert query(project, "SELECT id FROM source WHERE name='new.txt'") \
             == []
 
@@ -2719,3 +3076,129 @@ class TestArgumentValidation:
                    preview_token="qcp1.1.aaaaaaaa." + "a" * 32)
         assert "at least 2 characters" in out["error"]
         assert "token" not in out["error"].lower()
+
+
+# =============================================================================
+# THE DESCRIPTION THE MODEL READS BEFORE IT DECIDES ANYTHING
+# =============================================================================
+
+class TestTheDescriptionCarriesWhatD1Requires:
+    """Re-verification R-3. The whole description was pinned by ONE
+    character count.
+
+    `test_the_full_toolset_measures_what_the_documents_say` compares the
+    serialised `tools/list` payload's LENGTH against a published figure,
+    and only on Python 3.13 (`_reference_environment()`); on 3.10 to
+    3.12 even a length change passes. So replacing D1 3.12's required
+    sentence with the same number of characters of `xxx xxx` left the
+    whole suite green, and three of fix round 1's own deliverables live
+    in this string: F-6's re-read sentence, D-15's wider-reading
+    sentence, and what the sidecar path does and does not return.
+
+    The refusal texts in this feature are pinned to the character. This
+    is the string a model reads BEFORE deciding what to do, and it was
+    pinned to nothing. Each required point is now its own assertion, on
+    the description as the tool manager publishes it rather than on the
+    Python attribute, so deleting any one of them is red on every
+    interpreter.
+
+    Matching is done on the description with its line wrapping
+    flattened, because every one of these sentences straddles a line
+    break and a re-wrap must not be a failure.
+    """
+
+    # (label, the sentence D1 3.12 or a fix round requires)
+    REQUIRED = [
+        ("rewrites_source_text",
+         "THIS REWRITES SOURCE TEXT and moves every coding, annotation "
+         "and case link in the files it touches."),
+        ("preview_first",
+         "Preview first, relay the counts, the collisions and the residue "
+         "to the user, get an explicit yes, then execute with the token."),
+        ("deterministic",
+         "ONLY the names in the mapping are replaced, as whole words, "
+         "case-sensitively unless case_mode says otherwise. There is no "
+         "name detection and no guessing"),
+        ("possessives_keep_their_suffix",
+         "\"Tom\" DOES match inside \"Tom's\" (the apostrophe is not a "
+         "word character, so possessives keep their suffix)"),
+        ("variants_are_needed",
+         "Nicknames, inflections and spelling variants each need their own "
+         "entry or a `variants` list."),
+        ("what_is_not_rewritten",
+         "What this does NOT rewrite, and where the names will remain: "
+         "memos, journal entries, case names, file names, attribute "
+         "values, PDFs, media files, QualCoder 4.0's ai_data folder, "
+         "speakers.json and speaker_regex.json."),
+        ("residue_says_where_names_remain",
+         "The preview's `residue` block counts where the names still occur "
+         "so you can tell the user"),
+        ("residue_reads_wider_than_the_rewrite",         # D-15
+         "Its counts use a WIDER reading than the rewrite: any occurrence "
+         "a human would see, including inside a longer word and in any "
+         "case, so a case named Thomas_P01 is counted even under "
+         "case_mode=\"exact\"."),
+        ("still_personal_data",
+         "Pseudonymised data is still personal data and is often "
+         "re-identifiable from context. This reduces risk; it does not "
+         "anonymise (PRIVACY.md)."),
+        ("the_backup_is_the_reverse_key",
+         "The backup keeps the real names, and so does pseudonyms.json if "
+         "the researcher keeps one; both are the reverse key and belong "
+         "somewhere secure."),
+        ("the_manifest_and_journal_hold_no_original",
+         "The run manifest this tool writes and the journal entry it can "
+         "add never contain an original name"),
+        ("re_read_every_touched_file",                   # QA F-6
+         "After the run, re-read every touched file before any further "
+         "coding: all positions in them have changed, and any pending "
+         "coding suggestion for them is stale."),
+        ("qualcoder_does_not_refresh",
+         "an open QualCoder window does not refresh from this write on its "
+         "own"),
+        ("the_40_search_index_is_stale",
+         "QualCoder 4.0's AI search index keeps the previous text until it "
+         "re-indexes on the next open with AI enabled."),
+        ("the_sidecar_path_quotes_nothing",              # B4 / S3
+         "The names in that file are the researcher's reverse key and you "
+         "did not supply them, so on this path no diagnostic and no "
+         "refusal quotes one, and include_context returns no context at "
+         "all rather than the text around each match."),
+        ("the_sidecar_path_still_returns_names_it_has",  # R-2
+         "the project path and each file's own name, either of which can "
+         "itself contain one of those names."),
+    ]
+
+    @staticmethod
+    def published():
+        """The description as the tool manager publishes it.
+
+        `list_tools` serialises this same string, so a pin here is a pin
+        on the payload rather than on a Python attribute that could stop
+        being the payload.
+        """
+        tool = server.mcp._tool_manager._tools["pseudonymise_source"]
+        return " ".join((tool.description or "").split())
+
+    @pytest.mark.parametrize("label,sentence",
+                             REQUIRED,
+                             ids=[item[0] for item in REQUIRED])
+    def test_the_point_is_made(self, label, sentence):
+        assert " ".join(sentence.split()) in self.published(), label
+
+    def test_the_published_description_is_the_docstring(self):
+        """So the pins above cannot be satisfied by a docstring the
+        payload does not carry."""
+        tool = server.mcp._tool_manager._tools["pseudonymise_source"]
+        assert tool.description == server.pseudonymise_source.__doc__
+
+    def test_each_required_sentence_occurs_exactly_once(self):
+        """A fragment that matches in two places is a fragment that can
+        survive the deletion of the one that matters."""
+        published = self.published()
+        for label, sentence in self.REQUIRED:
+            assert published.count(" ".join(sentence.split())) == 1, label
+
+    def test_the_description_keeps_the_house_rules(self):
+        _house_rules([server.pseudonymise_source.__doc__], ["description"])
+

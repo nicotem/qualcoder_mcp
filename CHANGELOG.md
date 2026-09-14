@@ -65,12 +65,26 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   reading the label or the memo would see, including inside a longer
   word (`Thomas_P01`, `Mary_Ann`) and in any letter case. A report whose
   job is to say where the names remain has to be at least as wide as a
-  reader, and the block says which reading its counts are. Public memo
+  reader, and the block says which reading its counts are, what a short
+  name costs under it, and what it does not cover: the counts are of
+  memos, labels and attribute values, never of what remains in the file
+  text itself. The warning the model is told to relay says the same
+  thing in the same terms, because a count that reports a memo saying
+  "edited" for an entry called `Ed` is not a count of names. Public memo
   parts only: a name that
   occurs only inside a `#####` private note is neither read nor counted,
   and how many memos carry such a note is reported as a number. PDFs,
   media files and QualCoder 4.0's `ai_data/` are out of scope and said
   to be.
+- `use_project_pseudonyms=True` reads the mapping from the project's own
+  `pseudonyms.json`. Those names are the researcher's reverse key and
+  the caller never supplied them, so on that path no diagnostic and no
+  refusal quotes one, and `include_context` returns nothing at all
+  rather than the text around each match, which would quote one by
+  construction. The project path and each file's own name are still
+  returned as they stand, because a preview whose files cannot be named
+  cannot be relayed, and the tool's description says so rather than
+  promising otherwise.
 - Hidden coders, under owner ruling X1: a pure position shift of a
   hidden coder's row proceeds, because it changes no coding decision,
   and a resize, a snap or a deletion requires `allow_hidden_coder`. The
@@ -209,6 +223,14 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   unaffected: it carries every coder's counts, as QualCoder's own
   report does.
 
+### Changed: the backup folder's name leaves the server log
+
+- Taking a backup logged the backup folder's full path twice, and that
+  path carries the project folder's own name, which a single-case study
+  gives its participant. The log now carries the timestamped suffix that
+  says WHICH backup and not the part that says whose. This is shared by
+  every tool that takes a backup, not only the pseudonymisation run.
+
 ### Changed: destructive tools need a preview token, not a confirm flag
 
 - `merge_codes`, `delete_code`, `delete_category`, `merge_category`,
@@ -315,7 +337,7 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
 - Serialised tool JSON after the flagship and its fix round: full =
-  154,347 characters (about 38.6k tokens at chars/4) over 70 tools,
+  154,757 characters (about 38.7k tokens at chars/4) over 70 tools,
   core = 56,317 (about 14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
@@ -327,12 +349,12 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (162,175
+  time, the same definitions measure about five per cent more (162,609
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
   characters of the Batch B growth, `compare_coders` and the new setter
-  for most of the rest. `pseudonymise_source` alone accounts for 9,131
-  of the 10,554 characters added since, and the rider on
+  for most of the rest. `pseudonymise_source` alone accounts for 9,541
+  of the 10,964 characters added since, and the rider on
   `import_text_file` and the pruning note for the rest: it is one tool with a long description
   by necessity, because a tool that rewrites the researcher's text has
   to state in its own definition what it rewrites, what it leaves, and
