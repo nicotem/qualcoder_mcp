@@ -1,0 +1,1297 @@
+"""The v0.12 flagship engine: parity oracles, properties, edge cases (D1 6.1, 6.2, 6.3).
+
+Two oracles drive this file, both literal transcriptions of QualCoder
+master at pin 9bddf17, sitting beside the engine rather than inside it:
+
+- `master_boundary_spans`, the import-time replacement regex of
+  `manage_files.py:3344-3349`, which is where our whole-word rule comes
+  from;
+- `MasterEditWalk`, the `apply_insert` / `apply_delete` pair of
+  `code_text.py:5893-5927` driven by the running offset of `:5933-5950`,
+  which is what `overlap_policy="qualcoder_edit_parity"` promises.
+
+The second oracle is a real cross-check rather than a mirror: it walks
+ALL rows per edit, mutating a shared list the way upstream does, while
+the engine walks all edits per row and carries one row's state. An error
+in the order of the delete and the insert, in the running offset, or in
+the start anchor shows up as a disagreement.
+
+What the oracles do NOT claim, stated here because the claim would be
+easy to overstate: upstream feeds its walk whatever `diff_match_patch`
+produced for a keystroke, and that library may factor a common prefix or
+suffix out of a replacement. This engine never diffs; it deletes the
+whole name and inserts the whole pseudonym at the same offset. Parity is
+with the WALK, for that edit shape, and a test below says so.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+from hypothesis import HealthCheck, assume, given, settings, strategies as st
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from qualcoder_mcp import pseudonymise as P
+
+
+# =============================================================================
+# HOUSE RULES
+# =============================================================================
+
+def _house_rules(texts, labels=None):
+    """No em dashes, British English, no forbidden vocabulary.
+
+    Checked in the module that owns the strings, as Batch A's convention
+    has it, so a reworded message is checked where it is written.
+    """
+    forbidden_spellings = ("color", "colors", "behavior", "organize",
+                           "recognize", "authorization", "analyze",
+                           "labeled", "favor", "pseudonymize",
+                           "pseudonymization", "anonymize")
+    for index, text in enumerate(texts):
+        label = (labels[index] if labels else f"text {index}")
+        assert "—" not in text, label
+        lowered = text.lower()
+        for word in forbidden_spellings:
+            pattern = r"(?<![A-Za-z_])" + word + r"(?![A-Za-z_])"
+            assert not re.search(pattern, lowered), (label, word)
+
+
+# =============================================================================
+# ORACLE 1: master's import-time boundary regex (manage_files.py:3344-3349)
+# =============================================================================
+
+def master_boundary_spans(original, text):
+    """Where QualCoder master's own import replacement would fire.
+
+    Transcribed from `manage_files.py:3348` at pin 9bddf17:
+
+        re.sub(rf"(?<!\\w){re.escape(pseudonym['original'])}(?!\\w)",
+               pseudonym['pseudonym'], text_)
+
+    The spans, not the substitution, because the spans are what our
+    engine has to agree with; what goes in them is a separate question
+    (case modes, longest-first) that upstream does not have.
+    """
+    pattern = re.compile(rf"(?<!\w){re.escape(original)}(?!\w)")
+    return [(m.start(), m.end()) for m in pattern.finditer(text)]
+
+
+def legacy_boundary_spans(original, text):
+    """The 3.8.2 and survey-importer form, for the delta pins.
+
+    `3.8.2:manage_files.py:2035-2040` and, at BOTH pins,
+    `import_survey.py:134-140`:
+
+        re.sub(rf"\\b{pseudonym['original']}\\b", ...)
+
+    Two differences from master's form, and this function reproduces
+    both: `\\b` rather than the two lookarounds, and NO `re.escape`, so
+    an original carrying a regex metacharacter is read as syntax.
+    """
+    return [(m.start(), m.end())
+            for m in re.finditer(rf"\b{original}\b", text)]
+
+
+# The alphabet the generated texts are drawn from: letters that are word
+# characters, the separators that are not (space, hyphen, apostrophe,
+# full stop, newline), and two non-ASCII letters so the Unicode-aware
+# reading of `\w` is exercised rather than assumed.
+_TEXT_ALPHABET = "abTom ANn-'.\né中"
+_TEXT = st.text(alphabet=_TEXT_ALPHABET, min_size=0, max_size=60)
+_NAMES = st.sampled_from(["Tom", "Ann", "ab", "Tom Ann", "Téo", "中文",
+                          "An-n", "ab.c"])
+
+
+class TestBoundaryParityOracle:
+    """D1 6.1: our matching agrees with master's, span for span."""
+
+    @settings(max_examples=250, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, name=_NAMES)
+    def test_one_entry_matches_exactly_where_master_would(self, text, name):
+        mapping = P.validate_mapping(
+            [{"original": name, "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        ours = [(r.start, r.end) for r in P.find_replacements(compiled, text)]
+        assert ours == master_boundary_spans(name, text)
+
+    @settings(max_examples=200, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, name=_NAMES)
+    def test_the_rewritten_text_is_masters_rewritten_text(self, text, name):
+        """One entry cannot chain, so the whole substitution is comparable."""
+        mapping = P.validate_mapping(
+            [{"original": name, "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        ours = P.apply_replacements(text,
+                                    P.find_replacements(compiled, text))
+        theirs = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "Pseudo", text)
+        assert ours == theirs
+
+    @pytest.mark.parametrize("text,name,expected", [
+        ("Tom", "Tom", [(0, 3)]),
+        ("Anna", "Ann", []),
+        ("Ann.", "Ann", [(0, 3)]),
+        ("Tom's cat", "Tom", [(0, 3)]),
+        ("Tom’s cat", "Tom", [(0, 3)]),
+        ("Jean-Paul", "Jean", [(0, 4)]),
+        ("say Tom", "Tom", [(4, 7)]),
+        ("Tom\nsaid", "Tom", [(0, 3)]),
+        ("_Tom", "Tom", []),
+        ("9Tom", "Tom", []),
+        ("José went", "José", [(0, 4)]),
+        ("Josés went", "José", []),
+        ("中文 text", "中文", [(0, 2)]),
+        ("a中文 text", "中文", []),
+    ])
+    def test_the_table_of_boundary_cases(self, text, name, expected):
+        """D1 6.1's table, pinned against the oracle and against us."""
+        assert master_boundary_spans(name, text) == expected
+        mapping = P.validate_mapping(
+            [{"original": name, "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        assert [(r.start, r.end)
+                for r in P.find_replacements(compiled, text)] == expected
+
+
+class TestBoundaryDeltas:
+    """Where `\\b` and the escaping differ, documented as "we follow master"."""
+
+    def test_a_trailing_non_word_character_inverts_the_rule(self):
+        """"St." under `\\b` needs a WORD character next; master's form
+        needs a non-word one. Opposite answers on the same text, which is
+        exactly why the delta is pinned rather than assumed away."""
+        assert legacy_boundary_spans("St\\.", "St.Ives") == [(0, 3)]
+        assert legacy_boundary_spans("St\\.", "St. Ives") == []
+        assert master_boundary_spans("St.", "St.Ives") == []
+        assert master_boundary_spans("St.", "St. Ives") == [(0, 3)]
+        mapping = P.validate_mapping(
+            [{"original": "St.", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        assert [(r.start, r.end) for r in
+                P.find_replacements(compiled, "St. Ives")] == [(0, 3)]
+        assert P.find_replacements(compiled, "St.Ives") == []
+
+    def test_a_leading_non_word_character_inverts_the_rule(self):
+        assert legacy_boundary_spans("-ish", "boy-ish") == [(3, 7)]
+        assert master_boundary_spans("-ish", "boy-ish") == []
+
+    def test_the_legacy_form_reads_an_original_as_a_regex(self):
+        """3.8.2 and both survey importers interpolate unescaped, so a
+        full stop matches any character. Ours escapes, so it does not."""
+        assert legacy_boundary_spans("a.c", "abc") == [(0, 3)]
+        assert master_boundary_spans("a.c", "abc") == []
+        mapping = P.validate_mapping(
+            [{"original": "a.c", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        assert P.find_replacements(compiled, "abc") == []
+        assert len(P.find_replacements(compiled, "a.c")) == 1
+
+    def test_a_regex_metacharacter_cannot_reach_the_engine_as_syntax(self):
+        """The whole class, not one character: every surface form is
+        escaped, so no mapping string is ever read as a pattern."""
+        for hostile in ["a(b", "a)b", "a[b", "a|b", "a*b", "a+b", "a?b",
+                        "a{2}", "a\\b", "a$b", "^ab"]:
+            mapping = P.validate_mapping(
+                [{"original": hostile, "pseudonym": "Pseudo"}])
+            compiled = P.Compiled(mapping)
+            found = P.find_replacements(compiled, f" {hostile} ")
+            assert [(r.start, r.end) for r in found] == \
+                [(1, 1 + len(hostile))], hostile
+
+
+# =============================================================================
+# ORACLE 2: master's edit-mode walk (code_text.py:5893-5950)
+# =============================================================================
+
+class MasterEditWalk:
+    """`apply_insert` and `apply_delete`, transcribed from master.
+
+    `code_text.py:5893-5904` and `:5906-5927` at pin 9bddf17, kept in
+    upstream's own shape: a list of item dicts carrying `pos0`,
+    `newpos0` and `newpos1`, mutated in place, with a deletion queue.
+    The driver below supplies the running offset of `:5933-5950` for the
+    delete-then-insert pair each replacement amounts to.
+    """
+
+    def __init__(self):
+        self.code_deletions = []
+
+    @staticmethod
+    def apply_insert(items, at, length, keep_start_anchor):
+        for c in items:
+            if c['newpos0'] is None:
+                continue
+            if c['newpos0'] >= at:
+                c['newpos0'] += length
+                c['newpos1'] += length
+                if keep_start_anchor and c['pos0'] == 0:
+                    c['newpos0'] = 0
+            elif c['newpos0'] < at < c['newpos1']:
+                c['newpos1'] += length
+
+    def apply_delete(self, items, at, length, delete_sql):
+        for c in items:
+            if c['newpos0'] is None:
+                continue
+            if c['newpos0'] >= at + length:
+                c['newpos0'] -= length
+                c['newpos1'] -= length
+            elif c['newpos0'] >= at:
+                if c['newpos1'] <= at + length:
+                    self.code_deletions.append(delete_sql(c))
+                    c['newpos0'] = None
+                else:
+                    c['newpos0'] = at
+                    c['newpos1'] -= length
+            elif c['newpos1'] > at:
+                c['newpos1'] -= min(c['newpos1'], at + length) - at
+                if c['newpos1'] <= c['newpos0']:
+                    self.code_deletions.append(delete_sql(c))
+                    c['newpos0'] = None
+
+    def run(self, spans, replacements, keep_start_anchor):
+        """The walk over every row, one edit at a time (upstream's order).
+
+        Each replacement reaches the walk as upstream's editor would see
+        a whole-token retype: a delete of the name at the running offset
+        followed by an insert of the pseudonym at the same offset.
+
+        Upstream marks a deleted row by setting `newpos0` to None and
+        NEVER touches its `newpos1` again, because the row is about to be
+        removed by the queued SQL and the end is meaningless. The end is
+        normalised to None here so the comparison is against the ANSWER,
+        not against a field upstream stopped maintaining.
+        """
+        items = [{'id': index, 'pos0': a, 'pos1': b, 'newpos0': a,
+                  'newpos1': b} for index, (a, b) in enumerate(spans)]
+        shift = 0
+        for item in replacements:
+            at = item.start + shift
+            length = item.end - item.start
+            inserted = len(item.text)
+            self.apply_delete(items, at, length, lambda c: c['id'])
+            self.apply_insert(items, at, inserted, keep_start_anchor)
+            shift += inserted - length
+        return [(None, None) if c['newpos0'] is None
+                else (c['newpos0'], c['newpos1']) for c in items]
+
+
+_SPAN_SOURCE = st.lists(st.tuples(st.integers(0, 60), st.integers(0, 60)),
+                        min_size=0, max_size=8)
+
+
+def _valid_spans(raw, length):
+    """Turn generated integer pairs into spans a project could hold."""
+    spans = []
+    for a, b in raw:
+        lo, hi = min(a, b), max(a, b)
+        hi = min(hi, length)
+        lo = min(lo, length)
+        if lo < hi:
+            spans.append((lo, hi))
+    return spans
+
+
+class TestEditWalkParityOracle:
+    """D1 6.1: `qualcoder_edit_parity` is master's walk, row by row."""
+
+    @settings(max_examples=300, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, raw=_SPAN_SOURCE, anchor=st.booleans())
+    def test_the_engine_agrees_with_masters_walk(self, text, raw, anchor):
+        mapping = P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quux"},
+        ])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        spans = _valid_spans(raw, len(text))
+        assume(spans)
+        oracle = MasterEditWalk().run(spans, replacements, anchor)
+        mapper = P.SpanMapper(replacements, len(text))
+        ours = []
+        for pos0, pos1 in spans:
+            mapped = mapper.map_row(pos0, pos1, "qualcoder_edit_parity",
+                                    anchor)
+            ours.append((mapped.pos0, mapped.pos1))
+        assert ours == oracle
+
+    @pytest.mark.parametrize("span,expected", [
+        ((4, 7), (None, None)),      # exactly the name: deleted
+        ((4, 6), (None, None)),      # starting inside, ending inside
+        ((5, 9), (10, 12)),          # starting inside: cut to after
+        ((0, 6), (0, 4)),            # ending inside: cut to before
+        ((0, 11), (0, 14)),          # containing the name: grows
+        ((8, 11), (11, 14)),         # after the name: shifts
+        ((0, 3), (0, 3)),            # before the name: unmoved
+    ])
+    def test_the_five_shapes_D1_names(self, span, expected):
+        """"Say Tom now": the coding shapes D1 1.2 and 6.1 enumerate."""
+        text = "Say Tom now"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        mapped = mapper.map_row(span[0], span[1], "qualcoder_edit_parity",
+                                True)
+        assert (mapped.pos0, mapped.pos1) == expected
+        assert MasterEditWalk().run([span], replacements, True) == [expected]
+
+    def test_the_start_anchor_holds_for_codings_and_case_links_only(self):
+        """`keep_start_anchor` is True for codings and case links and
+        False for annotations (`code_text.py:5940-5942`), and it only
+        matters when the span's ORIGINAL pos0 was 0."""
+        text = "Tom said so"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        anchored = mapper.map_row(0, len(text), "qualcoder_edit_parity", True)
+        loose = mapper.map_row(0, len(text), "qualcoder_edit_parity", False)
+        assert anchored.pos0 == 0
+        assert loose.pos0 == 6        # the insert pushed the start right
+        assert MasterEditWalk().run([(0, len(text))], replacements, True) \
+            == [(anchored.pos0, anchored.pos1)]
+        assert MasterEditWalk().run([(0, len(text))], replacements, False) \
+            == [(loose.pos0, loose.pos1)]
+
+    def test_an_insertion_exactly_at_the_end_is_excluded(self):
+        """Master's `apply_insert` matches neither branch when the
+        insertion lands on `newpos1`, so text typed straight after a
+        span stays outside it (`code_text.py:5893-5904`)."""
+        text = "say Tom"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        mapped = mapper.map_row(0, 4, "qualcoder_edit_parity", False)
+        assert (mapped.pos0, mapped.pos1) == (0, 4)
+
+    def test_the_382_end_of_file_deletion_is_not_reproduced(self):
+        """`3.8.2:code_text.py`'s `ed_update_codings` deletes every row
+        with `newpos1 >= len(self.text)` on each edit-mode exit, so a
+        coding that legitimately ends at the end of the file dies on
+        every edit. Master replaced that with a clamp (`:6232-6233`) and
+        neither policy here reproduces the deletion: the row survives
+        and still ends at the end of the rewritten text."""
+        text = "Tom said so"
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}]))
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        for policy in P.OVERLAP_POLICIES:
+            mapped = mapper.map_row(4, len(text), policy, True)
+            assert mapped.pos0 is not None, policy
+            assert mapped.pos1 == mapper.new_len, policy
+
+    def test_parity_trims_a_trailing_name_which_is_not_that_deletion(self):
+        """The distinction the previous test would otherwise blur.
+
+        When the LAST token of a span is a replaced name, master's own
+        walk excludes the pseudonym: the delete takes the span's end back
+        to the edit point and the insert at that same point matches
+        neither branch. The row survives (it is not the 3.8.2 deletion)
+        but it no longer reaches the end of the text, and that is one of
+        the reasons this policy is the option rather than the default.
+        """
+        text = "he met Tom"
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}]))
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        parity = mapper.map_row(0, len(text), "qualcoder_edit_parity", True)
+        snap = mapper.map_row(0, len(text), "snap_to_pseudonym", True)
+        assert (parity.pos0, parity.pos1) == (0, 7)
+        assert (snap.pos0, snap.pos1) == (0, mapper.new_len)
+        assert MasterEditWalk().run([(0, len(text))], replacements, True) \
+            == [(parity.pos0, parity.pos1)]
+
+    def test_parity_is_with_the_walk_not_with_the_diff_library(self):
+        """The honest limit of the claim, asserted rather than described.
+
+        Replacing "Thomas" with "Thom" is one delete plus one insert
+        here. `diff_match_patch` may instead report a common prefix and
+        a shorter delete, which would move the edit boundary and give a
+        different answer for a span inside the shared prefix. This test
+        shows the two answers differ, so nothing downstream can read the
+        parity claim more widely than it is meant.
+        """
+        text = "say Thomas now"
+        mapping = P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Thom"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        whole_token = P.SpanMapper(replacements, len(text)).map_row(
+            4, 8, "qualcoder_edit_parity", False)
+        # The same rewrite expressed as the prefix-factored diff a diff
+        # library may produce: keep "Thom", delete "as".
+        factored = [P.Replacement(8, 10, 0, "as", "")]
+        prefix_factored = MasterEditWalk().run([(4, 8)], factored, False)
+        assert (whole_token.pos0, whole_token.pos1) == (None, None)
+        assert prefix_factored == [(4, 8)]
+
+
+# =============================================================================
+# ENGINE PROPERTIES (D1 6.2)
+# =============================================================================
+
+class TestSnapProperties:
+
+    @settings(max_examples=300, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, raw=_SPAN_SOURCE)
+    def test_no_span_is_ever_emptied_or_deleted(self, text, raw):
+        """The defining promise of `snap_to_pseudonym`: a pseudonym is
+        the same token as the name, so a coding that marked the name
+        marks the pseudonym and nothing is lost."""
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quu"},
+        ]))
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        for pos0, pos1 in _valid_spans(raw, len(text)):
+            mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
+            assert mapped is not None
+            assert mapped.pos0 is not None
+            assert 0 <= mapped.pos0 < mapped.pos1 <= mapper.new_len
+
+    @settings(max_examples=250, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, raw=_SPAN_SOURCE)
+    def test_the_new_slice_is_the_old_slice_with_the_names_replaced(
+            self, text, raw):
+        """A span that did not CUT a name comes out reading the same,
+        with the pseudonyms in place of the names."""
+        mapping = P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quu"},
+        ])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        new_text = P.apply_replacements(text, replacements)
+        mapper = P.SpanMapper(replacements, len(text))
+        for pos0, pos1 in _valid_spans(raw, len(text)):
+            mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
+            if mapped.change == P.SNAPPED:
+                continue
+            inner = [r for r in replacements
+                     if r.start >= pos0 and r.end <= pos1]
+            expected = P.apply_replacements(
+                text[pos0:pos1],
+                [P.Replacement(r.start - pos0, r.end - pos0, r.entry,
+                               r.matched, r.text) for r in inner])
+            assert new_text[mapped.pos0:mapped.pos1] == expected
+
+    @settings(max_examples=200, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, raw=_SPAN_SOURCE)
+    def test_a_disjoint_span_shifts_by_the_cumulative_delta(self, text, raw):
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        for pos0, pos1 in _valid_spans(raw, len(text)):
+            if any(r.start < pos1 and r.end > pos0 for r in replacements):
+                continue
+            delta = sum(r.delta for r in replacements if r.end <= pos0)
+            mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
+            assert (mapped.pos0, mapped.pos1) == (pos0 + delta, pos1 + delta)
+            assert mapped.change in (P.UNCHANGED, P.SHIFTED)
+
+    def test_a_span_equal_to_a_name_becomes_the_pseudonym(self):
+        text = "say Tom now"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        new_text = P.apply_replacements(text, replacements)
+        mapper = P.SpanMapper(replacements, len(text))
+        mapped = mapper.map_row(4, 7, "snap_to_pseudonym", True)
+        assert new_text[mapped.pos0:mapped.pos1] == "Pseudo"
+        assert mapped.change == P.RESIZED
+
+    @pytest.mark.parametrize("span", [(5, 9), (0, 6), (5, 6)])
+    def test_a_span_that_cut_a_name_now_contains_the_whole_pseudonym(
+            self, span):
+        text = "say Tom now"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        new_text = P.apply_replacements(text, replacements)
+        mapper = P.SpanMapper(replacements, len(text))
+        mapped = mapper.map_row(span[0], span[1], "snap_to_pseudonym", True)
+        assert "Pseudo" in new_text[mapped.pos0:mapped.pos1]
+        assert mapped.change == P.SNAPPED
+
+    def test_the_snap_policy_keeps_a_whole_file_span_whole_without_an_anchor(
+            self):
+        """`keep_start_anchor` is a parity device: under the snap policy
+        position 0 maps to 0 by arithmetic, for every table."""
+        text = "Tom said so"
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        for anchor in (True, False):
+            mapped = mapper.map_row(0, len(text), "snap_to_pseudonym", anchor)
+            assert (mapped.pos0, mapped.pos1) == (0, mapper.new_len)
+
+
+class TestChangeClassification:
+    """`snapped`, `resized`, `shifted`, `unchanged`: one vocabulary.
+
+    The distinction matters beyond presentation: the hidden-coder rule
+    (D1 3.7, owner ruling X1) exempts a PURE SHIFT and requires the
+    override for a resize, a snap or a deletion, so a row put in the
+    wrong class is a row whose coder's consent was decided wrongly.
+    """
+
+    def _mapper(self, text, pseudonym):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": pseudonym}]))
+        replacements = P.find_replacements(compiled, text)
+        return P.SpanMapper(replacements, len(text))
+
+    @pytest.mark.parametrize("policy", P.OVERLAP_POLICIES)
+    def test_a_span_containing_a_same_length_pseudonym_is_a_pure_shift(
+            self, policy):
+        """"Tom" to "Pat" is three characters for three: the coder still
+        marks the same passage, so this is exempt under X1."""
+        mapper = self._mapper("say Tom now ok", "Pat")
+        mapped = mapper.map_row(0, 11, policy, False)
+        assert mapped.change == P.UNCHANGED
+        assert mapped.touched is True         # the seltext still changes
+
+    @pytest.mark.parametrize("policy", P.OVERLAP_POLICIES)
+    def test_a_span_strictly_containing_a_name_is_resized_not_snapped(
+            self, policy):
+        """Master's tail-cut BRANCH fires here although nothing is cut:
+        the span shrinks by the name and grows by the pseudonym. Calling
+        it a snap would demand the hidden-coder override for a row whose
+        boundaries never met a name."""
+        mapper = self._mapper("say Tom now", "Pseudo")
+        mapped = mapper.map_row(0, 11, policy, False)
+        assert mapped.change == P.RESIZED
+
+    def test_a_whole_file_span_is_not_snapped_by_the_anchor_undoing_a_cut(
+            self):
+        """Under parity a span at offset 0 takes a head cut that the
+        start anchor immediately undoes in the same step. The start
+        never moves, so it is not a boundary the run had to move."""
+        mapper = self._mapper("Tom said so", "Pseudo")
+        anchored = mapper.map_row(0, 11, "qualcoder_edit_parity", True)
+        assert anchored.pos0 == 0
+        assert anchored.change == P.RESIZED
+        loose = mapper.map_row(0, 11, "qualcoder_edit_parity", False)
+        assert loose.change == P.SNAPPED
+
+    @pytest.mark.parametrize("policy", P.OVERLAP_POLICIES)
+    def test_a_span_after_every_edit_is_shifted(self, policy):
+        mapper = self._mapper("say Tom now", "Pseudo")
+        mapped = mapper.map_row(8, 11, policy, False)
+        assert mapped.change == P.SHIFTED
+        assert mapped.touched is False
+
+    @pytest.mark.parametrize("policy", P.OVERLAP_POLICIES)
+    def test_a_span_before_every_edit_is_unchanged_and_untouched(
+            self, policy):
+        mapper = self._mapper("say Tom now", "Pseudo")
+        mapped = mapper.map_row(0, 3, policy, False)
+        assert mapped.change == P.UNCHANGED
+        assert mapped.touched is False
+
+    def test_a_cut_boundary_is_snapped_under_both_policies(self):
+        mapper = self._mapper("say Tom now", "Pseudo")
+        for policy in P.OVERLAP_POLICIES:
+            assert mapper.map_row(5, 9, policy, False).change == P.SNAPPED
+
+    def test_touched_is_what_decides_a_seltext_refresh(self):
+        """A row whose positions do not move can still need its stored
+        quote rewritten, which is why `touched` exists separately."""
+        mapper = self._mapper("say Tom now ok", "Pat")
+        inside = mapper.map_row(0, 11, "snap_to_pseudonym", False)
+        outside = mapper.map_row(0, 3, "snap_to_pseudonym", False)
+        assert (inside.change, inside.touched) == (P.UNCHANGED, True)
+        assert (outside.change, outside.touched) == (P.UNCHANGED, False)
+
+
+class TestNonChaining:
+    """A pseudonym is never matched again, and the rule that guarantees it.
+
+    D1 is internally inconsistent here and this class resolves it in
+    favour of the rule. D1 3.2 refuses any mapping whose pseudonym is
+    also an original or a variant; D1 6.2's first non-chaining example
+    is `[Sam -> Alex, Bob -> Sam]`, which that rule refuses. D1 6.2's own
+    idempotence property then says the rules enforce that no pseudonym
+    equals an original, so 3.2 is the design and the 6.2 example is the
+    slip. The reasoning below is why the rule is the right half to keep.
+    """
+
+    def test_a_pseudonym_that_is_also_a_name_is_refused(self):
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping([
+                {"original": "Sam", "pseudonym": "Alex"},
+                {"original": "Bob", "pseudonym": "Sam"},
+            ])
+        assert "chain" in str(excinfo.value)
+
+    def test_why_that_mapping_is_refused_although_one_pass_survives_it(self):
+        """Two reasons, both shown rather than asserted.
+
+        Upstream's answer to `[Sam -> Alex, Bob -> Sam]` depends on the
+        order of the list: in this order nothing chains, and in the other
+        every Bob becomes Alex. And a SECOND run of the accepted mapping
+        over its own output would turn the ex-Bobs into Alex as well,
+        merging two identities without saying so. Refusing costs the
+        researcher one rename; accepting costs a silent merge.
+        """
+        forwards, backwards = "Sam and Bob", "Sam and Bob"
+        for original, pseudonym in (("Sam", "Alex"), ("Bob", "Sam")):
+            forwards = re.sub(rf"(?<!\w){re.escape(original)}(?!\w)",
+                              pseudonym, forwards)
+        for original, pseudonym in (("Bob", "Sam"), ("Sam", "Alex")):
+            backwards = re.sub(rf"(?<!\w){re.escape(original)}(?!\w)",
+                               pseudonym, backwards)
+        assert forwards == "Alex and Sam"
+        assert backwards == "Alex and Alex"
+
+    def test_the_ordering_upstream_gets_wrong_is_refused_outright(self):
+        for entries in ([{"original": "Sam", "pseudonym": "Alex"},
+                         {"original": "Alex", "pseudonym": "Pat"}],
+                        [{"original": "Alex", "pseudonym": "Pat"},
+                         {"original": "Sam", "pseudonym": "Alex"}]):
+            with pytest.raises(P.MappingError) as excinfo:
+                P.validate_mapping(entries)
+            assert "chain" in str(excinfo.value)
+
+    def test_what_upstream_would_have_done_with_that_mapping(self):
+        """The reason the refusal exists, shown rather than asserted."""
+        chained = "Sam and Alex"
+        for original, pseudonym in (("Sam", "Alex"), ("Alex", "Pat")):
+            chained = re.sub(rf"(?<!\w){re.escape(original)}(?!\w)",
+                             pseudonym, chained)
+        assert chained == "Pat and Pat"
+
+    @settings(max_examples=150, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT)
+    def test_the_order_of_the_entries_never_changes_the_result(self, text):
+        """What survives of "no chaining" once the rule is in force: with
+        no pseudonym able to be a name, the answer is a function of the
+        SET of entries, never of their order."""
+        entries = [{"original": "Tom", "pseudonym": "Pseudo"},
+                   {"original": "Ann", "pseudonym": "Quu"},
+                   {"original": "ab", "pseudonym": "Zed"}]
+        first = P.apply_replacements(text, P.find_replacements(
+            P.Compiled(P.validate_mapping(entries)), text))
+        second = P.apply_replacements(text, P.find_replacements(
+            P.Compiled(P.validate_mapping(list(reversed(entries)))), text))
+        assert first == second
+
+
+class TestLongestFirst:
+
+    @pytest.mark.parametrize("names,text,expected", [
+        ((["Mary Ann", "Mary"]), "Mary Ann went", "Sam went"),
+        ((["Mary", "Mary Ann"]), "Mary Ann went", "Sam went"),
+        ((["Jean-Paul", "Jean"]), "Jean-Paul went", "Sam went"),
+    ])
+    def test_the_longest_form_wins_whatever_order_it_is_given_in(
+            self, names, text, expected):
+        entries = []
+        for index, name in enumerate(names):
+            entries.append({"original": name,
+                            "pseudonym": "Sam" if len(name) == max(
+                                len(n) for n in names) else "Pat"})
+        compiled = P.Compiled(P.validate_mapping(entries))
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == expected
+
+    def test_the_shorter_form_still_fires_where_the_longer_cannot(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Mary Ann", "pseudonym": "Sam"},
+            {"original": "Mary", "pseudonym": "Pat"},
+        ]))
+        text = "Mary Anne went"
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == "Pat Anne went"
+
+
+class TestCaseModes:
+
+    @pytest.mark.parametrize("mode,text,expected", [
+        ("exact", "TOM tom Tom tOm", "TOM tom Alex tOm"),
+        ("insensitive", "TOM tom Tom tOm", "Alex Alex Alex Alex"),
+        ("insensitive_preserve", "TOM tom Tom tOm",
+         "ALEX alex Alex Alex"),
+    ])
+    def test_the_three_modes(self, mode, text, expected):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Alex"}], case_mode=mode))
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == expected
+
+    def test_insensitive_preserve_is_named_as_the_heuristic_it_is(self):
+        assert "heuristic" in P.Compiled.replacement_for.__doc__.lower()
+
+    def test_a_multi_word_pseudonym_follows_the_same_rule_as_a_whole(self):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Alex Brown"}],
+            case_mode="insensitive_preserve"))
+        text = "TOM and tom"
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == \
+            "ALEX BROWN and alex brown"
+
+    def test_case_variants_are_only_reported_under_exact(self):
+        exact = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Alex"}], case_mode="exact"))
+        assert P.case_variants_seen(exact, "TOM TOM Tom tom") == [
+            {"entry": 0, "form": "Tom", "other_case_count": 3}]
+        loose = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Alex"}],
+            case_mode="insensitive"))
+        assert P.case_variants_seen(loose, "TOM TOM Tom tom") == []
+
+    def test_a_spelling_another_entry_replaces_is_not_a_case_variant(self):
+        """With both "Tom" and "TOM" in the mapping, neither occurrence is
+        unreplaced, so neither is reported."""
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Alex"},
+            {"original": "TOM", "pseudonym": "Pat"},
+        ], case_mode="exact"))
+        assert P.case_variants_seen(compiled, "TOM Tom tom") == [
+            {"entry": 0, "form": "Tom", "other_case_count": 1},
+            {"entry": 1, "form": "TOM", "other_case_count": 1}]
+
+
+class TestDiagnostics:
+
+    def test_a_pseudonym_already_in_the_text_is_reported_not_refused(self):
+        """Owner ruling Q3: a warning, and the run proceeds."""
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Thomas", "pseudonym": "Alex"},
+            {"original": "Mary", "pseudonym": "Sam"},
+        ]))
+        found = P.pre_existing_pseudonym_occurrences(
+            compiled, "Thomas met Sam and Mary")
+        assert found == [{"entry": 1, "pseudonym": "Sam", "count": 1,
+                          "spans": [[11, 14]]}]
+
+    def test_a_shared_pseudonym_reports_for_every_entry_that_uses_it(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Thomas", "pseudonym": "Alex"},
+            {"original": "Mary", "pseudonym": "Alex"},
+        ]))
+        found = P.pre_existing_pseudonym_occurrences(compiled, "Alex was here")
+        assert [item["entry"] for item in found] == [0, 1]
+
+    def test_overlap_conflicts_name_the_form_that_lost(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Ann Marie", "pseudonym": "Sam"},
+            {"original": "Marie Curie", "pseudonym": "Pat"},
+        ]))
+        text = "Ann Marie Curie spoke"
+        replacements = P.find_replacements(compiled, text)
+        conflicts, truncated = P.overlap_conflicts(compiled, text,
+                                                   replacements)
+        assert not truncated
+        assert conflicts == [{"entry": 1, "form": "Marie Curie",
+                              "span": [4, 15], "loses_to_entry": 0,
+                              "chosen_span": [0, 9]}]
+
+    def test_no_conflict_is_reported_when_nothing_competes(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Sam"},
+            {"original": "Ann", "pseudonym": "Pat"},
+        ]))
+        text = "Tom and Ann"
+        assert P.overlap_conflicts(
+            compiled, text, P.find_replacements(compiled, text)) == ([], False)
+
+    def test_a_form_that_is_not_a_whole_word_is_not_a_conflict(self):
+        """The competing form has to be a WORD where it sits, or the
+        diagnostic invents clashes that could never have happened: "Mar"
+        inside "Marie" and "nn" inside "Ann" lost nothing, because
+        neither would ever have matched there.
+        """
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Ann Marie", "pseudonym": "Sam"},
+            {"original": "Mar", "pseudonym": "Pat"},      # trailing boundary
+            {"original": "nn", "pseudonym": "Quu"},       # leading boundary
+        ]))
+        text = "Ann Marie spoke"
+        replacements = P.find_replacements(compiled, text)
+        assert [(r.start, r.end) for r in replacements] == [(0, 9)]
+        assert P.overlap_conflicts(compiled, text, replacements) == ([], False)
+
+    def test_a_variant_of_the_same_entry_is_not_a_conflict(self):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Ann Marie", "pseudonym": "Sam",
+              "variants": ["Marie"]}]))
+        text = "Ann Marie spoke"
+        conflicts, _ = P.overlap_conflicts(
+            compiled, text, P.find_replacements(compiled, text))
+        assert conflicts == []
+
+    def test_the_conflict_scan_is_bounded_and_says_when_it_truncated(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Ann Marie", "pseudonym": "Sam"},
+            {"original": "Marie Curie", "pseudonym": "Pat"},
+        ]))
+        text = "Ann Marie Curie spoke. " * (P.MAX_OVERLAP_CONFLICTS + 5)
+        conflicts, truncated = P.overlap_conflicts(
+            compiled, text, P.find_replacements(compiled, text))
+        assert truncated is True
+        assert len(conflicts) == P.MAX_OVERLAP_CONFLICTS
+
+
+# =============================================================================
+# MAPPING VALIDATION (D1 3.2, texts of D1 3.11)
+# =============================================================================
+
+class TestMappingValidation:
+
+    @pytest.mark.parametrize("raw,fragment", [
+        ([], "mapping is empty"),
+        (None, "mapping is empty"),
+        ([{"original": "T", "pseudonym": "Alex"}],
+         "original must be at least 2 characters"),
+        ([{"original": "Tom", "pseudonym": "Al"}],
+         "pseudonym must be at least 3 characters"),
+        ([{"original": "Tom", "pseudonym": "A" * 201}],
+         "at most 200 characters"),
+        ([{"original": "Tom"}], "must have both original and pseudonym"),
+        ([{"original": "Tom", "pseudonym": "Alex", "extra": 1}],
+         "unknown key"),
+        (["Tom"], "must be an object"),
+        ("Tom", "must be a list"),
+        ([{"original": "Tom", "pseudonym": "Alex"},
+          {"original": "Tom", "pseudonym": "Pat"}], "appears twice"),
+        ([{"original": "Tom", "pseudonym": "Alex"},
+          {"original": "Pat", "pseudonym": "Tom"}], "chain"),
+        ([{"original": " Tom", "pseudonym": "Alex"}], "whitespace"),
+        ([{"original": "Tom", "pseudonym": "A#####B"}],
+         "five or more"),
+        ([{"original": "Tom", "pseudonym": "Al\U0001f600ex"}],
+         "beyond U+FFFF"),
+        # A carriage return is a C0 control, so the general character
+        # rule answers first; the U+FFFF clause is what catches a `\r`
+        # that somehow got past it and is pinned on its own below.
+        ([{"original": "Tom", "pseudonym": "Al\rex"}], "control characters"),
+        ([{"original": "Tom", "pseudonym": "Alex", "variants": "Tommy"}],
+         "variants must be a list"),
+        ([{"original": "Tom", "pseudonym": "Alex", "variants": ["T"]}],
+         "variant must be at least 2 characters"),
+        ([{"original": "Tom", "pseudonym": 5}], "must be a string"),
+    ], ids=lambda v: str(v)[:50])
+    def test_the_refusals(self, raw, fragment):
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping(raw)
+        assert fragment in str(excinfo.value)
+
+    def test_a_line_break_is_refused_in_every_position(self):
+        for bad in ["Tom\nx", "Tom\rx", "Tom x", "Tom x",
+                    "Tomx"]:
+            with pytest.raises(P.MappingError):
+                P.validate_mapping([{"original": bad, "pseudonym": "Alex"}])
+
+    def test_bidirectional_formatting_characters_are_refused(self):
+        """A pseudonym is written INTO the researcher's text; an override
+        would reorder every line after it on screen while the stored
+        offsets stayed where they are."""
+        for bad in ["‮Alex", "Al‭ex", "⁦Alex", "Al‏ex"]:
+            with pytest.raises(P.MappingError):
+                P.validate_mapping([{"original": "Tom", "pseudonym": bad}])
+
+    def test_the_zero_width_joiners_are_not_refused(self):
+        """They spell ordinary words in several scripts, so refusing them
+        would refuse real names."""
+        mapping = P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Al‍ex"}])
+        assert mapping.entries[0].pseudonym == "Al‍ex"
+
+    def test_an_astral_original_is_allowed_but_an_astral_pseudonym_is_not(
+            self):
+        """The asymmetry is the point: an original is whatever the file
+        already holds; a pseudonym is what we write, and an astral code
+        point there would break Qt's offsets from that character on."""
+        P.validate_mapping(
+            [{"original": "T\U0001f600m", "pseudonym": "Alex"}])
+        with pytest.raises(P.MappingError):
+            P.validate_mapping(
+                [{"original": "Tom", "pseudonym": "A\U0001f600lex"}])
+
+    def test_duplicate_pseudonyms_are_allowed_and_reported(self):
+        """Two people deliberately merged into one identity."""
+        mapping = P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Alex"},
+            {"original": "Ann", "pseudonym": "Alex"},
+        ])
+        assert mapping.shared_pseudonyms == (
+            {"pseudonym": "Alex", "entries": [0, 1]},)
+
+    def test_case_folded_duplicates_are_refused_only_when_case_is_ignored(
+            self):
+        entries = [{"original": "Tom", "pseudonym": "Alex"},
+                   {"original": "TOM", "pseudonym": "Pat"}]
+        P.validate_mapping(entries, case_mode="exact")
+        for mode in ("insensitive", "insensitive_preserve"):
+            with pytest.raises(P.MappingError):
+                P.validate_mapping(entries, case_mode=mode)
+
+    def test_a_pseudonym_that_only_case_folds_onto_a_name_chains_too(self):
+        entries = [{"original": "Tom", "pseudonym": "Alex"},
+                   {"original": "Pat", "pseudonym": "TOM"}]
+        P.validate_mapping(entries, case_mode="exact")
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping(entries, case_mode="insensitive")
+        assert "chain" in str(excinfo.value)
+
+    def test_a_variant_duplicated_inside_one_entry_is_refused(self):
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping([{"original": "Tom", "pseudonym": "Alex",
+                                 "variants": ["Tom"]}])
+        assert str(excinfo.value) == (
+            "mapping entry 0: the same original (or variant) appears twice.")
+
+    def test_a_duplicate_across_two_entries_names_both_of_them(self):
+        """D1 3.11's text, to the character. Asserting the fragment alone
+        let the cross-entry branch be removed with the test still green,
+        because the within-entry branch then answered with a message that
+        contained the same fragment and named one entry instead of two.
+        The researcher needs to be told which pair collided."""
+        for raw in ([{"original": "Tom", "pseudonym": "Alex"},
+                     {"original": "Tom", "pseudonym": "Pat"}],
+                    [{"original": "Tom", "pseudonym": "Alex"},
+                     {"original": "Ann", "pseudonym": "Pat",
+                      "variants": ["Tom"]}]):
+            with pytest.raises(P.MappingError) as excinfo:
+                P.validate_mapping(raw)
+            assert str(excinfo.value) == (
+                "mapping entries 0 and 1: the same original (or variant) "
+                "appears twice.")
+
+    def test_the_entry_cap_and_the_largest_accepted_mapping(self):
+        biggest = [{"original": f"Name{i:04d}", "pseudonym": f"Pseu{i:04d}"}
+                   for i in range(P.MAX_ENTRIES)]
+        assert len(P.validate_mapping(biggest)) == P.MAX_ENTRIES
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping(biggest + [{"original": "Extra",
+                                           "pseudonym": "More"}])
+        assert "at most 500" in str(excinfo.value)
+
+    def test_a_pseudonym_of_exactly_the_cap_is_accepted(self):
+        P.validate_mapping([{"original": "Tom",
+                             "pseudonym": "A" * P.MAX_PSEUDONYM_CHARS}])
+
+    def test_every_refusal_text_follows_the_house_rules(self):
+        texts = []
+        for raw in ([], [{"original": "T", "pseudonym": "Alex"}],
+                    [{"original": "Tom", "pseudonym": "Al"}],
+                    [{"original": "Tom", "pseudonym": "Al\U0001f600ex"}],
+                    [{"original": "Tom", "pseudonym": "Alex"},
+                     {"original": "Pat", "pseudonym": "Tom"}],
+                    [{"original": "Tom\nx", "pseudonym": "Alex"}]):
+            with pytest.raises(P.MappingError) as excinfo:
+                P.validate_mapping(raw)
+            texts.append(str(excinfo.value))
+        _house_rules(texts)
+
+
+class TestCanonicalMapping:
+
+    def test_order_does_not_change_the_canonical_form(self):
+        a = P.canonical_mapping(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Alex", "variants": ["T2", "T1"]},
+            {"original": "Ann", "pseudonym": "Pat"}]))
+        b = P.canonical_mapping(P.validate_mapping([
+            {"original": "Ann", "pseudonym": "Pat"},
+            {"original": "Tom", "pseudonym": "Alex", "variants": ["T1", "T2"]}]))
+        assert a == b
+        assert a[1]["variants"] == ["T1", "T2"]
+
+    def test_the_canonical_form_is_nfc(self):
+        composed = "José"
+        decomposed = "José"
+        assert composed != decomposed
+        a = P.canonical_mapping(P.validate_mapping(
+            [{"original": composed, "pseudonym": "Alex"}]))
+        b = P.canonical_mapping(P.validate_mapping(
+            [{"original": decomposed, "pseudonym": "Alex"}]))
+        assert a == b
+
+    def test_matching_is_not_normalised_even_though_binding_is(self):
+        """The asymmetry, pinned so nobody "fixes" it into a silent miss:
+        normalising what we LOOK FOR could stop matching a file stored in
+        the other normal form, so the engine matches the string exactly
+        as supplied. The consequence is that two mappings can bind the
+        same and do different things, which the signed state catches."""
+        text = "José spoke"
+        composed = P.Compiled(P.validate_mapping(
+            [{"original": "José", "pseudonym": "Alex"}]))
+        decomposed = P.Compiled(P.validate_mapping(
+            [{"original": "José", "pseudonym": "Alex"}]))
+        assert len(P.find_replacements(composed, text)) == 1
+        assert P.find_replacements(decomposed, text) == []
+
+
+# =============================================================================
+# DAMAGED AND EDGE-CASE ROWS (D1 6.3)
+# =============================================================================
+
+class TestDamagedRows:
+
+    def _mapper(self, text="say Tom now"):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Tom", "pseudonym": "Pseudo"}]))
+        replacements = P.find_replacements(compiled, text)
+        return P.SpanMapper(replacements, len(text)), text
+
+    @pytest.mark.parametrize("pos0,pos1", [
+        (None, 5), (5, None), (None, None), ("3", 5), (3, "5"),
+        (5, 5), (6, 3), (True, 5), (3, False),
+    ], ids=repr)
+    def test_a_row_that_is_not_a_span_is_left_exactly_as_it_is(
+            self, pos0, pos1):
+        mapper, _ = self._mapper()
+        assert mapper.map_row(pos0, pos1, "snap_to_pseudonym", True) is None
+
+    def test_an_end_past_the_text_is_clamped_on_the_old_side(self):
+        mapper, text = self._mapper()
+        mapped = mapper.map_row(0, len(text) + 40, "snap_to_pseudonym", True)
+        assert mapped.clamped is True
+        assert mapped.pos1 == mapper.new_len
+
+    def test_a_row_wholly_past_the_text_becomes_unmappable_after_clamping(
+            self):
+        mapper, text = self._mapper()
+        assert mapper.map_row(len(text) + 5, len(text) + 9,
+                              "snap_to_pseudonym", True) is None
+
+    def test_a_negative_start_keeps_its_start_and_moves_its_end(self):
+        """Neither policy invents a value for a start before the text:
+        no edit finishes before position zero, so the cumulative delta
+        there is zero and the oddity survives unchanged while the end
+        tracks the rewrite."""
+        mapper, text = self._mapper()
+        mapped = mapper.map_row(-1, len(text), "snap_to_pseudonym", True)
+        assert mapped.pos0 == -1
+        assert mapped.pos1 == mapper.new_len
+
+    def test_the_clamp_is_reported_for_every_policy(self):
+        mapper, text = self._mapper()
+        for policy in P.OVERLAP_POLICIES:
+            assert mapper.map_row(0, len(text) + 3, policy, True).clamped
+
+
+class TestTextEdgeCases:
+
+    def _run(self, text, names=("Tom",), pseudonym="Pseudo"):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": n, "pseudonym": pseudonym} for n in names]))
+        replacements = P.find_replacements(compiled, text)
+        return replacements, P.apply_replacements(text, replacements)
+
+    def test_a_name_at_offset_zero(self):
+        replacements, new = self._run("Tom said")
+        assert replacements[0].start == 0
+        assert new == "Pseudo said"
+
+    def test_a_name_at_the_end_of_the_text(self):
+        replacements, new = self._run("said Tom")
+        assert replacements[0].end == 8
+        assert new == "said Pseudo"
+
+    def test_a_name_as_the_entire_text(self):
+        _, new = self._run("Tom")
+        assert new == "Pseudo"
+
+    def test_two_names_adjacent(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Aaa"},
+            {"original": "Ann", "pseudonym": "Bbb"}]))
+        text = "Tom Ann"
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == "Aaa Bbb"
+
+    def test_names_separated_by_a_single_character(self):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Aaa"},
+            {"original": "Ann", "pseudonym": "Bbb"}]))
+        text = "Tom,Ann"
+        assert P.apply_replacements(
+            text, P.find_replacements(compiled, text)) == "Aaa,Bbb"
+
+    def test_a_name_immediately_followed_by_a_newline(self):
+        _, new = self._run("Tom\nsaid")
+        assert new == "Pseudo\nsaid"
+
+    def test_nothing_matches_across_a_line_break(self):
+        """The space in a multi-word form is literal, so a name split
+        over two lines is not a match (upstream parity)."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Mary Ann", "pseudonym": "Sam"}]))
+        assert P.find_replacements(compiled, "Mary\nAnn") == []
+
+    def test_an_empty_text_produces_no_edits_and_no_new_text(self):
+        replacements, new = self._run("")
+        assert replacements == []
+        assert new == ""
+
+    def test_a_file_with_no_match_is_returned_byte_for_byte(self):
+        text = "nothing to see here"
+        replacements, new = self._run(text)
+        assert replacements == []
+        assert new is text
+
+
+class TestUniqueConstraintPreCheck:
+
+    def test_two_rows_snapping_onto_one_span_are_reported(self):
+        """One coding on "Thomas" and one on "Thom": under the snap
+        policy both become the pseudonym, and `code_text` is unique on
+        (cid, fid, pos0, pos1, owner)."""
+        text = "say Thomas now"
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        a = mapper.map_row(4, 10, "snap_to_pseudonym", True)
+        b = mapper.map_row(4, 8, "snap_to_pseudonym", True)
+        assert (a.pos0, a.pos1) == (b.pos0, b.pos1)
+        collisions = P.unique_constraint_collisions(
+            [(1, 1, a.pos0, a.pos1, "C"), (1, 1, b.pos0, b.pos1, "C")],
+            [11, 12])
+        assert collisions == [{"key": [1, 1, 4, 8, "C"], "row_ids": [11, 12]}]
+
+    def test_rows_that_differ_in_any_key_column_do_not_collide(self):
+        assert P.unique_constraint_collisions(
+            [(1, 1, 0, 4, "C"), (2, 1, 0, 4, "C"), (1, 1, 0, 4, "D")],
+            [1, 2, 3]) == []
+
+    def test_the_parity_policy_resolves_the_collision_by_deleting(self):
+        text = "say Thomas now"
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        replacements = P.find_replacements(compiled, text)
+        mapper = P.SpanMapper(replacements, len(text))
+        for span in ((4, 10), (4, 8)):
+            mapped = mapper.map_row(span[0], span[1],
+                                    "qualcoder_edit_parity", True)
+            assert mapped.change == P.DELETED
+
+
+# =============================================================================
+# ROUND TRIP AND DETERMINISM (D1 6.2)
+# =============================================================================
+
+class TestRoundTripOracle:
+    """The v0.13 reverse tool's oracle, written now (D1 6.2).
+
+    Reversing over the manifest's SPANS rather than by matching text is
+    what makes reversal safe when a pseudonym also occurs naturally, and
+    this is the property the later tool has to satisfy.
+    """
+
+    @settings(max_examples=200, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT, raw=_SPAN_SOURCE)
+    def test_reversing_over_the_spans_restores_the_text_and_the_rows(
+            self, text, raw):
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quu"},
+        ]))
+        replacements = P.find_replacements(compiled, text)
+        assume(not P.pre_existing_pseudonym_occurrences(compiled, text))
+        new_text = P.apply_replacements(text, replacements)
+        mapper = P.SpanMapper(replacements, len(text))
+        spans = _valid_spans(raw, len(text))
+        forward = [mapper.map_row(a, b, "snap_to_pseudonym", True)
+                   for a, b in spans]
+
+        # The inverse edit list, exactly what a manifest records: each
+        # new span and the text it replaced.
+        inverse = []
+        offset = 0
+        for item in replacements:
+            start = item.start + offset
+            inverse.append(P.Replacement(start, start + len(item.text),
+                                         item.entry, item.text, item.matched))
+            offset += item.delta
+        assert P.apply_replacements(new_text, inverse) == text
+
+        back = P.SpanMapper(inverse, len(new_text))
+        for (a, b), mapped in zip(spans, forward):
+            if mapped.change == P.SNAPPED:
+                continue          # a cut boundary is information lost
+            returned = back.map_row(mapped.pos0, mapped.pos1,
+                                    "snap_to_pseudonym", True)
+            assert (returned.pos0, returned.pos1) == (a, b)
+
+
+class TestIdempotenceAndDeterminism:
+
+    def test_running_the_same_mapping_again_finds_nothing(self):
+        """Guaranteed by the validation rule that no pseudonym is a name
+        in the mapping, so a rewritten text holds no match."""
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quu"},
+        ]))
+        text = "Tom met Ann and Tom"
+        once = P.apply_replacements(text, P.find_replacements(compiled, text))
+        assert P.find_replacements(compiled, once) == []
+
+    @settings(max_examples=120, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(text=_TEXT)
+    def test_the_same_inputs_give_the_same_edits_every_time(self, text):
+        entries = [{"original": "Tom", "pseudonym": "Pseudo"},
+                   {"original": "Ann", "pseudonym": "Quu"}]
+        first = [(r.start, r.end, r.entry, r.text) for r in
+                 P.find_replacements(P.Compiled(P.validate_mapping(entries)),
+                                     text)]
+        second = [(r.start, r.end, r.entry, r.text) for r in
+                  P.find_replacements(
+                      P.Compiled(P.validate_mapping(list(reversed(entries)))),
+                      text)]
+        # Reversing the entry order renumbers the entries but must not
+        # move a single character.
+        assert [(s, e, t) for s, e, _, t in first] == \
+               [(s, e, t) for s, e, _, t in second]
+
+    def test_the_compiled_pattern_is_a_function_of_the_mapping_alone(self):
+        """Same mapping, same pattern, and the longest form first."""
+        entries = [{"original": "Ann", "pseudonym": "Quu"},
+                   {"original": "Mary Ann", "pseudonym": "Pseudo"}]
+        first = P.Compiled(P.validate_mapping(entries))
+        second = P.Compiled(P.validate_mapping(list(reversed(entries))))
+        assert first.pattern.pattern == second.pattern.pattern
+        assert [form for form, _ in first.forms] == ["Mary Ann", "Ann"]
+
+
+class TestContext:
+
+    def test_context_is_capped_however_much_is_asked_for(self):
+        text = "x" * 1000 + "Tom" + "y" * 1000
+        wide = P.context_for(text, 1000, 1003, 10_000)
+        assert len(wide) == 3 + 2 * P.MAX_CONTEXT_CHARS
+
+    def test_context_clips_at_the_edges_of_the_text(self):
+        assert P.context_for("Tom said", 0, 3, 30) == "Tom said"
+
+    def test_a_negative_request_returns_the_match_alone(self):
+        assert P.context_for("say Tom now", 4, 7, -5) == "Tom"

@@ -506,14 +506,19 @@ class Compiled:
         return found
 
     def replacement_for(self, entry_index: int, matched: str) -> str:
-        """The text that replaces one match, under this case mode."""
+        """The text that replaces one match, under this case mode.
+
+        Under `insensitive_preserve` this is a HEURISTIC, and the tool
+        description says so in the same word: it copies the shape of the
+        matched text onto the pseudonym, which gets SHOUTED and
+        lower-case passages right because that is what transcripts
+        actually contain, and takes the pseudonym as written for
+        anything else.
+        """
         pseudonym = self.mapping.entries[entry_index].pseudonym
         if self.case_mode != "insensitive_preserve":
             return pseudonym
-        # A heuristic, and the tool description calls it one: it copies
-        # the shape of the matched text onto the pseudonym and gets
-        # SHOUTED and lower-case passages right, which is what
-        # transcripts actually contain. Anything else (mixed case, a
+        # Anything that is not all upper or all lower (mixed case, a
         # capitalised word) takes the pseudonym as the researcher wrote
         # it. The length guard is upstream-shaped rather than reachable:
         # no surface form is shorter than two characters.
