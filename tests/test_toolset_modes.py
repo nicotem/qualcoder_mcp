@@ -31,7 +31,7 @@ from mcp.client.stdio import stdio_client
 REPO = Path(__file__).resolve().parent.parent
 VENV_PY = Path(sys.executable)
 
-EXPECTED_FULL = 69
+EXPECTED_FULL = 70
 EXPECTED_CORE = 21
 
 SCHEMA = """
@@ -308,9 +308,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 143_793          # 69 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 151_923          # 70 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_317           # 21 tools, same environment
-    FULL_MEASURED_310 = 151_053      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 159_607      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_253
 
     # Why two per cent, away from the reference environment.
@@ -338,11 +338,11 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "143,793"
+    FULL_CHARS = "151,923"
     CORE_CHARS = "56,317"
-    FULL_ROUNDED = "144,000"
+    FULL_ROUNDED = "152,000"
     CORE_ROUNDED = "56,000"
-    FULL_TOKENS = "36k"
+    FULL_TOKENS = "38k"
     CORE_TOKENS = "14k"
 
     @staticmethod
@@ -411,11 +411,11 @@ class TestThePublishedSchemaBudget:
 
     def test_the_full_toolset_measures_what_the_documents_say(self):
         self._assert_matches("full", self.FULL_MEASURED,
-                             self.FULL_MEASURED_310, 69)
+                             self.FULL_MEASURED_310, EXPECTED_FULL)
 
     def test_the_core_toolset_measures_what_the_documents_say(self):
         self._assert_matches("core", self.CORE_MEASURED,
-                             self.CORE_MEASURED_310, 21)
+                             self.CORE_MEASURED_310, EXPECTED_CORE)
 
     def test_the_tolerance_is_a_real_comparison(self):
         """A tolerance nobody drives is a tolerance that passes anything.
@@ -439,7 +439,7 @@ class TestThePublishedSchemaBudget:
         is two. Two tools are outside it. What catches one tool is the
         exact half, on 3.13, which CI runs on all three platforms.
         """
-        average_tool = self.FULL_MEASURED / 69
+        average_tool = self.FULL_MEASURED / EXPECTED_FULL
         assert average_tool / self.FULL_MEASURED < self.TOLERANCE
         assert 2 * average_tool / self.FULL_MEASURED > self.TOLERANCE
 
@@ -488,7 +488,9 @@ class TestThePublishedSchemaBudget:
         """The defect that gave this away: a full delta smaller than the
         core delta plus the tools outside core."""
         entry = self._read("CHANGELOG.md").split("## [0.11")[0]
-        block = entry[entry.index("Serialised tool JSON after this batch"):]
+        # Anchored on the stable prefix: the entry names WHICH batch
+        # the figure follows, and that wording moves with each one.
+        block = entry[entry.index("Serialised tool JSON after"):]
         numbers = [int(n.replace(",", "")) for n in
                    re.findall(r"\d{2,3},\d{3}", block)]
         full_after, core_after, full_before, core_before = numbers[:4]

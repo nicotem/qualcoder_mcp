@@ -9,10 +9,11 @@ import shutil
 import logging
 import sqlite3
 import tempfile
+import hashlib
 import functools
 import unicodedata
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Sequence, Tuple
 
 from mcp.server.fastmcp import FastMCP
@@ -49,7 +50,9 @@ from .database import (
     normalize_name,
     name_key,
     position_safe as db_position_safe,
+    read_project_pseudonyms,
 )
+from . import pseudonymise as pseudo
 from .cursors import (
     CURSOR_MAX_LENGTH,
     CURSOR_TOO_LONG,
@@ -81,6 +84,7 @@ from .preview_tokens import (
     SECRET_UNAVAILABLE_MESSAGE,
     TOKEN_VALID_FOR_MINUTES,
     PreviewSecretUnavailable,
+    bind_id,
     canonical_args,
     ensure_state_dir,
     fingerprint_rows,
@@ -9433,7 +9437,8 @@ def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
                    rows: Any, confirm: bool, hint: str,
                    execute_arguments: Dict[str, Any],
                    warnings: Optional[List[str]] = None,
-                   state_preview: Optional[Dict[str, Any]] = None
+                   state_preview: Optional[Dict[str, Any]] = None,
+                   override_required: Optional[bool] = None
                    ) -> Dict[str, Any]:
     """The preview payload, with the token that authorises its execute.
 
@@ -9442,7 +9447,16 @@ def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
     calls a minute apart: the age of a backup folder, the heuristics
     about an open QualCoder window. Signing those would expire every
     token by the clock rather than by change, so the signed part is the
-    stable core and the readable part is the whole preview.
+    stable core and the readable part is the whole preview. The flagship
+    uses it for the opposite reason: its preview carries presentation
+    that its arguments control (truncated span lists, context, the
+    residue scan), and signing those would bind arguments the token
+    deliberately does not bind.
+
+    `override_required` says whether the execute will need
+    `allow_hidden_coder`, for a tool whose rule for that is not the
+    single count the cascade previews carry. Left None, the cascade
+    rule applies unchanged.
     """
     project = _token_project()
     state = fingerprint_rows(preview if state_preview is None
@@ -9452,7 +9466,9 @@ def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
     # The recipe spells out the arguments the preview says this execute
     # will need, so a small local model does not have to infer them from
     # a note (D3 3.5).
-    if preview.get("hidden_coder_codings_affected", 0):
+    needs_override = (preview.get("hidden_coder_codings_affected", 0)
+                      if override_required is None else override_required)
+    if needs_override:
         arguments["allow_hidden_coder"] = True
     if preview.get("subcode_count", 0):
         arguments["cascade"] = True
@@ -9520,8 +9536,12 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
                          preview_token: Optional[str], confirm: bool,
                          backup_fail_detail: str, confirm_hint: str,
                          execute_arguments: Dict[str, Any],
-                         allow_hidden_coder: bool = False) -> Dict[str, Any]:
-    """Preview -> token -> safety-backup gate for destructive codebook ops.
+                         allow_hidden_coder: bool = False,
+                         state_preview_fn=None,
+                         override_required_fn=None,
+                         warnings_fn=None,
+                         execute_guard_fn=None) -> Dict[str, Any]:
+    """Preview -> token -> safety-backup gate for destructive operations.
 
     Without a token this returns a preview (read-only, no backup, no
     connection upgrade) of exactly what would change, plus the token that
@@ -9530,6 +9550,24 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     fingerprint of the rows in the blast radius, checks the hidden-coder
     gate, and only then runs the mutation under the full write discipline
     with a mandatory backup and an in-transaction re-check.
+
+    The four optional hooks exist so the flagship reuses this gate rather
+    than paralleling it, and every one of them defaults to the behaviour
+    the six codebook tools already had:
+
+    - `state_preview_fn(preview)` narrows what the token SIGNS to the
+      part of a preview that says what the run would do, for a tool
+      whose preview also carries presentation its own unbound arguments
+      control;
+    - `override_required_fn(preview)` replaces the single
+      `hidden_coder_codings_affected` count for a tool whose
+      hidden-coder rule is finer than a count (ruling X1 exempts a pure
+      position shift and does not exempt a resize);
+    - `warnings_fn(preview)` replaces the cascade collateral warnings;
+    - `execute_guard_fn(preview)` is a last refusal between the
+      hidden-coder gate and the write, for a precondition that is only
+      knowable from the preview, such as two rows that would land on one
+      unique key.
     """
     def state_of(db_) -> str:
         """The signed state: what the preview says AND which rows it covers.
@@ -9538,7 +9576,15 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
         comparison is between two answers to the same question rather
         than between a question and its hash.
         """
-        return fingerprint_rows(preview_fn(db_), fingerprint_fn(db_))
+        signed = preview_fn(db_)
+        if state_preview_fn is not None:
+            signed = state_preview_fn(signed)
+        return fingerprint_rows(signed, fingerprint_fn(db_))
+
+    def override_required(preview) -> bool:
+        if override_required_fn is not None:
+            return bool(override_required_fn(preview))
+        return bool(preview.get("hidden_coder_codings_affected", 0))
 
     try:
         ro = get_db()
@@ -9547,15 +9593,22 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     except (ValueError, RuntimeError) as e:
         return {"error": str(e)}
 
+    signed_preview = (preview if state_preview_fn is None
+                      else state_preview_fn(preview))
     if preview_token is None:
         try:
-            return _issue_preview(tool, token_args, preview, rows, confirm,
-                                  confirm_hint, execute_arguments,
-                                  _collateral_warnings(preview))
+            return _issue_preview(
+                tool, token_args, preview, rows, confirm, confirm_hint,
+                execute_arguments,
+                (_collateral_warnings if warnings_fn is None
+                 else warnings_fn)(preview),
+                state_preview=None if state_preview_fn is None
+                else signed_preview,
+                override_required=override_required(preview))
         except PreviewSecretUnavailable:
             return _token_error("preview_secret_unavailable", tool)
 
-    state = fingerprint_rows(preview, rows)
+    state = fingerprint_rows(signed_preview, rows)
     try:
         outcome = verify(preview_token, tool, token_args, _token_project(),
                          state)
@@ -9564,9 +9617,13 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     if outcome != OK:
         return _token_error(outcome, tool)
 
-    if preview.get("hidden_coder_codings_affected", 0) and \
-            not allow_hidden_coder:
+    if override_required(preview) and not allow_hidden_coder:
         return _token_error("hidden_coder_override_required", tool)
+
+    if execute_guard_fn is not None:
+        refusal = execute_guard_fn(preview)
+        if refusal is not None:
+            return refusal
 
     # Always back up before a destructive write (no create_backup=False here)
     result = _perform_write(_state_guarded(state_of, state, op_fn, tool),
@@ -9884,6 +9941,810 @@ def merge_category(from_category_id: int,
         execute_arguments=execute_args,
     )
     return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# PSEUDONYMISATION (v0.12 flagship, D1)
+# ============================================================================
+#
+# The one write class that can corrupt a project: it rewrites the text
+# every stored offset is measured against. So it carries every guard this
+# server has at once, and the order they run in is the design (D1 3.8):
+# the mapping is validated, the files are resolved, the token is verified
+# against a recomputation of the whole effect, the hidden-coder rule and
+# the unique-constraint rule refuse before anything is copied, and only
+# then does the write happen, behind a mandatory backup, behind SQLite's
+# RESERVED lock, behind a second recomputation of the signed state, and
+# behind a per-file fingerprint check that nothing has moved.
+
+PSEUDONYMISATION_DIRNAME = "pseudonymisation"
+# Upstream gives up after fifty tries at a unique journal name
+# (code_pdf.py:6047); so does this.
+JOURNAL_NAME_ATTEMPTS = 50
+# A run names the files it touches, or it names none of them and covers
+# every eligible text source. Two hundred explicit ids is far past any
+# real selection and keeps the token's bound arguments bounded.
+MAX_PSEUDONYMISE_FILE_IDS = 200
+
+
+def _pseudonymisation_dir() -> Path:
+    """Where run manifests live, read through the module attribute.
+
+    `preview_tokens.state_home()` rather than a second `Path.home()` of
+    our own, so the suite's isolation of the state home covers this
+    folder too and no test can write a manifest into the researcher's
+    own `~/.qualcoder_mcp`.
+    """
+    return preview_tokens_state_home() / PSEUDONYMISATION_DIRNAME
+
+
+def _write_run_manifest(payload: Dict[str, Any],
+                        name: str) -> Optional[Path]:
+    """Write one run manifest, atomically and owner-only.
+
+    The MRU discipline, for the same reasons: an exclusively created temp
+    file beside the target so two servers can never share a name, the
+    descriptor handed to `os.fdopen` before anything can fault, an fsync
+    before the rename so a crash cannot leave a half-written manifest,
+    and mode 0600 because the file names the pseudonyms.
+
+    Written AFTER the commit, so a crash in between leaves a correct
+    database and no manifest, which the journal entry still records. A
+    failure here is reported and never fails the run: the data is
+    already safely committed and refusing afterwards would only confuse.
+    """
+    directory = _pseudonymisation_dir()
+    tmp: Optional[Path] = None
+    try:
+        ensure_state_dir(directory)
+        fd, tmp_name = tempfile.mkstemp(dir=str(directory),
+                                        prefix=f"{name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        # Unowned between mkstemp and fdopen: a fault in that window
+        # leaks the descriptor, which POSIX hides and Windows reports as
+        # a sharing violation on the very next cleanup (the Batch B
+        # round-5 lesson).
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.name != "nt":
+            os.chmod(tmp_name, 0o600)
+        target = directory / name
+        tmp.replace(target)
+        tmp = None
+        return target
+    except Exception as e:
+        logger.error(f"Could not write the pseudonymisation run "
+                     f"manifest: {e}")
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return None
+
+
+def _pseudonymise_safe_name(name: Any, compiled) -> Optional[str]:
+    """A file name, unless the mapping matches it.
+
+    The manifest and the journal entry both promise to carry no original
+    name, and a FILE can be called "Thomas_interview.txt". D1 writes the
+    name into both; withholding it where it would break that promise
+    costs nothing, because the file id identifies the file either way,
+    and keeping it would put a real name into a journal entry that lives
+    inside the project and is visible to every later AI read.
+    """
+    if not isinstance(name, str):
+        return None
+    return None if compiled.pattern.search(name) else name
+
+
+def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
+    """What the researcher has to be told before approving a run.
+
+    Each appears only when it applies, and each says what would make the
+    answer different, because the preview exists to be read out loud.
+    """
+    warnings: List[str] = []
+    totals = preview.get("totals", {})
+    hidden = preview.get("hidden_coder_rows", {})
+
+    other = sum(entry["codings"] for item in preview.get("files", [])
+                for entry in item["codings"].get("by_owner", []))
+    changed = totals.get("codings_changed", 0)
+    if other:
+        names = ", ".join(preview.get("ai_coder_names", [])) or "none recorded"
+        warnings.append(
+            f"Warning: {other} of the {changed} coding(s) this run would "
+            f"move were not made under this server's AI coder name(s) "
+            f"({names}); they are other coders' work. Show the user the "
+            f"by_owner breakdown and get an explicit go-ahead before "
+            f"executing.")
+    if hidden.get("override_required"):
+        warnings.append(
+            "Warning: this run would resize, snap or delete span(s) that "
+            "belong to coder(s) currently hidden in QualCoder; their names "
+            "are not shown. Executing requires allow_hidden_coder=true. A "
+            "pure position shift of a hidden coder's row does not, because "
+            "it changes no coding decision.")
+    if totals.get("unique_constraint_collisions"):
+        warnings.append(
+            f"Warning: {totals['unique_constraint_collisions']} pair(s) or "
+            f"group(s) of rows would land on the same span after the "
+            f"remap, which QualCoder's schema forbids. The execute is "
+            f"refused until this is resolved; see "
+            f"unique_constraint_collisions.")
+    if totals.get("rows_deleted"):
+        warnings.append(
+            f"Warning: overlap_policy=qualcoder_edit_parity would DELETE "
+            f"{totals['rows_deleted']} row(s) whose span sits inside a "
+            f"replaced name, which is what QualCoder's own editor does. "
+            f"The default policy, snap_to_pseudonym, deletes nothing.")
+    pre_existing = [item for item in preview.get("files", [])
+                    if item.get("pre_existing_pseudonym_occurrences")]
+    if pre_existing:
+        warnings.append(
+            "Warning: at least one pseudonym already occurs in the text "
+            "(see pre_existing_pseudonym_occurrences). The rewritten text "
+            "will not distinguish those occurrences from the ones this run "
+            "writes. Choose a different pseudonym if that matters.")
+    if any(item.get("overlap_conflicts") for item in preview.get("files", [])):
+        warnings.append(
+            "Warning: two mapping entries compete for the same characters "
+            "somewhere (see overlap_conflicts); the longer surface form "
+            "won and the other did not fire there. Show the user the "
+            "conflicts.")
+    if preview.get("shared_pseudonyms"):
+        warnings.append(
+            "Warning: two or more mapping entries share one pseudonym, so "
+            "those people become one identity in the rewritten text. That "
+            "is allowed and may be deliberate; confirm it is.")
+    unsafe = [item["file_id"] for item in preview.get("files", [])
+              if not item.get("position_safe", True)]
+    if unsafe:
+        warnings.append(
+            f"Warning: file(s) {unsafe} contain \\r\\n sequences or "
+            f"characters beyond U+FFFF, so QualCoder's GUI already counts "
+            f"positions in them differently from this server (its "
+            f"documented emoji bug). This run does not make that worse and "
+            f"does not fix it.")
+    residue = preview.get("residue") or {}
+    residue_total = sum(v for v in residue.get("memos", {}).values()) + sum(
+        residue.get(key, 0) for key in
+        ("case_names", "file_names", "code_names", "attribute_values"))
+    if residue_total:
+        warnings.append(
+            f"Warning: the names in this mapping also occur in "
+            f"{residue_total} memo(s), label(s) or attribute value(s), "
+            f"which this tool does NOT rewrite. See residue; tell the user "
+            f"where the names would remain.")
+    if not totals.get("replacements"):
+        warnings.append(
+            "None of the names in this mapping occurs in the selected "
+            "files, so an execute would rewrite nothing.")
+    return warnings
+
+
+def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
+    """What is true after a run, whether or not anyone asks (D1 3.5)."""
+    return [
+        "Positions in these files have changed: re-read them before any "
+        "further coding, and treat any pending coding suggestion for them "
+        "as stale.",
+        "The backup contains the pre-pseudonymisation text and, if the "
+        "researcher keeps one, pseudonyms.json; both hold the real names. "
+        "Secure or prune the backup once the run is verified.",
+        "An open QualCoder window will not refresh from this write until "
+        "the project is reopened.",
+        "QualCoder 4.0's AI search index (ai_data/search.sqlite), if this "
+        "project has one, still holds the previous text and re-indexes the "
+        "source the next time QualCoder opens the project with AI enabled.",
+    ]
+
+
+def _stale_sessions_for(file_ids: Sequence[int]) -> List[str]:
+    """Review sessions whose unapplied suggestions point at a rewritten file.
+
+    Listed, never acted on: a session is the researcher's record and
+    deleting one is their decision. Nothing fails if a session file
+    cannot be read; the list is advice, not a gate.
+
+    An `apply_codings` call on such a session fails safe anyway, because
+    the recorded excerpt still holds the real name and the
+    exact-verbatim invariant will not find it in the rewritten text.
+    """
+    wanted = set(file_ids)
+    stale: List[str] = []
+    if current_project_path is None:
+        return stale
+    try:
+        listed = session_manager.list_sessions(
+            project_path=current_project_path, days_old=36500)
+    except Exception as e:
+        logger.debug(f"Could not list sessions for stale check: {e}")
+        return stale
+    for meta in listed:
+        session_id = meta.get("coding_session_id")
+        if not session_id:
+            continue
+        try:
+            session = session_manager.load_session(session_id)
+        except Exception:
+            continue
+        for suggestion in session.suggestions:
+            if suggestion.status in ("pending", "approved") and \
+                    suggestion.file_id in wanted:
+                stale.append(session_id)
+                break
+    return sorted(stale)
+
+
+def _pseudonymise_journal_name(files: Sequence[Dict[str, Any]],
+                               compiled) -> str:
+    """The journal entry's name, sanitised the way upstream sanitises its own.
+
+    Upstream builds "Restructure <file> <timestamp>" and replaces
+    everything outside `[\\w -]` with an underscore
+    (`code_pdf.py:6032-6033`). The one difference here is that the
+    character class is ASCII, because THIS server's `add_journal_entry`
+    enforces QualCoder's own ASCII journal-name charset
+    (`journals.py:607`); a Unicode-aware sanitiser would happily produce
+    a name our own validator then refuses.
+
+    A file name that the mapping matches is withheld, so a journal entry
+    inside the project never carries a real name in its title.
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
+    if len(files) == 1:
+        label = _pseudonymise_safe_name(files[0].get("name"), compiled)
+        if label is None:
+            label = f"file {files[0]['file_id']}"
+    else:
+        label = f"{len(files)} files"
+    return re.sub(r"[^ \w-]", "_", f"Pseudonymisation {label} {stamp}",
+                  flags=re.ASCII)
+
+
+def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
+                               compiled, backup_name: Optional[str],
+                               manifest_name: str) -> str:
+    """The audit the PROJECT itself carries, with no original in it.
+
+    Upstream's PDF restructure writes a report of its own rewrite into
+    the journal (`code_pdf.py:6004-6053`), which is the precedent for
+    recording this one there. The journal is inside the project and is
+    read back by every later AI read, so it carries pseudonyms, counts
+    and ids and nothing else: no original, no variant, no file name the
+    mapping matches, and no slice of text.
+    """
+    entries = compiled.mapping.entries
+    per_entry: Dict[int, int] = {}
+    for item in plan["files"]:
+        for replacement in item["replacements"]:
+            per_entry[replacement.entry] = per_entry.get(
+                replacement.entry, 0) + 1
+    lines = [
+        f"Pseudonymisation run, "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.",
+        f"Case mode: {plan['case_mode']}. Overlap policy: "
+        f"{plan['overlap_policy']}.",
+        f"Files rewritten: {len(written['files'])}.",
+    ]
+    for report in written["files"]:
+        label = _pseudonymise_safe_name(report.get("name"), compiled)
+        shown = (f"file id {report['file_id']} ({label})" if label
+                 else f"file id {report['file_id']} (name withheld: it "
+                      f"contains a name from the mapping)")
+        lines.append(
+            f"  {shown}: {report['replacements']} replacement(s), "
+            f"{report['codings_updated']} coding(s) moved, "
+            f"{report['annotations_updated']} annotation(s) moved, "
+            f"{report['case_links_updated']} case link(s) moved, "
+            f"{report['codings_deleted']} coding(s) deleted.")
+    if per_entry:
+        applied = ", ".join(
+            f"{entries[index].pseudonym} ({count})"
+            for index, count in sorted(per_entry.items()))
+        lines.append(f"Pseudonyms applied: {applied}.")
+    if backup_name:
+        lines.append(f"Backup taken before the run: {backup_name}.")
+    lines.append(f"Run manifest: {manifest_name}.")
+    lines.append(
+        "The names replaced are not recorded here. Positions in these "
+        "files have changed.")
+    return "\n".join(lines)
+
+
+def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
+                           compiled, bind: str, backup_path: Optional[str],
+                           journal_entry: Optional[str],
+                           when: datetime) -> Dict[str, Any]:
+    """The run record kept in the state home (D1 3.2).
+
+    Spans in the NEW text plus row ids and old and new offsets: enough
+    for a later release to reverse the run exactly, over spans rather
+    than by matching text, so a pseudonym that also occurred naturally is
+    never reversed by mistake. Not enough to reconstruct a name: the
+    originals, the old text and the old stored quotes are all absent, and
+    the researcher's own copy of the mapping is the other half a reversal
+    needs. That split is deliberate (owner ruling Q2): the reverse key
+    belongs to the researcher, not to this server's state folder.
+    """
+    entries = compiled.mapping.entries
+    by_id = {item["file_id"]: item for item in written["files"]}
+    files = []
+    for item in plan["files"]:
+        report = by_id.get(item["file_id"], {})
+        offset = 0
+        spans = []
+        for replacement in item["replacements"]:
+            start = replacement.start + offset
+            spans.append({"entry": replacement.entry,
+                          "new_span": [start, start + len(replacement.text)]})
+            offset += replacement.delta
+        rows: Dict[str, List[Dict[str, Any]]] = {}
+        for key, table in (("codings", "code_text"),
+                           ("annotations", "annotation"),
+                           ("case_links", "case_text")):
+            rows[key] = [
+                {"id": row["id"], "old": [row["pos0"], row["pos1"]],
+                 "new": (None if row["map"].pos0 is None
+                         else [row["map"].pos0, row["map"].pos1]),
+                 "change": row["map"].change}
+                for row in item["rows"][table]
+                if row["map"] is not None
+                and (row["map"].change != pseudo.UNCHANGED
+                     or row["map"].touched)]
+        files.append({
+            "file_id": item["file_id"],
+            "name": _pseudonymise_safe_name(item["name"], compiled),
+            "old_fingerprint": list(item["old_fingerprint"]),
+            "new_fingerprint": [report.get("new_length"),
+                                report.get("new_sha256")],
+            "replacements": spans,
+            **rows,
+        })
+    canonical_map = pseudo.canonical_mapping(compiled.mapping)
+    return {
+        "format": 1,
+        "created": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "project_path": str(validate_qda_path(current_project_path)),
+        "token_bind": bind,
+        "backup_path": backup_path,
+        "journal_entry": journal_entry,
+        "case_mode": plan["case_mode"],
+        "overlap_policy": plan["overlap_policy"],
+        # The mapping itself is never stored; this is only enough to
+        # tell whether a later reversal was given the same one.
+        "mapping_sha256": hashlib.sha256(
+            json.dumps(canonical_map, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode("utf-8")).hexdigest(),
+        "entries": [{"index": entry.index, "pseudonym": entry.pseudonym}
+                    for entry in entries],
+        "files": files,
+    }
+
+
+@mcp.tool()
+@_tool_guard
+def pseudonymise_source(
+    mapping: Optional[List[Dict[str, Any]]] = None,
+    file_ids: Optional[List[int]] = None,
+    use_project_pseudonyms: bool = False,
+    case_mode: str = "exact",
+    overlap_policy: str = "snap_to_pseudonym",
+    preview_token: Optional[str] = None,
+    allow_hidden_coder: bool = False,
+    record_in_journal: bool = True,
+    include_context: bool = False,
+    context_chars: int = 30,
+    scan_residue: bool = True,
+    max_spans_per_entry: int = 50,
+) -> str:
+    """Replace names with pseudonyms in a project's stored text.
+
+    THIS REWRITES SOURCE TEXT and moves every coding, annotation and case
+    link in the files it touches. It is the only tool in this server that
+    changes the text those positions are measured against. Preview first,
+    relay the counts, the collisions and the residue to the user, get an
+    explicit yes, then execute with the token.
+
+    Two-step by design. Call without preview_token: nothing is written
+    and the result is a preview of exactly what would change, with a
+    preview_token. Show the user the preview and every warning it
+    carries, and ask whether to proceed. Only if they agree, call again
+    with the SAME mapping, file_ids, case_mode and overlap_policy, plus
+    preview_token=<the token>. The token is valid for 60 minutes and only
+    while the text and the rows it covers are unchanged; if the project
+    changed in between, the execute is refused and you must preview
+    again. A backup is always created first and cannot be turned off.
+
+    Deterministic and rule-based. ONLY the names in the mapping are
+    replaced, as whole words, case-sensitively unless case_mode says
+    otherwise. There is no name detection and no guessing: if a name is
+    not in the mapping it stays. Whole-word means QualCoder's own rule,
+    so "Ann" does not match inside "Anna", but "Tom" DOES match inside
+    "Tom's" (the apostrophe is not a word character, so possessives keep
+    their suffix) and inside "Jean-Paul". Nicknames, inflections and
+    spelling variants each need their own entry or a `variants` list.
+    Nothing matches across a line break.
+
+    Pseudonymised data is still personal data and is often
+    re-identifiable from context. This reduces risk; it does not
+    anonymise (PRIVACY.md).
+
+    What this does NOT rewrite, and where the names will remain: memos,
+    journal entries, case names, file names, attribute values, PDFs,
+    media files, QualCoder 4.0's ai_data folder, speakers.json and
+    speaker_regex.json. The preview's `residue` block counts where the
+    names still occur so you can tell the user; it counts the PUBLIC part
+    of memos only and never reads a '#####' private note.
+
+    The backup keeps the real names, and so does pseudonyms.json if the
+    researcher keeps one; both are the reverse key and belong somewhere
+    secure. The run manifest this tool writes and the journal entry it
+    can add never contain an original name.
+
+    QualCoder notes: an open QualCoder window will not refresh from this
+    write until the project is reopened, and QualCoder 4.0's AI search
+    index keeps the previous text until it re-indexes on the next open
+    with AI enabled.
+
+    Args:
+        mapping: The replacements, as a list of objects:
+                 {"original": "Thomas", "pseudonym": "Alex",
+                  "variants": ["Tom", "Tommy"]}. `original` needs at
+                 least 2 characters and `pseudonym` at least 3
+                 (QualCoder's own minimums); `variants` is optional and
+                 maps extra surface forms to the same pseudonym. A
+                 pseudonym that is also a name in the same mapping is
+                 refused, because QualCoder's import would chain the two
+                 replacements and this tool will not.
+        file_ids: Which text sources to rewrite; omit for every eligible
+                 one. PDFs, media files and files with no stored text are
+                 listed under skipped_files with a reason and never fail
+                 the call.
+        use_project_pseudonyms: Read the mapping from the project's own
+                 pseudonyms.json instead (QualCoder's import-time list).
+                 Give this or `mapping`, not both.
+        case_mode: "exact" (default, QualCoder's own rule: TOM, Tom and
+                 tom are three different names), "insensitive" (all three
+                 get the pseudonym exactly as written), or
+                 "insensitive_preserve" (a HEURISTIC: an all-upper match
+                 gets an upper-case pseudonym, an all-lower match a
+                 lower-case one, anything else the pseudonym as written).
+        overlap_policy: "snap_to_pseudonym" (default): a coding that
+                 marked the name marks the pseudonym, a coding that cut
+                 into a name grows to contain the whole pseudonym, and
+                 nothing is ever emptied or deleted.
+                 "qualcoder_edit_parity": exactly what QualCoder's own
+                 text editor does, which DELETES a coding that sits on a
+                 name and trims one that merely touches it. Use it only
+                 when matching QualCoder's editor matters more than
+                 keeping the codings.
+        preview_token: The token from this operation's preview; omit it
+                 to get the preview.
+        allow_hidden_coder: Required when the preview says this run would
+                 resize, snap or delete a span belonging to a coder
+                 currently hidden in QualCoder. A pure position shift of
+                 such a row does not require it, because it changes no
+                 coding decision.
+        record_in_journal: Write a journal entry in the project recording
+                 the run (default true). It carries counts, pseudonyms
+                 and file ids, never an original name. This argument is
+                 NOT part of what the token binds: it changes only
+                 whether the run records itself.
+        include_context: Return the text around each match in the
+                 preview. Off by default because it returns FILE CONTENT
+                 into the conversation; the counts are usually enough to
+                 approve a run.
+        context_chars: Characters of context each side when
+                 include_context is on (capped at 120).
+        scan_residue: Count where the names also occur in memos, labels
+                 and attribute values (default true).
+        max_spans_per_entry: How many match positions to list per entry
+                 per file before truncating (default 50).
+
+    The last four arguments and record_in_journal are NOT bound into the
+    token: passing a different value for one of them on the execute call
+    is not "a different operation", it simply changes what is shown or
+    whether the run is recorded. The four that ARE bound are mapping,
+    file_ids, case_mode and overlap_policy, and they must be repeated
+    identically on the execute call.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
+
+    Returns:
+        JSON: the preview and a preview_token, or the result of the run.
+    """
+    if current_project_path is None:
+        return json.dumps({"error": _no_project_message()}, indent=2)
+    if case_mode not in pseudo.CASE_MODES:
+        return json.dumps({"error": (
+            f"case_mode must be one of "
+            f"{', '.join(pseudo.CASE_MODES)}.")}, indent=2)
+    if overlap_policy not in pseudo.OVERLAP_POLICIES:
+        return json.dumps({"error": (
+            f"overlap_policy must be one of "
+            f"{', '.join(pseudo.OVERLAP_POLICIES)}.")}, indent=2)
+
+    # One mapping source, named by the caller. Guessing which they meant
+    # is exactly the kind of helpfulness this tool must not have.
+    if mapping is not None and use_project_pseudonyms:
+        return json.dumps({"error": (
+            "mapping and use_project_pseudonyms were both given; give one "
+            "mapping source.")}, indent=2)
+    sidecar_encoding = None
+    if use_project_pseudonyms:
+        try:
+            mapping, sidecar_encoding = read_project_pseudonyms(
+                _current_project_folder())
+        except FileNotFoundError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError) as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    try:
+        validated = pseudo.validate_mapping(mapping, case_mode)
+    except pseudo.MappingError as e:
+        return json.dumps({"error": str(e)}, indent=2)
+    compiled = pseudo.Compiled(validated)
+
+    if file_ids is not None:
+        try:
+            file_ids = _validate_id_list(
+                file_ids, "file_ids", MAX_PSEUDONYMISE_FILE_IDS,
+                f"file_ids accepts at most {MAX_PSEUDONYMISE_FILE_IDS} "
+                f"file ids; omit it to cover every eligible text source.")
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # Resolved before anything else so "nothing here to rewrite" is an
+    # answer with the reasons attached rather than a bare error.
+    try:
+        eligible, skipped = get_db().pseudonymise_sources(file_ids)
+    except (ValueError, RuntimeError) as e:
+        return json.dumps({"error": str(e)}, indent=2)
+    if not eligible:
+        return json.dumps({
+            "error": ("No eligible text source: every selected file is a "
+                      "PDF, a media file or has no text. See skipped_files."),
+            "skipped_files": skipped,
+        }, indent=2)
+
+    ai_names = _ai_names_for_project()
+    token_args = canonical_args(
+        "pseudonymise_source",
+        mapping=pseudo.canonical_mapping(validated),
+        file_ids=file_ids, case_mode=case_mode,
+        overlap_policy=overlap_policy)
+
+    def _plan(db_):
+        return db_.pseudonymise_plan(compiled, overlap_policy, file_ids)
+
+    def _signed(preview):
+        """What the token covers: the effect, never the presentation.
+
+        Recomputed from the plan rather than trimmed out of the preview,
+        so an argument that only changes what is SHOWN cannot change what
+        is signed even by accident.
+        """
+        return preview["_effect"]
+
+    def _preview_with_effect(db_):
+        plan = _plan(db_)
+        preview = db_.pseudonymise_preview(
+            plan, ai_names, include_context=include_context,
+            context_chars=context_chars, scan_residue=scan_residue,
+            max_spans_per_entry=max_spans_per_entry)
+        if sidecar_encoding is not None:
+            preview["pseudonyms_json_encoding"] = sidecar_encoding
+        preview["_effect"] = db_.pseudonymise_effect(plan)
+        return preview
+
+    def _override_required(preview):
+        return bool(preview.get("hidden_coder_rows", {})
+                    .get("override_required"))
+
+    def _collisions_refusal(preview):
+        if preview.get("totals", {}).get("unique_constraint_collisions"):
+            return {
+                "error": (
+                    "Two or more rows would land on the same span after "
+                    "remapping (unique_constraint_collisions in the preview "
+                    "lists them), which QualCoder's schema forbids. Nothing "
+                    "was written: delete one row of each pair, or choose "
+                    "overlap_policy=qualcoder_edit_parity, which deletes "
+                    "spans that sit inside a replaced name."),
+                "reason": "unique_constraint_collision",
+                "nothing_changed": True,
+            }
+        if not preview.get("totals", {}).get("replacements"):
+            # A run with nothing to do is answered rather than performed:
+            # a whole-tree backup for a no-op helps nobody, and the
+            # token stays valid until it expires (D3 3.2).
+            return {
+                "success": True,
+                "nothing_changed": True,
+                "message": (
+                    "None of the names in this mapping occurs in the "
+                    "selected files, so nothing was rewritten and no "
+                    "backup was taken."),
+                "skipped_files": preview.get("skipped_files", []),
+            }
+        return None
+
+    owner = None
+    if preview_token is not None and record_in_journal:
+        owner, owner_error = _resolve_write_owner()
+        if owner_error is not None:
+            # The rebate: the journal entry is an audit record, not the
+            # run, so a project with no AI coder name yet can still have
+            # its text pseudonymised by turning the entry off.
+            owner_error = dict(owner_error)
+            owner_error["alternative"] = (
+                "Or call pseudonymise_source again with "
+                "record_in_journal=false and the same preview_token: the "
+                "rewrite itself writes no owner, so it needs no coder "
+                "name. The run manifest in ~/.qualcoder_mcp still records "
+                "it.")
+            return json.dumps(owner_error, indent=2)
+
+    captured: Dict[str, Any] = {}
+    # Both fixed before the write, because the journal entry is written
+    # INSIDE the transaction and has to be able to name the manifest that
+    # will sit beside it. `bind` covers the tool, the arguments and the
+    # project, all of which are settled here; `when` is read once so the
+    # name in the journal and the name on disk cannot disagree.
+    when = datetime.now(timezone.utc)
+    bind = bind_id("pseudonymise_source", token_args, _token_project())
+    manifest_name = f"run_{when.strftime('%Y%m%dT%H%M%SZ')}_{bind}.json"
+
+    def _op(wdb):
+        plan = wdb.pseudonymise_plan(compiled, overlap_policy, file_ids)
+        written = wdb.pseudonymise_write(plan)
+        hidden_updated = 0
+        for item in plan["files"]:
+            hidden = wdb.pseudonymise_hidden_rows(item)
+            hidden_updated += sum(hidden[key] for key in
+                                  ("shifted", "resized", "snapped",
+                                   "deleted"))
+        journal_entry = None
+        if record_in_journal:
+            backup = getattr(wdb, "last_backup_path", None)
+            journal_entry = _pseudonymise_write_journal(
+                wdb, plan, written, compiled, owner,
+                Path(backup).name if backup else None, manifest_name)
+        captured["plan"] = plan
+        captured["written"] = written
+        captured["journal_entry"] = journal_entry
+        unsafe = [report["file_id"] for report in written["files"]
+                  if not report["position_safe"]]
+        result = {
+            "success": True,
+            "message": (f"Pseudonymised {len(written['files'])} file(s)"),
+            "preview_verified": True,
+            "files": written["files"],
+            "hidden_coder_rows_updated": hidden_updated,
+            "journal_entry": journal_entry,
+        }
+        if unsafe:
+            result["position_safety_warning"] = (
+                f"File(s) {unsafe} contain \\r\\n sequences or characters "
+                f"beyond U+FFFF (e.g. emoji), so QualCoder's GUI uses a "
+                f"different position system for them (its documented emoji "
+                f"bug). That was already true before this run and is not "
+                f"made worse by it; GUI-created codings in those files may "
+                f"not align with the slices this server reports.")
+        return result
+
+    result = _guarded_destructive(
+        preview_fn=_preview_with_effect,
+        op_fn=_op,
+        fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(_plan(db_)),
+        tool="pseudonymise_source",
+        token_args=token_args,
+        preview_token=preview_token,
+        confirm=False,
+        allow_hidden_coder=allow_hidden_coder,
+        backup_fail_detail="no text was rewritten",
+        confirm_hint=(
+            "Read the user the per-file replacement counts, every "
+            "collision and the residue summary, and say plainly that this "
+            "rewrites the stored text and moves every coding in those "
+            "files. Only with an explicit yes, call pseudonymise_source "
+            "again exactly as execute_with says, with the SAME mapping."),
+        execute_arguments={
+            "case_mode": case_mode,
+            "overlap_policy": overlap_policy,
+            "file_ids": file_ids,
+            "use_project_pseudonyms": use_project_pseudonyms,
+        },
+        state_preview_fn=_signed,
+        override_required_fn=_override_required,
+        warnings_fn=_pseudonymise_warnings,
+        execute_guard_fn=_collisions_refusal,
+    )
+    if isinstance(result, dict):
+        result.pop("_effect", None)
+        preview = result.get("preview")
+        if isinstance(preview, dict):
+            preview.pop("_effect", None)
+    if not isinstance(result, dict) or "error" in result or \
+            not captured.get("written"):
+        return json.dumps(result, indent=2)
+
+    backup_path = result.get("backup_path")
+    manifest = _pseudonymise_manifest(
+        captured["plan"], captured["written"], compiled, bind, backup_path,
+        captured.get("journal_entry"), when)
+    written_to = _write_run_manifest(manifest, manifest_name)
+    if written_to is None:
+        result["manifest_path"] = None
+        result["manifest_note"] = (
+            "The run manifest could not be written to ~/.qualcoder_mcp; "
+            "the rewrite itself committed and is unaffected. Check the "
+            "permissions on that folder.")
+    else:
+        result["manifest_path"] = str(written_to)
+    result["stale_sessions"] = _stale_sessions_for(
+        [item["file_id"] for item in captured["written"]["files"]])
+    result["notes"] = _pseudonymise_notes(
+        Path(backup_path).name if backup_path else None)
+    return json.dumps(result, indent=2)
+
+
+def _pseudonymise_write_journal(wdb, plan: Dict[str, Any],
+                                written: Dict[str, Any], compiled,
+                                owner: Optional[str],
+                                backup_name: Optional[str],
+                                manifest_name: str) -> Optional[str]:
+    """Add the run's journal entry inside the same transaction.
+
+    Inside, so the database and its own audit record are consistent in
+    every outcome: a rollback takes both, a commit keeps both.
+
+    The unique name is found by looking first and inserting once, rather
+    than by inserting and catching the constraint. `add_journal_entry`
+    rolls the connection back on an IntegrityError, which inside this
+    transaction would discard the whole rewrite, so the one collision
+    path that must never be taken is the one upstream takes
+    (`code_pdf.py:6035-6049` loops on IntegrityError with its own
+    commit per attempt; ours cannot).
+    """
+    base = _pseudonymise_journal_name(written["files"], compiled)
+    name = base
+    for attempt in range(2, JOURNAL_NAME_ATTEMPTS + 1):
+        try:
+            taken = wdb.conn.execute(
+                "SELECT 1 FROM journal WHERE name = ?", (name,)).fetchone()
+        except sqlite3.Error:
+            return None
+        if taken is None:
+            break
+        name = f"{base}_{attempt}"
+    else:
+        logger.warning("Could not find a free journal name for the "
+                       "pseudonymisation run; no entry was written.")
+        return None
+    body = _pseudonymise_journal_body(
+        plan, written, compiled, backup_name, manifest_name)
+    try:
+        wdb.add_journal_entry(name=name, entry=body, owner=owner,
+                              auto_commit=False)
+    except (ValueError, RuntimeError) as e:
+        logger.warning(f"Could not write the pseudonymisation journal "
+                       f"entry: {e}")
+        return None
+    return name
 
 
 # ============================================================================

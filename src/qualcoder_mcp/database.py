@@ -1,6 +1,7 @@
 """Database interface for Qualcoder .qda files."""
 
 import bisect
+import locale
 import os
 import sqlite3
 from pathlib import Path
@@ -1348,6 +1349,104 @@ def copy_project_to_workspace(
 def memo_has_private_zone(memo: Any) -> bool:
     """Whether a stored memo carries a '#####' private section."""
     return split_public_private_memo(memo)[1] != ""
+
+
+PSEUDONYMS_JSON_NAME = "pseudonyms.json"
+# The sidecar is a short list of short strings. A megabyte is orders of
+# magnitude past any real one and stops a mistaken or hostile file being
+# read into memory whole.
+PSEUDONYMS_JSON_MAX_BYTES = 1024 * 1024
+
+
+def read_project_pseudonyms(project_folder: Union[str, Path]
+                            ) -> Tuple[List[Dict[str, str]], str]:
+    """QualCoder's own `pseudonyms.json`, read the way it is written.
+
+    Upstream writes the file with `json.dump(..., indent=2)` through an
+    `open(path, 'w')` that names NO encoding (`pseudonyms.py:92`, and it
+    reads it back the same way at `:122`), so what is on disk is whatever
+    the platform default was on the machine that wrote it: UTF-8 on macOS
+    and Linux, typically cp1252 on Windows. A reader that assumes UTF-8
+    therefore fails on a file a Windows QualCoder wrote with an accented
+    name in it.
+
+    So the bytes are decoded as UTF-8 first, with a leading byte-order
+    mark stripped if there is one, and as the platform default only if
+    that fails. Which one worked is RETURNED rather than guessed at,
+    because the answer matters to anyone comparing our counts with
+    QualCoder's.
+
+    The path is built from the resolved project folder and never from a
+    caller's string, and a symlink pointing out of the project is
+    refused rather than followed (the S-P1 rule the backup copier
+    already applies).
+
+    Returns (entries, encoding_used); entries carry exactly `original`
+    and `pseudonym`, and any other key upstream or a future version adds
+    is ignored on read, never rewritten.
+
+    Raises:
+        FileNotFoundError: no sidecar in this project.
+        ValueError: the file is not QualCoder's list of entries.
+    """
+    folder = Path(project_folder)
+    path = folder / PSEUDONYMS_JSON_NAME
+    if not os.path.lexists(str(path)):
+        raise FileNotFoundError(
+            f"{PSEUDONYMS_JSON_NAME} was not found in the project folder.")
+    if path.is_symlink():
+        try:
+            inside = path.resolve().is_relative_to(folder.resolve())
+        except (OSError, AttributeError):
+            inside = False
+        if not inside:
+            raise ValueError(
+                f"{PSEUDONYMS_JSON_NAME} in the project folder is a link to "
+                f"a file outside the project and was not read.")
+    raw = path.read_bytes()
+    if len(raw) > PSEUDONYMS_JSON_MAX_BYTES:
+        raise ValueError(
+            f"{PSEUDONYMS_JSON_NAME} is larger than "
+            f"{PSEUDONYMS_JSON_MAX_BYTES} bytes and was not read.")
+    try:
+        text = raw.decode("utf-8-sig")
+        encoding = "utf-8-sig" if raw[:3] == b"\xef\xbb\xbf" else "utf-8"
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False)
+        try:
+            text = raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            raise ValueError(
+                f"{PSEUDONYMS_JSON_NAME} could not be parsed as QualCoder's "
+                f"list of {{original, pseudonym}} entries: it is neither "
+                f"UTF-8 nor this machine's default encoding "
+                f"({encoding}).") from None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        # `msg` names the syntax problem and the position; it never
+        # carries a value out of the file.
+        raise ValueError(
+            f"{PSEUDONYMS_JSON_NAME} could not be parsed as QualCoder's "
+            f"list of {{original, pseudonym}} entries: {e.msg} at line "
+            f"{e.lineno}.") from None
+    if not isinstance(data, list):
+        raise ValueError(
+            f"{PSEUDONYMS_JSON_NAME} could not be parsed as QualCoder's "
+            f"list of {{original, pseudonym}} entries: the file holds a "
+            f"{type(data).__name__}, not a list.")
+    entries: List[Dict[str, str]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict) or not isinstance(
+                item.get("original"), str) or not isinstance(
+                item.get("pseudonym"), str):
+            raise ValueError(
+                f"{PSEUDONYMS_JSON_NAME} could not be parsed as QualCoder's "
+                f"list of {{original, pseudonym}} entries: entry {index} is "
+                f"not an object with two text values.")
+        entries.append({"original": item["original"],
+                        "pseudonym": item["pseudonym"]})
+    return entries, encoding
 
 
 def hidden_coder_refusal(kind: str, row_id: int,
@@ -7588,7 +7687,11 @@ class QualcoderDatabase:
         """Create a backup of the current project before making changes.
 
         The copy report (skipped outward or dangling symlinks, S-P1) is
-        kept on self.last_backup_report for the caller to surface.
+        kept on self.last_backup_report for the caller to surface, and
+        the folder on self.last_backup_path, for a write that has to name
+        its own backup from INSIDE the transaction (the flagship's
+        journal entry, which is written there so the database and its
+        audit record are consistent in every outcome).
 
         Returns:
             Path to the backup folder
@@ -7597,7 +7700,9 @@ class QualcoderDatabase:
             OSError: If backup fails
         """
         self.last_backup_report = {}
-        return backup_project(self.db_path, report=self.last_backup_report)
+        self.last_backup_path = backup_project(
+            self.db_path, report=self.last_backup_report)
+        return self.last_backup_path
 
     # ======================================================================
     # PSEUDONYMISATION (v0.12 flagship, D1): plan, preview, residue, write
@@ -8225,6 +8330,11 @@ class QualcoderDatabase:
             "mapping_entries": len(entries),
             "case_mode": plan["case_mode"],
             "overlap_policy": plan["overlap_policy"],
+            # At the top as well as per file, because the warning that
+            # names them has to read them whether or not any file has a
+            # coding, and because "which names does this server treat as
+            # its own" is one answer for the whole run (D7).
+            "ai_coder_names": list(ai_coder_names),
             "files": files,
             "skipped_files": plan["skipped"],
             "totals": totals,

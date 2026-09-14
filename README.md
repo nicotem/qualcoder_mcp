@@ -776,7 +776,7 @@ The MCP server exposes these resources (read-only data):
 ## Available Tools
 
 Claude can use these tools to analyse your data. The full toolset
-(the default, `QUALCODER_MCP_TOOLSET=full`) registers 69 tools; the
+(the default, `QUALCODER_MCP_TOOLSET=full`) registers 70 tools; the
 argument lists below are abbreviated, and each tool's own description
 carries the complete list.
 
@@ -795,7 +795,7 @@ carries the complete list.
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 144,000 characters for `full`, roughly 36k
+> definitions run to about 152,000 characters for `full`, roughly 38k
 > tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those

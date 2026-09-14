@@ -97,11 +97,20 @@ ASK_WRITES = {
                                   create_backup=False),
 }
 
-# D7 3.1's full list, so a twelfth write tool cannot land uncovered and
+# D7 3.1's full list, so a further write tool cannot land uncovered and
 # the count in the comment above cannot drift away from the code again
 # (QA round 1, F9: the constant was called ELEVEN_WRITES and held nine).
-ELEVEN_WRITE_TOOLS = frozenset(ASK_WRITES) | {"apply_codings",
-                                              "create_proposed_codes"}
+#
+# `pseudonymise_source` is the twelfth, and it is the only one that
+# resolves an owner CONDITIONALLY: the rewrite itself writes no owner
+# anywhere (it updates positions and quotes on rows that already have
+# one), so the only row that needs a coder name is the optional journal
+# entry recording the run. With `record_in_journal=false` it asks for
+# nothing, which is the rebate the ask refusal offers.
+OWNER_RESOLVING_TOOLS = frozenset(ASK_WRITES) | {"apply_codings",
+                                                 "create_proposed_codes",
+                                                 "pseudonymise_source"}
+ELEVEN_WRITE_TOOLS = OWNER_RESOLVING_TOOLS
 
 
 # Every read surface B1.17 names, keyed by name so a failure says which
@@ -414,9 +423,10 @@ class TestTheAsk:
         ELEVEN_WRITES held nine entries while its comment said the ask
         was pinned on all eleven (QA round 1, F9). The two the
         parametrisation cannot carry are pinned by their own tests above,
-        and a twelfth write tool would land uncovered in silence, so the
-        list is now derived from the source: every function that calls
-        `_resolve_write_owner` must be one of the eleven.
+        and a further write tool would land uncovered in silence, so the
+        list is derived from the source: every function that calls
+        `_resolve_write_owner` must be one of the listed tools. The
+        v0.12 flagship is the twelfth, and the list moved with it.
         """
         import ast
         source = (Path(server.__file__)).read_text(encoding="utf-8")
@@ -430,9 +440,9 @@ class TestTheAsk:
                         and inner.func.id == "_resolve_write_owner"):
                     resolving.add(node.name)
                     break
-        assert resolving == set(ELEVEN_WRITE_TOOLS), (
-            resolving ^ set(ELEVEN_WRITE_TOOLS))
-        assert len(ELEVEN_WRITE_TOOLS) == 11
+        assert resolving == set(OWNER_RESOLVING_TOOLS), (
+            resolving ^ set(OWNER_RESOLVING_TOOLS))
+        assert len(OWNER_RESOLVING_TOOLS) == 12
 
     def test_the_ask_repeats_byte_identically(self, setup_server_unset,
                                               qualcoder_db_path):

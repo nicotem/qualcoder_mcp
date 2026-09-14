@@ -59,7 +59,7 @@ RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))  # generated artefacts
 PROJECTS_DIR = RUN_DIR / "projects"
 HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
 
-EXPECTED_TOOLS = 69
+EXPECTED_TOOLS = 70
 EXPECTED_CONCRETE_RESOURCES = 7   # six data resources + qualcoder://guidance/methods (0.12)
 EXPECTED_RESOURCE_TEMPLATES = 3
 EXPECTED_RESOURCES_TOTAL = 10

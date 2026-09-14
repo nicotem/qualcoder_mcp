@@ -77,6 +77,8 @@ EXPECTED_TOOLS = {
     # report exports (v0.8 phase B)
     "export_codebook", "export_coded_segments_report",
     "export_frequencies_csv", "export_case_code_matrix_csv",
+    # v0.12 flagship: the one tool that rewrites stored text
+    "pseudonymise_source",
 }
 
 
@@ -102,7 +104,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 69
+        assert len(names) == 70
 
 
 class TestEndToEndLoop:

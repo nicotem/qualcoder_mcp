@@ -215,9 +215,10 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after this batch: full = 143,793 characters
-  (about 35.9k tokens at chars/4) over 69 tools, core = 56,317 (about
-  14.1k) over 21. At the Batch A point, before this batch: 128,297 and
+- Serialised tool JSON after the flagship: full = 151,923 characters
+  (about 38.0k tokens at chars/4) over 70 tools, core = 56,317 (about
+  14.1k) over 21. Before the flagship, after Batch B: 143,793 and
+  56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
   final tree through the toolset gate, as the `tools/list` payload
   carries them: the name, description and input schema of every
@@ -227,11 +228,16 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (151,053
+  time, the same definitions measure about five per cent more (159,607
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
-  characters of the growth, `compare_coders` and the new setter for
-  most of the rest. `tests/test_toolset_modes.py` re-measures all four
+  characters of the Batch B growth, `compare_coders` and the new setter
+  for most of the rest. `pseudonymise_source` alone accounts for the
+  8,130 characters added since: it is one tool with a long description
+  by necessity, because a tool that rewrites the researcher's text has
+  to state in its own definition what it rewrites, what it leaves, and
+  what the backup then holds. `core` is unchanged, because the flagship
+  is in `full` only. `tests/test_toolset_modes.py` re-measures all four
   figures on every run, so a docstring edit that moves them cannot
   leave them standing.
 

@@ -78,7 +78,7 @@ class TestSessionIdDuplicateRemoved:
 # the live registry so a tool added later is covered without an edit here.
 # ===========================================================================
 
-TOOL_COUNT = 69          # pinned in tests/test_v012_cli.py too
+TOOL_COUNT = 70          # pinned in tests/test_v012_cli.py too
 
 UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
 

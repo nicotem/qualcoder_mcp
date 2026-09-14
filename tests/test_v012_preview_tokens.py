@@ -174,13 +174,55 @@ class TestCanonicalJson:
         assert calls, "the MAC comparison must use hmac.compare_digest"
 
     def test_the_registration_table_is_the_only_place_arguments_live(self):
-        """H1: adding a gated tool is one row and no branch."""
+        """H1: adding a gated tool is one row and no branch.
+
+        The v0.12 flagship is the first tool to take that offer up:
+        `pseudonymise_source` is one row here and nothing else in this
+        module.
+        """
         assert set(pt.REGISTRY) == {
             "merge_codes", "delete_code", "delete_category",
-            "merge_category", "restore_backup", "prune_backups"}
+            "merge_category", "restore_backup", "prune_backups",
+            "pseudonymise_source"}
         assert pt.canonical_args("delete_code", code_id=7) == {"code_id": 7}
         with pytest.raises(KeyError):
             pt.canonical_args("set_memo", target_id=1)
+
+    def test_the_flagship_binds_only_what_decides_the_effect(self):
+        """The four arguments that change the text or a row, and no more.
+
+        `include_context`, `context_chars`, `scan_residue` and
+        `max_spans_per_entry` change what the preview SHOWS;
+        `record_in_journal` changes only whether the run records itself.
+        None of them is bound, so passing a different one on the execute
+        call is not "a different operation": it changes nothing.
+        """
+        bound = pt.canonical_args(
+            "pseudonymise_source",
+            mapping=[{"original": "Tom", "pseudonym": "Alex",
+                      "variants": []}],
+            file_ids=[3, 1], case_mode="exact",
+            overlap_policy="snap_to_pseudonym",
+            use_project_pseudonyms=True, include_context=True,
+            context_chars=99, scan_residue=False, max_spans_per_entry=1,
+            record_in_journal=False, allow_hidden_coder=True,
+            preview_token="qcp1.1.aaaaaaaa." + "a" * 32, confirm=True)
+        assert bound == {
+            "file_ids": [1, 3],
+            "mapping": [{"original": "Tom", "pseudonym": "Alex",
+                         "variants": []}],
+            "case_mode": "exact",
+            "overlap_policy": "snap_to_pseudonym"}
+
+    def test_the_flagship_file_selection_binds_as_a_sorted_set(self):
+        """The same files asked for in another order is the same run."""
+        def call(ids):
+            return pt.canonical_args(
+                "pseudonymise_source", mapping=[], file_ids=ids,
+                case_mode="exact", overlap_policy="snap_to_pseudonym")
+        assert call([3, 1, 2]) == call([1, 2, 3])
+        assert call(None)["file_ids"] is None
+        assert call([1])["file_ids"] == [1]
 
     def test_confirm_and_the_token_are_never_bound(self):
         """They describe the call, not the effect, so they cannot be part

@@ -357,6 +357,31 @@ def _args_prune_backups(kwargs):
             "older_than_days": None if older is None else float(older)}
 
 
+def _args_pseudonymise_source(kwargs):
+    """The four arguments that decide what a pseudonymisation run does.
+
+    `mapping` arrives already in its canonical form (entries sorted by
+    original, variants sorted, every string NFC-normalised), the same way
+    `merge_category` passes the RESOLVED category id rather than the name
+    it was given: the canonicalisation belongs to the module that knows
+    what a mapping is, and what reaches this table is the settled value.
+    Canonicalising it there is also what keeps `use_project_pseudonyms`
+    OUT of the binding, so the identical mapping binds the same whether
+    it was typed out or read from the project's own `pseudonyms.json`.
+
+    The preview-only arguments are absent, as `cascade` is: `include_context`,
+    `context_chars`, `scan_residue` and `max_spans_per_entry` change what
+    the preview SHOWS, and `record_in_journal` changes only whether the
+    run records itself, so none of them changes what happens to the text
+    or to a single row.
+    """
+    ids = kwargs.get("file_ids")
+    return {"file_ids": None if ids is None else sorted(int(i) for i in ids),
+            "mapping": kwargs["mapping"],
+            "case_mode": str(kwargs["case_mode"]),
+            "overlap_policy": str(kwargs["overlap_policy"])}
+
+
 REGISTRY: Dict[str, Any] = {
     "merge_codes": _args_merge_codes,
     "delete_code": _args_delete_code,
@@ -364,6 +389,7 @@ REGISTRY: Dict[str, Any] = {
     "merge_category": _args_merge_category,
     "restore_backup": _args_restore_backup,
     "prune_backups": _args_prune_backups,
+    "pseudonymise_source": _args_pseudonymise_source,
 }
 
 
