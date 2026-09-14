@@ -11,6 +11,7 @@ Upstream citations are into the pinned clone (QualCoder master 9bddf17)
 and the 3.8.2 tag, both verified with git rev-parse before being cited.
 """
 
+import ast
 import json
 import os
 import re
@@ -1542,21 +1543,40 @@ class TestSurfacePins:
         assert "set_project_ai_coder_name" in server.CORE_TOOLSET
         assert "set_project_ai_coder_name" in server.mcp._tool_manager._tools
 
-    def test_default_owner_has_exactly_two_occurrences(self):
+    def test_default_owner_has_exactly_one_definition_and_one_caller(self):
         """The export is its only caller left; every database write goes
         through the resolver (B1.5). Read from the source so a new write
-        tool wired to the old helper fails here."""
-        source = (Path(server.__file__)).read_text(encoding="utf-8")
-        assert source.count("_default_owner(") == 2
+        tool wired to the old helper fails here.
 
-    def test_no_write_tool_still_calls_the_export_fallback(self):
-        source = (Path(server.__file__)).read_text(encoding="utf-8")
-        definition = "def _default_owner() -> str:"
-        call = "_default_owner()"
-        assert definition in source
-        # The one remaining call site is the REFI exporter's ai_user_name
-        idx = source.index("ai_user_name=_default_owner()")
-        assert idx > 0
+        Read as SYNTAX (fix round 5). This used to count the literal
+        `_default_owner(` and expect two, which a caller written across
+        two lines or bound to a local name first would not add to. It is
+        the same escape the residual-duty sweep in
+        `tests/test_qc40_visibility.py` had, closed the same way: every
+        reference to the name is found, however it is spelled, and the
+        definition is a definition rather than a line of text."""
+        tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+        parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+        definitions = [node for node in ast.walk(tree)
+                       if isinstance(node, (ast.FunctionDef,
+                                            ast.AsyncFunctionDef))
+                       and node.name == "_default_owner"]
+        assert len(definitions) == 1, [d.lineno for d in definitions]
+        uses = [node for node in ast.walk(tree)
+                if isinstance(node, ast.Name)
+                and node.id == "_default_owner"]
+        assert len(uses) == 1, [use.lineno for use in uses]
+        # And the one use is the REFI exporter's ai_user_name argument,
+        # not merely somewhere in the file. Located by shape rather than
+        # by line number, so an edit above it does not turn this red.
+        holder = parents[uses[0]]
+        while holder is not None and not isinstance(holder, ast.keyword):
+            holder = parents.get(holder)
+        assert holder is not None, "the one use is not a keyword argument"
+        assert holder.arg == "ai_user_name"
 
     def test_the_resolver_returns_dicts_and_never_raises(self,
                                                          setup_server_unset):

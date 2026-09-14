@@ -1522,6 +1522,87 @@ def _drop_view(project_path, name):
 
 
 
+def _parents(tree):
+    table = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            table[child] = node
+    return table
+
+
+def _reads_of(module, attribute):
+    """(line, enclosing function) for every syntactic reference to
+    `<something>.<attribute>` in a module.
+
+    An ATTRIBUTE reference, not a call, so a method bound to a local
+    name and called later is still a read, and a call wrapped across
+    lines is still one call. The innermost enclosing function is
+    returned because that is the unit a caller's duty belongs to; a
+    reference at module level comes back with None, which is itself
+    worth reporting.
+    """
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    table = _parents(tree)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == attribute:
+            holder = table.get(node)
+            while holder is not None and not isinstance(
+                    holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                holder = table.get(holder)
+            found.append((node.lineno, holder))
+    return sorted(found, key=lambda pair: pair[0])
+
+
+def _functions_named(module, name):
+    """Every def of `name` in a module, by line."""
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    return [node.lineno for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name]
+
+
+def _names_used_in(node):
+    """Every bare name and attribute name mentioned under a node."""
+    used = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            used.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            used.add(sub.attr)
+    return used
+
+
+def _visibility_rule_spellings(module):
+    """Lines that spell "0 hides, absent is visible" for themselves.
+
+    The shape is `<mapping>.get(<name>, 1) == 0` (or `!= 0`), whatever
+    it is wrapped across and whatever it is spelled on. Matched on the
+    tree so that a line break inside the call cannot hide it, which the
+    line-by-line regex this replaced could not say.
+    """
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            continue
+        right = node.comparators[0]
+        if not (isinstance(right, ast.Constant) and right.value == 0):
+            continue
+        call = node.left
+        if not (isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "get"
+                and len(call.args) == 2
+                and isinstance(call.args[1], ast.Constant)
+                and call.args[1].value == 1):
+            continue
+        lines.append(node.lineno)
+    return sorted(lines)
+
+
 def _predicate_line():
     """The line number of coder_is_hidden's own return, so the sweep can
     demand that it is the ONLY place the rule is spelled out."""
@@ -1703,11 +1784,17 @@ class TestPartialViewSetIsNotACapability:
             str(Path(visibility_db).parent / "codebook.csv")))
         assert "error" not in out, out
 
-    def test_no_consumer_reaches_a_base_table_through_the_helper(self):
-        """The audit, as a pin: `_visible_source` is the only place that
-        turns (base, view) into a source, and the only outcomes are the
-        view, the base table on a project that declares nothing, and a
-        refusal."""
+    def test_the_helper_still_looks_like_the_one_place_that_decides(self):
+        """A SHAPE check, and nothing more than that (fix round 5).
+
+        This was offered as proof that the silent base-table fallback
+        cannot return. It is three substring assertions over the
+        helper's text, and it stays green when the fallback is put back,
+        because the words it looks for are still there. The claim about
+        today's code is true; this is not what makes it true. The proof
+        is the exhaustive drive below, and this pin is kept for what it
+        does say: the helper still mentions the three things a reader
+        expects to find in it, so a rewrite that drops one is visible."""
         from qualcoder_mcp import database as db_module
         source = Path(db_module.__file__).read_text(encoding="utf-8")
         helper = source.split("def _visible_source", 1)[1].split(
@@ -1716,6 +1803,49 @@ class TestPartialViewSetIsNotACapability:
         assert "table_exists" in helper
         assert "visibility_declared()" in helper
 
+    def test_no_consumer_reaches_a_base_table_through_the_helper(
+            self, visibility_db, qualcoder_db_path):
+        """The proof the pin above cannot give, by exhaustion.
+
+        `_visible_source` is the only place that turns (base, view) into
+        a source. Driven over EVERY subset of the four views and every
+        one of the four pairs: on a project that declares visibility it
+        returns the view or it raises, and it never once returns the
+        base table. That is the property the fallback broke, and a
+        restored fallback fails here on the first subset it reaches."""
+        from itertools import combinations
+        from qualcoder_mcp.database import (VISIBILITY_VIEWS,
+                                            CoderVisibilityUnreadable)
+        pairs = (("code_text", "code_text_visible"),
+                 ("code_image", "code_image_visible"),
+                 ("code_av", "code_av_visible"),
+                 ("annotation", "annotation_visible"))
+        views = sorted(VISIBILITY_VIEWS)
+        subsets = [set(keep) for size in range(len(views) + 1)
+                   for keep in combinations(views, size)]
+        assert len(subsets) == 16
+        for keep in subsets:
+            _restore_views(qualcoder_db_path)
+            for view in views:
+                if view not in keep:
+                    _drop_view(qualcoder_db_path, view)
+            _reopen(qualcoder_db_path)
+            caps = server.db.capabilities
+            assert caps.visibility_declared() is True, keep
+            for base, view in pairs:
+                try:
+                    got = server.db._visible_source(base, view)
+                except CoderVisibilityUnreadable:
+                    continue
+                assert got != base, (sorted(keep), base, got)
+                assert got == view, (sorted(keep), base, got)
+                assert keep == set(views), (
+                    "an incomplete set answered with a source", sorted(keep))
+                # And the export-parity read is the ONE way to a base
+                # table, on every one of these states.
+                assert server.db._visible_source(
+                    base, view, honor_visibility=False) == base
+
     def test_one_predicate_decides_who_is_hidden(self):
         """The other half of the audit. The rule "0 hides, absent is
         visible" used to be spelled out at ten call sites; each was a
@@ -1723,22 +1853,18 @@ class TestPartialViewSetIsNotACapability:
         class recurred. It is written once now, beside the map."""
         from qualcoder_mcp import database as db_module
         import qualcoder_mcp.server as server_module
+        # Read as syntax rather than line by line (fix round 5): the
+        # regex this used could be walked past by wrapping the call, and
+        # it also had to skip prose that merely described the rule. A
+        # Compare node cannot be split by a line break and a comment is
+        # not in the tree at all.
         offenders = []
         for module in (db_module, server_module):
-            for number, line in enumerate(
-                    Path(module.__file__).read_text(
-                        encoding="utf-8").splitlines(), 1):
-                stripped = line.strip()
-                if stripped.startswith("#") or stripped.startswith("A pred"):
-                    continue                      # the comment about it
-                if re.search(r"\.get\([^)]*,\s*1\)\s*[!=]=\s*0", line):
-                    offenders.append(
-                        f"{Path(module.__file__).name}:{number}: "
-                        f"{stripped[:60]}")
+            name = Path(module.__file__).name
+            for line in _visibility_rule_spellings(module):
+                offenders.append(f"{name}:{line}")
         # The one that remains is the predicate's own body.
-        assert offenders == [
-            f"database.py:{_predicate_line()}: "
-            f"return visibility.get(name, 1) == 0"], offenders
+        assert offenders == [f"database.py:{_predicate_line()}"], offenders
         assert db_module.coder_is_hidden({"X": 0}, "X") is True
         assert db_module.coder_is_hidden({"X": 1}, "X") is False
         assert db_module.coder_is_hidden({"X": 0}, "Y") is False
@@ -1749,22 +1875,38 @@ class TestPartialViewSetIsNotACapability:
         hands hidden coders' NAMES to the layer above, because
         compare_coders must be able to confirm that a coder named under
         the override exists. Its name is the warning, and every caller
-        filters it."""
+        filters it.
+
+        Read as SYNTAX (fix round 5). This used to count the literal
+        `coders_with_text_codings_including_hidden()` and then look at
+        the 400 characters after each occurrence, and a verifier passed
+        it green with two unfiltered callers: one whose call was wrapped
+        so the closing bracket landed on the next line, and one that
+        bound the method to a local name and called that. Neither
+        produces the literal. It is the same escape fix round three
+        closed for the unclosed-connection sweep, and it is closed the
+        same way: every syntactic reference to the attribute is found,
+        however it is spelled, and the unit the filter must appear in is
+        the enclosing function rather than a window of characters.
+        """
         from qualcoder_mcp import database as db_module
         import qualcoder_mcp.server as server_module
-        db_source = Path(db_module.__file__).read_text(encoding="utf-8")
-        server_source = Path(
-            server_module.__file__).read_text(encoding="utf-8")
-        assert "def coders_with_text_codings(" not in db_source
-        assert "coders_with_text_codings()" not in server_source
-        calls = server_source.count(
-            "coders_with_text_codings_including_hidden()")
-        assert calls == 3, calls
-        for chunk in server_source.split(
-                "coders_with_text_codings_including_hidden()")[1:]:
-            window = chunk[:400]
-            assert ("coder_is_hidden" in window
-                    or "known_coders" in window), window[:120]
+        assert _functions_named(db_module, "coders_with_text_codings") == []
+        assert _reads_of(server_module, "coders_with_text_codings") == []
+        reads = _reads_of(server_module,
+                          "coders_with_text_codings_including_hidden")
+        where = [f"{holder.name if holder else '<module>'}:{line}"
+                 for line, holder in reads]
+        assert len(reads) == 3, where
+        unfiltered = []
+        for line, holder in reads:
+            if holder is None:
+                unfiltered.append(f"line {line}: not inside a function")
+                continue
+            used = _names_used_in(holder)
+            if not ({"coder_is_hidden", "known_coders"} & used):
+                unfiltered.append(f"{holder.name} (line {line})")
+        assert unfiltered == [], unfiltered
 
     def test_the_predicate_is_what_the_views_do(self, visibility_db):
         """Driven against the views themselves rather than against its
