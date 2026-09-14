@@ -1410,7 +1410,12 @@ class TestAFileNameThatCarriesAName:
         body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
         assert "#####" not in body
         assert "a####b.txt" in body
-        assert result["manifest_path"].split("/")[-1] in body
+        # Path().name, not split("/"): manifest_path is str(Path), so on
+        # Windows it is backslash-separated and split("/") returns the whole
+        # path, which is never in the body (the body carries the bare file
+        # name). This assertion was the only path-string surgery on the
+        # branch and it was red on both Windows jobs.
+        assert Path(result["manifest_path"]).name in body
         assert "The names replaced are not recorded here" in body
 
 
