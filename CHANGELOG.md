@@ -231,6 +231,22 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   says WHICH backup and not the part that says whose. This is shared by
   every tool that takes a backup, not only the pseudonymisation run.
 
+### Changed: who may be named is re-read from the project
+
+- Schema capabilities are probed once, when a connection opens. The one
+  that says who may be NAMED is now re-read from the project whenever
+  that decision is made: QualCoder creates `coder_names.visibility` and
+  its four views on every project open, which can be after this server
+  connected, and a server that connected first named a coder the
+  researcher had since hidden and reported that no override was needed.
+  The re-read is one way. A declaration that was there when the
+  connection opened is never withdrawn by it, because a column that
+  disappears under a live connection is damage or a concurrent rebuild,
+  and the answer to those is still "who is hidden cannot be decided".
+  Which TABLE each read goes to is still settled when the connection
+  opens, so re-select the project after hiding a coder in QualCoder;
+  PRIVACY.md says so.
+
 ### Changed: destructive tools need a preview token, not a confirm flag
 
 - `merge_codes`, `delete_code`, `delete_category`, `merge_category`,

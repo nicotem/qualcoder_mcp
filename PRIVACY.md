@@ -257,6 +257,24 @@ project has the coder-visibility capability:
   category row being removed is reported as "(hidden coder)". The
   exported FILE is never affected by this: it carries every coder's
   counts, for parity with QualCoder's own report.
+- **When the capability arrives while this server is connected.**
+  QualCoder creates the visibility column and its views when it opens a
+  project, which can be after this server connected to it. Every
+  decision about who may be NAMED re-reads the declaration from the
+  project at the time it is made, so a coder hidden after this server
+  connected is treated as hidden. That re-read is one way: a
+  declaration that was there when the connection opened is never
+  withdrawn by it, because a column that disappears under a live
+  connection is damage or a concurrent rebuild, and the answer to those
+  is the "cannot be determined" posture above.
+  What is NOT re-read is which table each read goes to. That is settled
+  when the connection opens, so on a project that gained the capability
+  afterwards the reads go to the base tables until the project is
+  selected again, and a read tool can return a hidden coder's row with
+  its owner. Reopening the project (`select_project`, or restarting the
+  server) settles it. If you hide a coder in QualCoder while a
+  conversation is in progress, re-select the project before relying on
+  what the read tools return.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.

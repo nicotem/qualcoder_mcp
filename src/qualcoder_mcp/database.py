@@ -2276,6 +2276,64 @@ class QualcoderDatabase:
                 return str(row[0])
         return None
 
+    def _visibility_is_declared_now(self) -> bool:
+        """Whether `coder_names` declares per-coder visibility, re-read.
+
+        The capability set is probed once, when the connection opens
+        (`_probe_capabilities`). That is right for every other
+        capability it caches: they are additive schema, they say what
+        this server CAN do, and a stale answer costs a feature. This one
+        says what this server may DISCLOSE, and it is stale exactly when
+        it matters. QualCoder creates `coder_names.visibility` and its
+        four views on EVERY project open (app.py:1448-1569), under
+        exactly the long-lived read connection this server holds. With
+        the server connected first, the preview named a hidden coder and
+        reported `override_required: false`; the execute then refused
+        with `project_changed`, so nothing was written, but the
+        disclosure had already happened, and "never name a hidden coder"
+        is an owner-ruled invariant (X1).
+
+        Re-read HERE and nowhere else, which is what makes this a
+        contained change rather than a server-wide one: this is the only
+        per-project read of the declaration that decides who may be
+        named, `_visible_source` keeps the connect-time answer, and the
+        flagship reads its span rows from the base tables in either
+        case. One `PRAGMA table_info` per call, on a handful of calls
+        per tool call, and only on projects that had no declaration when
+        the connection opened.
+
+        ONE-WAY, and this is the whole design. A declaration that was
+        there at connect time is never withdrawn by this re-read, only
+        added. QualCoder's migration is additive: the column and the
+        views arrive and never leave, so a declaration that disappears
+        under a live connection is damage, drift, or a concurrent
+        rebuild, and the answer to those is `CoderVisibilityUnreadable`
+        from the table read below, not "this project hides nobody". A
+        two-way re-read reintroduces fix round 5's own defect, in which
+        removing MORE of the visibility schema bought MORE access; it
+        is measured to do so, at
+        `TestTheVisibilityTableFailsClosed` and
+        `TestNoSiteDecidesVisibilityPermissively`.
+
+        On a project with no `coder_names` table the PRAGMA returns no
+        rows, which is the same "no capability" the probe records. If
+        the PRAGMA itself fails, the connect-time answer stands: there
+        is nothing better to say here, and the caller reads the table
+        immediately afterwards and fails closed if that does not answer
+        either.
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.visibility_declared():
+            return True
+        try:
+            columns = {row[1] for row in self.conn.execute(
+                "PRAGMA table_info(coder_names)").fetchall()}
+        except sqlite3.Error as e:              # pragma: no cover - defensive
+            logger.warning(f"Could not re-read the coder visibility "
+                           f"declaration: {e}")
+            return False
+        return "visibility" in columns
+
     def coder_visibility_map(self) -> Optional[Dict[str, int]]:
         """{name: visibility} for the whole `coder_names` table.
 
@@ -2297,9 +2355,10 @@ class QualcoderDatabase:
         `coder_names`; QualCoder enrols names through its own harvest
         the next time it opens the project (app.py:1480-1494).
 
+        The declaration is re-read here rather than taken from the
+        connect-time probe; `_visibility_is_declared_now` says why.
         """
-        caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.visibility_declared():
+        if not self._visibility_is_declared_now():
             return None
         try:
             rows = self.conn.execute(

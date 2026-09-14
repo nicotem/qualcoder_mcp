@@ -3202,3 +3202,103 @@ class TestTheDescriptionCarriesWhatD1Requires:
     def test_the_description_keeps_the_house_rules(self):
         _house_rules([server.pseudonymise_source.__doc__], ["description"])
 
+
+# =============================================================================
+# THE CAPABILITY CACHE, WHICH IS OLDER THAN THIS FEATURE
+# =============================================================================
+
+class TestTheVisibilityDeclarationIsRereadPerCall:
+    """Re-verification, declined item (e), proven reachable.
+
+    Schema capabilities are probed once, when the connection opens. That
+    is right for the rest of them: they say what this server CAN do, and
+    a stale answer costs a feature. It was wrong for the one that says
+    who may be NAMED. QualCoder creates `coder_names.visibility` and its
+    four views on every project open (app.py:1448-1569), under exactly
+    the long-lived read connection this server holds, so a server that
+    connected first answered from a project state that no longer
+    existed: the preview named `Hidden Helga` in `by_owner` AND reported
+    `override_required: false`. The execute then refused with
+    `project_changed`, so nothing was written, but the disclosure had
+    already happened, and "never name a hidden coder" is an owner-ruled
+    invariant (X1).
+
+    The re-read is one way, and the second test here is why: a
+    declaration that disappears under a live connection is damage,
+    drift, or a concurrent QualCoder rebuild, and the answer to those is
+    "who is hidden cannot be decided", never "this project hides
+    nobody". A two-way re-read was tried and measured: it turns eight
+    fail-closed tests red in `test_qc40_visibility.py` and
+    `test_v012_compare_coders.py`, which is fix round 5's own defect,
+    where removing MORE of the visibility schema bought MORE access.
+    """
+
+    def _connected_before_qualcoder(self, tmp_path):
+        """A project with no visibility declaration when we connect."""
+        folder = build_project(tmp_path / "late.qda")
+        add_coding(folder, 1, 1, 0, 6)
+        add_coding(folder, 2, 1, 34, 42, owner="Hidden Helga")
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        assert server.db.capabilities.visibility_declared() is False
+        return folder
+
+    def test_a_declaration_that_arrives_after_the_connection_is_seen(
+            self, project, tmp_path):
+        folder = self._connected_before_qualcoder(tmp_path)
+        # QualCoder opens the project: the column and the four views, in
+        # the one routine that makes them.
+        hide_coder(folder, "Hidden Helga")
+
+        out = preview_of()
+        preview = out["preview"]
+        assert "Hidden Helga" not in json.dumps(preview)
+        assert [entry["owner"] for entry in
+                preview["files"][0]["codings"]["by_owner"]] == ["TestCoder"]
+        assert preview["hidden_coder_rows"]["override_required"] is True
+        assert server.db.coder_visibility_map() == {"TestCoder": 1,
+                                                    "Hidden Helga": 0}
+        # And the execute is gated on it rather than merely reported.
+        # The preview's own recipe already carries
+        # allow_hidden_coder=true, which is what it is for, so the
+        # refusal is driven by withholding it.
+        assert out["execute_with"]["arguments"]["allow_hidden_coder"] is True
+        refused = execute_from(out, allow_hidden_coder=False)
+        assert refused["reason"] == "hidden_coder_override_required"
+        assert_carries_no_name(json.dumps(refused), "refusal",
+                               ("Hidden Helga",))
+
+    def test_a_declaration_that_disappears_is_not_a_project_without_one(
+            self, project, tmp_path):
+        """The one-way half. `coder_names` going away mid-connection is
+        damage, not a legitimate state change: QualCoder's migration is
+        additive and never withdraws the column."""
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        folder = build_project(tmp_path / "early.qda")
+        add_coding(folder, 1, 1, 0, 6)
+        write_fixture_sidecar(str(folder))
+        hide_coder(folder, "Hidden Helga")
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        assert server.db.capabilities.visibility_declared() is True
+
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("DROP TABLE coder_names")
+        con.commit()
+        con.close()
+        with pytest.raises(CoderVisibilityUnreadable):
+            server.db.coder_visibility_map()
+
+    def test_a_project_that_never_declares_it_still_answers_none(
+            self, project, tmp_path):
+        """The control: the re-read must not invent a capability."""
+        self._connected_before_qualcoder(tmp_path)
+        assert server.db.coder_visibility_map() is None
+        preview = preview_of()["preview"]
+        assert preview["hidden_coder_rows"]["override_required"] is False
+        assert {entry["owner"] for entry in
+                preview["files"][0]["codings"]["by_owner"]} == {
+                    "TestCoder", "Hidden Helga"}
