@@ -427,7 +427,16 @@ def write_ai_coder_name(project_folder: Any, name: str, note: str = "",
                                         prefix=f"{SIDECAR_NAME}.",
                                         suffix=".tmp")
         tmp = Path(tmp_name)
-        with os.fdopen(fd, "wb") as f:
+        # The descriptor mkstemp returned belongs to nobody until
+        # `os.fdopen` takes it. If that call raises, POSIX still lets
+        # the cleanup unlink the open temp file, but Windows refuses,
+        # so the sidecar folder keeps the litter (fix round 5).
+        try:
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle as f:
             f.write(encoded)
             f.flush()
             os.fsync(f.fileno())

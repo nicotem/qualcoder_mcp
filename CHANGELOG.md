@@ -626,6 +626,18 @@ withholds project data.
   are refused as second spellings, and non-ASCII is refused before it
   can reach `hmac.compare_digest`, which raises on it.
 
+### Fixed: a failed atomic write left a temp file behind on Windows
+
+- Every file this server writes atomically (the preview-token secret,
+  the AI coder name sidecar, the most-recently-used pointer and the
+  session files) is created with `tempfile.mkstemp` and then handed to
+  `os.fdopen`. If that hand-over failed, the descriptor stayed open and
+  unowned, and the cleanup's own delete could not remove the temp file
+  on Windows, which refuses to unlink a file any handle still holds. The
+  project folder or `~/.qualcoder_mcp` was left with a `.tmp` file after
+  a failed write. The descriptor is now closed on that path, so the
+  cleanup removes the temp on every platform.
+
 ### Fixed: the AI coder name file can no longer outgrow its own reader
 
 - Writes were capped at 200 history entries and reads at 64 KiB, two

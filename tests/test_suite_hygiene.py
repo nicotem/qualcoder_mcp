@@ -367,6 +367,46 @@ class TestWindowsSharingSemanticsAreEmulated:
         finally:
             handle.close()
 
+    def test_an_open_file_cannot_be_unlinked(self, tmp_path):
+        """The operation the guard did not cover until fix round 5.
+
+        POSIX unlinks an open file and lets the last descriptor close it
+        later; Windows refuses while any handle is open. Every cleanup in
+        this package deletes a temp file it has just written, so a
+        descriptor that escaped its `with` turns into litter there and
+        into nothing at all here."""
+        target = tmp_path / "held.tmp"
+        target.write_bytes(b"x")
+        handle = open(target, "rb")
+        try:
+            with pytest.raises(PermissionError) as caught:
+                os.unlink(str(target))
+            assert H.SHARING_VIOLATION in str(caught.value)
+            with pytest.raises(PermissionError):
+                os.remove(str(target))
+            with pytest.raises(PermissionError):
+                target.unlink()
+        finally:
+            handle.close()
+
+    def test_the_same_unlink_succeeds_once_the_handle_is_closed(
+            self, tmp_path):
+        """The other half, so the guard cannot pass by refusing
+        everything: the ordinary delete is untouched."""
+        target = tmp_path / "released.tmp"
+        with open(target, "wb") as handle:
+            handle.write(b"x")
+        target.unlink()
+        assert not target.exists()
+        second = tmp_path / "second.tmp"
+        second.write_bytes(b"x")
+        os.unlink(str(second))
+        assert not second.exists()
+        third = tmp_path / "third.tmp"
+        third.write_bytes(b"x")
+        os.remove(str(third))
+        assert not third.exists()
+
     def test_the_detector_reports_nothing_when_nothing_is_open(
             self, tmp_path):
         """Otherwise every assertion above could pass for the wrong

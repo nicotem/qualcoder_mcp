@@ -596,7 +596,16 @@ class SessionManager:
                                             prefix=f"{filepath.name}.",
                                             suffix=".tmp")
             tmp = Path(tmp_name)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # `os.fdopen` either takes the descriptor or raises with it
+            # still open and unowned. POSIX hides that: the cleanup can
+            # unlink an open file. Windows cannot, and the storage
+            # folder keeps the temp for ever (fix round 5).
+            try:
+                handle = os.fdopen(fd, "w", encoding="utf-8")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle as f:
                 json.dump(session.to_dict(), f, indent=2)
             os.replace(str(tmp), str(filepath))
             logger.info(f"Saved session {session.session_id} to {filepath}")

@@ -315,7 +315,16 @@ def _remember_mru_project(project_path: str) -> None:
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
         fd, tmp = _open_mru_tmp()
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # The descriptor is unowned until `os.fdopen` takes it, and the
+        # cleanup below can only unlink the temp on POSIX while it is
+        # still open. On Windows the unlink fails and ~/.qualcoder_mcp
+        # accumulates temps (fix round 5).
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle as f:
             json.dump(payload, f)
         tmp.replace(_MRU_FILE)
     except Exception as e:

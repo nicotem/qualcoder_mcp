@@ -287,6 +287,51 @@ class TestSecretFile:
         assert not path.exists()
         assert list(state.glob("*")) == [], list(state.glob("*"))
 
+    def test_the_faulted_write_closes_the_descriptor_it_was_given(
+            self, tmp_path, monkeypatch):
+        """Why the clause above passed here and failed on the Windows
+        runners (fix round 5).
+
+        `tempfile.mkstemp` returns a descriptor nobody owns until
+        `os.fdopen` takes it. When `os.fdopen` raised, it was never
+        taken and never closed. POSIX unlinks an open file happily, so
+        the cleanup left an empty state folder and the pin above was
+        green; Windows refuses to unlink a file with a live handle
+        (ERROR_SHARING_VIOLATION), the tolerant `except OSError` in the
+        cleanup swallowed it, and the temp survived.
+
+        The descriptor is what is pinned, not the litter, because the
+        descriptor is the cause and it is the same on every platform.
+        Counting `os.close` calls rather than probing the number avoids
+        reading a descriptor the runtime has since reused."""
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        path = state / "preview_secret"
+        handed_out = []
+        closed = []
+        real_mkstemp = pt.tempfile.mkstemp
+        real_close = pt.os.close
+
+        def spy_mkstemp(*a, **k):
+            fd, name = real_mkstemp(*a, **k)
+            handed_out.append(fd)
+            return fd, name
+
+        def spy_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+
+        def exploding_fdopen(*a, **k):
+            raise OSError("disk went away mid-write")
+
+        monkeypatch.setattr(pt.tempfile, "mkstemp", spy_mkstemp)
+        monkeypatch.setattr(pt.os, "close", spy_close)
+        monkeypatch.setattr(pt.os, "fdopen", exploding_fdopen)
+        with pytest.raises(OSError):
+            pt._write_new_secret(path, exclusive=True)
+        assert handed_out, "mkstemp was never reached"
+        assert closed == handed_out, (closed, handed_out)
+
     def test_the_windows_publish_also_refuses_to_replace(self, tmp_path,
                                                          monkeypatch):
         """os.link needs NTFS and the privilege to make hard links, so
@@ -318,6 +363,34 @@ class TestSecretFile:
         with pytest.raises(FileExistsError):
             pt._publish_exclusive(str(source), path, windows=False)
         assert path.read_text(encoding="ascii") == before
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="the nt arm's premise is a Windows behaviour: POSIX rename "
+               "replaces silently, so the real call cannot show it here")
+    def test_the_windows_arm_really_refuses_on_the_platform_that_runs_it(
+            self, tmp_path, monkeypatch):
+        """The one claim the pin above cannot make (fix round 5).
+
+        Faulting `os.rename` proves the nt BRANCH is taken; it cannot
+        prove the premise the branch rests on, which is that Windows'
+        own `os.rename` raises when the destination exists. POSIX rename
+        replaces without a word, so no test on this machine can show it,
+        and the arm was written from documentation and had never run
+        anywhere. It runs here, on the Windows jobs, with the real call
+        and an existing destination: if that premise is ever wrong, the
+        secret would be replaced rather than refused and first-writer-
+        wins would be gone."""
+        state = tmp_path / "state"
+        monkeypatch.setattr(pt, "STATE_HOME", state)
+        winner = pt.load_secret()
+        path = state / "preview_secret"
+        source = state / "complete.tmp"
+        source.write_text("b" * 64 + "\n", encoding="ascii")
+        with pytest.raises(FileExistsError):
+            pt._publish_exclusive(str(source), path, windows=True)
+        assert path.read_text(encoding="ascii").strip() == winner
+        assert source.exists(), "a refused publish keeps its own temp"
 
     @POSIX_ONLY
     def test_a_secret_widened_since_creation_is_rotated(self, tmp_path,

@@ -217,7 +217,19 @@ def _write_new_secret(path: Path, exclusive: bool) -> str:
                                     suffix=".tmp")
     tmp: Optional[Path] = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="ascii") as f:
+        # If `os.fdopen` raises, the descriptor mkstemp returned is
+        # still open and nothing owns it. POSIX lets the cleanup below
+        # unlink an open file, so the leak was invisible here; Windows
+        # refuses (ERROR_SHARING_VIOLATION), so the temp file survived
+        # the failure and the state folder was left with litter. Hand
+        # the descriptor to the file object or close it; never neither
+        # (fix round 5).
+        try:
+            handle = os.fdopen(fd, "w", encoding="ascii")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle as f:
             f.write(value + "\n")
             f.flush()
             os.fsync(f.fileno())

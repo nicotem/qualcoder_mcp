@@ -226,14 +226,21 @@ def _windows_sharing_semantics():
     """Make POSIX refuse what Windows refuses, so the suite can see it.
 
     Windows will not rename or remove a directory that still holds an
-    OPEN file, and will not rename or replace an open file: SQLite, like
-    most writers, opens without FILE_SHARE_DELETE. POSIX allows all
-    three, so a test that moves or deletes a project while the server
-    still holds its connection is green on ubuntu and macOS and fails on
-    BOTH Windows jobs with WinError 32, version-independently. A CI
-    runner is the slowest possible place to learn that, and the whole
-    class is invisible on the machine the code is written on, so this
-    guard reproduces the rule here instead.
+    OPEN file, and will not rename, replace or UNLINK an open file:
+    SQLite, like most writers, opens without FILE_SHARE_DELETE. POSIX
+    allows all of them, so a test that moves or deletes a project while
+    the server still holds its connection is green on ubuntu and macOS
+    and fails on BOTH Windows jobs with WinError 32,
+    version-independently. A CI runner is the slowest possible place to
+    learn that, and the whole class is invisible on the machine the code
+    is written on, so this guard reproduces the rule here instead.
+
+    Unlink was missing from the list until fix round 5, and fix round 4
+    fell through the gap: a cleanup unlinked a temp file whose
+    descriptor `os.fdopen` had failed to take, which POSIX allows and
+    Windows refuses, so both Windows jobs went red on a pin that is
+    green here. A guard that covers three of the four operations is a
+    guard that says the class is handled when it is not.
 
     It is emulation, not policy: on Windows the operating system already
     enforces it and the fixture stands aside. `ignore_errors=True`
@@ -252,6 +259,16 @@ def _windows_sharing_semantics():
         # spellings are patched rather than relying on either.
         "path_rename": Path.rename,
         "path_replace": Path.replace,
+        # Deletion was the hole in this guard, and fix round 4 fell
+        # straight through it: Windows refuses to UNLINK an open file
+        # for the same reason it refuses to rename one, so a cleanup
+        # that deletes a temp whose descriptor is still open is silently
+        # fine here and leaves litter there. `os.remove` is a second
+        # name for the same call and is patched as its own attribute,
+        # and `Path.unlink` is patched for the accessor reason above.
+        "os_unlink": os.unlink,
+        "os_remove": os.remove,
+        "path_unlink": Path.unlink,
     }
 
     def _refuse(operation, *targets):
@@ -285,11 +302,26 @@ def _windows_sharing_semantics():
         _refuse("replace", self, target)
         return real["path_replace"](self, target)
 
+    def os_unlink(path, **kwargs):
+        _refuse("unlink", path)
+        return real["os_unlink"](path, **kwargs)
+
+    def os_remove(path, **kwargs):
+        _refuse("remove", path)
+        return real["os_remove"](path, **kwargs)
+
+    def path_unlink(self, *args, **kwargs):
+        _refuse("unlink", self)
+        return real["path_unlink"](self, *args, **kwargs)
+
     shutil.rmtree = rmtree
     os.rename = os_rename
     os.replace = os_replace
     Path.rename = path_rename
     Path.replace = path_replace
+    os.unlink = os_unlink
+    os.remove = os_remove
+    Path.unlink = path_unlink
     try:
         yield
     finally:
@@ -298,6 +330,9 @@ def _windows_sharing_semantics():
         os.replace = real["os_replace"]
         Path.rename = real["path_rename"]
         Path.replace = real["path_replace"]
+        os.unlink = real["os_unlink"]
+        os.remove = real["os_remove"]
+        Path.unlink = real["path_unlink"]
 
 
 @pytest.fixture(autouse=True)
