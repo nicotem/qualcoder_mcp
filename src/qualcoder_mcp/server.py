@@ -10755,11 +10755,20 @@ def pseudonymise_source(
         cheaper, it is more correct: the preview and the digests the
         token signs then describe ONE read of the project rather than
         two reads a few hundred milliseconds apart.
+
+        The cache is keyed on the CONNECTION that filled it, and that is
+        load-bearing rather than tidy: a cached plan handed to the write
+        connection inside the transaction would make the state check
+        compare a read to itself, which is the shape of the defect this
+        round exists to remove. A different connection always gets a
+        fresh plan, whatever else is wired up.
         """
-        plan = read_phase.get("plan")
-        if plan is None:
-            plan = db_.pseudonymise_plan(compiled, overlap_policy, file_ids)
+        if read_phase.get("conn") is db_.conn:
+            return read_phase["plan"]
+        plan = db_.pseudonymise_plan(compiled, overlap_policy, file_ids)
+        if "plan" not in read_phase:
             read_phase["plan"] = plan
+            read_phase["conn"] = db_.conn
         return plan
 
     def _signed(preview):
