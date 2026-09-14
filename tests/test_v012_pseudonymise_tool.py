@@ -577,6 +577,34 @@ class TestToken:
         refused = execute_from(out)
         assert refused["reason"] == "project_changed"
 
+    @pytest.mark.parametrize("sql", [
+        "UPDATE code_text SET important = 1 WHERE ctid = 3",
+        "UPDATE code_text SET owner = 'Carol' WHERE ctid = 3",
+    ], ids=["important", "owner"])
+    def test_a_row_change_the_counts_cannot_see_invalidates_the_token(
+            self, project, sql):
+        """What the ROW DIGEST is for, isolated from everything else.
+
+        Adding or removing a coding moves the counts, so a token would
+        fail on the effect block alone and a digest of nothing would
+        still look correct. These two do not move a single count: the
+        important flag and a change of visible owner leave every number
+        in the preview's effect block exactly as it was. They are in the
+        digest, so the token fails, which is right: the researcher
+        approved a run over those rows, and these are not those rows.
+        """
+        out = preview_of()
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute(sql)
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        refused = execute_from(out)
+        assert refused["reason"] == "project_changed"
+        assert refused["nothing_changed"] is True
+        assert backups(project) == []
+
     def test_an_import_invalidates_a_token_issued_for_every_file(
             self, project):
         """With file_ids=None the eligible set is part of the state, so a
@@ -787,9 +815,31 @@ class TestAiAttribution:
     def test_the_counts_are_of_changed_rows_not_of_every_row(self, project):
         """A row the run leaves exactly where it is is not "affected",
         and reporting it as such would overstate the collateral on a run
-        that moves two codings in a file that holds thirty."""
+        that moves two codings in a file that holds thirty.
+
+        The fixture has to contain an UNCHANGED row for this to mean
+        anything: in a file whose first character is a name, every row
+        moves, and the two readings agree. Here the names come later, so
+        the first coding is untouched and the difference is visible.
+        """
+        text = "aaa bbb ccc Thomas ddd"
+        folder = build_project(tmp_path_for(project) / "mixed.qda", text)
+        add_coding(folder, 1, 1, 0, 3, owner="Alice", seltext="aaa",
+                   text=text)
+        add_coding(folder, 2, 1, 12, 18, owner="Alice", seltext="Thomas",
+                   text=text)
+        add_coding(folder, 3, 1, 19, 22, owner=DEFAULT_AI_CODER_NAME,
+                   seltext="ddd", text=text)
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
         codings = preview_of()["preview"]["files"][0]["codings"]
-        assert codings["changed"] == codings["total"] - codings["unchanged"]
+        assert codings["total"] == 3
+        assert codings["unchanged"] == 1
+        assert codings["changed"] == 2
+        assert codings["by_owner"] == [{"owner": "Alice", "codings": 1}]
+        assert codings["ai_owned"] == 1
         assert sum(e["codings"] for e in codings["by_owner"]) \
             + codings["ai_owned"] == codings["changed"]
 
@@ -868,6 +918,38 @@ class TestWrite:
         assert rows[1]["seltext"] == "Line one"        # untouched, unmoved
         assert rows[2]["seltext"] == "Line three"      # moved, so refreshed
         assert " " not in rows[2]["seltext"]
+
+    def test_a_quote_is_refreshed_even_when_the_span_does_not_move(
+            self, project):
+        """The case a "positions changed" test cannot reach.
+
+        A pseudonym exactly as long as the name moves nothing: the
+        coding's span is identical afterwards, and its stored quote is
+        nonetheless wrong, because the text inside it changed. This is
+        why the refresh keys on whether the span met an edit as well as
+        on whether it moved, and it is the same row the hidden-coder
+        rule treats as a PURE SHIFT, since the coder still marks the same
+        passage.
+        """
+        text = "say Tom now, said Tom"
+        folder = build_project(tmp_path_for(project) / "same.qda", text)
+        add_coding(folder, 1, 1, 0, 11, seltext=text[0:11], text=text)
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        mapping = [{"original": "Tom", "pseudonym": "Pat"}]
+        out = preview_of(mapping=mapping)
+        codings = out["preview"]["files"][0]["codings"]
+        assert codings["unchanged"] == 1
+        assert codings["seltext_refreshed"] == 1
+        assert execute_from(out, mapping=mapping)["success"] is True
+        row = query(folder, "SELECT pos0,pos1,seltext FROM code_text")[0]
+        assert (row["pos0"], row["pos1"]) == (0, 11)
+        assert row["seltext"] == "say Pat now"
+        new_text = query(folder, "SELECT fulltext FROM source WHERE id=1"
+                         )[0]["fulltext"]
+        assert new_text[row["pos0"]:row["pos1"]] == row["seltext"]
 
     def test_the_parity_policy_deletes_and_says_how_many(self, project):
         out = preview_of(overlap_policy="qualcoder_edit_parity")
@@ -1027,6 +1109,32 @@ class TestManifest:
         monkeypatch.setattr(server.json, "dump", real)
         leftovers = list((pt.STATE_HOME / "pseudonymisation").glob("*.tmp"))
         assert leftovers == []
+
+    def test_a_failing_fdopen_leaks_no_descriptor_and_leaves_no_litter(
+            self, project, monkeypatch):
+        """The Batch B round-5 lesson, on this batch's own atomic write.
+
+        `tempfile.mkstemp` hands back a descriptor NOBODY owns until
+        `os.fdopen` takes it. If that call raises, the descriptor is
+        still open and the cleanup's unlink is the only thing that runs.
+        POSIX allows unlinking an open file, so the leak is invisible
+        here; Windows refuses it, so the temp survives and
+        `~/.qualcoder_mcp` fills with litter. The suite emulates the
+        Windows rule, so the leak fails HERE.
+        """
+        out = preview_of()          # the token secret exists before the fault
+
+        def failing(fd, *args, **kwargs):
+            raise OSError("too many open files")
+
+        monkeypatch.setattr(server.os, "fdopen", failing)
+        result = execute_from(out)
+        monkeypatch.undo()
+        assert result["success"] is True
+        assert result["manifest_path"] is None
+        directory = pt.STATE_HOME / "pseudonymisation"
+        assert list(directory.glob("*")) == []
+        assert H.open_paths_under(directory) == []
 
     def test_the_directory_comes_from_the_module_attribute(self):
         """Read the syntax, not a string: the suite isolates the state
@@ -1541,6 +1649,191 @@ class TestResultShape:
         assert "beyond U+FFFF" in out["error"]
         result = execute_from(preview_of())
         assert result["files"][0]["position_safe"] is True
+
+
+class TestStructureAndWindowsSafety:
+    """D1 6.4, and the two pins that can only be read rather than driven."""
+
+    @staticmethod
+    def _function(module_file, name):
+        tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name == name:
+                return node
+        raise AssertionError(f"{name} is not in {module_file}")
+
+    def test_the_c7_check_runs_before_the_first_write(self):
+        """Read the syntax, because the behaviour is unreachable.
+
+        `_state_guarded` recomputes the signed state before this function
+        is called, and that state already digests every touched file as
+        (id, length, sha256), so a changed fulltext is refused before the
+        C7 check could ever fire. The check is defence in depth: it
+        survives only if nothing moves it after the first write, and only
+        a structural pin can say so. Its position is asserted here, and
+        the report says plainly that no mutation of it can be made to go
+        red through behaviour.
+        """
+        from qualcoder_mcp import database as db_module
+        node = self._function(db_module.__file__, "pseudonymise_write")
+        verify_line = None
+        first_write_line = None
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            if isinstance(func, ast.Attribute):
+                if func.attr == "verify_fulltext_unchanged":
+                    verify_line = min(verify_line or inner.lineno,
+                                      inner.lineno)
+                if func.attr == "execute":
+                    first_write_line = min(first_write_line or inner.lineno,
+                                           inner.lineno)
+        assert verify_line is not None, "the C7 check is gone"
+        assert first_write_line is not None
+        assert verify_line < first_write_line, (
+            "the fulltext fingerprint check must precede every statement "
+            "this function issues")
+
+    @pytest.mark.parametrize("module,name", [
+        ("server", "_write_run_manifest"),
+        ("database", "read_project_pseudonyms"),
+    ])
+    def test_every_text_file_this_feature_opens_names_its_encoding(
+            self, module, name):
+        """An unnamed encoding is the platform's, which differs between
+        the machine that writes and the machine that reads. Read as
+        syntax: a sweep for the word "encoding" would be satisfied by a
+        comment."""
+        import importlib
+        target = importlib.import_module(f"qualcoder_mcp.{module}")
+        node = self._function(target.__file__, name)
+        opening = {"open", "fdopen", "read_text", "write_text"}
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            called = (func.id if isinstance(func, ast.Name)
+                      else func.attr if isinstance(func, ast.Attribute)
+                      else None)
+            if called not in opening:
+                continue
+            keywords = {kw.arg for kw in inner.keywords}
+            assert "encoding" in keywords, (
+                f"{name} calls {called} at line {inner.lineno} without "
+                f"naming an encoding")
+
+    def test_the_run_writes_no_file_outside_the_places_it_declares(
+            self, project, tmp_path):
+        """Everything this run creates is the project itself, a backup
+        folder beside it, or the state home.
+
+        The allowed list has to be the exact set, not a convenient
+        ancestor of it: listing `project.parent` would have covered the
+        whole temporary tree and made this test unable to fail, which is
+        what a mutation writing a stray file into that folder showed.
+        """
+        before = {p for p in tmp_path.rglob("*") if p.is_file()}
+        result = execute_from(preview_of())
+        assert result["success"] is True
+        after = {p for p in tmp_path.rglob("*") if p.is_file()}
+        backup_folders = list(
+            project.parent.glob(f"{project.stem}_backup_*"))
+        assert backup_folders, "the run took no backup, so this proves little"
+        allowed = [project, pt.STATE_HOME,
+                   Path(server.session_manager.storage_dir)] + backup_folders
+        strays = [path for path in sorted(after - before)
+                  if not any(root == path or root in path.parents
+                             for root in allowed)]
+        assert strays == [], strays
+
+    def test_nothing_this_run_logs_carries_a_name_or_a_slice(
+            self, project, caplog):
+        """The Security gate's own item: counts and ids in the log, never
+        a surface form and never a piece of the text (D1 5.1)."""
+        import logging
+        caplog.set_level(logging.DEBUG)
+        out = preview_of()
+        execute_from(out)
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        for forbidden in ("Thomas", "Tom", "Mary Ann", "Mary",
+                          "said he met", "agreed with"):
+            assert forbidden not in logged, forbidden
+
+    def test_the_engine_module_has_no_logger_at_all(self):
+        """The simplest way to keep a name out of the log is to have
+        nowhere to put one. Read as syntax, not as a grep for
+        "logger"."""
+        from qualcoder_mcp import pseudonymise as engine
+        tree = ast.parse(Path(engine.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any(alias.name == "logging"
+                               for alias in node.names)
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "logging"
+
+    def test_no_mapping_string_reaches_a_regex_unescaped(self):
+        """The whole class, read as syntax rather than grepped for.
+
+        Upstream's survey importer interpolates an original straight into
+        a pattern (`import_survey.py:134-140` at both pins), so a name
+        containing a full stop matches any character and one containing
+        an unbalanced bracket raises. Every pattern this engine builds
+        must therefore come from `re.escape`d parts, or from nothing but
+        literals and this module's own top-level constants.
+
+        A tolerated pattern must also have been BUILT here: a bare local
+        variable is refused even when it happens to be safe today,
+        because a sweep that accepts one accepts the next one too.
+        """
+        from qualcoder_mcp import pseudonymise as engine
+        source = Path(engine.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        module_constants = {
+            target.id
+            for node in tree.body if isinstance(node, ast.Assign)
+            for target in node.targets if isinstance(target, ast.Name)}
+        # Builtins a pattern may legitimately call to build a character
+        # class out of code points.
+        allowed_builtins = {"chr", "str", "len", "ord"}
+        risky = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute)
+                    and func.attr in ("compile", "finditer", "fullmatch",
+                                      "search", "sub", "match")
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "re"):
+                continue
+            pattern = node.args[0] if node.args else None
+            if pattern is None:
+                continue
+            if any(isinstance(sub, ast.Call)
+                   and isinstance(sub.func, ast.Attribute)
+                   and sub.func.attr == "escape"
+                   for sub in ast.walk(pattern)):
+                continue                      # built from escaped parts
+            names = {sub.id for sub in ast.walk(pattern)
+                     if isinstance(sub, ast.Name)}
+            # A comprehension's own loop variable is bound by the
+            # expression itself, so it carries whatever the thing it
+            # iterates carries and is not a free name.
+            for sub in ast.walk(pattern):
+                if isinstance(sub, (ast.GeneratorExp, ast.ListComp,
+                                    ast.SetComp, ast.DictComp)):
+                    for generator in sub.generators:
+                        names -= {t.id for t in ast.walk(generator.target)
+                                  if isinstance(t, ast.Name)}
+            if names <= (module_constants | allowed_builtins):
+                continue                      # literals and our constants
+            if isinstance(pattern, ast.Attribute):
+                continue                      # a compiled pattern's own text
+            risky.append((node.lineno, sorted(names)))
+        assert risky == [], risky
 
 
 class TestArgumentValidation:
