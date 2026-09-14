@@ -64,14 +64,41 @@ MIN_ORIGINAL_CHARS = 2
 # Upstream's own minimum for a pseudonym (pseudonyms.py:76-78).
 MIN_PSEUDONYM_CHARS = 3
 # Ours. A pseudonym is written into the researcher's text once per match,
-# so its length is the only unbounded amplification this tool has.
+# so its length is what bounds how far this tool can grow a file.
 MAX_PSEUDONYM_CHARS = 200
+# Ours. A surface form is a NAME, and 200 characters is already absurdly
+# generous for one. The cap is not about the text it matches, it is about
+# `max_form_len`: the overlap diagnostic scans a window of that width
+# around every match, so an uncapped form makes a READ-ONLY preview, with
+# no token and no approval, cost O(matches x form length). Measured
+# before the cap: a 200,000-character original over a 99 KB file took 91
+# seconds, and `validate_mapping` accepted a 1,000,000-character one
+# (Security S4).
+MAX_FORM_CHARS = 200
+# Ours. The same amplification from the other side: entries were capped
+# and variants were not, so one entry could carry 200,000 of them.
+MAX_VARIANTS_PER_ENTRY = 50
+# Ours. What the alternation, `forms_at`'s buckets and the token payload
+# are actually sized by. 500 entries of 4 forms each is far past any real
+# mapping.
+MAX_TOTAL_FORMS = 2000
 # Ours. Five hundred entries is far past any real mapping and keeps the
 # alternation, the diagnostics and the token payload bounded.
 MAX_ENTRIES = 500
-# Ours. `include_context` returns file text; the cap is what stops a
-# preview turning into a transcript dump.
+# Ours. `include_context` returns file text; this caps one window.
 MAX_CONTEXT_CHARS = 120
+# Ours, and this is the cap that actually stops a preview turning into a
+# transcript dump. Per-window was never enough: the number of windows was
+# uncapped, so 120 characters each side of 400 shown spans returned
+# 98,100 characters of a 20,800-character transcript, 4.7 times the file,
+# because the windows overlap (Security S8). The budget is per preview
+# call, across every file and every entry, and a block that runs out of
+# it says `context_truncated`.
+MAX_CONTEXT_TOTAL_CHARS = 10000
+# Ours. A paging cap in the house shape (`validate_limit`): silently
+# capped rather than refused, because a caller asking for more than this
+# many span positions per entry is asking for "all of them".
+MAX_SPANS_PER_ENTRY = 500
 # Ours, and deliberately NOT driven by a tool argument: `overlap_conflicts`
 # is part of the signed effect block, so its size must be the same on the
 # preview call and on the execute call.
@@ -184,10 +211,15 @@ def _check_name(value: Any, entry_index: int, label: str) -> str:
         raise MappingError(
             f"mapping entry {entry_index}: {label} must be at least "
             f"{MIN_ORIGINAL_CHARS} characters.")
+    if len(value) > MAX_FORM_CHARS:
+        raise MappingError(
+            f"mapping entry {entry_index}: {label} must be at most "
+            f"{MAX_FORM_CHARS} characters.")
     return value
 
 
-def _check_pseudonym(value: Any, entry_index: int) -> str:
+def _check_pseudonym(value: Any, entry_index: int,
+                     may_echo_names: bool = True) -> str:
     """A `pseudonym`: a string this engine writes into the file."""
     value = _check_common(value, entry_index, "pseudonym")
     if len(value) < MIN_PSEUDONYM_CHARS:
@@ -199,8 +231,9 @@ def _check_pseudonym(value: Any, entry_index: int) -> str:
             f"mapping entry {entry_index}: pseudonym must be at most "
             f"{MAX_PSEUDONYM_CHARS} characters.")
     if _has_astral(value) or "\r" in value:
+        shown = f"pseudonym '{value}'" if may_echo_names else "the pseudonym"
         raise MappingError(
-            f"mapping entry {entry_index}: pseudonym '{value}' contains "
+            f"mapping entry {entry_index}: {shown} contains "
             f"characters beyond U+FFFF (emoji or similar) or a carriage "
             f"return; QualCoder's editor would misplace positions in the "
             f"rewritten file. Choose a pseudonym in the Basic Multilingual "
@@ -252,7 +285,8 @@ def _fold(value: str) -> str:
     return value.casefold()
 
 
-def validate_mapping(raw: Any, case_mode: str = "exact") -> Mapping:
+def validate_mapping(raw: Any, case_mode: str = "exact",
+                     may_echo_names: bool = True) -> Mapping:
     """Validate a caller's mapping, or raise MappingError.
 
     Refused as a whole, with nothing previewed, on any of: an empty
@@ -271,6 +305,16 @@ def validate_mapping(raw: Any, case_mode: str = "exact") -> Mapping:
     `case_mode` matters here: in the two insensitive modes two forms that
     differ only in case ARE the same rule, so they are duplicates, and a
     pseudonym that case-folds onto a name would chain.
+
+    `may_echo_names=False` says the mapping did NOT come from the caller:
+    it was read out of the project's own `pseudonyms.json`, which is the
+    researcher's reverse key. D1 5.1's premise ("the mapping is
+    user-supplied and therefore already in the conversation") is false on
+    that path and D1 3.10 promises the opposite, so no refusal text on it
+    quotes a value. Entry indices carry everything the reader needs, and
+    the chaining refusal is where it mattered most: the value it quotes
+    is a pseudonym that is ALSO somebody's real name, which is the whole
+    reason the entry is refused (Security S3).
     """
     if case_mode not in CASE_MODES:
         raise MappingError(
@@ -306,7 +350,8 @@ def validate_mapping(raw: Any, case_mode: str = "exact") -> Mapping:
                 f"mapping entry {index}: each entry must have both original "
                 f"and pseudonym.")
         original = _check_name(item["original"], index, "original")
-        pseudonym = _check_pseudonym(item["pseudonym"], index)
+        pseudonym = _check_pseudonym(item["pseudonym"], index,
+                                     may_echo_names)
         raw_variants = item.get("variants")
         variants: List[str] = []
         if raw_variants is not None:
@@ -314,9 +359,20 @@ def validate_mapping(raw: Any, case_mode: str = "exact") -> Mapping:
                 raise MappingError(
                     f"mapping entry {index}: variants must be a list of "
                     f"strings.")
+            if len(raw_variants) > MAX_VARIANTS_PER_ENTRY:
+                raise MappingError(
+                    f"mapping entry {index}: has {len(raw_variants)} "
+                    f"variants; at most {MAX_VARIANTS_PER_ENTRY} are "
+                    f"accepted per entry.")
             for variant in raw_variants:
                 variants.append(_check_name(variant, index, "variant"))
         entries.append(Entry(index, original, pseudonym, tuple(variants)))
+
+    total_forms = sum(len(entry.forms) for entry in entries)
+    if total_forms > MAX_TOTAL_FORMS:
+        raise MappingError(
+            f"mapping has {total_forms} surface forms (originals plus "
+            f"variants); at most {MAX_TOTAL_FORMS} are accepted.")
 
     # Duplicate surface forms, across the whole mapping and within one
     # entry. Exact spelling always; case-folded as well when the run is
@@ -342,9 +398,11 @@ def validate_mapping(raw: Any, case_mode: str = "exact") -> Mapping:
         keys = {entry.pseudonym, _fold(entry.pseudonym)} if insensitive \
             else {entry.pseudonym}
         if any(key in seen for key in keys):
+            shown = (f"pseudonym '{entry.pseudonym}'" if may_echo_names
+                     else f"the pseudonym of entry {entry.index}")
             raise MappingError(
-                f"mapping entry {entry.index}: pseudonym "
-                f"'{entry.pseudonym}' is also an original or variant in this "
+                f"mapping entry {entry.index}: {shown} "
+                f"is also an original or variant in this "
                 f"mapping. QualCoder's import would chain the two "
                 f"replacements; this tool refuses instead. Choose a "
                 f"pseudonym that does not occur as a name in the mapping.")
@@ -404,12 +462,102 @@ def _form_sort_key(item: Tuple[str, int]) -> Tuple[int, int, str]:
     return (-len(form), index, form)
 
 
+# Runs of anything that is not a letter or a digit, underscore included
+# (`\W` alone excludes it, and `_` is the separator this whole finding is
+# about). Used to join the parts of a multi-word name, so the detector
+# reads "Mary Ann", "Mary_Ann", "Mary-Ann" and "MaryAnn" as the same
+# name, which is what a person reading a file list does.
+_SEPARATOR_RUN = r"[\W_]*"
+_SEPARATOR_SPLIT = re.compile(r"[\W_]+")
+
+
+def _detector_alternative(form: str) -> str:
+    """One surface form as a pattern that survives a changed separator.
+
+    A form of one word is itself, escaped. A form of several is its
+    words escaped and joined by "any run of separators, or none", so a
+    transcript called `Mary_Ann.txt` and a case called `MaryAnn` are
+    both found. A form with no letters or digits at all (which
+    validation permits: two punctuation marks pass the length rule) has
+    no words to join and is used literally.
+    """
+    parts = [part for part in _SEPARATOR_SPLIT.split(form) if part]
+    if not parts:
+        return re.escape(form)
+    return _SEPARATOR_RUN.join(re.escape(part) for part in parts)
+
+
+class NameDetector:
+    """Would a human reading this string see one of the mapping's names?
+
+    The DETECTOR, and it is deliberately NOT the rewriter's matcher. The
+    two answer different questions under opposite correctness conditions
+    and must never be swapped for one another:
+
+    - `Compiled.pattern` is the REWRITER's matcher: master's file-import
+      form, whole-word on both sides, so "Ann" is never replaced inside
+      "Anna" and an unrelated word is never corrupted. Conservative is
+      right there, and nothing about it changes.
+    - This class decides whether a string is REPORTED as still carrying
+      a name, or WITHHELD from a durable record because it carries one.
+      Both are questions about what a reader sees, not about what the
+      rewrite would fire on, so it is liberal by design: a bare
+      substring with no word boundary at all, because `_` is a word
+      character and `Thomas_interview.txt` is the commonest transcript
+      file name there is; case-insensitive under EVERY `case_mode`,
+      because `THOMAS_P01` names the participant whether or not this run
+      would rewrite it; over originals and variants alike.
+
+    The asymmetry is the whole point. Over-detecting costs a withheld
+    file name, which the file id replaces, or a residue count that is
+    one too high, which sends the researcher to look at a label that
+    does mention the name. Under-detecting costs a participant's real
+    name in a journal entry that ships inside the project.
+
+    The cost is real and is stated rather than hidden: an entry for
+    "Tom" makes a memo that says "tomorrow" count as carrying a name,
+    because a rule that catches `ThomasB.txt` cannot also spare
+    `tomorrow`, and of the two mistakes only one of them ships a
+    participant's name. The tool description says the residue counts
+    read wider than the rewrite.
+    """
+
+    __slots__ = ("_direct", "_folded")
+
+    def __init__(self, forms: Sequence[str]):
+        normalised = [unicodedata.normalize("NFC", form) for form in forms]
+        self._direct = re.compile(
+            "|".join(_detector_alternative(form) for form in normalised),
+            re.IGNORECASE)
+        # A second reading, because `re.IGNORECASE` and `str.casefold` do
+        # not agree on every code point (U+00DF casefolds to "ss" but
+        # does not match "SS" under IGNORECASE). Two searches over one
+        # short string cost nothing, and here the wider answer is the
+        # safe one.
+        self._folded = re.compile(
+            "|".join(_detector_alternative(_fold(form))
+                     for form in normalised))
+
+    def contains(self, value: Any) -> bool:
+        """True when a reader of `value` would see any surface form.
+
+        Anything that is not a non-empty string is False: a NULL label
+        carries no name, and nothing downstream should have to know that
+        a missing value and a clean one are different answers.
+        """
+        if not isinstance(value, str) or not value:
+            return False
+        text = unicodedata.normalize("NFC", value)
+        return bool(self._direct.search(text)
+                    or self._folded.search(_fold(text)))
+
+
 class Compiled:
     """A mapping compiled into one pattern, plus the lookups it needs."""
 
     __slots__ = ("mapping", "case_mode", "flags", "pattern", "forms",
                  "_exact", "_folded", "_by_first", "max_form_len",
-                 "pseudonym_pattern", "_pseudonym_entries")
+                 "pseudonym_pattern", "_pseudonym_entries", "detector")
 
     def __init__(self, mapping: Mapping):
         self.mapping = mapping
@@ -431,6 +579,10 @@ class Compiled:
         self.pattern = re.compile(
             "(?<!\\w)(?:" + "|".join(re.escape(form) for form, _ in forms)
             + ")(?!\\w)", self.flags)
+        # The other matcher, with the opposite contract: never used to
+        # rewrite, always used to decide whether a string is reported or
+        # withheld as carrying a name. See `NameDetector`.
+        self.detector = NameDetector([form for form, _ in forms])
         self._exact = {form: index for form, index in forms}
         self._folded: Dict[str, int] = {}
         for form, index in forms:
@@ -899,7 +1051,11 @@ class SpanMapper:
 
         Returning None is the "leave it exactly as it is" answer for a
         row whose stored positions are not a span: NULL, not an integer,
-        or `pos0 >= pos1`. Neither refuses the run; both are listed.
+        NEGATIVE, or `pos0 >= pos1`. None refuses the run; all are
+        listed. A negative position is a damaged row QualCoder never
+        writes, and mapping one would write it back negative and could
+        collide with the parked values the write uses; left alone and
+        reported, it is a row the researcher can go and look at (QA F-9).
 
         A `pos1` past the end of the text is CLAMPED on the old side
         before mapping and reported, which is master's own rule applied a
@@ -907,10 +1063,20 @@ class SpanMapper:
         valid code"). Clamping before rather than after is what makes
         the guarantee that no row is written with an end past the new
         text hold under both policies rather than only under one.
+
+        A clamped row is never classified as a pure shift. The classes
+        describe what happens to the STORED span, and a clamp truncates
+        it: the annotation stored at (76, 200) on an 81-character text
+        is written as (66, 71), which is a 119-character resize however
+        the rest of the run moved it. Classifying that as `shifted` put
+        it under ruling X1's exemption and let a hidden coder's row be
+        resized with no override asked for (Security S5).
         """
         if isinstance(pos0, bool) or isinstance(pos1, bool):
             return None
         if not isinstance(pos0, int) or not isinstance(pos1, int):
+            return None
+        if pos0 < 0 or pos1 < 0:
             return None
         clamped = False
         if pos1 > self.old_len:
@@ -927,6 +1093,8 @@ class SpanMapper:
                 f"overlap_policy must be one of "
                 f"{', '.join(OVERLAP_POLICIES)}.")
         mapped.clamped = clamped
+        if clamped and mapped.change in (UNCHANGED, SHIFTED):
+            mapped.change = RESIZED
         return mapped
 
 
@@ -937,8 +1105,8 @@ def unique_constraint_collisions(keys: Sequence[Tuple[Any, ...]],
 
     `code_text` is unique on (cid, fid, pos0, pos1, owner) and
     `annotation` on (fid, pos0, pos1, owner) in QualCoder's own schema
-    (`__main__.py:1800-1801` and `:1819-1821` at master, identical at the
-    3.8.2 tag). Two rows can collapse onto one span when both were cut by
+    (`__main__.py:1819-1821` and `:1800-1801` at master, in that order,
+    identical at the 3.8.2 tag). Two rows can collapse onto one span when both were cut by
     the same name: one marking "Thomas" and one marking "Thom" both snap
     to the pseudonym. Rare enough that the right answer is a human
     decision, so the preview lists it and the execute refuses.

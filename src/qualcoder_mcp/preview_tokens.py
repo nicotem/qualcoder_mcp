@@ -40,8 +40,13 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "qcp1"
-# The grammar of a token this server issues, so exactly ONE spelling of
-# a given token verifies. `[0-9]`, never `\d`: in a str pattern `\d`
+# The grammar of a token this server issues, so exactly one spelling of
+# each AUTHENTICATED field verifies. `bind` is outside that claim by
+# design: it is public and non-authoritative (D3 3.2), the MAC does not
+# cover it, and a token with `bind` overwritten still verifies, which a
+# gate confirmed by experiment. Nothing downstream reads it from the
+# token; the flagship recomputes it server-side. `[0-9]`, never `\d`: in
+# a str pattern `\d`
 # matches every Unicode Nd digit and `int()` decodes fullwidth,
 # Arabic-Indic, Devanagari and the rest to the same integer, so a live
 # token re-spelled in another digit script used to verify OK, because

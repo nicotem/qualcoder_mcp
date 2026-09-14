@@ -35,6 +35,7 @@ import sys
 import re
 import stat
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -1276,6 +1277,253 @@ class TestJournal:
 
 
 # =============================================================================
+# NAMES IN DURABLE RECORDS (fix round 1: QA F-1 and F-5, Security S1 and S2)
+# =============================================================================
+
+# The separators a real transcript file name uses. The first is the shape
+# the two original guarding tests both used, and it is the only one of
+# these that is not a word character: every other row here was judged to
+# carry no name at all, because the withholding test ran the REWRITER's
+# whole-word pattern over the name. Keep the first row: it is the
+# regression, and dropping it would hide one.
+NAME_SHAPES = [
+    "Thomas interview.txt",      # a space
+    "Thomas_interview.txt",      # an underscore, the docstring's own example
+    "Thomas-interview.txt",      # a hyphen
+    "Thomas.interview.txt",      # a dot
+    "Thomas2.txt",               # a digit after the name
+    "2Thomas.txt",               # a digit before it
+    "ThomasB.txt",               # a letter after it
+    "interview_Thomas.txt",      # the name at the end
+    "int_Thomas_01.txt",         # the name in the middle
+    "THOMAS_P01.txt",            # another case
+    "Tom_2.docx",                # a variant rather than an original
+    "Mary_Ann.txt",              # a multi-word name, separator changed
+    "MaryAnn_notes.txt",         # a multi-word name run together
+]
+
+# Every spelling of a real name this fixture's mapping covers. Checked
+# case-sensitively, because a case-insensitive sweep for "tom" would hit
+# an unrelated word in a path one day and the test would be believed.
+NAME_SPELLINGS = ("Thomas", "THOMAS", "thomas", "Tom", "Mary Ann",
+                  "Mary_Ann", "MaryAnn", "Mary")
+
+
+def assert_carries_no_name(text, label, extra=()):
+    for forbidden in NAME_SPELLINGS + tuple(extra):
+        assert forbidden not in text, (label, forbidden)
+
+
+def rename_file(project, name, fid=1):
+    """Rename a source and reopen the server's connection on it."""
+    con = sqlite3.connect(str(project / "data.qda"))
+    con.execute("UPDATE source SET name=? WHERE id=?", (name, fid))
+    con.commit()
+    con.close()
+    server.db.close()
+    server.db = QualcoderDatabase(str(project))
+
+
+@contextmanager
+def wired(folder):
+    """Select `folder` as the project for the body of a with-block."""
+    original_db, original_path = server.db, server.current_project_path
+    server.db = QualcoderDatabase(str(folder))
+    server.current_project_path = str(folder)
+    try:
+        yield folder
+    finally:
+        try:
+            server.db.close()
+        except Exception:
+            pass
+        server.db, server.current_project_path = original_db, original_path
+
+
+class TestAFileNameThatCarriesAName:
+    """Every durable record, over every separator, not just the space.
+
+    The two tests this class replaces both used `Thomas interview.txt`,
+    and the QA gate showed the whole safeguard could be replaced by a
+    literal matching that one string with the suite staying green. The
+    parametrisation is the pin: a detector that misses any separator
+    fails here, and a literal that matches one fails twelve times.
+    """
+
+    @pytest.mark.parametrize("name", NAME_SHAPES)
+    def test_the_journal_entry_carries_neither_the_name_nor_the_file(
+            self, project, name):
+        rename_file(project, name)
+        result = execute_from(preview_of())
+        row = query(project, "SELECT name,jentry FROM journal")[0]
+        assert_carries_no_name(row["name"], "journal name", (name,))
+        assert_carries_no_name(row["jentry"], "journal body", (name,))
+        assert "name withheld" in row["jentry"]
+        assert f"file id 1" in row["jentry"]
+        assert result["journal_entry"] == row["name"]
+
+    @pytest.mark.parametrize("name", NAME_SHAPES)
+    def test_the_manifest_carries_neither(self, project, name):
+        rename_file(project, name)
+        result = execute_from(preview_of())
+        body = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        assert_carries_no_name(body, "manifest", (name,))
+        assert json.loads(body)["files"][0]["name"] is None
+
+    @pytest.mark.parametrize("name", NAME_SHAPES)
+    def test_the_log_carries_neither(self, project, name, caplog):
+        import logging
+        rename_file(project, name)
+        caplog.set_level(logging.DEBUG)
+        execute_from(preview_of())
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert_carries_no_name(logged, "log", (name,))
+
+    @pytest.mark.parametrize("name", NAME_SHAPES)
+    def test_the_residue_counts_the_file_name(self, project, name):
+        """The field D1 6.3 names explicitly, and the one field where
+        underscores are the norm. It was asserted nowhere, and it
+        reported zero (QA F-5)."""
+        rename_file(project, name)
+        residue = preview_of()["preview"]["residue"]
+        assert residue["file_names"] == 1
+
+    def test_a_file_name_with_no_name_in_it_is_still_reported(self, project):
+        """Over-withholding is cheap but not free: a researcher reading
+        the journal should still see the file names that are safe."""
+        result = execute_from(preview_of())
+        row = query(project, "SELECT jentry FROM journal")[0]
+        assert "interview_01.txt" in row["jentry"]
+        assert "name withheld" not in row["jentry"]
+        body = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        assert json.loads(body)["files"][0]["name"] == "interview_01.txt"
+        assert preview_of()["preview"]["residue"]["file_names"] == 0
+
+    def test_a_marker_run_in_a_file_name_cannot_truncate_the_audit(
+            self, project):
+        """Security S6. `a#####b.txt` planted a private zone in the
+        journal entry, and everything after the marker -- the counts, the
+        backup, the manifest name, the line saying the names are not
+        recorded -- was silently dropped."""
+        rename_file(project, "a#####b.txt")
+        result = execute_from(preview_of())
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert "#####" not in body
+        assert "a####b.txt" in body
+        assert result["manifest_path"].split("/")[-1] in body
+        assert "The names replaced are not recorded here" in body
+
+
+class TestTheLabelsAndMemosTheResidueCounts:
+    """Every field of the residue block, in the shapes that defeated it.
+
+    Reproduced by the Security gate as five names surviving in a project
+    whose residue block reported one of them, and `residue_total` of 1
+    where it should have been 5.
+    """
+
+    def _plant(self, project, value):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET name=?, memo=? WHERE id=1",
+                    (value, f"Interviewed {value} at home."))
+        con.execute("UPDATE cases SET name=? WHERE caseid=1", (value,))
+        con.execute("UPDATE code_name SET name=? WHERE cid=1", (value,))
+        con.execute("INSERT INTO attribute_type (name,date,owner,memo,"
+                    "caseOrFile,valuetype) VALUES ('Role','d','TestCoder',"
+                    "'','case','character')")
+        con.execute("INSERT INTO attribute (attrid,name,attr_type,value,id,"
+                    "date,owner) VALUES (1,'Role','case',?,1,'d',"
+                    "'TestCoder')", (value,))
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+
+    @pytest.mark.parametrize("value", ["Thomas_P01", "Thomas-P01",
+                                       "Thomas2", "ThomasB", "Mary_Ann",
+                                       "MaryAnn", "THOMAS_P01",
+                                       "Thomas P01"])
+    def test_every_label_field_counts_the_name(self, project, value):
+        self._plant(project, value)
+        residue = preview_of()["preview"]["residue"]
+        assert residue["file_names"] == 1
+        assert residue["case_names"] == 1
+        assert residue["code_names"] == 1
+        assert residue["attribute_values"] == 1
+        assert residue["memos"]["source"] == 1
+
+    def test_a_project_with_no_residue_counts_none_of_it(self, project):
+        residue = preview_of()["preview"]["residue"]
+        for key in ("file_names", "case_names", "code_names",
+                    "attribute_values"):
+            assert residue[key] == 0, key
+        assert all(count == 0 for count in residue["memos"].values())
+
+    def test_the_block_says_which_reading_its_counts_are(self, project):
+        residue = preview_of()["preview"]["residue"]
+        assert "wider than the rewrite" in residue["reading_note"]
+
+    def test_the_counts_reach_the_warning_the_researcher_is_read(
+            self, project):
+        self._plant(project, "Thomas_P01")
+        out = preview_of()
+        assert any("memo(s), label(s) or attribute value(s)" in warning
+                   for warning in out["warnings"])
+
+
+class TestTheProjectFolderName:
+    """The second route, which had no guard at all (Security S1).
+
+    The backup folder's name is derived from the PROJECT folder's name,
+    and a single-case study is called after its participant. Nothing
+    tested it, because every fixture in the suite calls the project
+    `study.qda`.
+    """
+
+    def _build(self, tmp_path, folder_name):
+        folder = build_project(tmp_path / folder_name)
+        add_coding(folder, 1, 1, 0, 6)
+        write_fixture_sidecar(str(folder))
+        return folder
+
+    def test_the_backup_name_is_withheld_from_the_journal_body(
+            self, tmp_path):
+        with wired(self._build(tmp_path, "Thomas study.qda")) as folder:
+            result = execute_from(preview_of())
+            body = query(folder, "SELECT jentry FROM journal")[0]["jentry"]
+            assert_carries_no_name(body, "journal body")
+            assert "its name is withheld" in body
+            assert "newest backup folder" in body
+            # The backup itself is still there and still named for the
+            # project: what is withheld is the RECORD of its name.
+            assert backups(folder), "no backup was taken"
+            assert result["backup_path"]
+
+    def test_the_manifest_withholds_both_paths(self, tmp_path):
+        with wired(self._build(tmp_path, "Thomas study.qda")):
+            result = execute_from(preview_of())
+            manifest = json.loads(
+                Path(result["manifest_path"]).read_text(encoding="utf-8"))
+            assert_carries_no_name(json.dumps(manifest), "manifest")
+            assert manifest["project_path"] is None
+            assert manifest["backup_path"] is None
+            assert "token_bind identifies the project" in \
+                manifest["paths_withheld"]
+            assert re.fullmatch(r"[0-9a-f]{8}", manifest["token_bind"])
+
+    def test_an_ordinary_project_folder_is_recorded_in_full(self, tmp_path):
+        with wired(self._build(tmp_path, "fieldwork.qda")) as folder:
+            result = execute_from(preview_of())
+            manifest = json.loads(
+                Path(result["manifest_path"]).read_text(encoding="utf-8"))
+            assert "fieldwork.qda" in manifest["project_path"]
+            assert "fieldwork" in manifest["backup_path"]
+            assert "paths_withheld" not in manifest
+            body = query(folder, "SELECT jentry FROM journal")[0]["jentry"]
+            assert "Backup taken before the run: fieldwork_backup_" in body
+
+
+# =============================================================================
 # CONCURRENCY, FAULTS AND GATES
 # =============================================================================
 
@@ -1316,7 +1564,7 @@ class TestConcurrencyAndFaults:
         blocked = []
         original = QualcoderDatabase.pseudonymise_write
 
-        def probing_write(self, plan):
+        def probing_write(self, plan, fingerprints):
             con = sqlite3.connect(str(project / "data.qda"), timeout=0.1)
             try:
                 con.execute("UPDATE source SET memo='x' WHERE id=4")
@@ -1326,7 +1574,7 @@ class TestConcurrencyAndFaults:
                 blocked.append(True)
             finally:
                 con.close()
-            return original(self, plan)
+            return original(self, plan, fingerprints)
 
         monkeypatch.setattr(QualcoderDatabase, "pseudonymise_write",
                             probing_write)
@@ -1458,6 +1706,512 @@ class TestStaleSessions:
         before = path.read_bytes()
         execute_from(preview_of())
         assert path.read_bytes() == before
+
+
+# =============================================================================
+# THE FIXES OF ROUND 1 (QA F-2, F-3, F-13; Security S3, S5, S7, S8, S9)
+# =============================================================================
+
+class TestAJournalFailureCannotBeReportedAsSuccess:
+    """QA F-2. `add_journal_entry` rolled the connection back on two of
+    its own error paths, the flagship swallowed the exception, and `_op`
+    returned `{"success": true, "message": "Pseudonymised 1 file(s)"}`
+    with new lengths and new sha256 values over a database that was
+    byte-for-byte unchanged. Reachable on disk-full and on I/O errors.
+    """
+
+    @staticmethod
+    def _state(project):
+        return (query(project, "SELECT fulltext FROM source ORDER BY id"),
+                query(project, "SELECT ctid,pos0,pos1,seltext FROM code_text "
+                               "ORDER BY ctid"),
+                query(project, "SELECT anid,pos0,pos1 FROM annotation "
+                               "ORDER BY anid"),
+                query(project, "SELECT jid FROM journal"))
+
+    def test_a_failing_insert_no_longer_takes_the_rewrite_with_it(
+            self, project):
+        """The real code path, through SQLite: a BEFORE INSERT trigger
+        standing in for any INSERT-time failure that is not a duplicate
+        name. The statement fails, the transaction survives, and the
+        honest outcome is the rewrite plus `journal_entry: null`."""
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("CREATE TRIGGER no_journal BEFORE INSERT ON journal "
+                    "BEGIN SELECT RAISE(ABORT, 'simulated disk error'); END")
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        result = execute_from(preview_of())
+        assert result["success"] is True
+        assert result["journal_entry"] is None
+        assert query(project, "SELECT jid FROM journal") == []
+        text = query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"]
+        assert "Thomas" not in text and "Alex" in text
+        assert text == result["files"][0]["new_length"] * "x" or True
+        assert len(text) == result["files"][0]["new_length"]
+
+    def test_a_rollback_under_the_run_is_refused_not_reported(
+            self, project, monkeypatch):
+        """The guard itself. Any future path that rolls the transaction
+        back inside the run has to end as an error, never as a success
+        report over an unchanged database."""
+        def rollback_then_raise(self, name, entry, owner=None,
+                                auto_commit=True):
+            self.conn.rollback()
+            raise RuntimeError("Failed to add journal entry: simulated "
+                               "disk error")
+
+        monkeypatch.setattr(QualcoderDatabase, "add_journal_entry",
+                            rollback_then_raise)
+        before = self._state(project)
+        result = execute_from(preview_of())
+        assert "error" in result, result
+        assert "rolled back with it; nothing was changed" in result["error"]
+        assert "record_in_journal=false" in result["error"]
+        assert "success" not in result
+        assert self._state(project) == before
+        assert server.db.read_only is True
+
+    def test_a_helper_told_not_to_commit_does_not_roll_back(self, project):
+        """The other half of the fix, at the layer it belongs to:
+        `auto_commit=False` says a caller owns this transaction."""
+        db = QualcoderDatabase(str(project), read_only=False)
+        try:
+            db.begin_immediate()
+            db.conn.execute("UPDATE source SET memo='keep me' WHERE id=1")
+            db.add_journal_entry(name="Kept", entry="x", owner="TestCoder",
+                                 auto_commit=False)
+            with pytest.raises(ValueError):
+                db.add_journal_entry(name="Kept", entry="y",
+                                     owner="TestCoder", auto_commit=False)
+            assert db.conn.in_transaction is True
+            db.conn.commit()
+        finally:
+            db.close()
+        assert query(project, "SELECT memo FROM source WHERE id=1"
+                     )[0]["memo"] == "keep me"
+
+
+class TestTheFingerprintCheckIsACheck:
+    """QA F-3. The C7 loop compared a read to itself: `_op` rebuilt the
+    plan on the write connection and then verified the plan's own
+    fingerprints against a re-read on that same connection, inside the
+    same transaction. It could not fail, and it would not have failed
+    with the state guard deleted. It now takes the fingerprints the
+    READ-ONLY phase captured, which is what D1 3.6 specifies.
+
+    Driven at the database layer, because the tool-level route is
+    shadowed: the signed state digests every eligible file as
+    (id, length, sha256), so a fulltext change between the preview and
+    the execute is refused before C7 is reached. That path has its own
+    pin in `test_a_racing_write_is_caught_inside_the_transaction`.
+    """
+
+    def _plan(self, db):
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        return db.pseudonymise_plan(compiled, "snap_to_pseudonym", None)
+
+    def test_the_fingerprints_that_govern_are_the_ones_passed_in(
+            self, project):
+        """The plan's own fingerprints match the text on disk here, so
+        the version that verified against them accepted this write. The
+        preview's say the file moved, and that is the answer that
+        counts."""
+        db = QualcoderDatabase(str(project), read_only=False)
+        try:
+            plan = self._plan(db)
+            stale = {1: (11, "0" * 64)}
+            with pytest.raises(ValueError) as excinfo:
+                db.pseudonymise_write(plan, stale)
+            assert "file id 1 changed while this write was being prepared" \
+                in str(excinfo.value)
+        finally:
+            db.close()
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == TEXT
+
+    def test_a_touched_file_the_preview_never_saw_is_refused(self, project):
+        db = QualcoderDatabase(str(project), read_only=False)
+        try:
+            plan = self._plan(db)
+            with pytest.raises(ValueError) as excinfo:
+                db.pseudonymise_write(plan, {})
+            assert "was not in the preview" in str(excinfo.value)
+        finally:
+            db.close()
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == TEXT
+
+    def test_the_matching_fingerprints_let_the_write_through(self, project):
+        db = QualcoderDatabase(str(project), read_only=False)
+        try:
+            plan = self._plan(db)
+            db.begin_immediate()
+            report = db.pseudonymise_write(
+                plan, {item["file_id"]: item["old_fingerprint"]
+                       for item in plan["files"]})
+            db.conn.commit()
+        finally:
+            db.close()
+        assert report["files"][0]["replacements"] == 5
+        assert "Thomas" not in query(
+            project, "SELECT fulltext FROM source WHERE id=1"
+            )[0]["fulltext"]
+
+
+class TestWhatTheRunRecomputes:
+    """The performance shape, pinned rather than measured (QA F-14,
+    Security section 7). Five plans and two residue scans per execute,
+    one of the scans inside the write transaction while holding the
+    RESERVED lock, was not a bug but it was not a design either.
+    """
+
+    @staticmethod
+    def _instrument(monkeypatch):
+        calls = {"plans": [], "residue": []}
+        plan_original = QualcoderDatabase.pseudonymise_plan
+        residue_original = QualcoderDatabase.pseudonymise_residue
+
+        def counting_plan(self, *args, **kwargs):
+            calls["plans"].append(bool(self.conn.in_transaction))
+            return plan_original(self, *args, **kwargs)
+
+        def counting_residue(self, *args, **kwargs):
+            calls["residue"].append(bool(self.conn.in_transaction))
+            return residue_original(self, *args, **kwargs)
+
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_plan",
+                            counting_plan)
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_residue",
+                            counting_residue)
+        return calls
+
+    def test_the_preview_builds_one_plan_and_scans_once(self, project,
+                                                        monkeypatch):
+        calls = self._instrument(monkeypatch)
+        preview_of()
+        assert calls["plans"] == [False]
+        assert calls["residue"] == [False]
+
+    def test_the_execute_builds_one_plan_per_connection(self, project,
+                                                        monkeypatch):
+        out = preview_of()
+        calls = self._instrument(monkeypatch)
+        assert execute_from(out)["success"] is True
+        # One on the read-only connection (the preview, the row digests
+        # and the C7 fingerprints), one inside the transaction (the
+        # signed state and the write itself).
+        assert calls["plans"] == [False, True]
+
+    def test_no_residue_scan_happens_inside_the_write_transaction(
+            self, project, monkeypatch):
+        out = preview_of()
+        calls = self._instrument(monkeypatch)
+        execute_from(out)
+        assert calls["residue"] == [False]
+
+    def test_the_run_writes_the_plan_whose_effect_was_verified(
+            self, project, monkeypatch):
+        """Not a sixth recomputation of it: `_op` takes the plan the
+        state check built, on the same connection, in the same
+        transaction, with nothing written in between."""
+        seen = []
+        original = QualcoderDatabase.pseudonymise_write
+        plan_original = QualcoderDatabase.pseudonymise_plan
+
+        def remember(self, *args, **kwargs):
+            plan = plan_original(self, *args, **kwargs)
+            seen.append(id(plan))
+            return plan
+
+        written = []
+
+        def watch(self, plan, fingerprints):
+            written.append(id(plan))
+            return original(self, plan, fingerprints)
+
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_plan", remember)
+        monkeypatch.setattr(QualcoderDatabase, "pseudonymise_write", watch)
+        execute_from(preview_of())
+        assert written == [seen[-1]]
+
+
+class TestTheClampIsNotAShift:
+    """Security S5. `map_row` clamps a `pos1` past the end of the text
+    BEFORE classifying, so a row that was clamped and then shifted was
+    reported as a pure shift, which ruling X1 exempts. A hidden coder's
+    annotation stored at (76, 200) on an 81-character text was written
+    as (66, 71) with no override asked for: a 119-character truncation.
+    """
+
+    def _damaged_hidden_row(self, project):
+        hide_coder(project, "Hidden Helga")
+        add_annotation(project, 2, 76, 200, owner="Hidden Helga")
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+
+    def test_a_clamped_row_is_classified_as_a_resize(self, project):
+        add_annotation(project, 2, 76, 200)
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        counts = preview_of()["preview"]["files"][0]["annotations"]
+        assert counts["clamped"] == 1
+        assert counts["resized"] >= 1
+        assert counts["shifted"] == 0
+
+    def test_a_clamped_hidden_row_requires_the_override(self, project):
+        self._damaged_hidden_row(project)
+        out = preview_of()
+        hidden = out["preview"]["hidden_coder_rows"]
+        assert hidden["override_required"] is True
+        assert hidden["resized"] == 1
+        assert hidden["shifted"] == 0
+        refused = call(mapping=MAPPING, preview_token=out["preview_token"])
+        assert refused["reason"] == "hidden_coder_override_required"
+        assert refused["nothing_changed"] is True
+        assert backups(project) == []
+        assert query(project, "SELECT pos0,pos1 FROM annotation "
+                              "WHERE anid=2") == [{"pos0": 76, "pos1": 200}]
+
+    def test_the_override_still_lets_it_through(self, project):
+        self._damaged_hidden_row(project)
+        result = execute_from(preview_of(), allow_hidden_coder=True)
+        assert result["success"] is True
+        assert query(project, "SELECT pos0,pos1 FROM annotation "
+                              "WHERE anid=2") == [{"pos0": 66, "pos1": 71}]
+
+    def test_the_refusal_is_the_flagships_own_text(self, project):
+        """QA F-4 and Security S10. The shared codebook text points at
+        `hidden_coder_codings_affected`, a key this preview does not
+        have, says "codings" for what may be an annotation, and does not
+        say that a pure shift is exempt."""
+        self._damaged_hidden_row(project)
+        out = preview_of()
+        refused = call(mapping=MAPPING, preview_token=out["preview_token"])
+        error = refused["error"]
+        assert "hidden_coder_rows in the preview counts them" in error
+        assert "hidden_coder_codings_affected" not in error
+        assert "resize, snap or delete" in error
+        assert "pure position shift of such a span is exempt" in error
+        assert "Hidden Helga" not in json.dumps(refused)
+        _house_rules([error])
+
+
+class TestTheParkingFloor:
+    """QA F-9 and Security S7. The floor was taken over the MOVING rows
+    only, so a stationary damaged row already stored at a negative span
+    sat exactly where the parking was about to write, and the whole run
+    failed on the UNIQUE constraint.
+    """
+
+    def _swap_project(self, project):
+        text = "Thomas aa bb cc Thomas dd"
+        folder = build_project(tmp_path_for(project) / "park.qda", text)
+        add_coding(folder, 30, 1, 9, 12, owner="Bob", seltext=text[9:12],
+                   text=text)
+        add_coding(folder, 31, 1, 7, 10, owner="Bob", seltext=text[7:10],
+                   text=text)
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        return folder
+
+    def test_a_stationary_damaged_row_does_not_break_the_parking(
+            self, project):
+        folder = self._swap_project(project)
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("INSERT INTO code_text (ctid,cid,fid,seltext,pos0,pos1,"
+                    "owner,date,memo,important) VALUES "
+                    "(32,1,1,'',-4,-3,'Bob','d','',0)")
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        mapping = [{"original": "Thomas", "pseudonym": "Alex"}]
+        out = preview_of(mapping=mapping)
+        # The damaged row is reported rather than mapped.
+        assert 32 in out["preview"]["files"][0]["null_position_rows"][
+            "code_text"]
+        result = execute_from(out, mapping=mapping)
+        assert result.get("success") is True, result
+        moved = {r["ctid"]: (r["pos0"], r["pos1"]) for r in
+                 query(folder, "SELECT ctid,pos0,pos1 FROM code_text")}
+        assert moved == {30: (7, 10), 31: (5, 8), 32: (-4, -3)}
+
+
+class TestWhatTheTokenSigns:
+
+    def test_renaming_a_file_this_run_skips_keeps_the_token_valid(
+            self, project):
+        """QA F-13. `skipped_files` carried NAMES into the signed effect,
+        so renaming an untouched PDF invalidated a live token as
+        `project_changed`, with an explanation that was false."""
+        out = preview_of()
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET name='renamed.pdf' WHERE id=2")
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        result = execute_from(out)
+        assert result.get("success") is True, result
+
+    def test_the_readable_preview_still_names_the_skipped_files(
+            self, project):
+        skipped = preview_of()["preview"]["skipped_files"]
+        assert {item["file_id"]: item["reason"] for item in skipped} == {
+            2: "pdf_source", 3: "no_fulltext"}
+        assert any(item.get("name") == "paper.pdf" for item in skipped)
+
+    def test_a_changed_text_still_invalidates_the_token(self, project):
+        """The other direction, so the narrowing did not narrow too far."""
+        out = preview_of()
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext='Thomas again' WHERE id=1")
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        assert execute_from(out)["reason"] == "project_changed"
+
+
+class TestThePresentationArguments:
+    """Security S8 and S9. `context_chars`' own cap was nullified by an
+    uncapped `max_spans_per_entry`, and an unvalidated one leaked a raw
+    Python message into the envelope.
+    """
+
+    @pytest.mark.parametrize("kwargs,fragment", [
+        ({"max_spans_per_entry": "x"}, "must be a whole number"),
+        ({"max_spans_per_entry": 1.5}, "must be a whole number"),
+        ({"max_spans_per_entry": True}, "must be a whole number"),
+        ({"max_spans_per_entry": 0}, "must be at least 1"),
+        ({"max_spans_per_entry": -1}, "must be at least 1"),
+        ({"context_chars": "5"}, "must be a whole number"),
+        ({"context_chars": -1}, "must be at least 0"),
+    ], ids=repr)
+    def test_a_bad_presentation_argument_is_named_in_our_own_words(
+            self, project, kwargs, fragment):
+        out = preview_of(**kwargs)
+        assert fragment in out["error"]
+        assert "__index__" not in out["error"]
+        _house_rules([out["error"]])
+
+    def test_a_huge_span_request_is_capped_rather_than_refused(
+            self, project):
+        out = preview_of(max_spans_per_entry=10 ** 9)
+        assert "error" not in out
+
+    def test_the_context_budget_bounds_the_whole_preview(self, tmp_path):
+        """Not each window: the windows overlap, so 400 of them returned
+        4.7 times the file."""
+        text = ("Thomas said a great deal about the weather and the "
+                "fieldwork. ") * 400
+        folder = build_project(tmp_path / "long.qda", text)
+        write_fixture_sidecar(str(folder))
+        with wired(folder):
+            out = preview_of(include_context=True, context_chars=120,
+                             max_spans_per_entry=10 ** 9)
+            blocks = out["preview"]["files"][0]["replacements"]
+            returned = sum(len(window) for block in blocks
+                           for window in block.get("context", []))
+            assert returned <= P.MAX_CONTEXT_TOTAL_CHARS
+            assert any(block.get("context_truncated") for block in blocks)
+            assert returned < len(text)
+
+
+class TestTheSidecarKeepsItsNamesOutOfTheConversation:
+    """Security S3. D1 3.10 promises that reading `pseudonyms.json`
+    pulls the real names into the process and never into the
+    conversation. Three fields carried a surface form, which is an
+    original or a variant, and D1 5.1's premise (the caller supplied
+    them) is false on this path.
+    """
+
+    def _sidecar(self, project, entries):
+        (project / "pseudonyms.json").write_text(
+            json.dumps(entries), encoding="utf-8")
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+
+    def test_the_case_variants_diagnostic_names_the_entry_not_the_name(
+            self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext=? WHERE id=1",
+                    ("THOMAS and thomas and Thomas spoke.",))
+        con.commit()
+        con.close()
+        self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        seen = out["preview"]["files"][0]["case_variants_seen"]
+        assert seen and seen[0]["entry"] == 0
+        assert seen[0]["other_case_count"] == 2
+        assert "form" not in seen[0]
+        assert_carries_no_name(json.dumps(out["preview"]), "preview")
+
+    def test_the_overlap_diagnostic_names_the_entry_not_the_name(
+            self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext=? WHERE id=1",
+                    ("Ann Marie Curie spoke at length.",))
+        con.commit()
+        con.close()
+        self._sidecar(project, [{"original": "Ann Marie", "pseudonym": "Pat"},
+                                {"original": "Marie Curie",
+                                 "pseudonym": "Robin"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        conflicts = out["preview"]["files"][0]["overlap_conflicts"]
+        assert conflicts and conflicts[0]["entry"] == 1
+        assert "form" not in conflicts[0]
+        for forbidden in ("Ann Marie", "Marie Curie", "Marie"):
+            assert forbidden not in json.dumps(out["preview"]), forbidden
+
+    def test_a_chaining_sidecar_is_refused_without_quoting_the_name(
+            self, project):
+        """QualCoder's own dialog accepts this shape: it checks for
+        duplicate originals and duplicate pseudonyms only
+        (`pseudonyms.py:84-89` at the pin). The pseudonym it refuses is
+        also somebody's real name, which is why it is refused."""
+        self._sidecar(project, [{"original": "Ann Marie", "pseudonym": "Alex"},
+                                {"original": "Thomas",
+                                 "pseudonym": "Ann Marie"}])
+        out = call(mapping=None, use_project_pseudonyms=True)
+        assert "the pseudonym of entry 1 is also an original" in out["error"]
+        assert_carries_no_name(out["error"], "chaining refusal",
+                               ("Ann Marie",))
+
+    def test_a_typed_mapping_still_shows_the_caller_their_own_names(
+            self, project):
+        """The caller supplied these, so withholding them would only
+        make the diagnostic unreadable."""
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext=? WHERE id=1",
+                    ("Ann Marie Curie spoke at length.",))
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of(mapping=[{"original": "Ann Marie",
+                                   "pseudonym": "Pat"},
+                                  {"original": "Marie Curie",
+                                   "pseudonym": "Robin"}])
+        conflicts = out["preview"]["files"][0]["overlap_conflicts"]
+        assert conflicts[0]["form"] == "Marie Curie"
+
+    def test_the_two_mapping_sources_still_bind_the_same_token(
+            self, project):
+        """The suppression is presentation only: the signed effect is
+        not narrowed with it, so a token issued from the sidecar
+        executes from an identical typed mapping and the other way
+        round."""
+        self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"}],
+                      preview_token=out["preview_token"])
+        assert result.get("success") is True, result
 
 
 # =============================================================================
@@ -1846,7 +2600,12 @@ class TestStructureAndWindowsSafety:
         containing a full stop matches any character and one containing
         an unbalanced bracket raises. Every pattern this engine builds
         must therefore come from `re.escape`d parts, or from nothing but
-        literals and this module's own top-level constants.
+        literals and this module's own top-level constants. "Escaped
+        parts" includes a call to one of this module's own pattern
+        builders, admitted by the same rule applied to its returns
+        rather than by name, because the detector escapes the pieces of
+        a multi-word name after splitting it and the escaping is then
+        no longer visible where the pattern is compiled.
 
         A tolerated pattern must also have been BUILT here: a bare local
         variable is refused even when it happens to be safe today,
@@ -1862,6 +2621,39 @@ class TestStructureAndWindowsSafety:
         # Builtins a pattern may legitimately call to build a character
         # class out of code points.
         allowed_builtins = {"chr", "str", "len", "ord"}
+        # Module-level functions that BUILD a pattern fragment, admitted
+        # by the same rule rather than by name: every one of their
+        # returns has to come through `re.escape` itself. The detector's
+        # per-form alternative is one, because it splits a multi-word
+        # name before escaping its parts, and the escaping is then no
+        # longer visible at the `re.compile` that consumes it.
+        def _is_safe_call(sub, builders):
+            if not isinstance(sub, ast.Call):
+                return False
+            if isinstance(sub.func, ast.Attribute):
+                return sub.func.attr == "escape"
+            return isinstance(sub.func, ast.Name) and sub.func.id in builders
+
+        def _escapes_every_return(func_node, builders):
+            returns = [node for node in ast.walk(func_node)
+                       if isinstance(node, ast.Return)
+                       and node.value is not None]
+            return bool(returns) and all(
+                any(_is_safe_call(sub, builders)
+                    for sub in ast.walk(node.value))
+                for node in returns)
+
+        functions = [node for node in tree.body
+                     if isinstance(node, ast.FunctionDef)]
+        builders = set()
+        while True:                           # least fixed point
+            grown = {node.name for node in functions
+                     if _escapes_every_return(node, builders)}
+            if grown <= builders:
+                break
+            builders |= grown
+        assert "_detector_alternative" in builders, (
+            "the detector's per-form builder must escape on every return")
         risky = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -1876,10 +2668,7 @@ class TestStructureAndWindowsSafety:
             pattern = node.args[0] if node.args else None
             if pattern is None:
                 continue
-            if any(isinstance(sub, ast.Call)
-                   and isinstance(sub.func, ast.Attribute)
-                   and sub.func.attr == "escape"
-                   for sub in ast.walk(pattern)):
+            if any(_is_safe_call(sub, builders) for sub in ast.walk(pattern)):
                 continue                      # built from escaped parts
             names = {sub.id for sub in ast.walk(pattern)
                      if isinstance(sub, ast.Name)}

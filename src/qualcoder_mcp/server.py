@@ -74,7 +74,8 @@ from .coder_comparison import (
     qualcoder_report_values,
     statistics as comparison_statistics,
 )
-from .memo_privacy import extract_ai_memo, strip_private_memos
+from .memo_privacy import (extract_ai_memo, neutralize_marker,
+                           strip_private_memos)
 from .preview_tokens import (
     EXPIRED,
     MALFORMED,
@@ -6375,7 +6376,10 @@ def import_text_file(
         try:
             entries, sidecar_encoding = read_project_pseudonyms(
                 _current_project_folder())
-            validated = pseudo.validate_mapping(entries, "exact")
+            # The mapping is the researcher's, not the caller's, so no
+            # refusal text quotes a value from it (D1 3.10, Security S3).
+            validated = pseudo.validate_mapping(entries, "exact",
+                                                may_echo_names=False)
         except FileNotFoundError as e:
             return json.dumps({"error": str(e)}, indent=2)
         except (ValueError, OSError, pseudo.MappingError) as e:
@@ -9364,6 +9368,23 @@ TOKEN_ERROR_TEXTS = {
     "preview_secret_unavailable": SECRET_UNAVAILABLE_MESSAGE,
 }
 
+# Where one tool's refusal is not the shared one. The six codebook tools
+# count one thing, `hidden_coder_codings_affected`, and say so; the
+# flagship's rule is finer (ruling X1 exempts a pure position shift), its
+# preview publishes `hidden_coder_rows`, and the rows it covers can be
+# annotations rather than codings. Pointing a model at a key the payload
+# does not have is worse than saying nothing, so the flagship carries D1
+# 3.7's own wording (QA F-4, Security S10).
+TOKEN_ERROR_TEXTS_BY_TOOL = {
+    ("pseudonymise_source", "hidden_coder_override_required"): (
+        "Some spans that this run would resize, snap or delete belong to "
+        "a coder currently hidden in QualCoder (hidden_coder_rows in the "
+        "preview counts them); nothing was written. Pass "
+        "allow_hidden_coder=true to include them, or ask the user to "
+        "unhide the coder in QualCoder. A pure position shift of such a "
+        "span is exempt and needs nothing."),
+}
+
 TWO_STEP_PARAGRAPH = (
     "Two-step by design. Call without preview_token: nothing is written "
     "and the result is a preview of exactly what would change, with a "
@@ -9471,7 +9492,9 @@ def _token_error(reason: str, tool: str) -> Dict[str, Any]:
     """
     key = ("project_changed_or_rotated" if reason == PROJECT_CHANGED
            else reason)
-    return {"error": TOKEN_ERROR_TEXTS[key].format(tool=tool),
+    text = TOKEN_ERROR_TEXTS_BY_TOOL.get((tool, key),
+                                         TOKEN_ERROR_TEXTS[key])
+    return {"error": text.format(tool=tool),
             "reason": reason, "nothing_changed": True}
 
 
@@ -9618,7 +9641,8 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
                          state_preview_fn=None,
                          override_required_fn=None,
                          warnings_fn=None,
-                         execute_guard_fn=None) -> Dict[str, Any]:
+                         execute_guard_fn=None,
+                         state_of_fn=None) -> Dict[str, Any]:
     """Preview -> token -> safety-backup gate for destructive operations.
 
     Without a token this returns a preview (read-only, no backup, no
@@ -9645,7 +9669,15 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     - `execute_guard_fn(preview)` is a last refusal between the
       hidden-coder gate and the write, for a precondition that is only
       knowable from the preview, such as two rows that would land on one
-      unique key.
+      unique key;
+    - `state_of_fn(write_db)` recomputes the signed state inside the
+      transaction for a tool that can produce the same value more
+      cheaply than `preview_fn` plus `fingerprint_fn` would. It MUST
+      return exactly what those two produce on the same data, and it
+      exists because the default route recomputes a whole readable
+      preview, presentation and all, inside the write transaction: for
+      the flagship that meant a second full residue scan of every memo
+      in the project while holding SQLite's RESERVED lock.
     """
     def state_of(db_) -> str:
         """The signed state: what the preview says AND which rows it covers.
@@ -9654,6 +9686,8 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
         comparison is between two answers to the same question rather
         than between a question and its hash.
         """
+        if state_of_fn is not None:
+            return state_of_fn(db_)
         signed = preview_fn(db_)
         if state_preview_fn is not None:
             signed = state_preview_fn(signed)
@@ -10108,8 +10142,27 @@ def _write_run_manifest(payload: Dict[str, Any],
         return None
 
 
+def _pseudonymise_count_arg(value: Any, name: str, cap: int,
+                            minimum: int = 1) -> int:
+    """One presentation count: a whole number, in range, capped at `cap`.
+
+    The house shape for a paging argument (`database.validate_limit`):
+    refuse what is not a whole number, refuse below the minimum, and cap
+    silently above the maximum, because a caller asking for more than
+    the cap is asking for "as many as there are". Unvalidated, these two
+    arguments returned a raw Python message into the error envelope
+    ("slice indices must be integers or None ...") and accepted -1 and
+    10**9 in silence (Security S9).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be a whole number.")
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return min(value, cap)
+
+
 def _pseudonymise_safe_name(name: Any, compiled) -> Optional[str]:
-    """A file name, unless the mapping matches it.
+    """A file or folder name, unless a reader of it would see a name.
 
     The manifest and the journal entry both promise to carry no original
     name, and a FILE can be called "Thomas_interview.txt". D1 writes the
@@ -10117,10 +10170,17 @@ def _pseudonymise_safe_name(name: Any, compiled) -> Optional[str]:
     costs nothing, because the file id identifies the file either way,
     and keeping it would put a real name into a journal entry that lives
     inside the project and is visible to every later AI read.
+
+    The test is `compiled.detector`, NOT `compiled.pattern`. The pattern
+    is the rewriter's whole-word matcher and `_` is a word character, so
+    it answers "no name here" for the commonest transcript file name
+    there is; that conflation is exactly what fix round 1 was called for
+    (QA F-1, Security S1). The detector asks the question this function
+    is actually asking.
     """
-    if not isinstance(name, str):
+    if not isinstance(name, str) or not name:
         return None
-    return None if compiled.pattern.search(name) else name
+    return None if compiled.detector.contains(name) else name
 
 
 def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
@@ -10230,7 +10290,10 @@ def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
         "the project is reopened.",
         "QualCoder 4.0's AI search index (ai_data/search.sqlite), if this "
         "project has one, still holds the previous text and re-indexes the "
-        "source the next time QualCoder opens the project with AI enabled.",
+        "source the next time QualCoder opens the project with AI enabled. "
+        "Its chat history (ai_data/chat_history.sqlite) can hold the "
+        "previous text too and is never re-indexed; this server neither "
+        "reads nor writes either file.",
     ]
 
 
@@ -10280,7 +10343,8 @@ def _pseudonymise_journal_name(files: Sequence[Dict[str, Any]],
     (`code_pdf.py:6032-6033`). The one difference here is that the
     character class is ASCII, because THIS server's `add_journal_entry`
     enforces QualCoder's own ASCII journal-name charset
-    (`journals.py:607`); a Unicode-aware sanitiser would happily produce
+    (`journals.py:662` and `:787`); a Unicode-aware sanitiser would
+    happily produce
     a name our own validator then refuses.
 
     A file name that the mapping matches is withheld, so a journal entry
@@ -10306,8 +10370,16 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     the journal (`code_pdf.py:6004-6053`), which is the precedent for
     recording this one there. The journal is inside the project and is
     read back by every later AI read, so it carries pseudonyms, counts
-    and ids and nothing else: no original, no variant, no file name the
-    mapping matches, and no slice of text.
+    and ids and nothing else: no original, no variant, no file name a
+    reader would see a name in, no BACKUP FOLDER name a reader would see
+    a name in (it derives from the project folder's own name, which is a
+    separate route and was unguarded until fix round 1, Security S1),
+    and no slice of text.
+
+    Every label that comes from the file system also goes through
+    `neutralize_marker`, because a file called `a#####b.txt` would
+    otherwise plant a private zone in the entry and silently truncate
+    the project's own audit record at that point (Security S6).
     """
     entries = compiled.mapping.entries
     per_entry: Dict[int, int] = {}
@@ -10324,7 +10396,8 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     ]
     for report in written["files"]:
         label = _pseudonymise_safe_name(report.get("name"), compiled)
-        shown = (f"file id {report['file_id']} ({label})" if label
+        shown = (f"file id {report['file_id']} "
+                 f"({neutralize_marker(label)})" if label
                  else f"file id {report['file_id']} (name withheld: it "
                       f"contains a name from the mapping)")
         lines.append(
@@ -10339,7 +10412,13 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
             for index, count in sorted(per_entry.items()))
         lines.append(f"Pseudonyms applied: {applied}.")
     if backup_name:
-        lines.append(f"Backup taken before the run: {backup_name}.")
+        safe_backup = _pseudonymise_safe_name(backup_name, compiled)
+        lines.append(
+            f"Backup taken before the run: "
+            f"{neutralize_marker(safe_backup)}." if safe_backup else
+            "Backup taken before the run: its name is withheld, because "
+            "the project folder's own name contains a name from the "
+            "mapping. It is the newest backup folder beside the project.")
     lines.append(f"Run manifest: {manifest_name}.")
     lines.append(
         "The names replaced are not recorded here. Positions in these "
@@ -10397,12 +10476,22 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
             **rows,
         })
     canonical_map = pseudo.canonical_mapping(compiled.mapping)
-    return {
+    # The two paths are the last route a real name has into a durable
+    # artefact: both carry the PROJECT FOLDER's own name, and a project
+    # folder called "Thomas study.qda" is what a single-case study looks
+    # like. Withheld rather than trimmed, because a path is only useful
+    # whole; `token_bind` still identifies which run and which project
+    # this manifest belongs to, since it is a digest over the tool, the
+    # arguments and the project identity.
+    project_path = _pseudonymise_safe_name(
+        str(validate_qda_path(current_project_path)), compiled)
+    safe_backup_path = _pseudonymise_safe_name(backup_path, compiled)
+    manifest = {
         "format": 1,
         "created": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "project_path": str(validate_qda_path(current_project_path)),
+        "project_path": project_path,
         "token_bind": bind,
-        "backup_path": backup_path,
+        "backup_path": safe_backup_path,
         "journal_entry": journal_entry,
         "case_mode": plan["case_mode"],
         "overlap_policy": plan["overlap_policy"],
@@ -10415,6 +10504,12 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                     for entry in entries],
         "files": files,
     }
+    if project_path is None or (backup_path and safe_backup_path is None):
+        manifest["paths_withheld"] = (
+            "The project path and the backup path are not recorded here: "
+            "they contain a name from this mapping. token_bind identifies "
+            "the project and the run.")
+    return manifest
 
 
 @mcp.tool()
@@ -10470,12 +10565,21 @@ def pseudonymise_source(
     media files, QualCoder 4.0's ai_data folder, speakers.json and
     speaker_regex.json. The preview's `residue` block counts where the
     names still occur so you can tell the user; it counts the PUBLIC part
-    of memos only and never reads a '#####' private note.
+    of memos only and never reads a '#####' private note. Its counts use
+    a WIDER reading than the rewrite: any occurrence a human would see,
+    including inside a longer word and in any case, so a case named
+    Thomas_P01 is counted even under case_mode="exact".
 
     The backup keeps the real names, and so does pseudonyms.json if the
     researcher keeps one; both are the reverse key and belong somewhere
     secure. The run manifest this tool writes and the journal entry it
-    can add never contain an original name.
+    can add never contain an original name: a file name, folder name or
+    path that carries one is withheld from both and the file id is used
+    instead.
+
+    After the run, re-read every touched file before any further coding:
+    all positions in them have changed, and any pending coding
+    suggestion for them is stale.
 
     QualCoder notes: an open QualCoder window will not refresh from this
     write until the project is reopened, and QualCoder 4.0's AI search
@@ -10498,7 +10602,11 @@ def pseudonymise_source(
                  the call.
         use_project_pseudonyms: Read the mapping from the project's own
                  pseudonyms.json instead (QualCoder's import-time list).
-                 Give this or `mapping`, not both.
+                 Give this or `mapping`, not both. The names in that file
+                 are the researcher's reverse key and you did not supply
+                 them, so on this path the preview and every refusal name
+                 entry indices and pseudonyms only, never an original or
+                 a variant.
         case_mode: "exact" (default, QualCoder's own rule: TOM, Tom and
                  tom are three different names), "insensitive" (all three
                  get the pseudonym exactly as written), or
@@ -10535,7 +10643,10 @@ def pseudonymise_source(
         scan_residue: Count where the names also occur in memos, labels
                  and attribute values (default true).
         max_spans_per_entry: How many match positions to list per entry
-                 per file before truncating (default 50).
+                 per file before truncating (default 50, capped at 500).
+                 With include_context on, the context windows also share
+                 one budget for the whole preview; a block that runs out
+                 of it says context_truncated.
 
     The last four arguments and record_in_journal are NOT bound into the
     token: passing a different value for one of them on the execute call
@@ -10562,6 +10673,16 @@ def pseudonymise_source(
             f"overlap_policy must be one of "
             f"{', '.join(pseudo.OVERLAP_POLICIES)}.")}, indent=2)
 
+    try:
+        context_chars = _pseudonymise_count_arg(
+            context_chars, "context_chars", pseudo.MAX_CONTEXT_CHARS,
+            minimum=0)
+        max_spans_per_entry = _pseudonymise_count_arg(
+            max_spans_per_entry, "max_spans_per_entry",
+            pseudo.MAX_SPANS_PER_ENTRY)
+    except ValueError as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
     # One mapping source, named by the caller. Guessing which they meant
     # is exactly the kind of helpfulness this tool must not have.
     if mapping is not None and use_project_pseudonyms:
@@ -10578,8 +10699,14 @@ def pseudonymise_source(
         except (ValueError, OSError) as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # Whether the names in this mapping are already in the conversation.
+    # They are when the caller typed them; they are NOT when they were
+    # read out of the project's own pseudonyms.json, and on that path
+    # neither a refusal nor a diagnostic may quote one (D1 3.10).
+    may_echo_names = not use_project_pseudonyms
     try:
-        validated = pseudo.validate_mapping(mapping, case_mode)
+        validated = pseudo.validate_mapping(mapping, case_mode,
+                                            may_echo_names=may_echo_names)
     except pseudo.MappingError as e:
         return json.dumps({"error": str(e)}, indent=2)
     compiled = pseudo.Compiled(validated)
@@ -10613,8 +10740,27 @@ def pseudonymise_source(
         file_ids=file_ids, case_mode=case_mode,
         overlap_policy=overlap_policy)
 
-    def _plan(db_):
-        return db_.pseudonymise_plan(compiled, overlap_policy, file_ids)
+    # The plan is the expensive part of everything below it: it reads
+    # every eligible file's text, runs the pattern over all of it, and
+    # reads every span row of every touched file. Two phases need one
+    # each, and no phase needs two.
+    read_phase: Dict[str, Any] = {}
+
+    def _read_plan(db_):
+        """The read-only phase's plan, computed once and shared.
+
+        `_guarded_destructive` asks this phase for the preview and then
+        for the row digests, back to back on the same connection with
+        nothing in between. Computing one plan for both is not only
+        cheaper, it is more correct: the preview and the digests the
+        token signs then describe ONE read of the project rather than
+        two reads a few hundred milliseconds apart.
+        """
+        plan = read_phase.get("plan")
+        if plan is None:
+            plan = db_.pseudonymise_plan(compiled, overlap_policy, file_ids)
+            read_phase["plan"] = plan
+        return plan
 
     def _signed(preview):
         """What the token covers: the effect, never the presentation.
@@ -10626,11 +10772,12 @@ def pseudonymise_source(
         return preview["_effect"]
 
     def _preview_with_effect(db_):
-        plan = _plan(db_)
+        plan = _read_plan(db_)
         preview = db_.pseudonymise_preview(
             plan, ai_names, include_context=include_context,
             context_chars=context_chars, scan_residue=scan_residue,
-            max_spans_per_entry=max_spans_per_entry)
+            max_spans_per_entry=max_spans_per_entry,
+            may_echo_names=may_echo_names)
         if sidecar_encoding is not None:
             preview["pseudonyms_json_encoding"] = sidecar_encoding
         preview["_effect"] = db_.pseudonymise_effect(plan)
@@ -10694,9 +10841,41 @@ def pseudonymise_source(
     bind = bind_id("pseudonymise_source", token_args, _token_project())
     manifest_name = f"run_{when.strftime('%Y%m%dT%H%M%SZ')}_{bind}.json"
 
-    def _op(wdb):
+    def _state_on_write_connection(wdb):
+        """The signed state, recomputed inside the write transaction.
+
+        The same two parts the read-only phase signed, from one plan
+        built on the write connection after `BEGIN IMMEDIATE`. The
+        readable preview is deliberately not rebuilt here: none of what
+        it adds (the residue scan of every memo in the project, the
+        context slices, the truncated span lists) is signed, and
+        rebuilding it meant scanning every memo in the project twice per
+        run, the second time while holding the RESERVED lock.
+
+        The plan is kept for `_op`, so the run writes exactly the plan
+        whose effect was verified against the token, rather than a sixth
+        recomputation of it.
+        """
         plan = wdb.pseudonymise_plan(compiled, overlap_policy, file_ids)
-        written = wdb.pseudonymise_write(plan)
+        captured["write_plan"] = plan
+        return fingerprint_rows(wdb.pseudonymise_effect(plan),
+                                wdb.pseudonymise_row_digests(plan))
+
+    def _op(wdb):
+        plan = captured.get("write_plan")
+        if plan is None:                  # pragma: no cover - defensive
+            plan = wdb.pseudonymise_plan(compiled, overlap_policy, file_ids)
+        # C7, with the fingerprints the READ-ONLY phase captured, which
+        # is what D1 3.6 specifies. Passing the write phase's own
+        # fingerprints made the check compare a read to itself: both
+        # sides came from one plan built on one connection two lines
+        # earlier, so it could not fail (QA F-3). These come from before
+        # the backup was taken, so the comparison spans the whole window
+        # in which another writer could have moved the text.
+        preview_fingerprints = {
+            item["file_id"]: item["old_fingerprint"]
+            for item in read_phase["plan"]["files"]}
+        written = wdb.pseudonymise_write(plan, preview_fingerprints)
         hidden_updated = 0
         for item in plan["files"]:
             hidden = wdb.pseudonymise_hidden_rows(item)
@@ -10735,7 +10914,8 @@ def pseudonymise_source(
     result = _guarded_destructive(
         preview_fn=_preview_with_effect,
         op_fn=_op,
-        fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(_plan(db_)),
+        fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(
+            _read_plan(db_)),
         tool="pseudonymise_source",
         token_args=token_args,
         preview_token=preview_token,
@@ -10758,6 +10938,7 @@ def pseudonymise_source(
         override_required_fn=_override_required,
         warnings_fn=_pseudonymise_warnings,
         execute_guard_fn=_collisions_refusal,
+        state_of_fn=_state_on_write_connection,
     )
     if isinstance(result, dict):
         result.pop("_effect", None)
@@ -10793,18 +10974,51 @@ def _pseudonymise_write_journal(wdb, plan: Dict[str, Any],
                                 owner: Optional[str],
                                 backup_name: Optional[str],
                                 manifest_name: str) -> Optional[str]:
-    """Add the run's journal entry inside the same transaction.
+    """Add the run's journal entry, and refuse if the rewrite died with it.
 
-    Inside, so the database and its own audit record are consistent in
-    every outcome: a rollback takes both, a commit keeps both.
+    The entry is an audit record, not the run, so every way of failing to
+    write one returns None and the rewrite goes on. That is only sound
+    while the rewrite is still in flight. `add_journal_entry` rolls the
+    connection back on two of its own error paths, and a rollback inside
+    this transaction discards the WHOLE pseudonymisation; `_op` would
+    then report "Pseudonymised 1 file(s)" with new lengths and new
+    sha256 values over a database that is byte-for-byte unchanged (QA
+    F-2, reachable on disk-full and on I/O errors). So whichever way the
+    attempt ended, this checks that the transaction survived and raises
+    if it did not: `_perform_write` turns a RuntimeError from `op` into
+    an error envelope and rolls back.
+
+    Two things now stand between that outcome and a researcher:
+    `add_journal_entry` no longer rolls back a transaction it was told
+    not to commit, and this check catches it if any future path does.
+    """
+    name = _pseudonymise_journal_attempt(
+        wdb, plan, written, compiled, owner, backup_name, manifest_name)
+    if not wdb.conn.in_transaction:
+        raise RuntimeError(
+            "The journal entry could not be written and the rewrite was "
+            "rolled back with it; nothing was changed. Retry, or call "
+            "again with record_in_journal=false.")
+    return name
+
+
+def _pseudonymise_journal_attempt(wdb, plan: Dict[str, Any],
+                                  written: Dict[str, Any], compiled,
+                                  owner: Optional[str],
+                                  backup_name: Optional[str],
+                                  manifest_name: str) -> Optional[str]:
+    """Write the entry, or return None with the reason logged.
+
+    Inside the caller's transaction, so the database and its own audit
+    record are consistent in every outcome: a rollback takes both, a
+    commit keeps both.
 
     The unique name is found by looking first and inserting once, rather
-    than by inserting and catching the constraint. `add_journal_entry`
-    rolls the connection back on an IntegrityError, which inside this
-    transaction would discard the whole rewrite, so the one collision
-    path that must never be taken is the one upstream takes
-    (`code_pdf.py:6035-6049` loops on IntegrityError with its own
-    commit per attempt; ours cannot).
+    than by inserting and catching the constraint: a failed INSERT
+    inside a transaction is a statement to recover from, and upstream's
+    own answer to a name collision (`code_pdf.py:6035-6049` loops on
+    IntegrityError with its own commit per attempt) is not available to
+    a write that has a whole rewrite in flight beside it.
     """
     base = _pseudonymise_journal_name(written["files"], compiled)
     name = base

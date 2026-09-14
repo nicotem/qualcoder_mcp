@@ -823,7 +823,8 @@ def validate_limit(limit: int, max_limit: int = MAX_LIMIT) -> int:
 MAX_STRING_LENGTH = 10000  # Maximum allowed string length for user inputs
 MAX_TEXT_CONTENT_LENGTH = 1_000_000  # Maximum text content for file import (approx 1MB)
 # Journal titles: QualCoder restricts to letters/digits/underscore/space/hyphen
-# (journals.py:607, ^[\ \w-]+$). QualCoder's validator is PCRE2 whose \w is
+# (journals.py:662 and :787, ^[\ \w-]+$). QualCoder's validator is PCRE2
+# whose \w is
 # ASCII-only, so re.ASCII keeps us from accepting names (e.g. accented or CJK
 # letters) that the GUI would refuse (QA5-2).
 JOURNAL_NAME_RE = re.compile(r"^[ \w-]+$", re.ASCII)
@@ -1857,6 +1858,13 @@ class QualcoderDatabase:
           statement, because the fingerprint it holds is of the OLD
           text and its own update would make the comparison meaningless.
           The v0.12 pseudonymisation is the only write of that kind.
+
+        Either placement is only a check at all if the fingerprint comes
+        from a DIFFERENT read from the one this call makes. A caller that
+        passes a fingerprint it computed on this connection inside this
+        transaction is comparing a read to itself, which is what the
+        flagship did until fix round 1 (QA F-3): pass the fingerprint
+        captured when the operation was prepared.
 
         Either way it is the RESERVED lock, taken by `begin_immediate`,
         that makes the check mean anything: between it and the commit no
@@ -4941,6 +4949,24 @@ class QualcoderDatabase:
                 "on project copies in the MCP workspace."
             )
 
+    def _rollback_own_transaction(self, auto_commit: bool) -> None:
+        """Roll back after a failed statement, but only if it is ours.
+
+        `auto_commit=False` means a caller is running this write inside a
+        transaction of its own, and a helper that rolls that back
+        discards work it knows nothing about. The v0.12 flagship is the
+        case that made this real: its journal entry is written inside the
+        rewrite's transaction, so a rollback here threw away the whole
+        pseudonymisation while the tool still reported success (QA F-2).
+        The caller's own `_perform_write` rolls back on every exit path,
+        so nothing is left in flight either way.
+        """
+        if auto_commit:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+
     def add_coding(
         self,
         file_id: int,
@@ -5828,7 +5854,8 @@ class QualcoderDatabase:
             raise ValueError("name must be a non-empty string")
         name = name.strip()
         # QualCoder's journal-name charset: letters, digits, underscore,
-        # space, hyphen (journals.py:607; memos-journals.md §6.4). Enforce it
+        # space, hyphen (journals.py:662 and :787; memos-journals.md §6.4).
+        # Enforce it
         # so MCP journals are GUI-editable.
         if not JOURNAL_NAME_RE.match(name):
             raise ValueError(
@@ -5873,20 +5900,14 @@ class QualcoderDatabase:
             jid = cursor.lastrowid
             logger.info(f"Added journal entry: jid={jid}, name={name}")
         except sqlite3.IntegrityError as e:
-            try:
-                self.conn.rollback()
-            except Exception:
-                pass
+            self._rollback_own_transaction(auto_commit)
             if "unique" in str(e).lower():
                 raise ValueError(
                     f"A journal entry named '{name}' already exists"
                 ) from None
             raise RuntimeError(f"Failed to add journal entry: {e}") from None
         except sqlite3.Error as e:
-            try:
-                self.conn.rollback()
-            except Exception:
-                pass
+            self._rollback_own_transaction(auto_commit)
             _raise_query_error(e, "add_journal_entry",
                                "Failed to add journal entry")
 
@@ -7916,7 +7937,7 @@ class QualcoderDatabase:
 
         `code_text` is unique on (cid, fid, pos0, pos1, owner) and
         `annotation` on (fid, pos0, pos1, owner) in QualCoder's schema
-        (`__main__.py:1800-1801`, `:1819-1821`; identical at the 3.8.2
+        (`__main__.py:1819-1821`, `:1800-1801`; identical at the 3.8.2
         tag). `case_text` has no unique constraint at either pin and is
         not checked.
 
@@ -8034,7 +8055,14 @@ class QualcoderDatabase:
         return {"overlap_policy": plan["overlap_policy"],
                 "case_mode": plan["case_mode"],
                 "eligible_files": plan["eligible"],
-                "skipped_files": plan["skipped"],
+                # Ids and reasons, never NAMES. D1 3.8's digest list has
+                # no names in it, and signing them meant that renaming an
+                # unrelated PDF -- a file this run does not touch --
+                # invalidated a live token as `project_changed`, with an
+                # explanation that was false (QA F-13). The readable
+                # preview still carries the names.
+                "skipped_files": [[item["file_id"], item["reason"]]
+                                  for item in plan["skipped"]],
                 "files": files}
 
     @staticmethod
@@ -8123,6 +8151,17 @@ class QualcoderDatabase:
         counted and not mentioned. How many memos carry such a zone IS
         reported, as a number, which is the trade S-P2(c) already makes
         elsewhere.
+
+        Every field is read with `compiled.detector`, not with the
+        rewriter's pattern. This block is the answer to "where do the
+        names remain", so its reading has to be at least as wide as a
+        human reader's: `Thomas_P01` is a case named after the
+        participant, and the whole-word pattern called it clean, which
+        is how this block came to report zero where five names survived
+        (Security S2). The counts are therefore deliberately WIDER than
+        the rewrite: a memo reading "Thomas_Smith" is counted here and
+        is not rewritten, which is the point, since nothing in this
+        block is rewritten at all.
         """
         residue: Dict[str, Any] = {"memos": {}, "unreadable": []}
         private_zones = 0
@@ -8145,7 +8184,7 @@ class QualcoderDatabase:
                     continue
                 if memo_has_private_zone(value):
                     private_zones += 1
-                if compiled.pattern.search(extract_ai_memo(value)):
+                if compiled.detector.contains(extract_ai_memo(value)):
                     hits += 1
             residue["memos"][key] = hits
         residue["memos_with_private_zones_not_scanned"] = private_zones
@@ -8159,8 +8198,7 @@ class QualcoderDatabase:
                 residue["unreadable"].append(f"{table}.{column}")
                 continue
             residue[key] = sum(
-                1 for row in rows if isinstance(row[0], str)
-                and compiled.pattern.search(row[0]))
+                1 for row in rows if compiled.detector.contains(row[0]))
 
         try:
             rows = self.conn.execute(
@@ -8168,8 +8206,7 @@ class QualcoderDatabase:
                 "ON t.name = a.name WHERE t.valuetype != 'numeric' "
                 "AND a.value IS NOT NULL AND a.value != ''").fetchall()
             residue["attribute_values"] = sum(
-                1 for row in rows if isinstance(row[0], str)
-                and compiled.pattern.search(row[0]))
+                1 for row in rows if compiled.detector.contains(row[0]))
         except sqlite3.Error:
             residue["unreadable"].append("attribute.value")
 
@@ -8182,6 +8219,12 @@ class QualcoderDatabase:
             except OSError:
                 continue
         residue["sidecars_present"] = present
+        residue["reading_note"] = (
+            "These counts read wider than the rewrite: any occurrence a "
+            "person would see, including inside a longer word and in any "
+            "case, and a name of several words however its parts are "
+            "joined. So they can be generous (an entry for 'Lee' counts a "
+            "label that says 'Leeds'), and they never under-report.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
@@ -8242,12 +8285,29 @@ class QualcoderDatabase:
             block["more_owners"] = len(by_owner) - 20
         return block
 
+    @staticmethod
+    def _pseudonymise_without_forms(items: Sequence[Dict[str, Any]]
+                                    ) -> List[Dict[str, Any]]:
+        """The same diagnostics with the surface forms taken out.
+
+        `form` is an ORIGINAL or a VARIANT: a real name. On the
+        `use_project_pseudonyms` path the caller never supplied it, so
+        reporting it would put the researcher's own reverse key into the
+        conversation one name at a time, which is what D1 3.10 promises
+        does not happen (Security S3). The entry index says which entry,
+        which is what the model needs to relay the diagnostic; anyone who
+        wants the name has the file.
+        """
+        return [{key: value for key, value in item.items() if key != "form"}
+                for item in items]
+
     def pseudonymise_preview(self, plan: Dict[str, Any],
                              ai_coder_names: Sequence[str],
                              include_context: bool = False,
                              context_chars: int = 30,
                              scan_residue: bool = True,
-                             max_spans_per_entry: int = 50
+                             max_spans_per_entry: int = 50,
+                             may_echo_names: bool = True
                              ) -> Dict[str, Any]:
         """What the researcher is shown before approving a run (D1 3.5).
 
@@ -8255,6 +8315,13 @@ class QualcoderDatabase:
         caller already supplied. The only file CONTENT it can return is
         the optional context around each match, which is off by default
         and capped when it is on.
+
+        `may_echo_names=False` when the mapping was read from the
+        project's own `pseudonyms.json` rather than supplied by the
+        caller: the two diagnostics that carry a surface form then carry
+        the entry index alone. The signed effect block is NOT narrowed
+        with it, because it is never serialised and a token must bind the
+        same value from either mapping source.
         """
         from . import pseudonymise as engine
 
@@ -8266,6 +8333,9 @@ class QualcoderDatabase:
                   "rows_deleted": 0, "unique_constraint_collisions": 0}
         hidden_totals = {"shifted": 0, "resized": 0, "snapped": 0,
                          "deleted": 0, "override_required": False}
+        # One budget for the whole preview, spent across every file and
+        # every entry (engine.MAX_CONTEXT_TOTAL_CHARS).
+        context_budget = engine.MAX_CONTEXT_TOTAL_CHARS
         for item in plan["files"]:
             text = item["old_text"]
             per_entry: Dict[int, List[Dict[str, Any]]] = {}
@@ -8284,9 +8354,16 @@ class QualcoderDatabase:
                 if len(spans) > len(shown):
                     block["spans_truncated"] = True
                 if include_context:
-                    block["context"] = [
-                        engine.context_for(text, s.start, s.end,
-                                           context_chars) for s in shown]
+                    windows = []
+                    for span in shown:
+                        window = engine.context_for(
+                            text, span.start, span.end, context_chars)
+                        if len(window) > context_budget:
+                            block["context_truncated"] = True
+                            break
+                        context_budget -= len(window)
+                        windows.append(window)
+                    block["context"] = windows
                 replacements.append(block)
                 totals["replacements"] += len(spans)
 
@@ -8304,6 +8381,7 @@ class QualcoderDatabase:
                 hidden["override_required"])
             collisions = {table: rows for table, rows
                           in item["collisions"].items() if rows}
+            variants = engine.case_variants_seen(compiled, text)
             totals["files"] += 1
             totals["codings_changed"] += codings["changed"]
             totals["annotations_changed"] += (
@@ -8327,11 +8405,15 @@ class QualcoderDatabase:
                 "pre_existing_pseudonym_occurrences":
                     engine.pre_existing_pseudonym_occurrences(
                         compiled, text, max_spans_per_entry),
-                "overlap_conflicts": item["overlap_conflicts"],
+                "overlap_conflicts": (
+                    item["overlap_conflicts"] if may_echo_names else
+                    self._pseudonymise_without_forms(
+                        item["overlap_conflicts"])),
                 "overlap_conflicts_truncated":
                     item["overlap_conflicts_truncated"],
-                "case_variants_seen": engine.case_variants_seen(compiled,
-                                                                text),
+                "case_variants_seen": (
+                    variants if may_echo_names else
+                    self._pseudonymise_without_forms(variants)),
                 "codings": codings,
                 "annotations": annotations,
                 "case_links": case_links,
@@ -8405,17 +8487,26 @@ class QualcoderDatabase:
         return False
 
     def _pseudonymise_park(self, table: str, id_column: str,
-                           rows: Sequence[Dict[str, Any]]) -> None:
+                           rows: Sequence[Dict[str, Any]],
+                           all_rows: Sequence[Dict[str, Any]]) -> None:
         """Move rows to unique, out-of-range positions before the real move.
 
-        The parked values sit below every stored position in the file, so
+        The parked values sit below every stored position IN THE FILE, so
         they collide with nothing, and each row gets its own, so they
         collide with nothing parked either. The transaction makes them
         invisible: either the real positions land or the whole run rolls
         back.
+
+        `all_rows` is every row of this table for this file, and the
+        floor is taken over all of them rather than over the moving ones:
+        a stationary damaged row already stored at (-4, -3) sits exactly
+        where the parking was about to write, and the run failed on the
+        UNIQUE constraint (safely, but for no reason). The docstring
+        claimed the wider floor before the code took it (QA F-9,
+        Security S7).
         """
         floor = 0
-        for row in rows:
+        for row in all_rows:
             for value in (row["pos0"], row["pos1"]):
                 if isinstance(value, int) and not isinstance(value, bool):
                     floor = min(floor, value)
@@ -8425,7 +8516,9 @@ class QualcoderDatabase:
                 f"UPDATE {table} SET pos0 = ?, pos1 = ? WHERE {id_column} = ?",
                 (base - 2 * offset - 1, base - 2 * offset, row["id"]))
 
-    def pseudonymise_write(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def pseudonymise_write(self, plan: Dict[str, Any],
+                           preview_fingerprints: Dict[int, Any]
+                           ) -> Dict[str, Any]:
         """Rewrite every touched file and move every span, in one go.
 
         Order, which is D1 3.6's and master's: the C7 fingerprint of each
@@ -8436,6 +8529,17 @@ class QualcoderDatabase:
         between that check and these statements no other writer can
         commit against the text.
 
+        `preview_fingerprints` is `{file_id: (length, sha256)}` AS THE
+        PREVIEW READ IT, and it is a required argument rather than a
+        convenience because the alternative is what fix round 1 had to
+        undo: verifying against `plan["old_fingerprint"]`, which the
+        caller had built on this same connection moments earlier, made
+        both sides of the comparison one read and the check could not
+        fail (QA F-3). Held apart, C7 spans the window between the
+        read-only gate and this transaction, which includes the backup
+        copy, and it names WHICH file moved where the signed state can
+        only say that something did.
+
         Never touched, at either pin and under either policy:
         `important`, `owner`, `date`, `memo` and `avid` on a coding, and
         `memo`, `owner` and `date` on an annotation or a case link.
@@ -8444,8 +8548,13 @@ class QualcoderDatabase:
         # Nothing is written until every touched file still reads exactly
         # as it did when the preview was computed (C7).
         for item in plan["files"]:
-            self.verify_fulltext_unchanged(item["file_id"],
-                                           item["old_fingerprint"])
+            expected = preview_fingerprints.get(item["file_id"])
+            if expected is None:
+                raise ValueError(
+                    f"File id {item['file_id']} would be rewritten but was "
+                    f"not in the preview this run was authorised against. "
+                    f"Nothing was written: preview again.")
+            self.verify_fulltext_unchanged(item["file_id"], tuple(expected))
 
         report = []
         for item in plan["files"]:
@@ -8517,7 +8626,8 @@ class QualcoderDatabase:
             if key_of is not None and self._pseudonymise_needs_parking(
                     [row for row, _, _ in moving], key_of):
                 self._pseudonymise_park(table, id_column,
-                                        [row for row, _, _ in moving])
+                                        [row for row, _, _ in moving],
+                                        item["rows"][table])
             for row, mapped, refresh in moving:
                 if refresh:
                     self.conn.execute(

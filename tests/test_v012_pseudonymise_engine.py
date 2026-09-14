@@ -983,18 +983,77 @@ class TestMappingValidation:
                 "mapping entries 0 and 1: the same original (or variant) "
                 "appears twice.")
 
-    def test_the_entry_cap_and_the_largest_accepted_mapping(self):
+    def test_the_entry_cap_is_five_hundred(self):
+        """The value itself, not the constant read back.
+
+        Fix round 1, QA F-20. This test used to build its fixture from
+        `P.MAX_ENTRIES` and assert the fragment "at most 500", which is a
+        prefix of "at most 5000": lifting the cap tenfold left the whole
+        suite green. The cap is a documented limit (D1 3.2), so the
+        number is written out here and the refusal is asserted whole.
+        """
+        assert P.MAX_ENTRIES == 500
         biggest = [{"original": f"Name{i:04d}", "pseudonym": f"Pseu{i:04d}"}
-                   for i in range(P.MAX_ENTRIES)]
-        assert len(P.validate_mapping(biggest)) == P.MAX_ENTRIES
+                   for i in range(500)]
+        assert len(P.validate_mapping(biggest)) == 500
         with pytest.raises(P.MappingError) as excinfo:
             P.validate_mapping(biggest + [{"original": "Extra",
                                            "pseudonym": "More"}])
-        assert "at most 500" in str(excinfo.value)
+        assert str(excinfo.value) == (
+            "mapping has 501 entries; at most 500 are accepted.")
 
     def test_a_pseudonym_of_exactly_the_cap_is_accepted(self):
-        P.validate_mapping([{"original": "Tom",
-                             "pseudonym": "A" * P.MAX_PSEUDONYM_CHARS}])
+        assert P.MAX_PSEUDONYM_CHARS == 200
+        P.validate_mapping([{"original": "Tom", "pseudonym": "A" * 200}])
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping([{"original": "Tom", "pseudonym": "A" * 201}])
+        assert str(excinfo.value) == (
+            "mapping entry 0: pseudonym must be at most 200 characters.")
+
+    @pytest.mark.parametrize("label", ["original", "variant"])
+    def test_a_surface_form_is_capped_at_two_hundred_characters(self, label):
+        """Security S4. Nothing capped the length of a name, and
+        `max_form_len` is the width of the window the overlap diagnostic
+        scans around every match, so a read-only preview with no token
+        and no approval could be made to burn 91 seconds."""
+        assert P.MAX_FORM_CHARS == 200
+        entry = {"original": "Tom", "pseudonym": "Alex"}
+        entry[label if label == "original" else "variants"] = (
+            "Q" * 200 if label == "original" else ["Q" * 200])
+        P.validate_mapping([dict(entry)])
+        entry[label if label == "original" else "variants"] = (
+            "Q" * 201 if label == "original" else ["Q" * 201])
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping([entry])
+        assert str(excinfo.value) == (
+            f"mapping entry 0: {label} must be at most 200 characters.")
+
+    def test_the_variants_cap_is_fifty_per_entry(self):
+        assert P.MAX_VARIANTS_PER_ENTRY == 50
+        base = {"original": "Tom", "pseudonym": "Alex"}
+        P.validate_mapping([dict(base, variants=[f"V{i:03d}"
+                                                 for i in range(50)])])
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping([dict(base, variants=[f"V{i:03d}"
+                                                     for i in range(51)])])
+        assert str(excinfo.value) == (
+            "mapping entry 0: has 51 variants; at most 50 are accepted "
+            "per entry.")
+
+    def test_the_total_surface_form_cap_is_two_thousand(self):
+        """The cap that bounds the compiled alternation itself: 500
+        entries times 50 variants would be 25,500 forms without it."""
+        assert P.MAX_TOTAL_FORMS == 2000
+        def mapping(per_entry):
+            return [{"original": f"Name{i:04d}", "pseudonym": f"Pseu{i:04d}",
+                     "variants": [f"V{i:04d}x{j}" for j in range(per_entry)]}
+                    for i in range(500)]
+        P.validate_mapping(mapping(3))          # 500 x 4 = 2000
+        with pytest.raises(P.MappingError) as excinfo:
+            P.validate_mapping(mapping(4))      # 500 x 5 = 2500
+        assert str(excinfo.value) == (
+            "mapping has 2500 surface forms (originals plus variants); at "
+            "most 2000 are accepted.")
 
     def test_every_refusal_text_follows_the_house_rules(self):
         texts = []
@@ -1080,15 +1139,19 @@ class TestDamagedRows:
         assert mapper.map_row(len(text) + 5, len(text) + 9,
                               "snap_to_pseudonym", True) is None
 
-    def test_a_negative_start_keeps_its_start_and_moves_its_end(self):
-        """Neither policy invents a value for a start before the text:
-        no edit finishes before position zero, so the cumulative delta
-        there is zero and the oddity survives unchanged while the end
-        tracks the rewrite."""
-        mapper, text = self._mapper()
-        mapped = mapper.map_row(-1, len(text), "snap_to_pseudonym", True)
-        assert mapped.pos0 == -1
-        assert mapped.pos1 == mapper.new_len
+    @pytest.mark.parametrize("pos0,pos1", [(-1, 11), (-4, -3), (0, -2)],
+                             ids=repr)
+    def test_a_negative_position_is_left_exactly_as_it_is(self, pos0, pos1):
+        """Fix round 1, QA F-9. A negative stored position is a damaged
+        row QualCoder never writes. It used to be mapped, which wrote it
+        back negative -- into the range the write parks rows in while it
+        resolves a transient UNIQUE collision, where it made the whole
+        run fail with "could not rewrite this project's text". Reporting
+        it as unmappable puts it in `null_position_rows`, which is where
+        a researcher can see it."""
+        mapper, _ = self._mapper()
+        for policy in P.OVERLAP_POLICIES:
+            assert mapper.map_row(pos0, pos1, policy, True) is None
 
     def test_the_clamp_is_reported_for_every_policy(self):
         mapper, text = self._mapper()
@@ -1295,3 +1358,151 @@ class TestContext:
 
     def test_a_negative_request_returns_the_match_alone(self):
         assert P.context_for("say Tom now", 4, 7, -5) == "Tom"
+
+
+# =============================================================================
+# THE DETECTOR (fix round 1: QA F-1, Security S1 and S2)
+# =============================================================================
+
+class TestNameDetector:
+    """The matcher that answers a different question from the rewriter's.
+
+    One compiled pattern used to serve both jobs, and their correctness
+    conditions are opposite. Rewriting must be conservative: whole-word,
+    so "Ann" is not replaced inside "Anna" and upstream parity holds.
+    Deciding whether a string still CARRIES a name must be liberal,
+    because `_` is a word character and `Thomas_interview.txt` is the
+    ordinary shape of a transcript file name. The conflation put a real
+    name into a journal entry that ships inside the project, and made
+    the residue block report zero where five names survived.
+
+    Everything here is about the second matcher. The first is pinned,
+    unchanged, by the parity oracles above.
+    """
+
+    MAPPING = [{"original": "Thomas", "pseudonym": "Alex",
+                "variants": ["Tom"]},
+               {"original": "Mary Ann", "pseudonym": "Sam"}]
+
+    def _detector(self, case_mode="exact"):
+        return P.Compiled(P.validate_mapping(self.MAPPING,
+                                             case_mode)).detector
+
+    SEES_A_NAME = [
+        ("a space", "Thomas interview.txt"),
+        ("an underscore", "Thomas_interview.txt"),
+        ("a hyphen", "Thomas-interview.txt"),
+        ("a dot", "Thomas.interview.txt"),
+        ("a digit after", "Thomas2.txt"),
+        ("a digit before", "2Thomas.txt"),
+        ("a letter after", "ThomasB.txt"),
+        ("a letter before", "BThomas.txt"),
+        ("the bare name", "Thomas"),
+        ("at the start", "Thomas_01_transcript.txt"),
+        ("in the middle", "int_Thomas_01.txt"),
+        ("at the end", "interview_Thomas"),
+        ("upper case", "THOMAS_P01"),
+        ("lower case", "thomas_p01"),
+        ("mixed case", "tHoMaS_p01"),
+        ("a variant", "Tom_2.docx"),
+        ("a variant in a sentence", "Interviewed Tom_Smith at home."),
+        ("a multi-word name", "Mary Ann.txt"),
+        ("a multi-word name, underscore", "Mary_Ann.txt"),
+        ("a multi-word name, hyphen", "Mary-Ann.txt"),
+        ("a multi-word name, run together", "MaryAnn_notes.txt"),
+        ("a multi-word name, upper case", "MARYANN"),
+        ("a multi-word name, doubled space", "Mary  Ann"),
+        ("a multi-word name, comma", "Mary,Ann"),
+        ("a case label", "Thomas_P01"),
+        ("an attribute value", "Thomas_Smith"),
+        ("a memo sentence", "Interviewed Thomas_Smith at home."),
+        ("a path", "/Users/r/Documents/Thomas study.qda/data.qda"),
+    ]
+
+    @pytest.mark.parametrize("shape,value", SEES_A_NAME,
+                             ids=[shape for shape, _ in SEES_A_NAME])
+    def test_a_reader_of_this_string_would_see_a_name(self, shape, value):
+        assert self._detector().contains(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "interview_01.txt", "quiet.txt", "Participant A", "fieldwork.qda",
+        "Alex", "Sam", "Alex_01.txt", "notes about the weather",
+        "Thom", "Mar", "Ann", "Ann Mary", "Mary and Ann",
+    ], ids=repr)
+    def test_a_string_with_no_name_in_it(self, value):
+        assert self._detector().contains(value) is False
+
+    @pytest.mark.parametrize("value", [None, 5, True, b"Thomas", "", []],
+                             ids=repr)
+    def test_anything_that_is_not_a_non_empty_string_carries_no_name(
+            self, value):
+        assert self._detector().contains(value) is False
+
+    @pytest.mark.parametrize("case_mode", P.CASE_MODES)
+    def test_the_answer_does_not_depend_on_case_mode(self, case_mode):
+        """`case_mode` decides what the run REWRITES. Whether a label
+        still names the participant is a question about the label, and
+        `THOMAS_P01` names them under every mode."""
+        detector = self._detector(case_mode)
+        for value in ("THOMAS_P01", "thomas_p01", "Thomas_P01"):
+            assert detector.contains(value) is True
+
+    def test_the_rewriter_and_the_detector_answer_differently_on_purpose(
+            self):
+        """The whole finding in one test. Neither answer is wrong; they
+        are answers to different questions, and the rewrite's must not
+        move."""
+        compiled = P.Compiled(P.validate_mapping(self.MAPPING))
+        assert compiled.pattern.search("Thomas_interview.txt") is None
+        assert compiled.detector.contains("Thomas_interview.txt") is True
+        # The rewrite is untouched: still whole-word, still QualCoder's
+        # own rule, so the text of a file is not rewritten inside a
+        # longer word.
+        assert P.find_replacements(compiled, "Thomas_Smith spoke") == []
+        replacements = P.find_replacements(compiled, "Thomas spoke")
+        assert [(r.start, r.end, r.text) for r in replacements] == [
+            (0, 6, "Alex")]
+
+    def test_a_metacharacter_in_a_name_is_escaped_here_too(self):
+        """The detector compiles a second pattern out of caller strings,
+        so it inherits the same obligation as the first."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": "a.c", "pseudonym": "Zed"},
+             {"original": "x(y", "pseudonym": "Qux"}])).detector
+        assert detector.contains("file_a.c_01.txt") is True
+        assert detector.contains("file_x(y_01.txt") is True
+        assert detector.contains("aXc") is False
+        assert detector.contains("abc") is False
+
+    def test_a_form_of_punctuation_alone_is_matched_literally(self):
+        """Validation allows it (two characters, no control, no marker),
+        and splitting it into words leaves nothing to join."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": "--", "pseudonym": "Zed"}])).detector
+        assert detector.contains("a--b") is True
+        assert detector.contains("ab") is False
+
+    def test_the_two_readings_together_catch_a_folded_spelling(self):
+        """`re.IGNORECASE` and `str.casefold` disagree: U+00DF folds to
+        "ss" and does not match "SS" under IGNORECASE. The detector runs
+        both, because the wider answer is the safe one."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": "Straße", "pseudonym": "Zed"}])).detector
+        assert detector.contains("Straße_01.txt") is True
+        assert detector.contains("STRASSE_01.txt") is True
+
+    def test_a_decomposed_spelling_is_the_same_name(self):
+        """NFC on both sides: "René" typed as e + combining acute
+        renders identically and is the same participant."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": "René", "pseudonym": "Zed"}])).detector
+        assert detector.contains("René_interview.txt") is True
+
+    def test_the_price_of_the_wider_reading_is_paid_knowingly(self):
+        """An entry for "Tom" makes "tomorrow" count. A rule that
+        catches `ThomasB.txt` cannot spare `tomorrow`, and of the two
+        mistakes only one ships a participant's name. Pinned so that
+        nobody "fixes" it into a boundary test by accident."""
+        detector = self._detector()
+        assert detector.contains("tomorrow.txt") is True
+        assert detector.contains("thomasina notes") is True
