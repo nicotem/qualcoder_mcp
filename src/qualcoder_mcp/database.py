@@ -80,15 +80,22 @@ class SchemaCapabilities:
         # a read whose view is missing has no filtered source to use
         # (fix round 4, the hidden-coder class at its root).
         self.has_coder_visibility = has_coder_visibility
-        # The column plus SOME of the views: the project DECLARES that it
-        # can hide coders and this server cannot reproduce what QualCoder
-        # shows. Not the same as a pre-4.0 project, which declares
-        # nothing, so it must not be treated as one: QualCoder creates
-        # all four views together on open, so a subset is a project
-        # someone has taken views out of, which is the hostile-
-        # collaborator case the threat model names. Visibility-sensitive
-        # reads fail closed on it (see _visible_source); nothing else
-        # about the project is refused.
+        # The column WITHOUT the whole view set, down to and including
+        # no views at all: the project DECLARES that it can hide coders
+        # and this server cannot reproduce what QualCoder shows. Not the
+        # same as a pre-4.0 project, which declares nothing by not
+        # having the column, so it must not be treated as one:
+        # `update_coder_names` adds the column and creates the four
+        # views in one routine that runs on every project open at 3.8.2
+        # and at master alike (app.py:1448-1569, __main__.py:2422 at
+        # 9bddf17), so anything short of the four is a project someone
+        # has taken views out of, which is the hostile-collaborator case
+        # the threat model names. This used to require at least ONE
+        # surviving view, which meant ZERO views probed as no capability
+        # and every path opened: an attacker got MORE access by removing
+        # MORE (fix round 5). Visibility-sensitive reads fail closed on
+        # it (see _visible_source); nothing else about the project is
+        # refused.
         self.visibility_incomplete = visibility_incomplete
         self.tables = frozenset(tables)                 # for guarded cleanups
 
@@ -1579,8 +1586,13 @@ class QualcoderDatabase:
                 # (P1-3). The sqlite_master scan above includes views.
                 has_coder_visibility=("visibility" in coder_cols
                                       and VISIBILITY_VIEWS <= tables),
+                # The COLUMN is the declaration; the views are how much
+                # of it survives. This used to require at least one
+                # surviving view, which made ZERO views probe as no
+                # capability at all and opened everything the third
+                # state exists to close: an attacker got more access by
+                # removing MORE (fix round 5).
                 visibility_incomplete=("visibility" in coder_cols
-                                       and bool(VISIBILITY_VIEWS & tables)
                                        and not VISIBILITY_VIEWS <= tables),
                 tables=tables,
             )
@@ -1857,10 +1869,12 @@ class QualcoderDatabase:
 
         - the probe found the whole view set and one is gone NOW, so it
           was dropped after this connection was opened;
-        - the probe found the column and only SOME of the views, so the
-          project cannot be filtered as QualCoder filters it. QualCoder
-          creates the four together, so this is a project views have
-          been taken out of.
+        - the probe found the column and fewer than four views, none of
+          them included, so the project cannot be filtered as QualCoder
+          filters it. QualCoder creates the four together with the
+          column, so this is a project views have been taken out of, and
+          taking ALL of them out must not buy more than taking three
+          (fix round 5).
 
         Raising is the posture `_row_is_visible` already takes for a view
         that is present but cannot answer. No caller opts into it and no

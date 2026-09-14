@@ -211,6 +211,28 @@ class TestSuiteHygiene:
 # 10.2 PARITY PINS AGAINST THE PINNED UPSTREAM
 # =============================================================================
 
+def _run_upstream_coder_names_ddl(con, ddl, with_views=False):
+    """Put the project into the shape upstream's routine leaves.
+
+    The fixtures build a project that declares no per-coder visibility,
+    so its `coder_names` has no `visibility` column and upstream's
+    CREATE TABLE IF NOT EXISTS would do nothing. Dropping first makes
+    the verbatim statement run as it runs upstream, on a project that
+    does not have the table yet.
+
+    `with_views` adds the four views the same routine creates in the
+    same transaction (app.py:1517-1560). The column without them is not
+    a state QualCoder produces, and since fix round 5 this server treats
+    it as a project the views have been removed from.
+    """
+    con.executescript("DROP TABLE IF EXISTS coder_names;")
+    con.executescript(ddl)
+    if with_views:
+        from test_qc40_visibility import _VIEW_DDL
+        for view_ddl in _VIEW_DDL:
+            con.execute(view_ddl)
+
+
 class TestUpstreamParity:
     """Facts about QualCoder that this design rests on, pinned as tests.
 
@@ -239,7 +261,12 @@ class TestUpstreamParity:
                     UNION SELECT owner FROM files_filter WHERE owner IS NOT NULL;
             """
 
-    # app.py:1470-1475 at 9bddf17 and 3.8.2:__main__.py:1220-1223
+    # app.py:1470-1475 at 9bddf17 and 3.8.2:__main__.py:1220-1223.
+    # Applied through `_run_upstream_coder_names_ddl` below, which drops
+    # the fixture's own table first: upstream's statement is
+    # CREATE TABLE IF NOT EXISTS, so running it over a coder_names that
+    # predates the visibility column is a no-op, and the point of these
+    # tests is the table upstream's routine actually makes.
     CODER_NAMES_DDL = """
                 CREATE TABLE IF NOT EXISTS coder_names (
                     name TEXT UNIQUE NOT NULL,
@@ -258,7 +285,7 @@ class TestUpstreamParity:
         json.loads(server.set_project_ai_coder_name("Qwen 3.8 6bit"))
         server.create_code("Harvested", create_backup=False)
         con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
-        con.executescript(self.CODER_NAMES_DDL)
+        _run_upstream_coder_names_ddl(con, self.CODER_NAMES_DDL)
         # The harvest runs against the tables this fixture has; the two
         # 4.0-only tables are created empty so the verbatim statement can
         # run unchanged, which is the point of copying it verbatim.
@@ -280,7 +307,7 @@ class TestUpstreamParity:
         with rows but no coder_names row is VISIBLE, which is why our
         visibility lookup treats "absent" as "not hidden"."""
         con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
-        con.executescript(self.CODER_NAMES_DDL)
+        _run_upstream_coder_names_ddl(con, self.CODER_NAMES_DDL)
         con.executescript(
             """CREATE VIEW IF NOT EXISTS code_text_visible AS
                SELECT t.* FROM code_text t
@@ -303,7 +330,7 @@ class TestUpstreamParity:
         the matching rule, and the casefold rule for code, category and
         case names must not be extended to coder names."""
         con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
-        con.executescript(self.CODER_NAMES_DDL)
+        _run_upstream_coder_names_ddl(con, self.CODER_NAMES_DDL)
         con.execute("INSERT INTO coder_names (name) VALUES ('AI Agent')")
         con.execute("INSERT INTO coder_names (name) VALUES ('AI agent')")
         con.commit()
@@ -450,7 +477,8 @@ class TestTheAsk:
         """The leak invariant: on a project with a hidden coder and a
         private memo zone, the ask discloses neither."""
         con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
-        con.executescript(TestUpstreamParity.CODER_NAMES_DDL)
+        _run_upstream_coder_names_ddl(
+            con, TestUpstreamParity.CODER_NAMES_DDL, with_views=True)
         con.execute("INSERT INTO coder_names (name, visibility) "
                     "VALUES ('Hidden Coder', 0)")
         con.execute("UPDATE code_text SET memo = ? WHERE ctid = 1",

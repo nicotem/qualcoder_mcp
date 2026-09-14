@@ -142,7 +142,7 @@ class TestF3CorruptedDatabase:
         dbf = folder / "data.qda"
         conn = sqlite3.connect(str(dbf))
         conn.execute("CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, codername TEXT)")
-        conn.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
+        conn.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
         conn.execute("INSERT INTO project (databaseversion) VALUES ('v14')")
         conn.execute("CREATE TABLE filler (t TEXT)")
         conn.execute("INSERT INTO filler VALUES (?)", ("x" * 8000,))

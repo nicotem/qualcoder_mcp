@@ -688,12 +688,21 @@ withholds project data.
   alone, after which reads whose view was missing quietly returned
   unfiltered base tables while the result still said the hidden-coder
   filter had been applied.
-- A project that has the column and only some of the views now fails
-  closed: visibility-sensitive reads and the by-id write guards refuse
-  with "one of its coder-visibility views is missing. Open the project
-  in QualCoder, which recreates them, and try again". Projects with no
-  visibility objects at all are unaffected and read base tables as
-  before.
+- A project that has the column and is missing ANY of the views now
+  fails closed: visibility-sensitive reads and the by-id write guards
+  refuse with "one of its coder-visibility views is missing. Open the
+  project in QualCoder, which recreates them, and try again". That
+  includes a project with the column and no views at all, which for one
+  round was treated as declaring nothing and therefore opened
+  everything: removing all four views bought more access than removing
+  three. The column is the declaration; the views are how much of it
+  survives. QualCoder adds the column and creates the four views in one
+  routine that runs whenever it opens a project, so a project with the
+  column and fewer than four views is one the views have been taken out
+  of.
+- Projects with no visibility column at all are unaffected and read
+  base tables as before, which is the graceful degradation this
+  server has always promised for projects that declare nothing.
 - Duplicate rows in `coder_names` fold the way QualCoder's views fold
   them: ANY row with visibility 0 hides that coder. The hidden-coder
   count counts coders, not rows.

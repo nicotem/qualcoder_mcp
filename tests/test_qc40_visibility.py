@@ -46,9 +46,44 @@ _VIEW_DDL = [
 ]
 
 
+_VISIBILITY_COLUMN_DDL = (
+    "ALTER TABLE coder_names ADD COLUMN visibility INTEGER NOT NULL "
+    "DEFAULT 1 CHECK (visibility IN (0, 1))")
+
+
+def _has_visibility_column(cur):
+    return "visibility" in {r[1] for r in
+                            cur.execute("PRAGMA table_info(coder_names)")}
+
+
+def _declare_visibility_column(project_path):
+    """The COLUMN alone, which is what a project DECLARES.
+
+    QualCoder's `update_coder_names` adds the column and creates the
+    four views in one routine that runs on every project open
+    (app.py:1448-1569 at 9bddf17, and the same at the 3.8.2 tag), so
+    this half-state is not something QualCoder makes or leaves: it is a
+    project the views have been taken out of. The stock fixtures used to
+    be in it by accident, which is how a hidden coder came to be fully
+    published on a project with zero views (fix round 5).
+    """
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        cur = con.cursor()
+        if not _has_visibility_column(cur):
+            cur.execute(_VISIBILITY_COLUMN_DDL)
+        con.commit()
+    finally:
+        con.close()
+
+
 def _apply_visibility_schema(project_path, hidden_coder=HIDDEN):
     con = sqlite3.connect(str(Path(project_path) / "data.qda"))
     cur = con.cursor()
+    # The column first and the views after it, which is the order
+    # upstream's own routine uses (app.py:1470-1475 then :1517-1560).
+    if not _has_visibility_column(cur):
+        cur.execute(_VISIBILITY_COLUMN_DDL)
     for ddl in _VIEW_DDL:
         cur.execute(ddl)
     cur.executemany(
@@ -382,16 +417,20 @@ class TestPre40CoderFilter:
 
     def test_search_memos_reads_base_annotations_without_capability(
             self, setup_server, qualcoder_db_path):
-        # Without the 4.0 view the annotation branch reads the base
-        # table and no disclosure block appears (F13)
+        # On a project that declares no visibility the annotation branch
+        # reads the base table and no disclosure block appears (F13).
+        # The coder row carries no visibility value because the column
+        # is not there: that IS the pre-4.0 state, and it is the state
+        # the graceful-degradation ruling is about. A row saying
+        # visibility = 0 needs the column, and the column is the
+        # declaration (fix round 5), so the two cannot be combined.
         con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
         con.execute(
             "INSERT INTO annotation (fid, pos0, pos1, memo, owner, date) "
             "VALUES (1, 0, 4, 'hidden annotation', ?, '2024-01-15')",
             (HIDDEN,))
-        con.execute(
-            "INSERT OR REPLACE INTO coder_names (name, visibility) "
-            "VALUES (?, 0)", (HIDDEN,))
+        con.execute("INSERT OR REPLACE INTO coder_names (name) VALUES (?)",
+                    (HIDDEN,))
         con.commit()
         con.close()
         _reopen(qualcoder_db_path)
@@ -1458,6 +1497,21 @@ class TestTheClassCannotComeBack:
 # (fix round 4, S2 / S6 / S7)
 # =============================================================================
 
+def _restore_views(project_path):
+    """Put the four views back, and nothing else.
+
+    `_apply_visibility_schema` also inserts the fixture's rows, so it
+    cannot be used twice on one project.
+    """
+    con = sqlite3.connect(str(Path(project_path) / "data.qda"))
+    try:
+        for ddl in _VIEW_DDL:
+            con.execute(ddl)
+        con.commit()
+    finally:
+        con.close()
+
+
 def _drop_view(project_path, name):
     con = sqlite3.connect(str(Path(project_path) / "data.qda"))
     try:
@@ -1512,15 +1566,46 @@ class TestPartialViewSetIsNotACapability:
             "code_text_visible", "code_image_visible",
             "code_av_visible", "annotation_visible"}
 
-    def test_a_column_with_no_views_declares_nothing(self, setup_server):
-        """Unchanged from before: coder_names with the column and not one
-        view is a project that has not been opened by a build that makes
-        them, so it declares nothing and reads base tables."""
+    def test_a_column_with_no_views_is_the_same_third_state(
+            self, setup_server, qualcoder_db_path):
+        """Reversed in fix round 5, and it is the whole point.
+
+        This used to assert that a project with the column and ZERO
+        views declares nothing, on the reasoning that it had not been
+        opened by a build that makes the views. No QualCoder build
+        satisfies that reasoning: `update_coder_names` adds the column
+        and the four views in one routine, and that routine runs
+        unconditionally on every project open at 3.8.2 and at master
+        (app.py:1448-1569, `__main__.py:2422` at 9bddf17). A column with
+        no views is therefore a project the views were taken out of,
+        exactly like a column with three.
+
+        The old boundary made the state key on how much of the
+        declaration SURVIVED, so removing all four views bought an
+        attacker everything removing three refused. The declaration is
+        the column."""
+        _declare_visibility_column(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is False
+        assert caps.visibility_incomplete is True
+        assert caps.visibility_declared() is True
+
+    def test_a_project_without_the_column_still_declares_nothing(
+            self, setup_server):
+        """The graceful degradation the owner ruled on, confirmed rather
+        than assumed: a project that does not carry the column reads
+        base tables and refuses nothing. That is what "pre-4.0" means
+        here, and fix round 5 does not touch it."""
         caps = server.db.capabilities
         assert caps.has_coder_visibility is False
         assert caps.visibility_incomplete is False
         assert caps.visibility_declared() is False
         assert server.db.hidden_coder_count() == 0
+        assert server.db.code_text_source() == "code_text"
+        out = json.loads(server.get_coded_segments(1))
+        assert out["segment_count"] == 1
+        assert "coder_visibility" not in out
 
     def test_the_collateral_block_refuses_rather_than_naming(
             self, visibility_db):
@@ -1697,6 +1782,221 @@ class TestPartialViewSetIsNotACapability:
         for owner in every:
             assert coder_is_hidden(visibility, owner) == (owner not in seen), \
                 owner
+
+
+# =============================================================================
+# ZERO SURVIVING VIEWS: EVERY CONSUMING PATH, DRIVEN (fix round 5)
+# =============================================================================
+
+class TestZeroViewsIsRefusedEverywhereThreeViewsAreRefused:
+    """The defect the third state's old boundary left open, closed and
+    then driven at every path that consumes visibility.
+
+    With one view surviving, all of this refused. With none surviving it
+    all opened, so an attacker got MORE access by removing MORE: the
+    comparison named the hidden coder with full statistics, a cascade
+    preview published their counts by owner, the memo search returned
+    their annotation text and their name, and a single-row delete
+    removed the row and returned success with the name and no override
+    demanded, which bypassed ruling X1 outright.
+
+    Every path here is driven against the SAME project as the one-view
+    tests above, with all four views gone instead of one, so the two
+    states are held to one standard."""
+
+    FORBIDDEN = TestWriteEchoesRedactHiddenTargets.FORBIDDEN
+
+    @pytest.fixture
+    def zero_views(self, visibility_db):
+        from qualcoder_mcp.database import VISIBILITY_VIEWS
+        for view in sorted(VISIBILITY_VIEWS):
+            _drop_view(visibility_db, view)
+        _reopen(visibility_db)
+        return visibility_db
+
+    def _assert_failed_closed(self, raw):
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, needle
+        out = json.loads(raw)
+        assert "error" in out and "success" not in out, out
+        return out
+
+    def test_the_probe_says_declared_and_unusable(self, zero_views):
+        caps = server.db.capabilities
+        assert caps.has_coder_visibility is False
+        assert caps.visibility_incomplete is True
+        assert caps.visibility_declared() is True
+        # The count comes from the TABLE, which is still there, so the
+        # project still knows it hides somebody.
+        assert server.db.hidden_coder_count() == 1
+
+    def test_the_source_chooser_refuses_for_all_four(self, zero_views):
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        for base, view in (("code_text", "code_text_visible"),
+                           ("code_image", "code_image_visible"),
+                           ("code_av", "code_av_visible"),
+                           ("annotation", "annotation_visible")):
+            with pytest.raises(CoderVisibilityUnreadable):
+                server.db._visible_source(base, view)
+
+    @pytest.mark.parametrize("read", [
+        "get_coded_segments", "search_coded_text", "get_coding_frequencies",
+        "find_cooccurring_codes", "get_case_code_matrix",
+        "get_codes_by_case", "get_cases_by_code"])
+    def test_the_seven_filtered_reads_refuse(self, zero_views, read):
+        calls = {
+            "get_coded_segments": lambda: server.get_coded_segments(1),
+            "search_coded_text": lambda: server.search_coded_text("stressed"),
+            "get_coding_frequencies": lambda: server.get_coding_frequencies(),
+            "find_cooccurring_codes": lambda: server.find_cooccurring_codes(1),
+            "get_case_code_matrix": lambda: server.get_case_code_matrix(),
+            "get_codes_by_case": lambda: server.get_codes_by_case(1),
+            "get_cases_by_code": lambda: server.get_cases_by_code(1),
+        }
+        raw = calls[read]()
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, (read, needle)
+        assert "coder-visibility view" in raw, read
+
+    def test_the_comparison_neither_names_nor_compares_the_hidden_coder(
+            self, zero_views):
+        """The auto-selection used to pick the hidden coder, name them,
+        and report their agreement statistics in full."""
+        raw = server.compare_coders()
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, needle
+        raw = server.compare_coders(coder_a="TestCoder", coder_b=HIDDEN)
+        for needle in self.FORBIDDEN:
+            assert needle not in raw, needle
+        assert "success" not in json.loads(raw)
+
+    def test_the_cascade_preview_publishes_no_counts_by_owner(
+            self, zero_views):
+        for raw in (server.delete_code(1), server.merge_codes(1, 2)):
+            out = self._assert_failed_closed(raw)
+            assert "preview" not in out, out
+            assert "coder-visibility view" in out["error"]
+
+    def test_the_category_previews_still_mask_their_one_name(
+            self, zero_views, qualcoder_db_path):
+        """Unchanged by the boundary: a category preview reads no coding
+        rows, so it has nothing to refuse, and its one name comes from a
+        TABLE the missing views do not damage."""
+        con = sqlite3.connect(str(Path(qualcoder_db_path) / "data.qda"))
+        con.execute("UPDATE code_cat SET owner = ? WHERE catid = 1",
+                    (HIDDEN,))
+        con.commit()
+        con.close()
+        _reopen(qualcoder_db_path)
+        for raw in (server.delete_category(1), server.merge_category(1)):
+            assert HIDDEN not in raw
+            out = json.loads(raw)
+            assert out["preview"]["collateral"]["category_row_owner"] == \
+                "(hidden coder)"
+
+    def test_the_memo_search_returns_neither_the_text_nor_the_name(
+            self, zero_views):
+        raw = server.search_memos("hidden")
+        assert "hidden annotation" not in raw
+        assert HIDDEN not in raw
+        assert "\"applied\"" not in raw
+        out = json.loads(raw)
+        assert "error" in out and "coder-visibility view" in out["error"]
+
+    def test_the_file_resource_raises_rather_than_leaking(self, zero_views):
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        with pytest.raises(CoderVisibilityUnreadable) as caught:
+            server.get_file_content(1)
+        assert "hidden annotation" not in str(caught.value)
+        assert HIDDEN not in str(caught.value)
+
+    def test_the_single_row_delete_refuses_and_removes_nothing(
+            self, zero_views):
+        """The X1 bypass, verbatim: `delete_coding(3)` used to remove the
+        hidden coder's row and return success with their name in it, and
+        demanded no override to do it."""
+        for raw in (server.delete_coding(3), server.update_annotation(1, "x"),
+                    server.delete_annotation(1),
+                    server.set_memo("coding", 3, "x")):
+            self._assert_failed_closed(raw)
+        assert _row(zero_views,
+                    "SELECT memo FROM code_text WHERE ctid = 3")[0] == \
+            "hidden memo"
+        assert _row(zero_views,
+                    "SELECT memo FROM annotation WHERE anid = 1")[0] == \
+            "hidden annotation"
+        assert _row(zero_views,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 1
+
+    def test_the_override_does_not_reopen_the_write_guard(self, zero_views):
+        """`allow_hidden_coder=true` is consent to act on a coder the
+        server can still identify. It is not a way to read a filter that
+        does not exist: the by-id guard has to know whether the row is
+        hidden before it can honour the consent, and here it cannot, so
+        it refuses with the override as it does without it."""
+        self._assert_failed_closed(
+            server.delete_coding(3, allow_hidden_coder=True))
+        assert _row(zero_views,
+                    "SELECT COUNT(*) FROM code_text WHERE ctid = 3")[0] == 1
+
+    def test_the_comparison_override_behaves_as_it_does_everywhere(
+            self, zero_views, qualcoder_db_path):
+        """Not a hole, and recorded here so a later reader does not
+        close it by mistake.
+
+        `compare_coders` with the override NAMES the coder the caller
+        named, on every state of the project including the complete one:
+        that is the owner ruling of D2 3.12 item 1, the coder names are
+        this tool's subject, and upstream's own comparison dialogs read
+        base tables and offer hidden coders like any other. Removing
+        views therefore buys nothing here, which is the property that
+        matters; what it must not do is buy something."""
+        with_none = server.compare_coders(coder_a="TestCoder",
+                                          coder_b=HIDDEN,
+                                          allow_hidden_coder=True)
+        _restore_views(qualcoder_db_path)
+        _reopen(qualcoder_db_path)
+        with_all = server.compare_coders(coder_a="TestCoder",
+                                         coder_b=HIDDEN,
+                                         allow_hidden_coder=True)
+        assert json.loads(with_none)["coder_b"] == HIDDEN
+        assert json.loads(with_all)["coder_b"] == HIDDEN
+        assert (json.loads(with_none)["per_code"] ==
+                json.loads(with_all)["per_code"])
+        assert (json.loads(with_none)["overall"] ==
+                json.loads(with_all)["overall"])
+
+    def test_the_exports_are_untouched(self, zero_views):
+        """honor_visibility=False is export parity, not a visibility
+        decision, and the refusal must not reach it."""
+        assert server.db.code_text_source(honor_visibility=False) == "code_text"
+        out = json.loads(server.export_codebook(
+            str(Path(zero_views).parent / "codebook.csv")))
+        assert "error" not in out, out
+
+    def test_removing_more_never_buys_more(self, zero_views,
+                                           qualcoder_db_path):
+        """The property, stated as one test: whatever the one-view state
+        refuses, the zero-view state refuses too. Anything else means an
+        attacker is rewarded for deleting another object."""
+        probes = (lambda: server.get_coded_segments(1),
+                  lambda: server.search_memos("hidden"),
+                  lambda: server.delete_coding(3),
+                  lambda: server.delete_code(1),
+                  lambda: server.compare_coders())
+        zero = [probe() for probe in probes]
+        _restore_views(qualcoder_db_path)               # all four back
+        _drop_view(qualcoder_db_path, "annotation_visible")
+        _reopen(qualcoder_db_path)
+        one_short = [probe() for probe in probes]
+        for raw_zero, raw_one in zip(zero, one_short):
+            zero_refused = "error" in json.loads(raw_zero)
+            one_refused = "error" in json.loads(raw_one)
+            assert zero_refused >= one_refused, (raw_zero[:200],
+                                                 raw_one[:200])
+            for needle in self.FORBIDDEN:
+                if needle not in raw_one:
+                    assert needle not in raw_zero, needle
 
 
 # =============================================================================

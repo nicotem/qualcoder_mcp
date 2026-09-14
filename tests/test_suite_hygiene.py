@@ -550,6 +550,65 @@ class TestNoConnectionIsOpenedWithNothingToCloseIt:
             "conn = sqlite3.connect(str(p))\nconn.close()\n") == []
 
 
+class TestNoFixtureBuildsAProjectQualCoderCannotMake:
+    """The shape that hid the fix-round-5 defect for a whole batch.
+
+    Every fixture in this suite built `coder_names` WITH the visibility
+    column and none of the four views. QualCoder makes that combination
+    nowhere: `update_coder_names` adds the column and creates the views
+    in one routine that runs on every project open, at 3.8.2 and at
+    master alike. The suite was therefore driving thousands of
+    assertions through a project shape that exists only when someone has
+    removed the views, while the probe read it as "no capability at
+    all", so the state that had to fail closed was the state everything
+    was tested on. The fixtures now build a project that declares
+    nothing, and the declared-but-damaged state has its own fixture.
+
+    Pinned at both ends: the built projects, and the DDL that builds
+    them."""
+
+    REPO = pathlib.Path(__file__).resolve().parents[1]
+    # Assembled rather than written out, for the reason the sweep above
+    # reads syntax: this module has to be able to name the shape it
+    # forbids without reporting itself.
+    COLUMN = "visibility INTEGER NOT NULL " + "DEFAULT 1"
+    # The two places a visibility column may legitimately be spelled:
+    # the migration the 4.0 fixture applies, and the verbatim upstream
+    # CREATE the parity pins run. Both create the views alongside it.
+    ALLOWED = {"test_qc40_visibility.py", "test_v012_ai_coder_setting.py"}
+
+    def test_the_stock_fixture_declares_nothing(self, setup_server):
+        import qualcoder_mcp.server as server_module
+        caps = server_module.db.capabilities
+        assert caps.visibility_declared() is False
+        assert caps.visibility_incomplete is False
+
+    def test_the_shared_builder_declares_nothing(self, tmp_path):
+        path = H.build_project({}, parent=tmp_path)
+        db = database.QualcoderDatabase(path)
+        try:
+            assert db.capabilities.visibility_declared() is False
+        finally:
+            db.close()
+
+    def test_only_the_two_visibility_modules_spell_the_column(self):
+        offenders = []
+        for module in sorted((self.REPO / "tests").glob("*.py")):
+            if module.name in self.ALLOWED:
+                continue
+            if self.COLUMN in module.read_text(encoding="utf-8"):
+                offenders.append(module.name)
+        assert offenders == [], offenders
+
+    def test_the_sweep_would_notice(self):
+        """Otherwise it could pass because the spelling drifted."""
+        allowed = sorted(self.ALLOWED)
+        found = [name for name in allowed
+                 if self.COLUMN in (self.REPO / "tests" / name).read_text(
+                     encoding="utf-8")]
+        assert found == allowed, found
+
+
 class TestTheSourceDistributionCarriesNoSuite:
     """The sdist shipped `tests/test_*.py` without `tests/conftest.py`
     or `tests/track5_helpers.py`, which every one of those modules
