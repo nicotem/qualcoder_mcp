@@ -315,7 +315,7 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
 - Serialised tool JSON after the flagship and its fix round: full =
-  154,276 characters (about 38.6k tokens at chars/4) over 70 tools,
+  154,347 characters (about 38.6k tokens at chars/4) over 70 tools,
   core = 56,317 (about 14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
@@ -327,12 +327,12 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (162,100
+  time, the same definitions measure about five per cent more (162,175
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
   characters of the Batch B growth, `compare_coders` and the new setter
-  for most of the rest. `pseudonymise_source` alone accounts for 9,060
-  of the 10,483 characters added since, and the rider on
+  for most of the rest. `pseudonymise_source` alone accounts for 9,131
+  of the 10,554 characters added since, and the rider on
   `import_text_file` and the pruning note for the rest: it is one tool with a long description
   by necessity, because a tool that rewrites the researcher's text has
   to state in its own definition what it rewrites, what it leaves, and

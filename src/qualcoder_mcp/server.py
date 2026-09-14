@@ -10286,8 +10286,9 @@ def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
         f"{backup} the pre-pseudonymisation text and, if the researcher "
         f"keeps one, pseudonyms.json; both hold the real names. Secure or "
         f"prune it with prune_backups once the run is verified.",
-        "An open QualCoder window will not refresh from this write until "
-        "the project is reopened.",
+        "An open QualCoder window will not refresh from this write on its "
+        "own: it has no file watcher. Re-selecting the file in the Files "
+        "list re-reads it, and reopening the project always does.",
         "QualCoder 4.0's AI search index (ai_data/search.sqlite), if this "
         "project has one, still holds the previous text and re-indexes the "
         "source the next time QualCoder opens the project with AI enabled. "
@@ -10581,10 +10582,11 @@ def pseudonymise_source(
     all positions in them have changed, and any pending coding
     suggestion for them is stale.
 
-    QualCoder notes: an open QualCoder window will not refresh from this
-    write until the project is reopened, and QualCoder 4.0's AI search
-    index keeps the previous text until it re-indexes on the next open
-    with AI enabled.
+    QualCoder notes: an open QualCoder window does not refresh from this
+    write on its own (re-selecting the file in the Files list re-reads
+    it; reopening the project always does), and QualCoder 4.0's AI
+    search index keeps the previous text until it re-indexes on the next
+    open with AI enabled.
 
     Args:
         mapping: The replacements, as a list of objects:

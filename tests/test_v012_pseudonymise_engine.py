@@ -911,9 +911,25 @@ class TestMappingValidation:
         """A pseudonym is written INTO the researcher's text; an override
         would reorder every line after it on screen while the stored
         offsets stayed where they are."""
-        for bad in ["‮Alex", "Al‭ex", "⁦Alex", "Al‏ex"]:
+        for bad in ["‮Alex", "Al‭ex", "⁦Alex", "Al‏ex",
+                    "Al‎ex", "؜Alex"]:
             with pytest.raises(P.MappingError):
                 P.validate_mapping([{"original": "Tom", "pseudonym": bad}])
+
+    def test_the_refused_set_is_unicodes_own_bidi_control_property(self):
+        """Fix round 1, QA F-17. The list enumerated four of the five
+        ranges and U+061C was accepted. An enumeration that is one short
+        of a Unicode property is the kind of thing a reader believes, so
+        the set is now the property."""
+        import unicodedata
+        bidi_controls = [chr(cp) for cp in
+                         list(range(0x202A, 0x202F)) +
+                         list(range(0x2066, 0x206A)) +
+                         [0x061C, 0x200E, 0x200F]]
+        for char in bidi_controls:
+            with pytest.raises(P.MappingError):
+                P.validate_mapping([{"original": "Tom",
+                                     "pseudonym": f"Al{char}ex"}])
 
     def test_the_zero_width_joiners_are_not_refused(self):
         """They spell ordinary words in several scripts, so refusing them

@@ -122,10 +122,14 @@ DELETED = "deleted"
 #
 # - U+2028 as well as U+2029, because both are line separators Qt's
 #   document model treats as breaks;
-# - the explicit bidirectional formatting controls (U+200E, U+200F,
-#   U+202A to U+202E, U+2066 to U+2069), because a pseudonym is written
-#   INTO the researcher's text and one of these would visually reorder
-#   every line after it while leaving the stored offsets untouched;
+# - the bidirectional formatting controls, all of them: Unicode's
+#   Bidi_Control set is U+061C, U+200E, U+200F, U+202A to U+202E and
+#   U+2066 to U+2069, because a pseudonym is written INTO the
+#   researcher's text and one of these would visually reorder every line
+#   after it while leaving the stored offsets untouched. U+061C is the
+#   weakest of them (an invisible strong-AL character rather than a
+#   range control) and was the one this list missed; no pseudonym needs
+#   it, so the set is now the whole property rather than an enumeration;
 # - U+FEFF, because QualCoder strips a leading one on import
 #   (manage_files.py:3340-3341), so a pseudonym carrying one would behave
 #   differently depending on where it landed.
@@ -137,6 +141,7 @@ DELETED = "deleted"
 _FORBIDDEN_RANGES = (
     (0x0000, 0x001F),      # C0 controls, which includes every line break
     (0x007F, 0x009F),      # DEL and the C1 controls
+    (0x061C, 0x061C),      # ARABIC LETTER MARK, the fifth bidi control
     (0x2028, 0x2029),      # LINE SEPARATOR and PARAGRAPH SEPARATOR
     (0x200E, 0x200F),      # LEFT-TO-RIGHT and RIGHT-TO-LEFT MARK
     (0x202A, 0x202E),      # the bidirectional embeddings and overrides
