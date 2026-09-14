@@ -508,13 +508,13 @@ def qualcoder_db_path(tmp_path):
         CREATE TABLE annotation (
             anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER,
             pos1 INTEGER, memo TEXT, owner TEXT, date TEXT
-        )
+        , unique(fid,pos0,pos1,owner))
     """)
 
     cursor.execute("""
         CREATE TABLE journal (
             jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT
-        )
+        , unique(name))
     """)
     cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
     cursor.execute("INSERT INTO journal VALUES (1, 'Entry 1', 'Some notes', '2024-01-15', 'TestCoder')")
@@ -531,7 +531,7 @@ def qualcoder_db_path(tmp_path):
         CREATE TABLE attribute (
             attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT,
             value TEXT, id INTEGER, date TEXT, owner TEXT
-        )
+        , unique(name,attr_type,id))
     """)
     cursor.execute("INSERT INTO attribute VALUES (1, 'Age', 'case', '30', 1, '2024-01-15', 'TestCoder')")
 
@@ -586,11 +586,11 @@ def empty_db_path(tmp_path):
     cursor.execute("CREATE TABLE code_text (ctid INTEGER PRIMARY KEY, cid INTEGER, fid INTEGER, seltext TEXT, pos0 INTEGER, pos1 INTEGER, owner TEXT, date TEXT, memo TEXT, avid INTEGER, important INTEGER, UNIQUE(cid, fid, pos0, pos1, owner))")
     cursor.execute("CREATE TABLE cases (caseid INTEGER PRIMARY KEY, name TEXT, memo TEXT, owner TEXT, date TEXT, CONSTRAINT ucm UNIQUE(name))")
     cursor.execute("CREATE TABLE case_text (id INTEGER PRIMARY KEY, caseid INTEGER, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
-    cursor.execute("CREATE TABLE annotation (anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT)")
-    cursor.execute("CREATE TABLE journal (jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT)")
+    cursor.execute("CREATE TABLE annotation (anid INTEGER PRIMARY KEY, fid INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT, unique(fid,pos0,pos1,owner))")
+    cursor.execute("CREATE TABLE journal (jid INTEGER PRIMARY KEY, name TEXT, jentry TEXT, date TEXT, owner TEXT, unique(name))")
     cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
     cursor.execute("CREATE TABLE attribute_type (name TEXT PRIMARY KEY, date TEXT, owner TEXT, memo TEXT, caseOrFile TEXT, valuetype TEXT)")
-    cursor.execute("CREATE TABLE attribute (attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT, value TEXT, id INTEGER, date TEXT, owner TEXT)")
+    cursor.execute("CREATE TABLE attribute (attrid INTEGER PRIMARY KEY, name TEXT, attr_type TEXT, value TEXT, id INTEGER, date TEXT, owner TEXT, unique(name,attr_type,id))")
     cursor.execute("CREATE TABLE code_image (imid INTEGER PRIMARY KEY, id INTEGER, x1 INTEGER, y1 INTEGER, width INTEGER, height INTEGER, cid INTEGER, memo TEXT, date TEXT, owner TEXT, important INTEGER, pdf_page INTEGER)")
     cursor.execute("CREATE TABLE code_av (avid INTEGER PRIMARY KEY, cid INTEGER, id INTEGER, pos0 INTEGER, pos1 INTEGER, memo TEXT, owner TEXT, date TEXT, important INTEGER DEFAULT 0)")
 

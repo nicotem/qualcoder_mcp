@@ -263,7 +263,7 @@ def qualcoder_db_path(tmp_path):
             owner TEXT,
             date TEXT,
             FOREIGN KEY (fid) REFERENCES source(id)
-        )
+        , unique(fid,pos0,pos1,owner))
     """)
     annotations = [
         (1, 1, 50, 100, "Key passage about stress", "TestCoder", "2024-01-15"),
@@ -280,7 +280,7 @@ def qualcoder_db_path(tmp_path):
             jentry TEXT,
             date TEXT,
             owner TEXT
-        )
+        , unique(name))
     """)
     cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
     journal_entries = [
@@ -319,7 +319,7 @@ def qualcoder_db_path(tmp_path):
             date TEXT,
             owner TEXT,
             FOREIGN KEY (name) REFERENCES attribute_type(name)
-        )
+        , unique(name,attr_type,id))
     """)
     attributes = [
         (1, "Age", "case", "35", 1, "2024-01-10", "TestCoder"),

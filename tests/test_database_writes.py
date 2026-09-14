@@ -155,7 +155,7 @@ def write_test_db_path(tmp_path):
             owner TEXT,
             date TEXT,
             FOREIGN KEY (fid) REFERENCES source(id)
-        )
+        , unique(fid,pos0,pos1,owner))
     """)
 
     cursor.execute("""
@@ -165,7 +165,7 @@ def write_test_db_path(tmp_path):
             jentry TEXT,
             date TEXT,
             owner TEXT
-        )
+        , unique(name))
     """)
     cursor.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
 
@@ -190,7 +190,7 @@ def write_test_db_path(tmp_path):
             date TEXT,
             owner TEXT,
             FOREIGN KEY (name) REFERENCES attribute_type(name)
-        )
+        , unique(name,attr_type,id))
     """)
 
     cursor.execute("""

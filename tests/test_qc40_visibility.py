@@ -167,7 +167,7 @@ class TestVisibilityProbe:
         cur.execute("CREATE TABLE code_text (ctid INTEGER PRIMARY KEY, "
                     "cid INTEGER, fid INTEGER, seltext TEXT, pos0 INTEGER, "
                     "pos1 INTEGER, owner TEXT, date TEXT, memo TEXT, "
-                    "important INTEGER)")
+                    "important INTEGER, unique(cid,fid,pos0,pos1,owner))")
         cur.execute("CREATE TABLE code_name (cid INTEGER PRIMARY KEY, "
                     "name TEXT UNIQUE, memo TEXT, catid INTEGER, owner TEXT, "
                     "date TEXT, color TEXT)")
@@ -176,9 +176,10 @@ class TestVisibilityProbe:
                     "supercatid INTEGER)")
         cur.execute("CREATE TABLE source (id INTEGER PRIMARY KEY, name TEXT, "
                     "fulltext TEXT, mediapath TEXT, memo TEXT, owner TEXT, "
-                    "date TEXT)")
+                    "date TEXT, unique(name))")
         cur.execute("CREATE TABLE cases (caseid INTEGER PRIMARY KEY, "
-                    "name TEXT, memo TEXT, owner TEXT, date TEXT)")
+                    "name TEXT, memo TEXT, owner TEXT, date TEXT, "
+                    "unique(name))")
         cur.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL)")
         cur.execute(_VIEW_DDL[1])
         con.commit()
