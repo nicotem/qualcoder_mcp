@@ -537,14 +537,28 @@ class TestToken:
 
     def test_an_expired_token_sends_the_model_back_to_the_preview(
             self, project, monkeypatch):
+        """No test sleeps and none reads the clock twice: the token's own
+        issue time is read from the preview and the verifier's clock is
+        moved past it by exactly the lifetime plus a minute."""
         out = preview_of()
+        issued = int(out["preview_token"].split(".")[1])
         monkeypatch.setattr(
             pt, "_now",
-            lambda: pt._now.__wrapped__() if False else
-            int(__import__("time").time()) + pt.TOKEN_MAX_AGE_SECONDS + 60)
+            lambda: issued + pt.TOKEN_MAX_AGE_SECONDS + 60)
         refused = execute_from(out)
         assert refused["reason"] == "token_expired"
         assert refused["nothing_changed"] is True
+        assert backups(project) == []
+
+    def test_a_token_one_second_inside_the_window_still_executes(
+            self, project, monkeypatch):
+        """The other side of the same boundary, so the expiry test is a
+        real comparison rather than a one-directional one."""
+        out = preview_of()
+        issued = int(out["preview_token"].split(".")[1])
+        monkeypatch.setattr(pt, "_now",
+                            lambda: issued + pt.TOKEN_MAX_AGE_SECONDS)
+        assert execute_from(out)["success"] is True
 
     @pytest.mark.parametrize("bad", ["", "not-a-token", "qcp1.1.2.3",
                                      "qcp1.1.aaaaaaaa." + "z" * 32])
@@ -893,6 +907,29 @@ class TestWrite:
                      )[0]["fulltext"]
         link = query(project, "SELECT pos0,pos1 FROM case_text WHERE id=1")[0]
         assert (link["pos0"], link["pos1"]) == (0, len(text))
+
+    def test_the_other_whole_file_case_link_convention_also_survives(
+            self, project):
+        """QualCoder master writes `pos1 = len(text)` for a whole-file
+        case link and 3.8.2's file manager wrote `len - 1`. Both are
+        whole-file links, this server's own duplicate check treats them
+        as one, and neither is normalised into the other here: a run
+        makes the minimal change, so a `len - 1` link comes out as
+        `len - 1` of the new text."""
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE case_text SET pos1 = ? WHERE id = 1",
+                    (len(TEXT) - 1,))
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of()
+        assert out["preview"]["files"][0]["case_links"]["whole_file"] == 1
+        assert execute_from(out)["success"] is True
+        text = query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"]
+        link = query(project, "SELECT pos0,pos1 FROM case_text WHERE id=1")[0]
+        assert (link["pos0"], link["pos1"]) == (0, len(text) - 1)
 
     def test_a_row_untouched_by_the_run_keeps_its_stored_quote_verbatim(
             self, project):
@@ -1386,6 +1423,33 @@ class TestStaleSessions:
     def test_an_applied_suggestion_is_not_listed(self, project):
         self._session(project, 1, status="applied")
         assert execute_from(preview_of())["stale_sessions"] == []
+
+    def test_applying_a_stale_suggestion_afterwards_fails_safe(self,
+                                                               project):
+        """Why listing them is enough, and deleting them is not this
+        tool's decision (D1 5.6).
+
+        A suggestion records the exact excerpt it refers to. After the
+        run that excerpt still holds the real name and the rewritten text
+        does not, so the exact-verbatim invariant cannot find it and the
+        suggestion is rejected rather than written at the wrong offsets.
+        The failure mode is a refusal, not a misplaced coding.
+        """
+        # APPROVED, not pending: `apply_codings` only ever writes
+        # approved suggestions, so a pending one would make this test
+        # pass on "nothing to apply" and prove nothing at all.
+        session = self._session(project, 1, status="approved")
+        assert execute_from(preview_of())["stale_sessions"] == \
+            [session.session_id]
+        before = query(project, "SELECT ctid FROM code_text")
+        out = json.loads(server.apply_codings(session.session_id,
+                                              create_backup=False))
+        assert out["total_approved"] == 1
+        assert len(out["failures"]) == 1
+        assert "does not match the file text" in out["failures"][0]["reason"]
+        assert out["failures"][0]["provided_snippet"] == "Thomas"
+        assert "nothing was written" in out["error"]
+        assert query(project, "SELECT ctid FROM code_text") == before
 
     def test_the_run_never_touches_a_session_file(self, project):
         session = self._session(project, 1)
