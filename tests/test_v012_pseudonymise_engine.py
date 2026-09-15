@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from hypothesis import HealthCheck, assume, given, settings, strategies as st
+from hypothesis import HealthCheck, Phase, given, settings, strategies as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -95,14 +95,112 @@ def legacy_boundary_spans(original, text):
             for m in re.finditer(rf"\b{original}\b", text)]
 
 
-# The alphabet the generated texts are drawn from: letters that are word
+# Two text strategies, and why there are two (fix round 3, S8).
+#
+# `_TEXT` draws characters from an alphabet: letters that are word
 # characters, the separators that are not (space, hyphen, apostrophe,
 # full stop, newline), and two non-ASCII letters so the Unicode-aware
-# reading of `\w` is exercised rather than assumed.
+# reading of `\w` is exercised rather than assumed. It is the right
+# strategy for the BOUNDARY, where what matters is which character sits
+# either side of a match, and the wrong one for everything downstream of
+# a match, because a text drawn one character at a time from that
+# alphabet held a whole-word "Tom" or "Ann" in 0.2 per cent of examples.
+# Instrumented at the final verification: the edit-walk parity oracle
+# saw 0 replacements in 3,000 examples across 10 seeds, and two planted
+# parity bugs stayed green under it.
+#
+# `_NAMED_TEXT` builds a text from TOKENS joined by generated separators.
+# The vocabulary carries the names the property tests map ("Tom", "Ann",
+# "ab") beside their near-misses (inside a longer word, another case,
+# possessive, the two non-ASCII scripts), and the separators are drawn
+# from the characters `\w` does and does not count, so a whole-word
+# match, a boundary miss and a separator-joined form all occur in most
+# examples. `TestTheGeneratorsExerciseWhatTheyClaim` measures both.
 _TEXT_ALPHABET = "abTom ANn-'.\né中"
 _TEXT = st.text(alphabet=_TEXT_ALPHABET, min_size=0, max_size=60)
 _NAMES = st.sampled_from(["Tom", "Ann", "ab", "Tom Ann", "Téo", "中文",
                           "An-n", "ab.c"])
+
+_TOKENS = st.sampled_from(["Tom", "Ann", "ab", "Tom", "Ann", "x", "Anna",
+                           "Tommy", "TOM", "ann", "Téo", "中文", "a", "b",
+                           "c", "n", "An"])
+_SEPARATORS = st.sampled_from([" ", " ", "-", "'", ".", "\n", "", "  ",
+                               ", "])
+
+
+@st.composite
+def _named_text(draw):
+    count = draw(st.integers(min_value=0, max_value=10))
+    pieces = []
+    for index in range(count):
+        if index:
+            pieces.append(draw(_SEPARATORS))
+        pieces.append(draw(_TOKENS))
+    return "".join(pieces)
+
+
+_NAMED_TEXT = _named_text()
+
+
+@st.composite
+def _boundary_sample(draw):
+    """A (text, name) pair for the boundary oracles.
+
+    The name is drawn FIRST and the text is built around it: the name
+    itself, the name with a letter or digit either side (a boundary
+    miss), its parts joined by another separator, and the ordinary
+    tokens, joined by generated separators; one example in three is a
+    text from the arbitrary-character alphabet instead, so every
+    character in it still reaches the boundary. Built this way a
+    two-word or hyphenated name ("Tom Ann", "An-n", "ab.c") occurs as
+    often as a one-word one, where the token vocabulary alone produced
+    it in under two per cent of examples.
+    """
+    name = draw(_NAMES)
+    if draw(st.integers(min_value=0, max_value=2)) == 0:
+        return draw(_TEXT), name
+    parts = [part for part in re.split(r"[^\w]+", name) if part]
+    near = [name + "x", "x" + name, name + "1", name.upper(),
+            "-".join(parts), "".join(parts), " ".join(parts)]
+    tokens = st.sampled_from([name, name, name] + near
+                             + ["ab", "x", "Tom", "Ann", "é", "中", "b"])
+    count = draw(st.integers(min_value=1, max_value=8))
+    pieces = []
+    for index in range(count):
+        if index:
+            pieces.append(draw(_SEPARATORS))
+        pieces.append(draw(tokens))
+    return "".join(pieces), name
+
+
+_BOUNDARY_SAMPLE = _boundary_sample()
+
+
+@st.composite
+def _text_and_spans(draw):
+    """A named text and up to eight spans over it.
+
+    The spans are drawn RELATIVE to the text's length, which is what
+    removes the `assume(spans)` the old span source needed (and with it
+    the `filter_too_much` suppression of re-verification R-4): a span
+    over an empty text is not drawn, and every span drawn is a span a
+    project could hold. The names sit at token boundaries, so a span
+    that touches one is common rather than lucky.
+    """
+    text = draw(_NAMED_TEXT)
+    length = len(text)
+    spans = []
+    if length:
+        for _ in range(draw(st.integers(min_value=0, max_value=8))):
+            a = draw(st.integers(min_value=0, max_value=length))
+            b = draw(st.integers(min_value=0, max_value=length))
+            lo, hi = min(a, b), max(a, b)
+            if lo < hi:
+                spans.append((lo, hi))
+    return text, spans
+
+
+_TEXT_AND_SPANS = _text_and_spans()
 
 
 class TestBoundaryParityOracle:
@@ -110,8 +208,9 @@ class TestBoundaryParityOracle:
 
     @settings(max_examples=250, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT, name=_NAMES)
-    def test_one_entry_matches_exactly_where_master_would(self, text, name):
+    @given(sample=_BOUNDARY_SAMPLE)
+    def test_one_entry_matches_exactly_where_master_would(self, sample):
+        text, name = sample
         mapping = P.validate_mapping(
             [{"original": name, "pseudonym": "Pseudo"}])
         compiled = P.Compiled(mapping)
@@ -120,9 +219,10 @@ class TestBoundaryParityOracle:
 
     @settings(max_examples=200, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT, name=_NAMES)
-    def test_the_rewritten_text_is_masters_rewritten_text(self, text, name):
+    @given(sample=_BOUNDARY_SAMPLE)
+    def test_the_rewritten_text_is_masters_rewritten_text(self, sample):
         """One entry cannot chain, so the whole substitution is comparable."""
+        text, name = sample
         mapping = P.validate_mapping(
             [{"original": name, "pseudonym": "Pseudo"}])
         compiled = P.Compiled(mapping)
@@ -280,54 +380,32 @@ class MasterEditWalk:
                 else (c['newpos0'], c['newpos1']) for c in items]
 
 
-_SPAN_SOURCE = st.lists(st.tuples(st.integers(0, 60), st.integers(0, 60)),
-                        min_size=0, max_size=8)
-
-
-def _valid_spans(raw, length):
-    """Turn generated integer pairs into spans a project could hold."""
-    spans = []
-    for a, b in raw:
-        lo, hi = min(a, b), max(a, b)
-        hi = min(hi, length)
-        lo = min(lo, length)
-        if lo < hi:
-            spans.append((lo, hi))
-    return spans
-
-
 class TestEditWalkParityOracle:
-    """D1 6.1: `qualcoder_edit_parity` is master's walk, row by row."""
+    """D1 6.1: `qualcoder_edit_parity` is master's walk, row by row.
 
-    # `filter_too_much` is suppressed because `assume(spans)` below
-    # rejects a generated span set that is legitimately empty, and on an
-    # unlucky seed hypothesis rejects enough of them to raise
-    # FailedHealthCheck. Measured at re-verification: about 1.5 per cent
-    # of runs, which is roughly a nine per cent chance of a spurious red
-    # per push across six CI jobs, and it is reported as this oracle
-    # failing, which is this branch's central correctness claim.
-    # `filter_too_much` is a performance warning, not a correctness
-    # signal, and nothing here is filtered for a reason that could hide
-    # a defect. Reshaping `_SPAN_SOURCE` so the `assume` is unnecessary
-    # is the better fix and is a v0.13 item; it changes what this test
-    # generates, which a fix round should not.
-    # Deterministic reproduction of the failure this suppresses (delete
-    # `.hypothesis` first, or the stored example replays and hides the
-    # seed):
-    #   --hypothesis-seed=22456547744127925701047518566622594684
+    The oracle draws from `_TEXT_AND_SPANS`, whose spans are generated
+    relative to the text, so nothing is filtered and no health check
+    needs suppressing: re-verification R-4's `filter_too_much`
+    suppression (seed 22456547744127925701047518566622594684) covered a
+    filter that no longer exists. What it did NOT cover, and what the
+    final verification found, was that the old text strategy held a
+    whole-word name in 0.2 per cent of examples, so this oracle ran
+    3,000 examples with zero replacements and two planted parity bugs
+    stayed green under it. `TestTheGeneratorsExerciseWhatTheyClaim`
+    holds the measurement now.
+    """
+
     @settings(max_examples=300, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow,
-                                     HealthCheck.filter_too_much])
-    @given(text=_TEXT, raw=_SPAN_SOURCE, anchor=st.booleans())
-    def test_the_engine_agrees_with_masters_walk(self, text, raw, anchor):
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(sample=_TEXT_AND_SPANS, anchor=st.booleans())
+    def test_the_engine_agrees_with_masters_walk(self, sample, anchor):
+        text, spans = sample
         mapping = P.validate_mapping([
             {"original": "Tom", "pseudonym": "Pseudo"},
             {"original": "Ann", "pseudonym": "Quux"},
         ])
         compiled = P.Compiled(mapping)
         replacements = P.find_replacements(compiled, text)
-        spans = _valid_spans(raw, len(text))
-        assume(spans)
         oracle = MasterEditWalk().run(spans, replacements, anchor)
         mapper = P.SpanMapper(replacements, len(text))
         ours = []
@@ -463,18 +541,19 @@ class TestSnapProperties:
 
     @settings(max_examples=300, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT, raw=_SPAN_SOURCE)
-    def test_no_span_is_ever_emptied_or_deleted(self, text, raw):
+    @given(sample=_TEXT_AND_SPANS)
+    def test_no_span_is_ever_emptied_or_deleted(self, sample):
         """The defining promise of `snap_to_pseudonym`: a pseudonym is
         the same token as the name, so a coding that marked the name
         marks the pseudonym and nothing is lost."""
+        text, spans = sample
         compiled = P.Compiled(P.validate_mapping([
             {"original": "Tom", "pseudonym": "Pseudo"},
             {"original": "Ann", "pseudonym": "Quu"},
         ]))
         replacements = P.find_replacements(compiled, text)
         mapper = P.SpanMapper(replacements, len(text))
-        for pos0, pos1 in _valid_spans(raw, len(text)):
+        for pos0, pos1 in spans:
             mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
             assert mapped is not None
             assert mapped.pos0 is not None
@@ -482,11 +561,12 @@ class TestSnapProperties:
 
     @settings(max_examples=250, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT, raw=_SPAN_SOURCE)
+    @given(sample=_TEXT_AND_SPANS)
     def test_the_new_slice_is_the_old_slice_with_the_names_replaced(
-            self, text, raw):
+            self, sample):
         """A span that did not CUT a name comes out reading the same,
         with the pseudonyms in place of the names."""
+        text, spans = sample
         mapping = P.validate_mapping([
             {"original": "Tom", "pseudonym": "Pseudo"},
             {"original": "Ann", "pseudonym": "Quu"},
@@ -495,7 +575,7 @@ class TestSnapProperties:
         replacements = P.find_replacements(compiled, text)
         new_text = P.apply_replacements(text, replacements)
         mapper = P.SpanMapper(replacements, len(text))
-        for pos0, pos1 in _valid_spans(raw, len(text)):
+        for pos0, pos1 in spans:
             mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
             if mapped.change == P.SNAPPED:
                 continue
@@ -509,14 +589,15 @@ class TestSnapProperties:
 
     @settings(max_examples=200, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT, raw=_SPAN_SOURCE)
-    def test_a_disjoint_span_shifts_by_the_cumulative_delta(self, text, raw):
+    @given(sample=_TEXT_AND_SPANS)
+    def test_a_disjoint_span_shifts_by_the_cumulative_delta(self, sample):
+        text, spans = sample
         mapping = P.validate_mapping(
             [{"original": "Tom", "pseudonym": "Pseudo"}])
         compiled = P.Compiled(mapping)
         replacements = P.find_replacements(compiled, text)
         mapper = P.SpanMapper(replacements, len(text))
-        for pos0, pos1 in _valid_spans(raw, len(text)):
+        for pos0, pos1 in spans:
             if any(r.start < pos1 and r.end > pos0 for r in replacements):
                 continue
             delta = sum(r.delta for r in replacements if r.end <= pos0)
@@ -702,7 +783,7 @@ class TestNonChaining:
 
     @settings(max_examples=150, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT)
+    @given(text=_NAMED_TEXT)
     def test_the_order_of_the_entries_never_changes_the_result(self, text):
         """What survives of "no chaining" once the rule is in force: with
         no pseudonym able to be a name, the answer is a function of the
@@ -1319,26 +1400,24 @@ class TestRoundTripOracle:
     this is the property the later tool has to satisfy.
     """
 
-    # Suppressed for the same reason as the parity oracle above: both
-    # `assume` calls here reject inputs that are legitimately
-    # uninteresting rather than wrong. This one filters far less often
-    # (120 runs without a discovery) and is suppressed anyway, because
-    # the rate is a property of the seed and not of the test.
+    # No `assume` and no suppression (fix round 3, S8): the spans come
+    # with the text, and the pseudonyms are chosen outside the token
+    # vocabulary, so a pre-existing occurrence cannot be generated and
+    # the reversal is exact by construction rather than by filtering.
     @settings(max_examples=200, deadline=None,
-              suppress_health_check=[HealthCheck.too_slow,
-                                     HealthCheck.filter_too_much])
-    @given(text=_TEXT, raw=_SPAN_SOURCE)
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(sample=_TEXT_AND_SPANS)
     def test_reversing_over_the_spans_restores_the_text_and_the_rows(
-            self, text, raw):
+            self, sample):
+        text, spans = sample
         compiled = P.Compiled(P.validate_mapping([
             {"original": "Tom", "pseudonym": "Pseudo"},
             {"original": "Ann", "pseudonym": "Quu"},
         ]))
         replacements = P.find_replacements(compiled, text)
-        assume(not P.pre_existing_pseudonym_occurrences(compiled, text))
+        assert not P.pre_existing_pseudonym_occurrences(compiled, text)
         new_text = P.apply_replacements(text, replacements)
         mapper = P.SpanMapper(replacements, len(text))
-        spans = _valid_spans(raw, len(text))
         forward = [mapper.map_row(a, b, "snap_to_pseudonym", True)
                    for a, b in spans]
 
@@ -1362,6 +1441,126 @@ class TestRoundTripOracle:
             assert (returned.pos0, returned.pos1) == (a, b)
 
 
+class TestTheGeneratorsExerciseWhatTheyClaim:
+    """The measurement behind the oracles (fix round 3, S8).
+
+    A property test proves nothing about a branch its inputs never
+    reach. These count, over the REAL hypothesis distribution
+    (`derandomize=True`, so the figure is the same on every run and
+    every platform, and generation only, so a failure is a count and
+    not a shrunk example), how often each strategy produces the thing
+    the test built on it is about. The thresholds sit well below what
+    was measured, and far above the 0.2 to 1.7 per cent the old
+    alphabet strategy managed.
+    """
+
+    TOMANN = P.Compiled(P.validate_mapping([
+        {"original": "Tom", "pseudonym": "Pseudo"},
+        {"original": "Ann", "pseudonym": "Quux"},
+    ]))
+
+    @staticmethod
+    def _count(strategy_kwargs, body, examples=500):
+        seen = {"examples": 0, "hits": 0}
+
+        @settings(max_examples=examples, deadline=None, database=None,
+                  derandomize=True, phases=[Phase.generate],
+                  suppress_health_check=[HealthCheck.too_slow])
+        @given(**strategy_kwargs)
+        def probe(**kwargs):
+            seen["examples"] += 1
+            if body(**kwargs):
+                seen["hits"] += 1
+
+        probe()
+        assert seen["examples"] >= examples * 0.9, seen
+        return seen["hits"] / seen["examples"]
+
+    def test_the_named_text_holds_a_replacement_in_most_examples(self):
+        rate = self._count(
+            {"text": _NAMED_TEXT},
+            lambda text: bool(P.find_replacements(self.TOMANN, text)))
+        assert rate >= 0.5, rate
+
+    def test_the_spans_touch_a_replacement_in_a_substantial_fraction(self):
+        """What the edit-walk oracle needs: a replacement AND a span
+        that meets it, because a span that meets none is mapped by a
+        shift and the walk's delete and insert branches never run."""
+        def touching(sample):
+            text, spans = sample
+            replacements = P.find_replacements(self.TOMANN, text)
+            return any(a < r.end and r.start < b
+                       for a, b in spans for r in replacements)
+        rate = self._count({"sample": _TEXT_AND_SPANS}, touching)
+        assert rate >= 0.3, rate
+
+    def test_every_walk_branch_is_reached(self):
+        """The four shapes master's walk distinguishes (inside a name,
+        containing one, a head cut, a tail cut) each occur in at least
+        five per cent of examples, so a bug in any one branch has
+        dozens of chances per run to show."""
+        shapes = {"inside": 0, "contains": 0, "head": 0, "tail": 0}
+
+        def classify(sample):
+            text, spans = sample
+            replacements = P.find_replacements(self.TOMANN, text)
+            hit = False
+            for a, b in spans:
+                for r in replacements:
+                    if a >= r.start and b <= r.end:
+                        shapes["inside"] += 1
+                    elif a < r.start and b > r.end:
+                        shapes["contains"] += 1
+                    elif r.start <= a < r.end < b:
+                        shapes["head"] += 1
+                    elif a < r.start < b <= r.end:
+                        shapes["tail"] += 1
+                    else:
+                        continue
+                    hit = True
+            return hit
+        total = 500
+        self._count({"sample": _TEXT_AND_SPANS}, classify, examples=total)
+        for shape, count in shapes.items():
+            assert count >= total * 0.05, (shape, count, shapes)
+
+    def test_the_boundary_sample_holds_a_master_match_often(self):
+        rate = self._count(
+            {"sample": _BOUNDARY_SAMPLE},
+            lambda sample: bool(master_boundary_spans(sample[1], sample[0])))
+        assert rate >= 0.4, rate
+
+    @pytest.mark.parametrize("name", ["Tom", "Ann", "ab", "Tom Ann", "Téo",
+                                      "中文", "An-n", "ab.c"])
+    def test_every_boundary_name_is_matched_and_missed(self, name):
+        """Each name in `_NAMES` both matches and narrowly misses (a
+        letter beside it) in the samples drawn for it, so the two
+        boundary oracles compare our rule with master's on both sides of
+        the boundary for every shape of name."""
+        seen = {"match": 0, "miss": 0}
+
+        def look(sample):
+            text, drawn = sample
+            if drawn != name:
+                return False
+            if master_boundary_spans(name, text):
+                seen["match"] += 1
+            if name in text and not master_boundary_spans(name, text):
+                seen["miss"] += 1
+            return True
+        self._count({"sample": _BOUNDARY_SAMPLE}, look, examples=1200)
+        assert seen["match"] >= 15 and seen["miss"] >= 3, (name, seen)
+
+    def test_the_old_alphabet_alone_would_fail_these(self):
+        """The measurement that made the round: the strategy the oracles
+        used to draw from, counted the same way, so nobody reads the
+        thresholds above as generous."""
+        rate = self._count(
+            {"text": _TEXT},
+            lambda text: bool(P.find_replacements(self.TOMANN, text)))
+        assert rate < 0.05, rate
+
+
 class TestIdempotenceAndDeterminism:
 
     def test_running_the_same_mapping_again_finds_nothing(self):
@@ -1377,7 +1576,7 @@ class TestIdempotenceAndDeterminism:
 
     @settings(max_examples=120, deadline=None,
               suppress_health_check=[HealthCheck.too_slow])
-    @given(text=_TEXT)
+    @given(text=_NAMED_TEXT)
     def test_the_same_inputs_give_the_same_edits_every_time(self, text):
         entries = [{"original": "Tom", "pseudonym": "Pseudo"},
                    {"original": "Ann", "pseudonym": "Quu"}]

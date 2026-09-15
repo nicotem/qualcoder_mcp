@@ -1294,14 +1294,32 @@ class TestJournal:
         execute_from(preview_of(), record_in_journal=False)
         assert query(project, "SELECT jid FROM journal") == []
 
-    def test_the_name_is_uniquified_against_an_existing_entry(self, project):
+    def test_the_name_is_uniquified_against_an_existing_entry(
+            self, project, monkeypatch):
         """`journal` is unique on name, so the run must find a free one
         rather than let the insert raise: an IntegrityError inside this
-        transaction would roll the whole rewrite back."""
+        transaction would roll the whole rewrite back.
+
+        The clock is frozen (fix round 3, S9): the expected name and the
+        name the run writes both carry a second-resolution stamp, and
+        under full-suite load the second ticked between the two reads,
+        so the fresh name was already unique and no suffix was needed.
+        """
+        from datetime import datetime as real_datetime
+
+        frozen = real_datetime(2026, 9, 15, 7, 50, 52)
+
+        class Frozen(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.replace(tzinfo=tz)
+
+        monkeypatch.setattr(server, "datetime", Frozen)
         out = preview_of()
         taken = server._pseudonymise_journal_name(
             [{"file_id": 1, "name": "interview_01.txt"}],
             P.Compiled(P.validate_mapping(MAPPING)))
+        assert taken.endswith("2026-09-15 075052")
         con = sqlite3.connect(str(project / "data.qda"))
         con.execute("INSERT INTO journal (jid,name,jentry,date,owner) "
                     "VALUES (1,?,'earlier','d','TestCoder')", (taken,))
