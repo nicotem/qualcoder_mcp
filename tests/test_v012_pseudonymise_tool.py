@@ -1092,6 +1092,32 @@ class TestHiddenCoders:
         assert query(project, "SELECT pos0, pos1 FROM annotation WHERE anid=9"
                      ) == [{"pos0": 0, "pos1": 4}]
 
+    def test_the_warning_and_the_refusal_say_which_rows_are_exempt(
+            self, project):
+        """Ruling 7.3(3) in the two sentences a model reads at the gate:
+        the preview's warning and the execute's refusal both say that a
+        substitution is exempt like a shift, and both keep the house
+        rules. Driven by a snap, so both sentences are really emitted."""
+        _hidden(project, ("coding", 10, 1, 9))
+        out = preview_of()
+        warnings = [w for w in out["warnings"] if "allow_hidden_coder" in w]
+        assert len(warnings) == 1
+        assert ("A pure position shift of a hidden coder's row does not, and "
+                "neither does a row that covered a name and now covers its "
+                "pseudonym, whatever the two lengths: neither changes a "
+                "coding decision. A row that grew to swallow a pseudonym, "
+                "one that contained a name and changed length with it, or "
+                "one that would be deleted, does.") in warnings[0]
+        assert "because it changes no coding decision." not in warnings[0]
+        refused = call(mapping=MAPPING, preview_token=out["preview_token"])
+        assert refused["reason"] == "hidden_coder_override_required"
+        assert ("A pure position shift of such a span is exempt and needs "
+                "nothing, and so is a span that covered a name and now "
+                "covers its pseudonym, whatever the two lengths."
+                ) in refused["error"]
+        assert "Hidden Coder" not in json.dumps(out) + json.dumps(refused)
+        _house_rules([warnings[0], refused["error"]], ["warning", "refusal"])
+
     def test_a_case_link_is_never_hidden(self, project):
         """`case_text` has no visibility view at either pin, so QualCoder
         does not hide case links and neither does this accounting."""
@@ -4350,6 +4376,13 @@ class TestTheDescriptionCarriesWhatD1Requires:
         ("the_sidecar_path_still_returns_names_it_has",  # R-2
          "the project path and each file's own name, either of which can "
          "itself contain one of those names."),
+        ("the_override_rule_in_plain_words",             # ruling 7.3(3)
+         "a coding that covered the name and now covers the pseudonym "
+         "needs no override, whatever the two lengths, and neither does a "
+         "pure position shift, because neither changes a coding decision; "
+         "a coding that grew to swallow a pseudonym, one that contained a "
+         "name and changed length with it, or one that would be deleted, "
+         "does."),
     ]
 
     @staticmethod
@@ -4384,6 +4417,15 @@ class TestTheDescriptionCarriesWhatD1Requires:
 
     def test_the_description_keeps_the_house_rules(self):
         _house_rules([server.pseudonymise_source.__doc__], ["description"])
+
+    def test_the_length_rule_is_gone(self):
+        """Ruling 7.3(3). The sentence that implied only a shift was
+        exempt, so that "Thomas -> Alex" needed the override and
+        "Thomas -> Alexis" did not, is no longer what a model reads."""
+        published = self.published()
+        assert "A pure position shift of such a row does not require it" \
+            not in published
+        assert "whatever the two lengths" in published
 
     def test_the_wide_parity_claim_is_gone(self):
         """Fix round 3, S5: "exactly what QualCoder's own text editor

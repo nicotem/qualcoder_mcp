@@ -9406,7 +9406,8 @@ TOKEN_ERROR_TEXTS = {
 
 # Where one tool's refusal is not the shared one. The six codebook tools
 # count one thing, `hidden_coder_codings_affected`, and say so; the
-# flagship's rule is finer (ruling X1 exempts a pure position shift), its
+# flagship's rule is finer (ruling X1 exempts a pure position shift and,
+# refined by ruling 7.3(3), a pure substitution), its
 # preview publishes `hidden_coder_rows`, and the rows it covers can be
 # annotations rather than codings. Pointing a model at a key the payload
 # does not have is worse than saying nothing, so the flagship carries D1
@@ -9418,7 +9419,8 @@ TOKEN_ERROR_TEXTS_BY_TOOL = {
         "preview counts them); nothing was written. Pass "
         "allow_hidden_coder=true to include them, or ask the user to "
         "unhide the coder in QualCoder. A pure position shift of such a "
-        "span is exempt and needs nothing."),
+        "span is exempt and needs nothing, and so is a span that covered "
+        "a name and now covers its pseudonym, whatever the two lengths."),
 }
 
 TWO_STEP_PARAGRAPH = (
@@ -9699,8 +9701,9 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
       control;
     - `override_required_fn(preview)` replaces the single
       `hidden_coder_codings_affected` count for a tool whose
-      hidden-coder rule is finer than a count (ruling X1 exempts a pure
-      position shift and does not exempt a resize);
+      hidden-coder rule is finer than a count (ruling X1, refined by
+      7.3(3), exempts a pure position shift and a pure substitution and
+      does not exempt a resize, a snap or a deletion);
     - `warnings_fn(preview)` replaces the cascade collateral warnings;
     - `execute_guard_fn(preview)` is a last refusal between the
       hidden-coder gate and the write, for a precondition that is only
@@ -10245,8 +10248,12 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             "Warning: this run would resize, snap or delete span(s) that "
             "belong to coder(s) currently hidden in QualCoder; their names "
             "are not shown. Executing requires allow_hidden_coder=true. A "
-            "pure position shift of a hidden coder's row does not, because "
-            "it changes no coding decision.")
+            "pure position shift of a hidden coder's row does not, and "
+            "neither does a row that covered a name and now covers its "
+            "pseudonym, whatever the two lengths: neither changes a coding "
+            "decision. A row that grew to swallow a pseudonym, one that "
+            "contained a name and changed length with it, or one that "
+            "would be deleted, does.")
     if totals.get("unique_constraint_collisions"):
         warnings.append(
             f"Warning: {totals['unique_constraint_collisions']} pair(s) or "
@@ -10717,9 +10724,14 @@ def pseudonymise_source(
                  to get the preview.
         allow_hidden_coder: Required when the preview says this run would
                  resize, snap or delete a span belonging to a coder
-                 currently hidden in QualCoder. A pure position shift of
-                 such a row does not require it, because it changes no
-                 coding decision.
+                 currently hidden in QualCoder (hidden_coder_rows). In
+                 plain words: a coding that covered the name and now
+                 covers the pseudonym needs no override, whatever the
+                 two lengths, and neither does a pure position shift,
+                 because neither changes a coding decision; a coding
+                 that grew to swallow a pseudonym, one that contained a
+                 name and changed length with it, or one that would be
+                 deleted, does.
         record_in_journal: Write a journal entry in the project recording
                  the run (default true). It carries counts, pseudonyms
                  and file ids, never an original name. This argument is
