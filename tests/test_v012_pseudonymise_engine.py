@@ -732,6 +732,21 @@ class TestChangeClassification:
         mapped = mapper.map_row(span[0], span[1], "snap_to_pseudonym", False)
         assert mapped.change == P.RESIZED
 
+    def test_a_clamped_span_that_lands_exactly_on_a_name_is_a_resize(self):
+        """The clamp rule is unchanged by ruling 7.3(3) (fix round 1,
+        B6). The stored row (4, 40) on "say Thomas" is a 36-character
+        span the coder never confined to the name, so its truncation is
+        a resize and not a substitution, and it stays on the override
+        side; the same span stored as the name is the substitution."""
+        mapper, new_text = self._thomas("say Thomas", "Alex")
+        mapped = mapper.map_row(4, 40, "snap_to_pseudonym", False)
+        assert mapped.clamped is True
+        assert mapped.change == P.RESIZED
+        assert new_text[mapped.pos0:mapped.pos1] == "Alex"
+        unclamped = mapper.map_row(4, 10, "snap_to_pseudonym", False)
+        assert unclamped.clamped is False
+        assert unclamped.change == P.SUBSTITUTED
+
     def test_under_parity_a_span_exactly_on_a_name_is_deleted_not_substituted(
             self):
         """The edit-parity policy deletes the row before the class is

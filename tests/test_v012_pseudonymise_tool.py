@@ -3251,6 +3251,34 @@ class TestTheClampIsNotAShift:
         assert query(project, "SELECT pos0,pos1 FROM annotation "
                               "WHERE anid=2") == [{"pos0": 66, "pos1": 71}]
 
+    def test_a_clamp_that_lands_exactly_on_a_name_is_still_a_resize(
+            self, project, tmp_path):
+        """Ruling 7.3(3) leaves this rule as it was. A hidden coder's
+        row stored as (4, 200) on "say Thomas" is clamped to (4, 10),
+        which is exactly the name; the coder never marked the name
+        alone, so the truncation is a resize and not a substitution,
+        and the override is asked for."""
+        text = "say Thomas"
+        folder = build_project(tmp_path / "end.qda", text=text)
+        add_annotation(folder, 2, 4, 200, owner="Hidden Helga")
+        hide_coder(folder, "Hidden Helga")
+        write_fixture_sidecar(str(folder))
+        with wired(folder):
+            out = preview_of()
+            hidden = out["preview"]["hidden_coder_rows"]
+            assert hidden["resized"] == 1
+            assert hidden["substituted"] == 0
+            assert hidden["override_required"] is True
+            assert out["preview"]["files"][0]["annotations"]["clamped"] == 1
+            refused = call(mapping=MAPPING, preview_token=out["preview_token"])
+            assert refused["reason"] == "hidden_coder_override_required"
+            assert query(folder, "SELECT pos0, pos1 FROM annotation "
+                                 "WHERE anid=2") == [{"pos0": 4, "pos1": 200}]
+            result = execute_from(out, allow_hidden_coder=True)
+            assert result["success"] is True
+            assert query(folder, "SELECT pos0, pos1 FROM annotation "
+                                 "WHERE anid=2") == [{"pos0": 4, "pos1": 8}]
+
     def test_the_refusal_is_the_flagships_own_text(self, project):
         """QA F-4 and Security S10. The shared codebook text points at
         `hidden_coder_codings_affected`, a key this preview does not
