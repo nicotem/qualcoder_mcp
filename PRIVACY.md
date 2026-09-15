@@ -260,21 +260,31 @@ project has the coder-visibility capability:
 - **When the capability arrives while this server is connected.**
   QualCoder creates the visibility column and its views when it opens a
   project, which can be after this server connected to it. Every
-  decision about who may be NAMED re-reads the declaration from the
-  project at the time it is made, so a coder hidden after this server
-  connected is treated as hidden. That re-read is one way: a
-  declaration that was there when the connection opened is never
-  withdrawn by it, because a column that disappears under a live
-  connection is damage or a concurrent rebuild, and the answer to those
-  is the "cannot be determined" posture above.
-  What is NOT re-read is which table each read goes to. That is settled
+  decision that puts a coder's NAME into a result re-reads the
+  declaration from the project at the time it is made: the
+  pseudonymisation preview's owner breakdown and hidden-row counts, the
+  cascade previews' `by_owner` and `discarded_by_owner` lists and their
+  masked row owner, the coder comparison's refusal and its hidden
+  count, the frequencies export's coder list and the AI coder name
+  setter. So a coder hidden after this server connected is treated as
+  hidden by all of them. That re-read is one way: a declaration that
+  was there when the connection opened is never withdrawn by it,
+  because a column that disappears under a live connection is damage
+  or a concurrent rebuild, and the answer to those is the "cannot be
+  determined" posture above; and if the declaration itself cannot be
+  read, the answer is the same posture rather than "nobody is hidden".
+  What is NOT re-read is which table each READ goes to. That is settled
   when the connection opens, so on a project that gained the capability
-  afterwards the reads go to the base tables until the project is
-  selected again, and a read tool can return a hidden coder's row with
-  its owner. Reopening the project (`select_project`, or restarting the
-  server) settles it. If you hide a coder in QualCoder while a
-  conversation is in progress, re-select the project before relying on
-  what the read tools return.
+  afterwards the read tools (coded segments, searches, the file view,
+  frequencies and the rest of the list above) go to the base tables
+  until the project is selected again, and can return a hidden coder's
+  row with its owner; the hidden-coder count those results disclose
+  keys on the same connect-time answer, so it does not claim a filter
+  that was not applied. Reopening the project (`select_project`, or
+  restarting the server) settles it, and so does any write, because a
+  write opens a fresh connection. If you hide a coder in QualCoder
+  while a conversation is in progress, re-select the project before
+  relying on what the read tools return.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.
@@ -547,17 +557,24 @@ will ask, and the summary above depends on them:
     too. `speakers.json` and `speaker_regex.json` can hold names as
     well; the preview reports whether they are present and never reads
     them.
-  - **Memos, journal entries, case names, file names and attribute
+  - **Memos (twelve fields, the audio/video and image coding memos
+    included), journal entries and their names, case names, file names,
+    code names, category names, attribute-type names and attribute
     values.** Scanned and counted, never rewritten. The count is in the
     preview's `residue` block, and a name that occurs only in a
-    `#####` private note is neither read nor counted. Those counts read
-    wider than the rewrite does: the rewrite replaces whole words only,
-    as QualCoder's own import does, while the count is of anything a
-    person reading the label or the memo would see, including inside a
-    longer word (`Thomas_P01`) and in any letter case. So a label the
-    count reports is not always one the rewrite would have changed, and
-    that is the safe direction for a report whose job is to tell you
-    where the names remain.
+    `#####` private note is neither read nor counted. Those counts are a
+    heuristic that reads wider than the rewrite does: the rewrite
+    replaces whole words only, as QualCoder's own import does, while
+    the count is of anything a person reading the label or the memo
+    would see, including inside a longer word (`Thomas_P01`) and in any
+    letter case, compared after Unicode compatibility normalisation with
+    invisible characters (a soft hyphen, a zero-width space) removed.
+    So a label the count reports is not always one the rewrite would
+    have changed, and that is the safe direction for a report whose
+    job is to tell you where the names remain. What the count does not
+    reach, and the preview says so: a look-alike letter from another
+    script (a Cyrillic "о" for a Latin "o") is a different letter to
+    the comparison, and is out of scope.
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or
@@ -579,9 +596,14 @@ will ask, and the summary above depends on them:
     manifest records `paths_withheld` instead of the project path and
     the backup path. That errs towards recording less, and `token_bind`
     still identifies the run and the project. The same test is
-    normalised to Unicode NFC, so a fullwidth or otherwise
-    compatibility-equivalent spelling of a name is not detected by it;
-    the rewrite would not match such a spelling either.
+    normalised to Unicode NFKC with invisible characters removed, so a
+    fullwidth spelling, or a soft hyphen or zero-width space inside a
+    name, is detected by it; a look-alike letter from another script is
+    not, and neither the test nor the rewrite matches such a spelling.
+    The manifest's `token_bind` and its `mapping_hmac_sha256` are both
+    keyed with the per-user token secret rather than plain digests, so
+    neither confirms a guessed name to anyone who holds the manifest or
+    the preview without also holding that secret.
   - **The preview's own reply.** On the `use_project_pseudonyms` path
     the mapping is the researcher's own reverse key and the model never
     supplied it, so no diagnostic and no refusal quotes a name from it

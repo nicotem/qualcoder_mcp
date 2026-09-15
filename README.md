@@ -465,9 +465,12 @@ analytics (`get_coded_segments`, `search_coded_text`,
 codings and annotations in `analyze_file_with_coding`, and the
 annotation matches of `search_memos`) read what the user sees in
 QualCoder by default and disclose how many coders are hidden, never
-their names. Passing an explicit `coder` argument reads that coder's
-rows from the full data instead. File exports keep reading the full
-data, as QualCoder's own reports do. Writes that target an existing row
+their names (with one stated exception, a project that gained the
+capability after this server connected to it; PRIVACY.md's "Coder
+visibility" section says what is and is not re-read). Passing an
+explicit `coder` argument reads that coder's rows from the full data
+instead. File exports keep reading the full data, as QualCoder's own
+reports do. Writes that target an existing row
 by id (`delete_coding`, `update_annotation`, `delete_annotation`,
 `set_memo` on a coding) refuse a hidden coder's row unless
 `allow_hidden_coder=true`; with the override the result carries ids
@@ -900,7 +903,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
 **Source Text, Destructive (preview, then token, then safety backup):**
-- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces QualCoder's own text editor, which deletes a coding sitting on a name. Memos, journal entries, case names, file names, attribute values, PDFs, media and `ai_data/` are scanned and counted, never rewritten, and the preview's `residue` block says where names remain. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name, and a file name, folder name or path that carries one is withheld from both in favour of the file id. The `residue` counts read wider than the rewrite does: any occurrence a person would see, including inside a longer word and in any case, and they cover memos, labels and attribute values rather than the file text. With `use_project_pseudonyms` the mapping is the researcher's own `pseudonyms.json`, which the caller never supplied, so no diagnostic and no refusal quotes a name from it and `include_context` returns nothing; file names and the project path are still returned as they stand. The mandatory backup does contain the real names
+- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces the walk QualCoder's coding-view editor applies, fed this tool's exact edit list (the editor's own diff may factor a shared prefix or suffix out of a replacement and keep a coding this policy deletes), which deletes a coding sitting on a name. Memos, journal entries, case, file, code, category and attribute-type names and attribute values are scanned and counted, never rewritten, and the preview's `residue` block says where names remain; PDFs, media files and `ai_data/` are out of scope and are neither rewritten nor scanned. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name, and a file name, folder name or path that carries one is withheld from both in favour of the file id. The `residue` counts read wider than the rewrite does: any occurrence a person would see, including inside a longer word and in any case, and they cover memos, labels and attribute values rather than the file text. With `use_project_pseudonyms` the mapping is the researcher's own `pseudonyms.json`, which the caller never supplied, so no diagnostic and no refusal quotes a name from it and `include_context` returns nothing; file names and the project path are still returned as they stand. The mandatory backup does contain the real names
 
 **Codebook, Destructive (preview, then token, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
@@ -1150,9 +1153,10 @@ Contributions are welcome! Some ideas for enhancements:
   sources and moves every coding, annotation and case link with it, in
   one transaction, behind a preview and a mandatory backup. Rule-based
   and deterministic: only the names you list are replaced, as whole
-  words. Memos, journal entries, case names, file names, attribute
-  values, PDFs and media are scanned and counted, never rewritten, so
-  the preview tells you where names remain.
+  words. Memos, journal entries, case names, file names and attribute
+  values are scanned and counted, never rewritten, so the preview tells
+  you where names remain; PDFs, media files and `ai_data/` are out of
+  scope and are neither rewritten nor scanned.
 
 **Planned for v0.12 and later:**
 - 🤝 Further QualCoder 4.0 interoperability (later phases)

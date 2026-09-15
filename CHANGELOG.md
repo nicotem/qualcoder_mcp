@@ -57,7 +57,8 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   sitting exactly on a name and trims one that merely touches it. The
   preview counts what each would do before you choose.
 - What is NOT rewritten is counted rather than left to be discovered:
-  the ten memo fields, case names, file names, code names and text
+  twelve memo fields (the audio/video and image coding memos included),
+  case, file, code, category, attribute-type and journal names, and text
   attribute values, plus which of `pseudonyms.json`, `speakers.json` and
   `speaker_regex.json` are present. Those counts read WIDER than the
   rewrite, deliberately: the rewrite replaces whole words only, as
@@ -242,10 +243,58 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   The re-read is one way. A declaration that was there when the
   connection opened is never withdrawn by it, because a column that
   disappears under a live connection is damage or a concurrent rebuild,
-  and the answer to those is still "who is hidden cannot be decided".
-  Which TABLE each read goes to is still settled when the connection
-  opens, so re-select the project after hiding a coder in QualCoder;
-  PRIVACY.md says so.
+  and the answer to those is still "who is hidden cannot be decided";
+  and a declaration that cannot be read at all is the same answer,
+  never "nobody is hidden". It reaches every decision that names a
+  coder: the pseudonymisation preview, the cascade previews' owner
+  lists and masked row owner, the coder comparison and its hidden
+  count, the frequencies export's coder list and the AI coder name
+  setter. Which TABLE each read goes to is still settled when the
+  connection opens, so re-select the project after hiding a coder in
+  QualCoder; PRIVACY.md says so.
+
+### Changed: the pseudonymisation preview names nobody it should not, on any data shape
+
+- `unique_constraint_collisions[].key` was built with the owner column,
+  so two codings by one hidden coder cut by one name put her name into
+  the one field of the preview that did not withhold it. The reported
+  key is now `(cid, fid, pos0, pos1)` for a coding and `(fid, pos0,
+  pos1)` for an annotation; `row_ids` identify the rows. A standing
+  test walks every string of the preview, the execute result, the
+  manifest, the journal row and the log on a project named after its
+  participant in every field.
+- The token's public bind and the manifest's mapping digest are keyed
+  with the per-user token secret for `pseudonymise_source` (and for it
+  alone; the codebook tools' binds are the plain digests they were).
+  Beside the pseudonym the preview shows, a plain digest of the mapping
+  read from `pseudonyms.json` let a dictionary of first names confirm
+  the original in twenty guesses. The manifest field is now
+  `mapping_hmac_sha256`.
+- The signed effect keys each replacement on the entry's canonical
+  position rather than the caller's index, so the same mapping given
+  in another order executes against the same token instead of being
+  refused as "the project changed", and a token issued from
+  `pseudonyms.json` executes from the identical typed mapping in any
+  order.
+- The AI coder name is resolved on the preview: if none is set, the
+  preview warns and carries the ask in `execute_with.before_executing`
+  rather than refusing at execute time after the researcher has
+  approved; on the execute the ask comes after the token is verified,
+  so a malformed token is answered as malformed.
+- The residue scan reads twelve memo fields and six label columns
+  (the audio/video and image coding memos, and the category,
+  attribute-type and journal names, are new) and compares after Unicode
+  compatibility normalisation with invisible characters removed, so a
+  fullwidth spelling, a soft hyphen or a zero-width space inside a name
+  no longer walks a file name past it into the journal body and the
+  manifest; a look-alike letter from another script stays out of scope
+  and the prose says so. The residue warning and note call the wide
+  reading the heuristic it is, point at `search_memos`, and a surface
+  form of fewer than four characters draws its own warning before the
+  researcher approves. The parity warning and the description carry
+  D-10's narrowed claim: master's coding-view walk fed this tool's exact
+  edit list, where the editor's own diff may keep a coding this policy
+  deletes.
 
 ### Changed: destructive tools need a preview token, not a confirm flag
 
@@ -352,8 +401,8 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after the flagship and its fix round: full =
-  154,757 characters (about 38.7k tokens at chars/4) over 70 tools,
+- Serialised tool JSON after the flagship and its three fix rounds: full =
+  155,323 characters (about 38.8k tokens at chars/4) over 70 tools,
   core = 56,317 (about 14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and
   48,795, over 67 tools and 20. Every figure here is measured on the
@@ -365,12 +414,12 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   with mcp 1.30.0, in the repository's own `venv/`, the one
   CONTRIBUTING.md tells a contributor to create. On Python 3.10 to
   3.12, which keep the docstring indentation 3.13 strips at compile
-  time, the same definitions measure about five per cent more (162,609
+  time, the same definitions measure about five per cent more (163,207
   and 59,253, taken on Python 3.11.13 with the same mcp, in the
   repository's `.venv/`). The three paged read tools account for 5,104
   characters of the Batch B growth, `compare_coders` and the new setter
-  for most of the rest. `pseudonymise_source` alone accounts for 9,541
-  of the 10,964 characters added since, and the rider on
+  for most of the rest. `pseudonymise_source` alone accounts for 10,107
+  of the 11,530 characters added since, and the rider on
   `import_text_file` and the pruning note for the rest: it is one tool with a long description
   by necessity, because a tool that rewrites the researcher's text has
   to state in its own definition what it rewrites, what it leaves, and

@@ -6436,9 +6436,12 @@ def import_text_file(
                 for index, count in sorted(counts.items())],
             "note": ("Only the names in this project's pseudonyms.json "
                      "were replaced, as whole words and case-sensitively, "
-                     "which is QualCoder's own rule. Entries were applied "
-                     "in one pass rather than one after another, so "
-                     "nothing this import wrote was replaced again."),
+                     "which is QualCoder's own boundary rule; each "
+                     "pseudonym was written literally, where QualCoder's "
+                     "own import reads a backslash in it as a pattern. "
+                     "Entries were applied in one pass rather than one "
+                     "after another, so nothing this import wrote was "
+                     "replaced again."),
         }
         if not content.strip():
             return json.dumps({
@@ -9686,7 +9689,7 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     gate, and only then runs the mutation under the full write discipline
     with a mandatory backup and an in-transaction re-check.
 
-    The four optional hooks exist so the flagship reuses this gate rather
+    The five optional hooks exist so the flagship reuses this gate rather
     than paralleling it, and every one of them defaults to the behaviour
     the six codebook tools already had:
 
@@ -10347,9 +10350,9 @@ def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
               if backup_name else "The backup taken before this run "
                                    "contains")
     return [
-        "Positions in these files have changed: re-read them before any "
-        "further coding, and treat any pending coding suggestion for them "
-        "as stale.",
+        "Positions after the first replacement in these files have "
+        "changed: re-read them before any further coding, and treat any "
+        "pending coding suggestion for them as stale.",
         f"{backup} the pre-pseudonymisation text and, if the researcher "
         f"keeps one, pseudonyms.json; both hold the real names. Secure or "
         f"prune it with prune_backups once the run is verified.",
@@ -10489,8 +10492,8 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
             "mapping. It is the newest backup folder beside the project.")
     lines.append(f"Run manifest: {manifest_name}.")
     lines.append(
-        "The names replaced are not recorded here. Positions in these "
-        "files have changed.")
+        "The names replaced are not recorded here. Positions after the "
+        "first replacement in these files have changed.")
     return "\n".join(lines)
 
 
@@ -10655,8 +10658,8 @@ def pseudonymise_source(
     instead.
 
     After the run, re-read every touched file before any further coding:
-    all positions in them have changed, and any pending coding
-    suggestion for them is stale.
+    every position after the first replacement in it has changed, and
+    any pending coding suggestion for them is stale.
 
     QualCoder notes: an open QualCoder window does not refresh from this
     write on its own (re-selecting the file in the Files list re-reads
@@ -10680,8 +10683,8 @@ def pseudonymise_source(
                  the call.
         use_project_pseudonyms: Read the mapping from the project's own
                  pseudonyms.json instead (QualCoder's import-time list).
-                 Give this or `mapping`, not both. The names in that file
-                 are the researcher's reverse key and you did not supply
+                 Give this or `mapping`, not both. The original names in
+                 that file are the researcher's reverse key and you did not supply
                  them, so on this path no diagnostic and no refusal
                  quotes one, and include_context returns no context at
                  all rather than the text around each match. Two things
@@ -10700,10 +10703,14 @@ def pseudonymise_source(
                  marked the name marks the pseudonym, a coding that cut
                  into a name grows to contain the whole pseudonym, and
                  nothing is ever emptied or deleted.
-                 "qualcoder_edit_parity": exactly what QualCoder's own
-                 text editor does, which DELETES a coding that sits on a
-                 name and trims one that merely touches it. Use it only
-                 when matching QualCoder's editor matters more than
+                 "qualcoder_edit_parity": the walk QualCoder's own
+                 coding-view editor applies, fed this tool's exact edit
+                 list, which DELETES a coding that sits on a name and
+                 trims one that merely touches it. The editor itself
+                 diffs the two texts first, and its diff library may
+                 factor a shared prefix or suffix out of a replacement
+                 (Tom to Tim) and keep a coding this policy deletes.
+                 Use it only when matching that walk matters more than
                  keeping the codings.
         preview_token: The token from this operation's preview; omit it
                  to get the preview.
@@ -10716,7 +10723,11 @@ def pseudonymise_source(
                  the run (default true). It carries counts, pseudonyms
                  and file ids, never an original name. This argument is
                  NOT part of what the token binds: it changes only
-                 whether the run records itself.
+                 whether the run records itself. If the project has no
+                 AI coder name yet, the preview says so and carries the
+                 ask in execute_with.before_executing; set one with
+                 set_project_ai_coder_name before executing, or execute
+                 with record_in_journal=false.
         include_context: Return the text around each match in the
                  preview. Off by default because it returns FILE CONTENT
                  into the conversation; the counts are usually enough to

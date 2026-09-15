@@ -90,9 +90,16 @@ CREATE TABLE graph (grid integer primary key, name text, description text, date 
 CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL);
 """
 
-# The column and the four views, exactly as QualCoder's own routine
-# creates them (app.py:1470-1475 then :1518-1561 at 9bddf17), and
-# together, because that routine never makes one without the other.
+# The column and the four views, together, because QualCoder's own
+# routine never makes one without the other. Upstream does not ALTER an
+# existing table: `update_coder_names` creates `coder_names` with the
+# `visibility` column already declared in its CREATE TABLE
+# (app.py:1448-1586 at 9bddf17; the same routine at 3.8.2 is
+# `__main__.py:1198-1330`) and the four views after it
+# (app.py:1518-1561). The ALTER below is this suite's own way of
+# reaching the same shape from a fixture whose table predates the
+# column; what the server reads (`PRAGMA table_info`) answers the same
+# for both.
 VISIBILITY_COLUMN = ("ALTER TABLE coder_names ADD COLUMN visibility INTEGER "
                      "NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1))")
 VISIBILITY_VIEWS = [
@@ -3419,7 +3426,9 @@ class TestResultShape:
     def test_the_result_carries_the_four_notes(self, project):
         result = execute_from(preview_of())
         joined = " ".join(result["notes"])
-        assert "Positions in these files have changed" in joined
+        assert ("Positions after the first replacement in these files have "
+                "changed" in joined)
+        assert "Positions in these files have changed" not in joined
         assert "backup" in joined
         assert "open QualCoder window" in joined
         assert "search index" in joined
@@ -3790,8 +3799,8 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "add never contain an original name"),
         ("re_read_every_touched_file",                   # QA F-6
          "After the run, re-read every touched file before any further "
-         "coding: all positions in them have changed, and any pending "
-         "coding suggestion for them is stale."),
+         "coding: every position after the first replacement in it has "
+         "changed, and any pending coding suggestion for them is stale."),
         ("qualcoder_does_not_refresh",
          "an open QualCoder window does not refresh from this write on its "
          "own"),
@@ -3799,10 +3808,22 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "QualCoder 4.0's AI search index keeps the previous text until it "
          "re-indexes on the next open with AI enabled."),
         ("the_sidecar_path_quotes_nothing",              # B4 / S3
-         "The names in that file are the researcher's reverse key and you "
-         "did not supply them, so on this path no diagnostic and no "
-         "refusal quotes one, and include_context returns no context at "
-         "all rather than the text around each match."),
+         "The original names in that file are the researcher's reverse "
+         "key and you did not supply them, so on this path no diagnostic "
+         "and no refusal quotes one, and include_context returns no "
+         "context at all rather than the text around each match."),
+        ("parity_is_the_walk_not_the_editor",            # fix round 3, S5
+         "the walk QualCoder's own coding-view editor applies, fed this "
+         "tool's exact edit list, which DELETES a coding that sits on a "
+         "name and trims one that merely touches it. The editor itself "
+         "diffs the two texts first, and its diff library may factor a "
+         "shared prefix or suffix out of a replacement (Tom to Tim) and "
+         "keep a coding this policy deletes."),
+        ("the_ask_comes_in_the_preview",                 # fix round 3, S4
+         "If the project has no AI coder name yet, the preview says so and "
+         "carries the ask in execute_with.before_executing; set one with "
+         "set_project_ai_coder_name before executing, or execute with "
+         "record_in_journal=false."),
         ("the_sidecar_path_still_returns_names_it_has",  # R-2
          "the project path and each file's own name, either of which can "
          "itself contain one of those names."),
@@ -3840,6 +3861,98 @@ class TestTheDescriptionCarriesWhatD1Requires:
 
     def test_the_description_keeps_the_house_rules(self):
         _house_rules([server.pseudonymise_source.__doc__], ["description"])
+
+    def test_the_wide_parity_claim_is_gone(self):
+        """Fix round 3, S5: "exactly what QualCoder's own text editor
+        does" was false for Tom to Tim, Sara to Sana, Thomas to Thom and
+        Ann to Anna, where the editor's diff keeps a coding this policy
+        deletes (D-10's narrowing, now in the description too)."""
+        assert "exactly what QualCoder's own" not in self.published()
+        assert "all positions in them have changed" not in self.published()
+
+
+# =============================================================================
+# THE DOCUMENTS A RESEARCHER READS INSTEAD OF THE DESCRIPTION
+# =============================================================================
+
+class TestTheDocumentsTellTheTruth:
+    """Fix round 3, B4 and S5, pinned the way the description's points
+    are pinned: a sentence that claims more than the code does is a
+    failing test, on every interpreter.
+
+    README said PDFs, media and `ai_data/` were "scanned and counted";
+    the residue block never reads any of them, and README is what a
+    researcher reads to decide whether the PDF text is safe. README also
+    said `qualcoder_edit_parity` "reproduces QualCoder's own text
+    editor", which is false whenever the pseudonym shares a prefix or
+    suffix with the name. PRIVACY.md carries the arrival-state promise
+    and the detector's stated limit, both of which this round made true.
+    """
+
+    REPO = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def _flat(cls, name):
+        text = (cls.REPO / name).read_text(encoding="utf-8")
+        return " ".join(text.replace("\n>", " ").split())
+
+    @pytest.mark.parametrize("sentence", [
+        "PDFs, media files and `ai_data/` are out of scope and are neither "
+        "rewritten nor scanned.",
+        "Memos, journal entries, case, file, code, category and "
+        "attribute-type names and attribute values are scanned and "
+        "counted, never rewritten",
+        "`qualcoder_edit_parity` reproduces the walk QualCoder's "
+        "coding-view editor applies, fed this tool's exact edit list (the "
+        "editor's own diff may factor a shared prefix or suffix out of a "
+        "replacement and keep a coding this policy deletes)",
+        "PRIVACY.md's \"Coder visibility\" section says what is and is not "
+        "re-read",
+    ])
+    def test_readme_says_it(self, sentence):
+        assert " ".join(sentence.split()) in self._flat("README.md")
+
+    @pytest.mark.parametrize("claim", [
+        "PDFs, media and `ai_data/` are scanned and counted",
+        "PDFs and media are scanned and counted",
+        "reproduces QualCoder's own text editor",
+    ])
+    def test_readme_no_longer_claims_it(self, claim):
+        assert claim not in self._flat("README.md")
+
+    @pytest.mark.parametrize("sentence", [
+        # B3: the promise, scoped to what re-reads, and the residual.
+        "Every decision that puts a coder's NAME into a result re-reads "
+        "the declaration from the project at the time it is made",
+        "What is NOT re-read is which table each READ goes to.",
+        "if the declaration itself cannot be read, the answer is the same "
+        "posture rather than \"nobody is hidden\"",
+        # S6 and S7: what the residue reads, and what it cannot reach.
+        "Memos (twelve fields, the audio/video and image coding memos "
+        "included), journal entries and their names, case names, file "
+        "names, code names, category names, attribute-type names and "
+        "attribute values.",
+        "a look-alike letter from another script (a Cyrillic \"о\" for a "
+        "Latin \"o\") is a different letter to the comparison, and is out "
+        "of scope",
+        # S2: the keyed bind and manifest digest.
+        "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
+        "both keyed with the per-user token secret rather than plain "
+        "digests",
+    ])
+    def test_privacy_says_it(self, sentence):
+        assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
+
+    def test_privacy_no_longer_makes_the_unqualified_promise(self):
+        flat = self._flat("PRIVACY.md")
+        assert "Every decision about who may be NAMED re-reads" not in flat
+        assert ("compatibility-equivalent spelling of a name is not "
+                "detected by it" not in flat)
+
+    def test_the_changelog_counts_the_rounds(self):
+        entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
+        assert "after the flagship and its three fix rounds" in entry
+        assert "after the flagship and its fix round:" not in entry
 
 
 # =============================================================================
