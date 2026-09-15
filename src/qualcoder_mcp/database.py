@@ -2043,6 +2043,56 @@ class QualcoderDatabase:
         return self._visible_source("code_text", "code_text_visible",
                                     honor_visibility)
 
+    def _naming_source(self, base: str, view: str) -> str:
+        """The table or view a decision that NAMES a coder reads from.
+
+        `_visible_source` keeps the connect-time answer, and the reads
+        that go through it are the arrival-state residual PRIVACY.md
+        discloses: on a project that gained the capability after this
+        server connected, a read tool returns a hidden coder's row
+        until the project is re-selected. A decision that puts a
+        coder's NAME into a preview cannot stand on that answer, because
+        "never name a hidden coder" is owner-ruled (X1) and the
+        pseudonymisation preview already re-reads the declaration per
+        call; the cascade previews' `by_owner` and `discarded_by_owner`
+        did not, and named the coder the flagship withheld, on one
+        project in one session (fix round 3, B3).
+
+        So: with a declaration present at connect, exactly
+        `_visible_source` (the one-way rule and the view-set rule are
+        both there). With none, the declaration is re-read
+        (`_visibility_is_declared_now`, one way); still none, the base
+        table, where nothing is hidden. Arrived since, the view has to
+        exist NOW, because a declaration without its view cannot be
+        filtered as QualCoder filters it, and the answer is the refusal
+        `_visible_source` gives for the same state. That is a full
+        re-read of exactly the two facts this decision needs, and no
+        others: which table every OTHER read goes to is still settled
+        when the connection opens.
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.visibility_declared():
+            return self._visible_source(base, view)
+        if not self._visibility_is_declared_now():
+            return base
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'view' "
+                "AND name = ?", (view,)).fetchone()
+        except sqlite3.Error as e:
+            logger.error(f"Could not check for the coder-visibility view "
+                         f"{view}: {e}")
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(its coder-visibility views could not be read)") from None
+        if row is None:
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(one of its coder-visibility views is missing). Open "
+                "the project in QualCoder, which recreates them, and "
+                "try again")
+        return view
+
     def hidden_coder_count(self) -> int:
         """How many coders this project currently hides (0 without the
         visibility capability). Used for result disclosure; hidden
@@ -2317,10 +2367,15 @@ class QualcoderDatabase:
 
         On a project with no `coder_names` table the PRAGMA returns no
         rows, which is the same "no capability" the probe records. If
-        the PRAGMA itself fails, the connect-time answer stands: there
-        is nothing better to say here, and the caller reads the table
-        immediately afterwards and fails closed if that does not answer
-        either.
+        the PRAGMA itself fails, who may be named cannot be decided and
+        the answer is `CoderVisibilityUnreadable`, the same posture the
+        table read below takes. This used to return False, on the
+        reasoning that the caller reads the table next and fails closed
+        there; but False is "no capability", and on that answer the
+        caller never reads the table at all, so a lock landing on this
+        one statement named the hidden coder and reported that no
+        override was needed (fix round 3, S1: the last fail-open branch
+        in the visibility design).
         """
         caps = getattr(self, "capabilities", None)
         if caps is not None and caps.visibility_declared():
@@ -2328,10 +2383,13 @@ class QualcoderDatabase:
         try:
             columns = {row[1] for row in self.conn.execute(
                 "PRAGMA table_info(coder_names)").fetchall()}
-        except sqlite3.Error as e:              # pragma: no cover - defensive
-            logger.warning(f"Could not re-read the coder visibility "
-                           f"declaration: {e}")
-            return False
+        except sqlite3.Error as e:
+            logger.error(f"Could not re-read the coder visibility "
+                         f"declaration: {e}")
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(its coder-visibility declaration could not be read)"
+            ) from None
         return "visibility" in columns
 
     def coder_visibility_map(self) -> Optional[Dict[str, int]]:
@@ -2497,15 +2555,17 @@ class QualcoderDatabase:
         _row_is_visible): a preview must never report fewer hidden rows
         than the cascade would remove. This used to `continue` past a
         missing view, which undercounted by a whole modality in silence
-        (fix round 4)."""
-        caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.visibility_declared():
+        (fix round 4). Keyed on the declaration as it is NOW rather than
+        as it was at connect, so a coder hidden after this server
+        connected is counted here and gates the execute (fix round 3,
+        B3)."""
+        if not self._visibility_is_declared_now():
             return None
         total = 0
         for base, view in (("code_text", "code_text_visible"),
                            ("code_av", "code_av_visible"),
                            ("code_image", "code_image_visible")):
-            self._visible_source(base, view)      # raises if it is gone
+            self._naming_source(base, view)       # raises if it is gone
             try:
                 all_n = self.conn.execute(
                     f"SELECT COUNT(*) FROM {base} WHERE ({where})",
@@ -6148,9 +6208,12 @@ class QualcoderDatabase:
         as its own work (the one helper of H3, resolved in the server
         layer); rows under those names are folded into `ai_owned_codings`
         and never appear as `by_owner` entries.
+
+        `by_owner` NAMES coders, so it reads from `_naming_source`, which
+        re-reads the declaration per call the way the flagship's own
+        preview does (fix round 3, B3).
         """
         ai_names = set(ai_coder_names)
-        caps = getattr(self, "capabilities", None)
         tables = (("code_text", "code_text_visible", "text"),
                   ("code_av", "code_av_visible", "av"),
                   ("code_image", "code_image_visible", "image"))
@@ -6159,7 +6222,7 @@ class QualcoderDatabase:
         if cids:
             marks = ",".join("?" for _ in cids)
             for base, view, label in tables:
-                source = self._visible_source(base, view)
+                source = self._naming_source(base, view)
                 try:
                     rows = self.conn.execute(
                         f"SELECT owner, COUNT(*) AS n FROM {source} "
@@ -6184,7 +6247,7 @@ class QualcoderDatabase:
             marks = ",".join("?" for _ in cids)
             hidden = self._hidden_codings_affected(f"cid IN ({marks})",
                                                    list(cids))
-        elif caps is not None and caps.visibility_declared():
+        elif self._visibility_is_declared_now():
             hidden = 0
 
         ai_owned = sum(e["codings"] for o, e in per_owner.items()
@@ -6250,9 +6313,10 @@ class QualcoderDatabase:
 
         The discarded duplicate is the one irreversible part of a merge
         (its memo and important flag are lost), so the preview says whose
-        it is. Visible owners only, by the same rule as `by_owner`.
+        it is. Visible owners only, by the same rule as `by_owner`, and
+        from the same per-call source.
         """
-        source = self._visible_source("code_text", "code_text_visible")
+        source = self._naming_source("code_text", "code_text_visible")
         try:
             rows = self.conn.execute(
                 f"SELECT s.owner AS owner, COUNT(*) AS n FROM {source} s "
@@ -6951,8 +7015,7 @@ class QualcoderDatabase:
                     "never reparented to a grandparent). Coded data is "
                     "untouched.",
         }
-        caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.visibility_declared():
+        if self._visibility_is_declared_now():
             # No coding rows are touched, so none of a hidden coder's
             preview["hidden_coder_codings_affected"] = 0
         return preview
@@ -7357,8 +7420,7 @@ class QualcoderDatabase:
                     "they key on the code, not the category), then deletes "
                     "the source category." + memo_note,
         }
-        caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.visibility_declared():
+        if self._visibility_is_declared_now():
             preview["hidden_coder_codings_affected"] = 0
         return preview
 

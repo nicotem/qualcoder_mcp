@@ -641,19 +641,29 @@ def _snippet(text: Optional[str], max_len: int = 80) -> str:
     return text if len(text) <= max_len else text[:max_len] + "…"
 
 
-def _coder_visibility_note(coder: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _coder_visibility_note(coder: Optional[str] = None,
+                           hidden: Optional[int] = None
+                           ) -> Optional[Dict[str, Any]]:
     """Disclosure block for reads shaped by coder visibility (P1-3).
 
     Returned only when the project actually hides coders. Reports the
     COUNT of hidden coders, never their names. With an explicit coder
     filter the read went to the base tables, and the note says so
     instead (methodological transparency either way).
+
+    `hidden` lets a caller that has already read the visibility map
+    supply the count from it; without it the count keys on the
+    connect-time probe, which is right for the reads this note
+    describes, because their rows come from the same connect-time
+    source and a fresh count beside a stale read would claim a filter
+    that was not applied.
     """
     coder = normalize_coder(coder)  # blank means no filter (F10)
-    try:
-        hidden = get_db().hidden_coder_count()
-    except Exception:
-        return None
+    if hidden is None:
+        try:
+            hidden = get_db().hidden_coder_count()
+        except Exception:
+            return None
     if hidden <= 0:
         return None
     if coder is not None:
@@ -4316,6 +4326,18 @@ def _eligible_coders(db_, visibility: Optional[Dict[str, int]],
     return [n for n in names if not coder_is_hidden(visibility, n)]
 
 
+def _hidden_count_in(visibility: Optional[Dict[str, int]]) -> int:
+    """How many coders a `coder_visibility_map()` result hides (a count).
+
+    The map is keyed by name, so this is the DISTINCT count
+    `hidden_coder_count` computes, taken from the fresh read rather than
+    from the connect-time probe that `hidden_coder_count` keys on.
+    """
+    if not visibility:
+        return 0
+    return sum(1 for name in visibility if coder_is_hidden(visibility, name))
+
+
 def _hidden_eligible_count(db_, visibility: Optional[Dict[str, int]]) -> int:
     """How many coders with text codings the project hides (a count)."""
     if visibility is None:
@@ -4475,9 +4497,12 @@ def compare_coders(coder_a: Optional[str] = None,
 
     # The hidden rule for this tool: the coder names are its SUBJECT, so
     # naming a hidden coder needs the explicit boolean, and with it the
-    # tool behaves exactly as the v0.11 read override does (B3.4).
-    caps = getattr(db_, "capabilities", None)
-    has_visibility = caps is not None and caps.visibility_declared()
+    # tool behaves exactly as the v0.11 read override does (B3.4). Whether
+    # the project declares visibility is what the map above answered,
+    # freshly, and not what the connect-time probe recorded: a coder
+    # hidden after this server connected was compared by name (fix round
+    # 3, B3).
+    has_visibility = visibility is not None
     if has_visibility and not allow_hidden_coder:
         if (coder_is_hidden(visibility or {}, coder_a)
                 or coder_is_hidden(visibility or {}, coder_b)):
@@ -4718,11 +4743,17 @@ def compare_coders(coder_a: Optional[str] = None,
             f"{clipped_total} coding(s) reach beyond the end of their "
             f"file's text and were clipped to it; QualCoder's own report "
             f"drops the overflow characters in the same way.")
+    caps = getattr(db_, "capabilities", None)     # the schema, not visibility
     if include_subcodes and caps is not None and not caps.has_supercid:
         result["notes"].append(
             "include_subcodes had no effect: this project's schema has no "
             "sub-codes.")
-    note = _coder_visibility_note(coder_a if allow_hidden_coder else None)
+    # The count of hidden coders comes from the same fresh map as the
+    # decision above, so one result cannot say "1 more coder hidden" in
+    # one place and "0" in another on an arrival-state project.
+    hidden_in_map = _hidden_count_in(visibility)
+    note = _coder_visibility_note(coder_a if allow_hidden_coder else None,
+                                  hidden=hidden_in_map)
     if note is not None:
         if allow_hidden_coder and (
                 coder_is_hidden(visibility or {}, coder_a)
@@ -4731,7 +4762,7 @@ def compare_coders(coder_a: Optional[str] = None,
         else:
             result["coder_visibility"] = {
                 "hidden_coder_filter": "not_applicable",
-                "hidden_coders": db_.hidden_coder_count(),
+                "hidden_coders": hidden_in_map,
                 "note": ("This project hides some coders in QualCoder, but "
                          "neither named coder is hidden, so nothing was "
                          "filtered."),

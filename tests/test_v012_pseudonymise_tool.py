@@ -3759,3 +3759,255 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         assert {entry["owner"] for entry in
                 preview["files"][0]["codings"]["by_owner"]} == {
                     "TestCoder", "Hidden Helga"}
+
+    class _PragmaFaults:
+        """A connection on which only the declaration re-read fails.
+
+        Everything else reaches the real connection, so a refusal here
+        is the re-read's own decision and not the whole tool falling
+        over (the judge's reproduction, S1).
+        """
+
+        def __init__(self, real):
+            object.__setattr__(self, "_real", real)
+
+        def execute(self, sql, *args, **kwargs):
+            if "PRAGMA table_info(coder_names)" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def __setattr__(self, name, value):
+            setattr(self._real, name, value)
+
+    def test_a_re_read_that_cannot_answer_fails_closed(
+            self, project, tmp_path):
+        """Fix round 3, S1: the last fail-open branch in the visibility
+        design. The re-read returned False when its PRAGMA raised, and
+        False is "no capability", on which the table is never read at
+        all; so a lock landing on that one statement, on a project that
+        gained the capability after connect, named the hidden coder and
+        reported that no override was needed. Now it is "cannot be
+        decided", which every caller already handles.
+        """
+        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        folder = self._connected_before_qualcoder(tmp_path)
+        hide_coder(folder, "Hidden Helga")
+        control = preview_of()
+        assert "Hidden Helga" not in json.dumps(control)
+        assert control["preview"]["hidden_coder_rows"]["override_required"] \
+            is True
+        real = server.db.conn
+        server.db.conn = self._PragmaFaults(real)
+        try:
+            with pytest.raises(CoderVisibilityUnreadable) as caught:
+                server.db.coder_visibility_map()
+            assert "declaration could not be read" in str(caught.value)
+            out = preview_of()
+            assert "preview" not in out
+            assert "preview_token" not in out
+            assert "could not be read" in out["error"]
+            assert "Hidden Helga" not in json.dumps(out)
+            assert backups(folder) == []
+        finally:
+            server.db.conn = real
+        # And the fault is the only thing in the way.
+        assert preview_of()["preview"]["hidden_coder_rows"][
+            "override_required"] is True
+
+    def test_a_declaration_present_at_connect_never_reaches_the_re_read(
+            self, project, tmp_path):
+        """The one-way rule's other face: with the capability present
+        when the connection opened, the PRAGMA is not consulted, so the
+        same fault changes nothing."""
+        folder = build_project(tmp_path / "early.qda")
+        add_coding(folder, 1, 1, 0, 6)
+        add_coding(folder, 2, 1, 34, 42, owner="Hidden Helga")
+        write_fixture_sidecar(str(folder))
+        hide_coder(folder, "Hidden Helga")
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        assert server.db.capabilities.visibility_declared() is True
+        real = server.db.conn
+        server.db.conn = self._PragmaFaults(real)
+        try:
+            out = preview_of()
+            assert out["preview"]["hidden_coder_rows"]["override_required"] \
+                is True
+            assert "Hidden Helga" not in json.dumps(out)
+        finally:
+            server.db.conn = real
+
+
+class TestTheOlderTokenGatedToolsRereadTheDeclarationToo:
+    """Fix round 3, B3. PRIVACY.md's fix-round-2 paragraph promised that
+    every decision about who may be NAMED re-reads the declaration; the
+    flagship's did, and the six older token-gated tools' did not. On a
+    project that gained the capability after this server connected,
+    `delete_code` and `merge_codes` named the hidden coder in
+    `collateral.by_owner` (and `merge_codes` in `discarded_by_owner`),
+    `delete_category` and `merge_category` named her as the row owner,
+    and `compare_coders` compared her by name. The same one-way re-read
+    the flagship uses now feeds `_naming_source`, the anonymous hidden
+    count and the comparison's eligibility, so the promise is true of
+    every naming decision rather than of one tool; what is still not
+    re-read is which TABLE the read tools go to, and PRIVACY.md says so.
+    """
+
+    def _arrived(self, tmp_path, category_owner="Hidden Helga"):
+        """Connected before the capability existed, then QualCoder hid
+        a coder: the column and the four views, as its routine makes
+        them, under this server's live connection."""
+        folder = build_project(tmp_path / "arrive.qda")
+        add_coding(folder, 1, 1, 0, 6)                            # TestCoder
+        add_coding(folder, 2, 2, 34, 42)                          # TestCoder
+        add_coding(folder, 5, 1, 19, 22, owner="Hidden Helga")
+        add_coding(folder, 6, 2, 63, 68, owner="Hidden Helga")
+        # A duplicate span under both codes by the hidden coder, so a
+        # merge of 1 into 2 discards one of hers.
+        add_coding(folder, 7, 1, 34, 42, owner="Hidden Helga")
+        add_coding(folder, 8, 2, 34, 42, owner="Hidden Helga")
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("INSERT INTO code_cat (catid,name,owner,date,memo) "
+                    "VALUES (1,'Themes',?,'d','')", (category_owner,))
+        con.execute("INSERT INTO code_cat (catid,name,owner,date,memo) "
+                    "VALUES (2,'Other','TestCoder','d','')")
+        con.commit()
+        con.close()
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        assert server.db.capabilities.visibility_declared() is False
+        hide_coder(folder, "Hidden Helga")
+        assert server.db.capabilities.visibility_declared() is False
+        assert server.db.code_text_source() == "code_text"     # the residual
+        return folder
+
+    def test_delete_code_counts_her_and_gates_the_execute(
+            self, project, tmp_path):
+        folder = self._arrived(tmp_path)
+        raw = server.delete_code(code_id=1)
+        out = json.loads(raw)
+        assert "Hidden Helga" not in raw
+        block = out["preview"]["collateral"]
+        assert [e["owner"] for e in block["by_owner"]] == ["TestCoder"]
+        assert block["hidden_coder_codings"] == 2                # ctid 5, 7
+        assert out["preview"]["hidden_coder_codings_affected"] == 2
+        assert out["execute_with"]["arguments"]["allow_hidden_coder"] is True
+        assert any("hidden in QualCoder" in w for w in out["warnings"])
+        refused = json.loads(server.delete_code(
+            code_id=1, preview_token=out["preview_token"]))
+        assert refused["reason"] == "hidden_coder_override_required"
+        assert "Hidden Helga" not in json.dumps(refused)
+        assert backups(folder) == []
+
+    def test_merge_codes_names_her_in_neither_owner_list(
+            self, project, tmp_path):
+        self._arrived(tmp_path)
+        raw = server.merge_codes(from_code_id=1, into_code_id=2)
+        out = json.loads(raw)
+        assert "Hidden Helga" not in raw
+        block = out["preview"]["collateral"]
+        assert [e["owner"] for e in block["by_owner"]] == ["TestCoder"]
+        assert block["discarded_by_owner"] == []                # hers only
+        assert block["hidden_coder_codings"] == 2
+        assert out["preview"]["hidden_coder_codings_affected"] == 2
+        assert out["execute_with"]["arguments"]["allow_hidden_coder"] is True
+
+    @pytest.mark.parametrize("tool", ["delete_category", "merge_category"])
+    def test_the_category_previews_mask_her_as_the_row_owner(
+            self, project, tmp_path, tool):
+        self._arrived(tmp_path)
+        call_tool = getattr(server, tool)
+        kwargs = ({"category_id": 1} if tool == "delete_category"
+                  else {"from_category_id": 1, "into_category": "Other"})
+        raw = call_tool(**kwargs)
+        out = json.loads(raw)
+        assert "Hidden Helga" not in raw
+        assert out["preview"]["collateral"]["category_row_owner"] == \
+            "(hidden coder)"
+        assert out["preview"]["hidden_coder_codings_affected"] == 0
+        assert out["preview"]["collateral"]["hidden_coder_codings"] == 0
+
+    def test_compare_coders_refuses_her_and_counts_her(
+            self, project, tmp_path):
+        self._arrived(tmp_path)
+        raw = server.compare_coders(coder_a="TestCoder",
+                                    coder_b="Hidden Helga")
+        out = json.loads(raw)
+        assert out["error"] == server.HIDDEN_COMPARISON_REFUSAL
+        assert "Hidden Helga" not in raw
+        # Auto-selection: one eligible coder, and one more hidden, said
+        # as a count; the same count everywhere in one result.
+        auto = json.loads(server.compare_coders())
+        assert "1 more coder hidden in QualCoder" in auto["error"]
+        assert "Hidden Helga" not in auto["error"]
+        allowed = json.loads(server.compare_coders(
+            coder_a="TestCoder", coder_b="Hidden Helga",
+            allow_hidden_coder=True))
+        assert allowed["coder_visibility"]["hidden_coder_filter"] == \
+            "bypassed"
+        assert allowed["coder_visibility"]["hidden_coders"] == 1
+
+    def test_the_two_file_level_tools_have_nobody_to_name(
+            self, project, tmp_path):
+        """Controls for the six: restore_backup and prune_backups name
+        no coder on any project; pinned so the count of six is a count
+        of six and not of four."""
+        from qualcoder_mcp.database import backup_project
+        folder = self._arrived(tmp_path)
+        backup = backup_project(folder)
+        backup_project(folder)                  # two, so one can be pruned
+        for raw in (server.restore_backup(backup_path=str(backup)),
+                    server.prune_backups(keep_last=1)):
+            out = json.loads(raw)
+            assert out.get("requires_confirmation") is True, out
+            assert "Hidden Helga" not in raw
+
+    def test_a_declaration_that_arrives_without_its_views_fails_closed(
+            self, project, tmp_path):
+        """The re-read is of two facts, not one: the column says the
+        project can hide a coder, and the view is what filters as
+        QualCoder filters. A column with no view is a project the views
+        were taken out of, and the answer is the refusal, not a
+        `by_owner` from the base table."""
+        folder = build_project(tmp_path / "column.qda")
+        add_coding(folder, 1, 1, 0, 6)
+        add_coding(folder, 5, 1, 19, 22, owner="Hidden Helga")
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute(VISIBILITY_COLUMN)
+        con.execute("INSERT OR REPLACE INTO coder_names (name, visibility) "
+                    "VALUES ('Hidden Helga', 0)")
+        con.commit()
+        con.close()
+        for raw in (server.delete_code(code_id=1),
+                    server.merge_codes(from_code_id=1, into_code_id=2)):
+            out = json.loads(raw)
+            assert "preview" not in out
+            assert "views is missing" in out["error"]
+            assert "Hidden Helga" not in raw
+
+    def test_a_project_that_never_declares_still_names_everyone(
+            self, project, tmp_path):
+        """The control: on a project with no declaration nothing is
+        hidden, and the re-read must not invent a capability."""
+        folder = build_project(tmp_path / "never.qda")
+        add_coding(folder, 1, 1, 0, 6)
+        add_coding(folder, 5, 1, 19, 22, owner="Colleague")
+        write_fixture_sidecar(str(folder))
+        server.db.close()
+        server.db = QualcoderDatabase(str(folder))
+        server.current_project_path = str(folder)
+        out = json.loads(server.delete_code(code_id=1))
+        assert {e["owner"] for e in out["preview"]["collateral"]["by_owner"]
+                } == {"TestCoder", "Colleague"}
+        assert "hidden_coder_codings" not in out["preview"]["collateral"]
+        assert "hidden_coder_codings_affected" not in out["preview"]
