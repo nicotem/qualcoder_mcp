@@ -329,7 +329,11 @@ Two further rules touch files on your disk:
   fails on such a project. This is a deliberate, owner-approved
   deviation from QualCoder's save_backup, which copies whatever a link
   points to. A copy that fails part-way is removed rather than left
-  behind as a half-complete "backup".
+  behind as a half-complete "backup". On `pseudonymise_source`'s result
+  the name of a skipped symlink is withheld where a reader of it would
+  see a name from the mapping, the count kept; and the log line that
+  reports a skipped symlink carries the count and the reason, never the
+  path, because MCP hosts keep the server's log on disk.
 - **Process listing.** To warn when a QualCoder 4.0 window appears to
   have a project open (4.0 writes no lock file), every tool that
   reports a `qualcoder_gui_signals` field (today: select_project,

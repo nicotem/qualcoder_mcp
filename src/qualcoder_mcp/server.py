@@ -11079,14 +11079,39 @@ def pseudonymise_source(
             ask = dict(owner_error)
             ask["message"] = ask.pop("error")
             result["execute_with"]["before_executing"] = ask
+            # The resolver's own account, not a fixed sentence: four
+            # distinct refusals reach here (no name set, the sidecar
+            # unreadable, the sidecar of a newer format, this host's
+            # declaration conflicting with the project's name), and "no
+            # AI coder name is set" was false on three of them (fix
+            # round 4, R4). The quick picks are pointed at only where
+            # the ask carries any.
+            details = ("execute_with.before_executing carries the details"
+                       + (" and the quick picks" if ask.get("quick_picks")
+                          else ""))
             result.setdefault("warnings", []).append(
-                "Warning: no AI coder name is set for this project, and the "
-                "journal entry this run writes by default needs one. Before "
-                "executing, ask the user which name to use and call "
-                "set_project_ai_coder_name (see execute_with.before_executing "
-                "for the quick picks), or execute with "
-                "record_in_journal=false; the run manifest records the run "
-                "either way.")
+                f"Warning: the journal entry this run writes by default "
+                f"cannot be written as things stand. {ask['message']} "
+                f"Before executing, settle that ({details}), or execute "
+                f"with record_in_journal=false; the run manifest records "
+                f"the run either way.")
+        skipped_names = result.get("backup_skipped_symlink_names")
+        if skipped_names:
+            # The symlink names a backup skipped follow the rule the file
+            # names already follow (fix round 4, R3): withheld where a
+            # reader of one would see a name from the mapping, the count
+            # kept. The backup's own log line carries no path at all.
+            safe = [_pseudonymise_safe_name(name, compiled)
+                    for name in skipped_names]
+            withheld = sum(1 for name in safe if name is None)
+            if withheld:
+                result["backup_skipped_symlink_names"] = safe
+                result["backup_skipped_symlink_names_withheld"] = withheld
+                result["backup_skipped_symlinks_note"] = (
+                    f"{result.get('backup_skipped_symlinks_note', '')} "
+                    f"{withheld} of the names are withheld (null): a "
+                    f"reader of each would see a name from this mapping. "
+                    f"The count stands.").strip()
     if not isinstance(result, dict) or "error" in result or \
             not captured.get("written"):
         return json.dumps(result, indent=2)

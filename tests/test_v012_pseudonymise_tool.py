@@ -2153,6 +2153,20 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             [{"original": PARTICIPANT, "pseudonym": "Alex"},
              {"original": "Mary Ann", "pseudonym": "Sam"}]),
             encoding="utf-8")
+        # A linked media folder named after the participant, pointing
+        # outside the project, which the backup skips and reports (fix
+        # round 4, R3). Where a symlink cannot be made (Windows without
+        # the privilege) the walk runs without it; the POSIX-only test
+        # below proves the route is really taken.
+        outside = tmp_path / f"{PARTICIPANT} videos"
+        outside.mkdir()
+        (folder / "media").mkdir()
+        try:
+            os.symlink(str(outside),
+                       str(folder / "media" / f"{PARTICIPANT} videos"),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            pass
         return folder
 
     @staticmethod
@@ -2232,6 +2246,35 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             assert HIDDEN_COLLEAGUE.lower() not in logged.lower()
             assert PARTICIPANT.lower() not in logged.lower()
 
+    @POSIX_ONLY
+    def test_the_linked_folder_named_after_the_participant_is_withheld(
+            self, tmp_path, caplog):
+        """Fix round 4, R3. The backup skips the link and reports it; the
+        name follows the rule the file names follow (withheld where a
+        reader would see a name from the mapping, the count kept), and
+        the WARNING line the backup writes carries the count and the
+        reason, never the path. So the walk above finds nothing, and this
+        test shows that it is not passing an empty route."""
+        import logging
+        with wired(self._build(tmp_path, collide=False)):
+            caplog.set_level(logging.DEBUG)
+            result = execute_as_recipe(self._sidecar_preview(),
+                                       allow_hidden_coder=True)
+            assert result.get("success") is True, result
+            assert result["backup_skipped_symlinks"] == 1
+            assert result["backup_skipped_symlink_names"] == [None]
+            assert result["backup_skipped_symlink_names_withheld"] == 1
+            assert "withheld (null)" in result["backup_skipped_symlinks_note"]
+            skipping = [record for record in caplog.records
+                        if "Skipping" in record.getMessage()]
+            assert len(skipping) == 1
+            assert skipping[0].levelname == "WARNING"
+            line = skipping[0].getMessage()
+            assert "1 skipped so far" in line
+            assert "outside the project" in line
+            assert PARTICIPANT.lower() not in line.lower()
+            assert "videos" not in line
+
     def test_the_walk_would_notice(self):
         """A walk that read only the top level would have passed B1."""
         nested = {"preview": {"files": [{"unique_constraint_collisions": {
@@ -2244,6 +2287,55 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
                                 "files": [{"name": f"{PARTICIPANT}.txt"}]}}
         assert routes_carrying(declared, PARTICIPANT, DECLARED_ROUTES) == []
         assert len(routes_carrying(declared, PARTICIPANT)) == 2
+
+
+@POSIX_ONLY
+class TestASymlinkNamedAfterTheParticipant:
+    """Fix round 4, R3, at the two sites: the backup's log line (every
+    tool that takes a backup) and the flagship's result."""
+
+    @staticmethod
+    def _link(project, tmp_path, name):
+        outside = tmp_path / f"outside {name}"
+        outside.mkdir()
+        (project / "media").mkdir(exist_ok=True)
+        os.symlink(str(outside), str(project / "media" / name),
+                   target_is_directory=True)
+        return os.path.join("media", name)
+
+    def test_the_log_line_carries_the_count_and_the_reason_never_the_path(
+            self, project, tmp_path, caplog):
+        import logging
+        from qualcoder_mcp import database
+        rel = self._link(project, tmp_path, "Thomas videos")
+        caplog.set_level(logging.DEBUG)
+        report = {}
+        backup = database.backup_project(project, report)
+        assert report["skipped_symlinks"] == [rel]
+        assert not (backup / "media" / "Thomas videos").exists()
+        lines = [record for record in caplog.records
+                 if "Skipping" in record.getMessage()]
+        assert len(lines) == 1 and lines[0].levelname == "WARNING"
+        text = lines[0].getMessage()
+        assert "1 skipped so far" in text
+        assert "points outside the project or dangles" in text
+        assert "Thomas" not in text and "videos" not in text
+        shutil.rmtree(backup)
+
+    def test_the_flagship_withholds_the_name_and_keeps_the_count(
+            self, project, tmp_path):
+        named = self._link(project, tmp_path, "Thomas videos")
+        plain = self._link(project, tmp_path, "field videos")
+        result = execute_from(preview_of())
+        assert result.get("success") is True, result
+        assert result["backup_skipped_symlinks"] == 2
+        assert sorted(result["backup_skipped_symlink_names"],
+                      key=str) == sorted([None, plain], key=str)
+        assert result["backup_skipped_symlink_names_withheld"] == 1
+        assert "1 of the names are withheld (null)" in \
+            result["backup_skipped_symlinks_note"]
+        assert routes_carrying(result, "Thomas", DECLARED_ROUTES) == []
+        assert named not in json.dumps(result)
 
 
 # =============================================================================

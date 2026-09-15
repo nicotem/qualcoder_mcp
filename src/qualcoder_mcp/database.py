@@ -1159,8 +1159,15 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
             ignored.add(name)
             rel = os.path.relpath(full, project_root)
             skipped.append(rel)
+            # The count and the reason, never the path: MCP hosts keep
+            # the server's log on disk, and a linked media folder can be
+            # named after a participant (fix round 4, R3). The path is in
+            # the result, where the tool that took the backup decides
+            # what may be shown.
             logger.warning(
-                f"Skipping symlink {rel!r} in project copy: {reason}")
+                f"Skipping a symlink in project copy ({len(skipped)} "
+                f"skipped so far): {reason}. The path is in the result, "
+                f"not in the log.")
         return ignored
 
     return _ignore
