@@ -48,9 +48,12 @@ from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp import preview_tokens as pt
 from qualcoder_mcp import pseudonymise as P
 from qualcoder_mcp.database import QualcoderDatabase
-from qualcoder_mcp.project_settings import (DEFAULT_AI_CODER_NAME,
+from qualcoder_mcp.project_settings import (AI_CODER_NAME_ENV,
+                                            DEFAULT_AI_CODER_NAME,
                                             KNOWN_AI_ASSISTANT_OWNER,
-                                            SIDECAR_NAME)
+                                            NEWER_FORMAT_MESSAGE,
+                                            SIDECAR_NAME,
+                                            UNREADABLE_MESSAGE)
 from qualcoder_mcp.sessions import AICodingSession, CodingSuggestion
 
 POSIX_ONLY = pytest.mark.skipif(
@@ -1429,16 +1432,69 @@ class TestJournal:
         assert ask["quick_picks"]
         assert "record_in_journal=false" in ask["alternative"]
         warning = [w for w in out["warnings"]
-                   if "no AI coder name is set" in w]
+                   if "cannot be written as things stand" in w]
         assert len(warning) == 1
+        assert ask["message"] in warning[0]
         assert "execute_with.before_executing" in warning[0]
         _house_rules(warning + [ask["message"]], ["warning", "ask"])
         # With record_in_journal=false the run needs no owner, and the
         # preview says nothing about one.
         quiet = preview_of(record_in_journal=False)
         assert "before_executing" not in quiet["execute_with"]
-        assert not any("no AI coder name is set" in w
+        assert not any("cannot be written as things stand" in w
                        for w in quiet.get("warnings", []))
+
+    @pytest.mark.parametrize("shape", ["unset", "unreadable", "newer_format",
+                                       "mismatch"])
+    def test_the_warning_carries_the_resolvers_own_account(
+            self, project, shape, monkeypatch):
+        """Fix round 4, R4. `_resolve_write_owner` returns four distinct
+        refusals, and the preview's warning said "no AI coder name is
+        set" on every one of them: false where the sidecar cannot be
+        read or is of a newer format (a name may well be set) and false
+        where this host's declaration conflicts with a name that IS set.
+        The warning carries the resolver's own text, and points at the
+        quick picks only where the ask has any."""
+        if shape == "unset":
+            self._unset(project)
+        elif shape == "unreadable":
+            (project / SIDECAR_NAME).write_text("{not json", encoding="utf-8")
+        elif shape == "newer_format":
+            path = project / SIDECAR_NAME
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["format_version"] += 1
+            path.write_text(json.dumps(data), encoding="utf-8")
+        else:
+            monkeypatch.setenv(AI_CODER_NAME_ENV, "Other Model 9")
+        out = preview_of()
+        assert out["preview_token"]
+        ask = out["execute_with"]["before_executing"]
+        expected = {
+            "unset": "No AI coder name is set for this project yet",
+            "unreadable": UNREADABLE_MESSAGE,
+            "newer_format": NEWER_FORMAT_MESSAGE,
+            "mismatch": ("This host declares the AI coder name "
+                         "\"Other Model 9\""),
+        }[shape]
+        assert expected in ask["message"], ask["message"]
+        warning = [w for w in out["warnings"]
+                   if "cannot be written as things stand" in w]
+        assert len(warning) == 1, out["warnings"]
+        assert ask["message"] in warning[0]
+        if shape in ("unset", "mismatch"):
+            assert ask["action_required"] == "set_project_ai_coder_name"
+            assert ask["quick_picks"]
+            assert "and the quick picks" in warning[0]
+        else:
+            assert "action_required" not in ask
+            assert "quick_picks" not in ask
+            assert "quick picks" not in warning[0]
+        if shape != "unset":
+            assert "no ai coder name is set" not in warning[0].lower()
+        if shape == "mismatch":
+            assert f"current AI coder name is \"{DEFAULT_AI_CODER_NAME}\"" \
+                in warning[0]
+        _house_rules(warning + [ask["message"]], ["warning", "ask"])
 
     def test_the_ask_comes_after_the_token_and_before_the_write(
             self, project):
@@ -1892,6 +1948,17 @@ class TestTheLabelsAndMemosTheResidueCounts:
         for forbidden in ("Ed", "Tom", "Kim"):
             assert forbidden not in warning[0], forbidden
         _house_rules(warning, ["short-form warning"])
+        # One entry: the verb agrees with the noun (fix round 4, R5). The
+        # fixture MAPPING's "Tom" is that entry, so every preview in the
+        # suite carries this form of the warning.
+        out = preview_of()
+        assert out["preview"]["short_forms"] == [{"entry": 0, "length": 3}]
+        singular = [w for w in out["warnings"] if "surface form of fewer" in w]
+        assert len(singular) == 1
+        assert singular[0].startswith(
+            "Warning: mapping entry [0] has a surface form of fewer than 4 "
+            "characters.")
+        assert " have " not in singular[0]
         # Nothing shorter than four: no block and no warning.
         out = preview_of(mapping=[{"original": "Thomas", "pseudonym": "Alex"}])
         assert "short_forms" not in out["preview"]

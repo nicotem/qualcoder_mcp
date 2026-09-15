@@ -10324,9 +10324,10 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         # from exact to generous (re-verification 6.2 measured the turn
         # at four); the researcher hears that before approving.
         entries = sorted({item["entry"] for item in short})
-        noun = "entry" if len(entries) == 1 else "entries"
+        noun, verb = (("entry", "has") if len(entries) == 1
+                      else ("entries", "have"))
         warnings.append(
-            f"Warning: mapping {noun} {entries} have a surface form of "
+            f"Warning: mapping {noun} {entries} {verb} a surface form of "
             f"fewer than {pseudo.SHORT_FORM_CHARS} characters. The residue "
             f"counts are a heuristic that reads wider than the rewrite, so "
             f"a short form makes them generous: they will report fields "
