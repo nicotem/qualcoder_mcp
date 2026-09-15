@@ -583,41 +583,69 @@ class TestToken:
     CONFLICTING = [{"original": "Thomas", "pseudonym": "Alex"},
                    {"original": "Mary Ann", "pseudonym": "Sam"},
                    {"original": "Ann", "pseudonym": "Beth"}]
+    THOMAS, MARY_ANN, ANN = CONFLICTING
 
+    # The order pairs the pin compares. Canonical order is Ann 0, Mary
+    # Ann 1, Thomas 2, and the winning entry "Mary Ann" sits at caller
+    # index 1 in CONFLICTING and in its reverse alike, so that pair on
+    # its own saw only the `entry` half of the fix: the raw
+    # `loses_to_entry` equalled its canonical position by coincidence,
+    # and that one line reverted with the whole suite green (fix round
+    # 5, B1). The other two pairs move "Mary Ann".
+    ORDER_PAIRS = [
+        ("Mary Ann stays at 1", CONFLICTING, [ANN, MARY_ANN, THOMAS]),
+        ("Mary Ann moves 0 to 2", [MARY_ANN, THOMAS, ANN],
+         [THOMAS, ANN, MARY_ANN]),
+        ("Mary Ann moves 1 to 0", [THOMAS, MARY_ANN, ANN],
+         [MARY_ANN, ANN, THOMAS]),
+    ]
+
+    @pytest.mark.parametrize("label,previewed,executed", ORDER_PAIRS,
+                             ids=[label for label, *_ in ORDER_PAIRS])
     def test_a_mapping_with_an_overlap_conflict_executes_in_another_order(
-            self, project):
-        """Fix round 4, B1. The signed effect keys the replacements AND
-        the overlap conflicts on the canonical position. The two lines
-        that canonicalise a conflict's `entry` and `loses_to_entry`
-        reverted with the whole suite green, because no pin's mapping
-        produced a conflict; under that revert this mapping, reordered,
-        was refused as "the project changed" on a project nothing had
-        touched. With "Ann" inside "Mary Ann" the conflict is recorded,
-        the readable preview shows it under the caller's indices in
-        either order, the signed effect is identical in both, and the
-        reversed order executes.
+            self, project, label, previewed, executed):
+        """Fix round 4, B1, and fix round 5, B1. The signed effect keys
+        the replacements AND the overlap conflicts on the canonical
+        position. The two lines that canonicalise a conflict's `entry`
+        and `loses_to_entry` reverted with the whole suite green,
+        because no pin's mapping produced a conflict; under that revert
+        this mapping, reordered, was refused as "the project changed"
+        on a project nothing had touched. With "Ann" inside "Mary Ann"
+        the conflict is recorded, the readable preview shows it under
+        the caller's indices in either order, the signed effect names
+        the canonical pair (Ann 0 loses to Mary Ann 1) and is identical
+        in both, and the second order executes from the first's token.
         """
-        out = preview_of(mapping=self.CONFLICTING)
+        def index_of(order, original):
+            return [entry["original"] for entry in order].index(original)
+
+        out = preview_of(mapping=previewed)
         assert out["preview"]["files"][0]["overlap_conflicts"] == [
-            {"entry": 2, "form": "Ann", "span": [39, 42],
-             "loses_to_entry": 1, "chosen_span": [34, 42]}]
-        reversed_mapping = list(reversed(self.CONFLICTING))
-        again = preview_of(mapping=reversed_mapping)
+            {"entry": index_of(previewed, "Ann"), "form": "Ann",
+             "span": [39, 42],
+             "loses_to_entry": index_of(previewed, "Mary Ann"),
+             "chosen_span": [34, 42]}]
+        again = preview_of(mapping=executed)
         assert again["preview"]["files"][0]["overlap_conflicts"] == [
-            {"entry": 0, "form": "Ann", "span": [39, 42],
-             "loses_to_entry": 1, "chosen_span": [34, 42]}]
+            {"entry": index_of(executed, "Ann"), "form": "Ann",
+             "span": [39, 42],
+             "loses_to_entry": index_of(executed, "Mary Ann"),
+             "chosen_span": [34, 42]}]
         assert again["preview_token"].split(".")[2] == \
             out["preview_token"].split(".")[2]          # one bind
         effects = []
-        for mapping in (self.CONFLICTING, reversed_mapping):
+        for mapping in (previewed, executed):
             compiled = P.Compiled(P.validate_mapping(mapping))
             plan = server.db.pseudonymise_plan(compiled, "snap_to_pseudonym",
                                                None)
             effects.append(server.db.pseudonymise_effect(plan))
-        signed = effects[0]["files"][0]["overlap_conflicts"]
-        assert signed, "the conflict must reach the signed effect"
+        for effect in effects:
+            signed = effect["files"][0]["overlap_conflicts"]
+            assert [(c["entry"], c["loses_to_entry"]) for c in signed] == \
+                [(0, 1)], ("the conflict must reach the signed effect "
+                           "under the canonical positions")
         assert effects[0] == effects[1]
-        result = execute_from(out, mapping=reversed_mapping)
+        result = execute_from(out, mapping=executed)
         assert result.get("success") is True, result
         assert query(project, "SELECT fulltext FROM source WHERE id=1"
                      )[0]["fulltext"] == (
@@ -3359,21 +3387,38 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
                       preview_token=out["preview_token"])
         assert result.get("success") is True, result
 
+    # The sidecar's order against the typed order (fix round 4, B1, and
+    # fix round 5, B1): the first case keeps "Mary Ann" at index 1 on
+    # both sides, which is its canonical position, and so could not see
+    # the `loses_to_entry` half of the fix; the other two move it, on
+    # the typed side and on the sidecar's.
+    SIDECAR_ORDERS = [
+        ("typed keeps Mary Ann at 1", ["Ann", "Mary Ann", "Thomas"],
+         ["Thomas", "Mary Ann", "Ann"]),
+        ("typed moves Mary Ann to 2", ["Ann", "Mary Ann", "Thomas"],
+         ["Thomas", "Ann", "Mary Ann"]),
+        ("sidecar moves Mary Ann to 0", ["Mary Ann", "Ann", "Thomas"],
+         ["Thomas", "Mary Ann", "Ann"]),
+    ]
+
+    @pytest.mark.parametrize("label,sidecar,typed", SIDECAR_ORDERS,
+                             ids=[label for label, *_ in SIDECAR_ORDERS])
     def test_a_sidecar_token_with_an_overlap_conflict_executes_in_any_order(
-            self, project):
+            self, project, label, sidecar, typed):
         """Fix round 4, B1, on this path: the conflict between "Ann" and
         "Mary Ann" is signed by canonical position here too, so the
         sidecar's order and the typed order share one effect."""
-        self._sidecar(project, [{"original": "Ann", "pseudonym": "Beth"},
-                                {"original": "Mary Ann", "pseudonym": "Sam"},
-                                {"original": "Thomas", "pseudonym": "Alex"}])
+        pseudonyms = {"Ann": "Beth", "Mary Ann": "Sam", "Thomas": "Alex"}
+        self._sidecar(project, [{"original": name,
+                                 "pseudonym": pseudonyms[name]}
+                                for name in sidecar])
         out = preview_of(mapping=None, use_project_pseudonyms=True)
         conflicts = out["preview"]["files"][0]["overlap_conflicts"]
         assert [(c["entry"], c["loses_to_entry"]) for c in conflicts] == \
-            [(0, 1)]
-        result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"},
-                               {"original": "Mary Ann", "pseudonym": "Sam"},
-                               {"original": "Ann", "pseudonym": "Beth"}],
+            [(sidecar.index("Ann"), sidecar.index("Mary Ann"))]
+        result = call(mapping=[{"original": name,
+                                "pseudonym": pseudonyms[name]}
+                               for name in typed],
                       preview_token=out["preview_token"])
         assert result.get("success") is True, result
 
