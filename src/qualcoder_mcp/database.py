@@ -8027,15 +8027,28 @@ class QualcoderDatabase:
         row could land on. A row with a NULL in any key column is left
         out, because SQLite treats NULLs as distinct and such rows
         cannot violate the constraint.
+
+        The key the preview CARRIES is the key without its owner column.
+        Grouping needs the owner, because the constraint has it; the
+        report does not, because `row_ids` already say which rows, and
+        the owner can be a coder the project hides. Two codings by one
+        hidden coder cut by one name is an ordinary shape, and it put
+        the coder's name into the one field of the preview that did not
+        withhold it, on a preview whose `by_owner` and
+        `hidden_coder_rows` both did (X1, D1 3.7: the count, never the
+        name). A visible owner's name goes with it, which costs the
+        researcher one look at the rows the ids name.
         """
         from . import pseudonymise as engine
 
         out: Dict[str, List[Dict[str, Any]]] = {}
-        for table, key_of in (
+        for table, key_of, shown in (
                 ("code_text",
-                 lambda r, p0, p1: (r["cid"], file_id, p0, p1, r["owner"])),
+                 lambda r, p0, p1: (r["cid"], file_id, p0, p1, r["owner"]),
+                 lambda key: key[:4]),          # (cid, fid, pos0, pos1)
                 ("annotation",
-                 lambda r, p0, p1: (file_id, p0, p1, r["owner"]))):
+                 lambda r, p0, p1: (file_id, p0, p1, r["owner"]),
+                 lambda key: key[:3])):         # (fid, pos0, pos1)
             keys, ids = [], []
             for row in rows.get(table, ()):
                 mapped = row["map"]
@@ -8050,7 +8063,8 @@ class QualcoderDatabase:
                     continue
                 keys.append(key)
                 ids.append(row["id"])
-            out[table] = engine.unique_constraint_collisions(keys, ids)
+            out[table] = engine.unique_constraint_collisions(keys, ids,
+                                                             shown=shown)
         return out
 
     @staticmethod

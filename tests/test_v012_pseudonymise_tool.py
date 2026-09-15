@@ -249,6 +249,13 @@ def execute_from(out, **kwargs):
     return call(**arguments)
 
 
+def execute_as_recipe(out, **kwargs):
+    """Execute with the recipe VERBATIM, mapping source included."""
+    arguments = dict(out["execute_with"]["arguments"])
+    arguments.update(kwargs)
+    return call(**arguments)
+
+
 def _house_rules(texts, labels=None):
     forbidden_spellings = ("color", "colors", "behavior", "organize",
                            "recognize", "authorization", "analyze",
@@ -753,6 +760,39 @@ class TestHiddenCoders:
         result = execute_from(out, allow_hidden_coder=True)
         assert "Hidden Coder" not in json.dumps(result)
 
+    def test_two_hidden_rows_that_collide_do_not_name_the_coder(
+            self, project):
+        """Fix round 3, B1. The one-row pin above cannot reach this
+        shape. Two codings by one hidden coder on one code, one marking
+        "Thomas" and one marking "Thom", both snap to the pseudonym and
+        land on one unique key, and the key the preview reported was
+        built with the owner column: `[1, 1, 0, 4, "Hidden Coder"]`,
+        in the one field of a preview whose `by_owner` and
+        `hidden_coder_rows` both withheld the name. The same for two
+        annotations. Ordinary data, and an owner-ruled invariant (X1).
+        """
+        add_coding(project, 10, 1, 0, 6, owner="Hidden Coder")
+        add_coding(project, 11, 1, 0, 4, owner="Hidden Coder")
+        add_annotation(project, 8, 0, 6, owner="Hidden Coder")
+        add_annotation(project, 9, 0, 4, owner="Hidden Coder")
+        hide_coder(project, "Hidden Coder")
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of()
+        collisions = out["preview"]["files"][0]["unique_constraint_collisions"]
+        assert collisions["code_text"] == [{"key": [1, 1, 0, 4],
+                                            "row_ids": [10, 11]}]
+        assert collisions["annotation"] == [{"key": [1, 0, 4],
+                                             "row_ids": [8, 9]}]
+        assert out["preview"]["hidden_coder_rows"]["override_required"] is True
+        owners = {e["owner"] for e in
+                  out["preview"]["files"][0]["codings"]["by_owner"]}
+        assert "TestCoder" in owners and "Hidden Coder" not in owners
+        assert "Hidden Coder" not in json.dumps(out)
+        refused = execute_from(out, allow_hidden_coder=True)
+        assert refused["reason"] == "unique_constraint_collision"
+        assert "Hidden Coder" not in json.dumps(refused)
+
     def test_a_hidden_annotation_counts_too(self, project):
         """QualCoder creates an `annotation_visible` view, so an
         annotation can belong to a hidden coder; a count nested under
@@ -1017,8 +1057,10 @@ class TestUniqueConstraint:
         out = preview_of()
         collisions = out["preview"]["files"][0][
             "unique_constraint_collisions"]["code_text"]
-        assert collisions == [{"key": [1, 1, 0, 4, "Bob"],
-                               "row_ids": [20, 21]}]
+        # (cid, fid, pos0, pos1): the owner column is grouped on and not
+        # reported, because it can name a hidden coder (fix round 3, B1).
+        assert collisions == [{"key": [1, 1, 0, 4], "row_ids": [20, 21]}]
+        assert "Bob" not in json.dumps(collisions)
         assert any("same span after the remap" in w for w in out["warnings"])
 
     def test_the_execute_refuses_before_taking_a_backup(self, project):
@@ -1606,6 +1648,227 @@ class TestTheProjectFolderName:
             assert "paths_withheld" not in manifest
             body = query(folder, "SELECT jentry FROM journal")[0]["jentry"]
             assert "Backup taken before the run: fieldwork_backup_" in body
+
+
+# =============================================================================
+# EVERY STRING IN EVERY SINK, ON A PROJECT NAMED AFTER THE PARTICIPANT
+# (fix round 3, B1: the final-verification judge's own method as a pin)
+# =============================================================================
+
+# The participant everything in the project is named after, and the
+# colleague whose work is hidden in QualCoder. Two names on purpose: the
+# participant's name is DECLARED to be returned in a few places (the
+# project path and each file's own name, because a preview whose files
+# cannot be named cannot be relayed), so a walk for it needs an allow
+# list; the hidden coder's name is owed to nobody and the walk for it
+# has none.
+PARTICIPANT = "Thomas"
+HIDDEN_COLLEAGUE = "Helga"
+
+# Where the participant's name MAY appear in the two ephemeral results,
+# on the sidecar path, exactly as the tool description declares: the
+# project path, each file's own name, and the backup folder (which is
+# derived from the project folder's name and named in the result so the
+# researcher can find it). Anything else is a route.
+DECLARED_ROUTES = (
+    re.compile(r"^\.preview\.project$"),
+    re.compile(r"^\.preview\.files\[\d+\]\.name$"),
+    re.compile(r"^\.preview\.skipped_files\[\d+\]\.name$"),
+    re.compile(r"^\.files\[\d+\]\.name$"),
+    re.compile(r"^\.backup_path$"),
+    re.compile(r"^\.notes\[\d+\]$"),          # names the backup folder
+)
+
+
+def walk_strings(value, path=""):
+    """Every string in a JSON-shaped value, with the path it sits at."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from walk_strings(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from walk_strings(item, f"{path}[{index}]")
+    elif isinstance(value, str):
+        yield path, value
+
+
+def routes_carrying(value, name, allowed=()):
+    """The paths at which `name` appears, less the declared ones."""
+    return [(path, text[:80]) for path, text in walk_strings(value)
+            if name.lower() in text.lower()
+            and not any(rule.match(path) for rule in allowed)]
+
+
+class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
+    """The judge's method, kept as the test that catches the next B1.
+
+    A project whose folder, file, case, code, category, attribute type
+    and value, journal entry and media-coding memos are all named after
+    the participant, coded by a colleague hidden in QualCoder who also
+    owns the file, the code, the category, the attribute and the
+    journal entry, with two of her codings and two of her annotations
+    cut by the same name so that they collide. Then EVERY string in the
+    preview, the execute result, the manifest, the journal row and the
+    captured log is walked, not the fields a reader would think to
+    check: B1 lived in `unique_constraint_collisions[].key`, which no
+    earlier test read, on a preview whose `by_owner` and
+    `hidden_coder_rows` had both withheld the name.
+
+    Two walks. The hidden coder's name may appear nowhere at all. The
+    participant's name may appear only where the description declares
+    it (`DECLARED_ROUTES`), and in the three durable records nowhere.
+    """
+
+    def _build(self, tmp_path, collide=True):
+        folder = build_project(tmp_path / f"{PARTICIPANT} study.qda")
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("UPDATE source SET name=?, memo=?, owner=? WHERE id=1",
+                    (f"{PARTICIPANT}_interview.txt",
+                     f"{PARTICIPANT} at home, {HIDDEN_COLLEAGUE} present",
+                     HIDDEN_COLLEAGUE))
+        con.execute("UPDATE cases SET name=?, memo=?, owner=? WHERE caseid=1",
+                    (f"{PARTICIPANT}_P01", f"{PARTICIPANT} lives alone",
+                     HIDDEN_COLLEAGUE))
+        con.execute("UPDATE code_name SET name=?, memo=?, owner=? "
+                    "WHERE cid=1",
+                    (f"{PARTICIPANT}_trust", f"{HIDDEN_COLLEAGUE}'s code",
+                     HIDDEN_COLLEAGUE))
+        con.execute("INSERT INTO code_cat (catid,name,owner,date,memo) "
+                    "VALUES (1,?,?,'d',?)",
+                    (f"{PARTICIPANT} themes", HIDDEN_COLLEAGUE,
+                     f"{PARTICIPANT} category memo"))
+        con.execute("INSERT INTO attribute_type (name,date,owner,memo,"
+                    "caseOrFile,valuetype) VALUES (?,'d',?,?,'case',"
+                    "'character')",
+                    (f"{PARTICIPANT} flag", HIDDEN_COLLEAGUE,
+                     f"{PARTICIPANT} attribute memo"))
+        con.execute("INSERT INTO attribute (attrid,name,attr_type,value,id,"
+                    "date,owner) VALUES (1,?,'case',?,1,'d',?)",
+                    (f"{PARTICIPANT} flag", f"{PARTICIPANT}_Smith",
+                     HIDDEN_COLLEAGUE))
+        con.execute("INSERT INTO journal (jid,name,jentry,date,owner) "
+                    "VALUES (1,?,?,'d',?)",
+                    (f"{PARTICIPANT} notes",
+                     f"{HIDDEN_COLLEAGUE} wrote about {PARTICIPANT}",
+                     HIDDEN_COLLEAGUE))
+        con.execute("INSERT INTO code_av (avid,id,pos0,pos1,cid,memo,date,"
+                    "owner,important) VALUES (1,3,0,10,1,?,'d',?,0)",
+                    (f"{PARTICIPANT} laughs here", HIDDEN_COLLEAGUE))
+        con.execute("INSERT INTO code_image (imid,id,x1,y1,width,height,cid,"
+                    "memo,date,owner,important) VALUES (1,2,0,0,10,10,1,?,"
+                    "'d',?,0)",
+                    (f"{PARTICIPANT} in the photo", HIDDEN_COLLEAGUE))
+        con.commit()
+        con.close()
+        add_coding(folder, 1, 1, 0, 6)                          # TestCoder
+        add_coding(folder, 5, 1, 0, 6, owner=HIDDEN_COLLEAGUE)  # "Thomas"
+        add_coding(folder, 7, 1, 19, 22, owner=HIDDEN_COLLEAGUE,
+                   memo=f"{HIDDEN_COLLEAGUE}: {PARTICIPANT} again")
+        add_annotation(folder, 1, 0, 6, owner=HIDDEN_COLLEAGUE,
+                       memo=f"{HIDDEN_COLLEAGUE} annotation")
+        add_case_link(folder, 1, 0, len(TEXT), owner=HIDDEN_COLLEAGUE)
+        if collide:
+            add_coding(folder, 6, 1, 0, 4, owner=HIDDEN_COLLEAGUE)  # "Thom"
+            add_annotation(folder, 2, 0, 4, owner=HIDDEN_COLLEAGUE)
+        hide_coder(folder, HIDDEN_COLLEAGUE)
+        write_fixture_sidecar(str(folder))
+        # QualCoder's own two keys per entry (pseudonyms.py at the pin),
+        # so the sidecar path is driven with the shape QualCoder writes.
+        (folder / "pseudonyms.json").write_text(json.dumps(
+            [{"original": PARTICIPANT, "pseudonym": "Alex"},
+             {"original": "Mary Ann", "pseudonym": "Sam"}]),
+            encoding="utf-8")
+        return folder
+
+    @staticmethod
+    def _sidecar_preview():
+        return preview_of(mapping=None, use_project_pseudonyms=True)
+
+    @pytest.mark.parametrize("source", ["typed", "sidecar"])
+    def test_the_preview_and_the_refusal_name_the_hidden_coder_nowhere(
+            self, tmp_path, source):
+        with wired(self._build(tmp_path, collide=True)):
+            out = (preview_of() if source == "typed"
+                   else self._sidecar_preview())
+            preview = out["preview"]
+            # The shape is reached: both collisions listed, the override
+            # required, and the coder's own rows counted rather than named.
+            collisions = preview["files"][0]["unique_constraint_collisions"]
+            assert collisions["code_text"] == [{"key": [1, 1, 0, 4],
+                                                "row_ids": [5, 6]}]
+            assert collisions["annotation"] == [{"key": [1, 0, 4],
+                                                 "row_ids": [1, 2]}]
+            assert preview["hidden_coder_rows"]["override_required"] is True
+            owners = {e["owner"] for e in
+                      preview["files"][0]["codings"]["by_owner"]}
+            assert owners == {"TestCoder"}
+            assert routes_carrying(out, HIDDEN_COLLEAGUE) == []
+            execute = execute_from if source == "typed" else execute_as_recipe
+            refused = execute(out, allow_hidden_coder=True)
+            assert refused["reason"] == "unique_constraint_collision"
+            assert routes_carrying(refused, HIDDEN_COLLEAGUE) == []
+
+    def test_the_participant_reaches_the_preview_by_the_declared_routes_only(
+            self, tmp_path):
+        with wired(self._build(tmp_path, collide=True)):
+            out = self._sidecar_preview()
+            assert routes_carrying(out, PARTICIPANT, DECLARED_ROUTES) == []
+            # The declared routes are really taken, so the allow list is
+            # not passing an empty walk.
+            assert out["preview"]["files"][0]["name"] == \
+                f"{PARTICIPANT}_interview.txt"
+            assert PARTICIPANT in out["preview"]["project"]
+            # And the residue reports the fields, as counts.
+            residue = out["preview"]["residue"]
+            assert residue["file_names"] == 1
+            assert residue["case_names"] == 1
+            assert residue["code_names"] == 1
+            assert residue["attribute_values"] == 1
+
+    def test_the_execute_result_manifest_journal_and_log_carry_neither_name(
+            self, tmp_path, caplog):
+        import logging
+        with wired(self._build(tmp_path, collide=False)) as folder:
+            caplog.set_level(logging.DEBUG)
+            out = self._sidecar_preview()
+            assert out["preview"]["hidden_coder_rows"]["override_required"] \
+                is True
+            result = execute_as_recipe(out, allow_hidden_coder=True)
+            assert result.get("success") is True, result
+            assert result["hidden_coder_rows_updated"] >= 1
+            # The ephemeral result: the hidden coder nowhere, the
+            # participant by the declared routes only.
+            assert routes_carrying(result, HIDDEN_COLLEAGUE) == []
+            assert routes_carrying(result, PARTICIPANT, DECLARED_ROUTES) == []
+            # The three durable records: neither name, anywhere.
+            manifest = Path(result["manifest_path"]).read_text(
+                encoding="utf-8")
+            assert HIDDEN_COLLEAGUE.lower() not in manifest.lower()
+            assert PARTICIPANT.lower() not in manifest.lower()
+            rows = query(folder, "SELECT name, jentry, owner FROM journal "
+                                 "WHERE jid != 1")
+            assert len(rows) == 1
+            for column, text in rows[0].items():
+                assert HIDDEN_COLLEAGUE.lower() not in text.lower(), column
+                assert PARTICIPANT.lower() not in text.lower(), column
+            logged = "\n".join(record.getMessage()
+                                for record in caplog.records)
+            assert "Creating backup" in logged, "the run took no backup"
+            assert HIDDEN_COLLEAGUE.lower() not in logged.lower()
+            assert PARTICIPANT.lower() not in logged.lower()
+
+    def test_the_walk_would_notice(self):
+        """A walk that read only the top level would have passed B1."""
+        nested = {"preview": {"files": [{"unique_constraint_collisions": {
+            "code_text": [{"key": [1, 1, 0, 4, HIDDEN_COLLEAGUE],
+                           "row_ids": [5, 6]}]}}]}}
+        assert routes_carrying(nested, HIDDEN_COLLEAGUE) == [
+            (".preview.files[0].unique_constraint_collisions.code_text[0]"
+             ".key[4]", HIDDEN_COLLEAGUE)]
+        declared = {"preview": {"project": f"/x/{PARTICIPANT} study.qda",
+                                "files": [{"name": f"{PARTICIPANT}.txt"}]}}
+        assert routes_carrying(declared, PARTICIPANT, DECLARED_ROUTES) == []
+        assert len(routes_carrying(declared, PARTICIPANT)) == 2
 
 
 # =============================================================================

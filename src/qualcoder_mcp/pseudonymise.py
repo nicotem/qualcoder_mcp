@@ -1104,8 +1104,8 @@ class SpanMapper:
 
 
 def unique_constraint_collisions(keys: Sequence[Tuple[Any, ...]],
-                                 row_ids: Sequence[Any]
-                                 ) -> List[Dict[str, Any]]:
+                                 row_ids: Sequence[Any],
+                                 shown=None) -> List[Dict[str, Any]]:
     """Rows that would land on the same unique key after the remap.
 
     `code_text` is unique on (cid, fid, pos0, pos1, owner) and
@@ -1115,11 +1115,22 @@ def unique_constraint_collisions(keys: Sequence[Tuple[Any, ...]],
     the same name: one marking "Thomas" and one marking "Thom" both snap
     to the pseudonym. Rare enough that the right answer is a human
     decision, so the preview lists it and the execute refuses.
+
+    Rows are GROUPED on the whole key, because that is the constraint,
+    and REPORTED under `shown(key)` when a caller gives one. The
+    database layer uses it to leave the owner column out of what the
+    preview carries: the key's owner can be a coder the project hides,
+    and two rows of one hidden coder cut by one name is an ordinary
+    shape (one marking "Thomas", one marking "Thom"), so the owner in
+    the reported key named a hidden coder in a preview whose every
+    other field withholds the name (X1). `row_ids` identify the rows
+    on their own.
     """
     groups: Dict[Tuple[Any, ...], List[Any]] = {}
     for key, row_id in zip(keys, row_ids):
         groups.setdefault(key, []).append(row_id)
-    return [{"key": list(key), "row_ids": sorted(ids)}
+    return [{"key": list(key if shown is None else shown(key)),
+             "row_ids": sorted(ids)}
             for key, ids in sorted(groups.items(), key=lambda kv: str(kv[0]))
             if len(ids) > 1]
 
