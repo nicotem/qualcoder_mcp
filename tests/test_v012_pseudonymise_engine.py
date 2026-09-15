@@ -1863,11 +1863,17 @@ class TestNameDetector:
     # spellings a file list holds were no longer found: an under-report,
     # and a regression against the round before. The byte order mark is
     # refused by validation and reaches the detector directly only.
+    # Beside them, the two visible separators a file list holds (fix
+    # round 5, S1): no form-side pin had one, so the split class could
+    # be narrowed to `[^\w.\-]+` with the suite green, under which a
+    # typed "Mary-Ann" found neither "Mary Ann" nor "Mary_Ann.txt".
     BETWEEN_TWO_WORDS = [
         ("zero-width space", "\u200b"),
         ("soft hyphen", "\u00ad"),
         ("word joiner", "\u2060"),
         ("byte order mark", "\ufeff"),
+        ("hyphen", "-"),
+        ("underscore", "_"),
     ]
 
     @pytest.mark.parametrize("label,char", BETWEEN_TWO_WORDS,
@@ -1884,6 +1890,23 @@ class TestNameDetector:
                 [{"original": f"Mary{char}Ann", "pseudonym": "Zed"}])
             ).detector
             assert through_validation.contains("Mary_Ann.txt") is True
+
+    def test_a_hangul_filler_between_two_words_fuses_them_as_documented(
+            self):
+        """The exception to the pin above, pinned as the limit it is
+        (fix round 5, R1 note): the four Hangul fillers are letters to
+        `\\w`, so between two words of a FORM they are not a split point
+        and the per-piece strip fuses the form into `MaryAnn`, exactly
+        as `_detector_parts` says and as it was at ac359e3. A filler in
+        a VALUE is stripped like any other, so that side still reads
+        `Mary<filler>Ann` as "Mary Ann". If this ever passes the other
+        way, the docstring must change with it."""
+        for filler in ("\u115f", "\u1160", "\u3164", "\uffa0"):
+            assert P._detector_parts(f"Mary{filler}Ann") == ["MaryAnn"]
+            fused = P.NameDetector([f"Mary{filler}Ann"])
+            assert fused.contains("MaryAnn") is True, hex(ord(filler))
+            assert fused.contains("Mary Ann") is False, hex(ord(filler))
+            assert self._detector().contains(f"Mary{filler}Ann") is True
 
     def test_a_space_of_any_width_is_a_separator_not_an_invisible_character(
             self):
