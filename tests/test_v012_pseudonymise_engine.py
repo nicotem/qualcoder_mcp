@@ -1810,6 +1810,11 @@ class TestNameDetector:
         # the hand list stopped short of, and a reserved code point.
         ("Mongolian free variation selector four", "\u180f"),
         ("reserved default-ignorable U+2065", "\u2065"),
+        # A Hangul filler (fix round 5, S2): category Lo, so `\\w` counts
+        # it as a letter and the split leaves it inside the word. On the
+        # form side only the per-piece strip in `_detector_parts`
+        # removes it, and that strip reverted with the suite green.
+        ("Hangul filler", "\u3164"),
     ]
 
     @pytest.mark.parametrize("label,char", INVISIBLE,
