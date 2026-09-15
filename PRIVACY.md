@@ -242,6 +242,21 @@ project has the coder-visibility capability:
     constraint lives there; so if the AI coder name itself is hidden
     in QualCoder, the result reveals that one such row exists (its id
     only, never its memo or anything about other hidden coders).
+- **`pseudonymise_source` and hidden coders.** Rewriting a file moves
+  every coder's rows with the text, hidden coders' included, and the
+  preview reports what the run would do to a hidden coder's rows as
+  counts (`shifted`, `substituted`, `resized`, `snapped`, `deleted`),
+  never names. Which of them need `allow_hidden_coder=true` is the
+  owner's ruling X1 as refined on 2026-09-15: a coding that covered the
+  name and now covers the pseudonym needs no override, whatever the two
+  lengths, and neither does a pure position shift, because neither
+  changes a coding decision; a coding that grew to swallow a pseudonym,
+  one that contained a name and changed length with it, or one that
+  would be deleted (which only the `qualcoder_edit_parity` policy does)
+  requires the override. The refusal names neither the coder nor a
+  count. A row whose stored end lies past the end of the text is
+  clamped first and counted as a resize, never carried through the
+  exemption.
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.

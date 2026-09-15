@@ -86,14 +86,22 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   returned as they stand, because a preview whose files cannot be named
   cannot be relayed, and the tool's description says so rather than
   promising otherwise.
-- Hidden coders, under owner ruling X1: a pure position shift of a
-  hidden coder's row proceeds, because it changes no coding decision,
-  and a resize, a snap or a deletion requires `allow_hidden_coder`. The
-  preview reports what the run would do to those rows as counts, never
-  names. A row whose stored end lies past the end of the text is clamped
-  to it, as QualCoder clamps its own, and a clamp is counted as a resize
-  rather than a shift, because it changes the span's length: so a
-  hidden coder's damaged row is not carried through the exemption.
+- Hidden coders, under owner ruling X1 as refined on 2026-09-15: a
+  coding that covered the name and now covers the pseudonym needs no
+  override, whatever the two lengths, and neither does a pure position
+  shift, because neither changes a coding decision; a coding that grew
+  to swallow a pseudonym, one that contained a name and changed length
+  with it, or one that would be deleted (which only `qualcoder_edit_parity`
+  does) requires `allow_hidden_coder`. Before the refinement the tool
+  classified the substitution by length, so `Thomas -> Alex` needed the
+  override and `Thomas -> Alexis` did not, for one and the same coding
+  decision. The preview reports what the run would do to those rows as
+  counts (`shifted`, `substituted`, `resized`, `snapped`, `deleted`),
+  never names. A row whose stored end lies past the end of the text is
+  clamped to it, as QualCoder clamps its own, and a clamp is counted as
+  a resize rather than a shift or a substitution, because it changes
+  the span's length: so a hidden coder's damaged row is not carried
+  through the exemption.
 - The limits a mapping has to live within, all refused with their own
   text: at most 500 entries, at most 2,000 surface forms in total and 50
   variants per entry, an original or variant of 2 to 200 characters, a
