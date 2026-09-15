@@ -11110,7 +11110,7 @@ def pseudonymise_source(
                 result["backup_skipped_symlink_names_withheld"] = withheld
                 result["backup_skipped_symlinks_note"] = (
                     f"{result.get('backup_skipped_symlinks_note', '')} "
-                    f"{withheld} of the names are withheld (null): a "
+                    f"{withheld} of the names listed are withheld (null): a "
                     f"reader of each would see a name from this mapping. "
                     f"The count stands.").strip()
     if not isinstance(result, dict) or "error" in result or \

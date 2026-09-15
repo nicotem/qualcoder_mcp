@@ -2419,18 +2419,24 @@ class TestASymlinkNamedAfterTheParticipant:
 
     def test_the_flagship_withholds_the_name_and_keeps_the_count(
             self, project, tmp_path):
+        """One link named with a space and one with the underscore a
+        file system holds (fix round 5, S4): the rule is the detector's,
+        not the rewriter's whole-word pattern, to which `_` is a word
+        character and `Thomas_videos` carries no name."""
         named = self._link(project, tmp_path, "Thomas videos")
+        underscored = self._link(project, tmp_path, "Thomas_videos")
         plain = self._link(project, tmp_path, "field videos")
         result = execute_from(preview_of())
         assert result.get("success") is True, result
-        assert result["backup_skipped_symlinks"] == 2
+        assert result["backup_skipped_symlinks"] == 3
         assert sorted(result["backup_skipped_symlink_names"],
-                      key=str) == sorted([None, plain], key=str)
-        assert result["backup_skipped_symlink_names_withheld"] == 1
-        assert "1 of the names are withheld (null)" in \
+                      key=str) == sorted([None, None, plain], key=str)
+        assert result["backup_skipped_symlink_names_withheld"] == 2
+        assert "2 of the names listed are withheld (null)" in \
             result["backup_skipped_symlinks_note"]
         assert routes_carrying(result, "Thomas", DECLARED_ROUTES) == []
         assert named not in json.dumps(result)
+        assert underscored not in json.dumps(result)
 
 
 # =============================================================================
