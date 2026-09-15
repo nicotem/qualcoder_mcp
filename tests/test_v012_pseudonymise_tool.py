@@ -4199,6 +4199,15 @@ class TestTheDocumentsTellTheTruth:
         "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
         "both keyed with the per-user token secret rather than plain "
         "digests",
+        # Fix round 4, L3: prune_backups opens no database connection.
+        "and so does any write that opens the database, because such a "
+        "write opens a fresh connection (`prune_backups` touches only the "
+        "file system and settles nothing)",
+        # Fix round 4, R3: the symlink route.
+        "On `pseudonymise_source`'s result the name of a skipped symlink "
+        "is withheld where a reader of it would see a name from the "
+        "mapping, the count kept; and the log line that reports a skipped "
+        "symlink carries the count and the reason, never the path",
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
@@ -4211,7 +4220,8 @@ class TestTheDocumentsTellTheTruth:
 
     def test_the_changelog_counts_the_rounds(self):
         entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
-        assert "after the flagship and its three fix rounds" in entry
+        assert "after the flagship and its four fix rounds" in entry
+        assert "after the flagship and its three fix rounds" not in entry
         assert "after the flagship and its fix round:" not in entry
 
 

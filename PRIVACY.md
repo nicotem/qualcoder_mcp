@@ -281,8 +281,10 @@ project has the coder-visibility capability:
   row with its owner; the hidden-coder count those results disclose
   keys on the same connect-time answer, so it does not claim a filter
   that was not applied. Reopening the project (`select_project`, or
-  restarting the server) settles it, and so does any write, because a
-  write opens a fresh connection. If you hide a coder in QualCoder
+  restarting the server) settles it, and so does any write that opens
+  the database, because such a write opens a fresh connection
+  (`prune_backups` touches only the file system and settles nothing).
+  If you hide a coder in QualCoder
   while a conversation is in progress, re-select the project before
   relying on what the read tools return.
 
