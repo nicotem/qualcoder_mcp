@@ -1873,6 +1873,13 @@ class TestNameDetector:
     # round 5, S1): no form-side pin had one, so the split class could
     # be narrowed to `[^\w.\-]+` with the suite green, under which a
     # typed "Mary-Ann" found neither "Mary Ann" nor "Mary_Ann.txt".
+    # And the two visible separators a NAME holds (the final
+    # re-performance, 2026-09-15): with only hyphen and underscore
+    # pinned, the split class could still drop the apostrophe or the
+    # full stop with the suite green, under which "O'Brien" no longer
+    # found "OBrien_interview.txt" and "J.R." no longer found
+    # "JR_interview.txt". The curly apostrophe rides with them because
+    # a transcript pasted from a word processor carries U+2019.
     BETWEEN_TWO_WORDS = [
         ("zero-width space", "\u200b"),
         ("soft hyphen", "\u00ad"),
@@ -1880,6 +1887,9 @@ class TestNameDetector:
         ("byte order mark", "\ufeff"),
         ("hyphen", "-"),
         ("underscore", "_"),
+        ("apostrophe", "'"),
+        ("curly apostrophe", "\u2019"),
+        ("full stop", "."),
     ]
 
     @pytest.mark.parametrize("label,char", BETWEEN_TWO_WORDS,
