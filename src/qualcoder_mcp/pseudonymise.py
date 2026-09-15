@@ -505,41 +505,77 @@ def _form_sort_key(item: Tuple[str, int]) -> Tuple[int, int, str]:
 _SEPARATOR_RUN = r"[\W_]*"
 _SEPARATOR_SPLIT = re.compile(r"[\W_]+")
 
-
-def _detector_alternative(form: str) -> str:
-    """One surface form as a pattern that survives a changed separator.
-
-    A form of one word is itself, escaped. A form of several is its
-    words escaped and joined by "any run of separators, or none", so a
-    transcript called `Mary_Ann.txt` and a case called `MaryAnn` are
-    both found. A form with no letters or digits at all (which
-    validation permits: two punctuation marks pass the length rule) has
-    no words to join and is used literally.
-    """
-    parts = [part for part in _SEPARATOR_SPLIT.split(form) if part]
-    if not parts:
-        return re.escape(form)
-    return _SEPARATOR_RUN.join(re.escape(part) for part in parts)
-
-
-# Code points a reader does not see. Unicode's Default_Ignorable_Code_Point
-# property is not in `unicodedata`, so it is approximated here by the
-# format category (Cf: the soft hyphen, the zero-width space, joiner and
-# non-joiner, the word joiner, the bidi marks and controls, the byte order
-# mark) plus the combining marks and fillers the property also lists: the
+# Code points a reader does not see: Unicode's Default_Ignorable_Code_Point
+# property, transcribed as ranges from DerivedCoreProperties.txt of the
+# Unicode version named below (4,174 code points in seventeen ranges;
+# the same set in 14.0.0 and 16.0.0, and one short in 13.0.0, which had
+# not yet assigned U+180F). `unicodedata` does not expose the property,
+# and an interpreter's own tables are that interpreter's (Python 3.10
+# carries 13.0.0), so the table is embedded and applied as it stands on
+# every interpreter. It holds the format characters a reader never sees
+# (the soft hyphen, the zero-width space, joiner and non-joiner, the
+# word joiner, the bidi marks and controls, the byte order mark, the
+# tag characters), the marks and fillers that render as nothing (the
 # combining grapheme joiner, the variation selectors, the Mongolian free
-# variation selectors and the Hangul fillers. A name with one of these
-# inside it renders exactly as the name, which is how a soft hyphen
-# copied out of a PDF walked `Thomas` past the detector into the journal
-# body and the manifest (fix round 3, S7).
-_IGNORABLE_EXPLICIT = frozenset(
-    [0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0]
-    + list(range(0x180B, 0x180E))
-    + list(range(0xFE00, 0xFE10))
-    + list(range(0xE0100, 0xE01F0)))
+# variation selectors, the Khmer inherent vowels, the Hangul fillers)
+# and the reserved code points the standard says a renderer must treat
+# the same way. Fix round 3 approximated the property with category Cf
+# plus a hand list that stopped at U+180D, and U+180F and the reserved
+# ranges walked a name past the detector into the manifest (fix round
+# 4, R2). Each range boundary is pinned against this table, and the
+# count against the file's own total.
+DEFAULT_IGNORABLE_UNICODE_VERSION = "15.1.0"
+DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD),     # SOFT HYPHEN
+    (0x034F, 0x034F),     # COMBINING GRAPHEME JOINER
+    (0x061C, 0x061C),     # ARABIC LETTER MARK
+    (0x115F, 0x1160),     # HANGUL CHOSEONG FILLER, HANGUL JUNGSEONG FILLER
+    (0x17B4, 0x17B5),     # KHMER VOWEL INHERENT AQ, AA
+    (0x180B, 0x180F),     # MONGOLIAN FREE VARIATION SELECTORS ONE to FOUR
+                          # and the MONGOLIAN VOWEL SEPARATOR between them
+    (0x200B, 0x200F),     # ZERO WIDTH SPACE to RIGHT-TO-LEFT MARK
+    (0x202A, 0x202E),     # the bidi embeddings and overrides
+    (0x2060, 0x206F),     # WORD JOINER to NOMINAL DIGIT SHAPES, with the
+                          # reserved U+2065 and the bidi isolates inside
+    (0x3164, 0x3164),     # HANGUL FILLER
+    (0xFE00, 0xFE0F),     # VARIATION SELECTOR-1 to -16
+    (0xFEFF, 0xFEFF),     # ZERO WIDTH NO-BREAK SPACE, the byte order mark
+    (0xFFA0, 0xFFA0),     # HALFWIDTH HANGUL FILLER
+    (0xFFF0, 0xFFF8),     # reserved
+    (0x1BCA0, 0x1BCA3),   # the shorthand format controls
+    (0x1D173, 0x1D17A),   # the musical symbol beam and phrase controls
+    (0xE0000, 0xE0FFF),   # LANGUAGE TAG, the tag characters, VARIATION
+                          # SELECTOR-17 to -256, and the reserved code
+                          # points between and after them
+)
+DEFAULT_IGNORABLE_COUNT = 4174
+_DEFAULT_IGNORABLE = frozenset(
+    code_point for low, high in DEFAULT_IGNORABLE_RANGES
+    for code_point in range(low, high + 1))
 # A pattern that matches nothing, for a mapping whose every surface form
 # is made of characters a reader does not see.
 _NEVER = re.compile(r"(?!x)x")
+
+
+def is_default_ignorable(code_point: int) -> bool:
+    """Whether Unicode's Default_Ignorable_Code_Point property holds."""
+    return code_point in _DEFAULT_IGNORABLE
+
+
+def _strip_unseen(text: str) -> str:
+    """`text` less every character a reader does not see, unnormalised.
+
+    The property above, and category Cf beside it. The format
+    characters outside the property (the Arabic, Syriac and Kaithi
+    number signs, the interlinear annotation controls, the Egyptian
+    hieroglyph format controls) are visible marks by Unicode's own
+    account, so stripping them is a widening rather than the property;
+    it is kept because a wider reading here is the safe one and the
+    round before this one already read that wide.
+    """
+    return "".join(ch for ch in text
+                   if ord(ch) not in _DEFAULT_IGNORABLE
+                   and unicodedata.category(ch) != "Cf")
 
 
 def _reader_sees(value: str) -> str:
@@ -548,17 +584,65 @@ def _reader_sees(value: str) -> str:
     Compatibility normalisation (NFKC), so a fullwidth or otherwise
     compatibility-equivalent spelling reads as the plain one, and the
     default-ignorable code points removed, so an invisible character
-    inside a word does not split it. Applied to the mapping's forms and
-    to every value alike, which is what makes an NFD form find an NFC
-    label and the other way round. What this does NOT do, stated
-    because the residue prose says so too: a look-alike letter from
-    another script (a Cyrillic "о" for a Latin "o") is a different code
-    point after every normalisation there is, and is out of scope.
+    inside a word does not split it. Applied to every VALUE the detector
+    is asked about; the forms go through `_detector_parts`, which
+    splits before it strips. What this does NOT do, stated because the
+    residue prose says so too: a look-alike letter from another script
+    (a Cyrillic "о" for a Latin "o") is a different code point after
+    every normalisation there is, and is out of scope. Spaces of every
+    width are spaces: NFKC turns a thin or hair space into a plain one,
+    and a plain one is a separator, not an invisible character.
     """
-    text = unicodedata.normalize("NFKC", value)
-    return "".join(ch for ch in text
-                   if unicodedata.category(ch) != "Cf"
-                   and ord(ch) not in _IGNORABLE_EXPLICIT)
+    return _strip_unseen(unicodedata.normalize("NFKC", value))
+
+
+def _detector_parts(form: str) -> List[str]:
+    """The words of one surface form, as a reader sees them.
+
+    Split FIRST, on the normalised form, and strip inside each word
+    afterwards. The order matters and was wrong in fix round 3, which
+    stripped before splitting: `Mary<ZWSP>Ann` fused into the one word
+    `MaryAnn`, which no longer found "Mary Ann" or "Mary_Ann.txt", a
+    narrower reading than the round before it had (fix round 4, R1). An
+    invisible character between two words is a separator to whoever
+    put it there (a soft hyphen at a line break, a zero-width space
+    from a web page); one inside a word that `\\w` counts as a letter (a
+    Hangul filler) is nothing at all, and stripping it inside the word
+    reads the word whole. Either way the reading is at least as wide as
+    the split alone gave.
+    """
+    text = unicodedata.normalize("NFKC", form)
+    return [part for part in (_strip_unseen(piece)
+                              for piece in _SEPARATOR_SPLIT.split(text))
+            if part]
+
+
+def _detector_alternative(form: str, fold: bool = False) -> str:
+    """One surface form as a pattern that survives a changed separator.
+
+    A form of one word is itself, escaped. A form of several is its
+    words escaped and joined by "any run of separators, or none", so a
+    transcript called `Mary_Ann.txt` and a case called `MaryAnn` are
+    both found. A form with no letters or digits at all (which
+    validation permits: two punctuation marks pass the length rule) has
+    no words to join and is used literally; one made entirely of
+    characters a reader does not see comes back empty, and the caller
+    drops it. With `fold`, the casefolded reading of the same words.
+    """
+    parts = _detector_parts(form)
+    if fold:
+        parts = [_fold(part) for part in parts]
+    if parts:
+        return _SEPARATOR_RUN.join(re.escape(part) for part in parts)
+    literal = _reader_sees(form)
+    return re.escape(_fold(literal) if fold else literal)
+
+
+def _detector_pattern(forms: Sequence[str], fold: bool = False) -> str:
+    """The alternation over `forms`, empty alternatives left out."""
+    return "|".join(alternative for alternative in
+                    (_detector_alternative(form, fold) for form in forms)
+                    if alternative)
 
 
 class NameDetector:
@@ -599,27 +683,21 @@ class NameDetector:
     __slots__ = ("_direct", "_folded")
 
     def __init__(self, forms: Sequence[str]):
-        # The forms as a reader sees them, and never an empty one: a
-        # form made entirely of invisible characters (validation lets a
-        # zero-width space through, and two of them pass the length
-        # rule) would otherwise be an empty alternative, which matches
-        # every string.
-        normalised = [seen for seen in (_reader_sees(form) for form in forms)
-                      if seen]
-        if not normalised:
+        # Each form as a reader sees it, split into its words before
+        # anything is stripped (`_detector_parts`), and never an empty
+        # alternative: a form made entirely of invisible characters
+        # (validation lets a zero-width space through, and two of them
+        # pass the length rule) would otherwise match every string.
+        if not any(_detector_alternative(form) for form in forms):
             self._direct = self._folded = _NEVER
             return
-        self._direct = re.compile(
-            "|".join(_detector_alternative(form) for form in normalised),
-            re.IGNORECASE)
+        self._direct = re.compile(_detector_pattern(forms), re.IGNORECASE)
         # A second reading, because `re.IGNORECASE` and `str.casefold` do
         # not agree on every code point (U+00DF casefolds to "ss" but
         # does not match "SS" under IGNORECASE). Two searches over one
         # short string cost nothing, and here the wider answer is the
         # safe one.
-        self._folded = re.compile(
-            "|".join(_detector_alternative(_fold(form))
-                     for form in normalised))
+        self._folded = re.compile(_detector_pattern(forms, fold=True))
 
     def contains(self, value: Any) -> bool:
         """True when a reader of `value` would see any surface form.

@@ -1503,6 +1503,9 @@ NAME_SHAPES = [
     "Tho\u00admas_interview.txt",   # a soft hyphen inside the name (S7)
     "Tho\u200bmas_interview.txt",   # a zero-width space inside it (S7)
     "\uff34\uff48\uff4f\uff4d\uff41\uff53.txt",   # fullwidth (S7)
+    "Tho\u180fmas_interview.txt",   # a default-ignorable mark the round-3
+                                   # approximation stopped short of (R2)
+    "Tho\u2065mas_interview.txt",   # a reserved default-ignorable (R2)
 ]
 
 # Every spelling of a real name this fixture's mapping covers. Checked
@@ -1649,6 +1652,37 @@ class TestAFileNameThatCarriesAName:
         # branch and it was red on both Windows jobs.
         assert Path(result["manifest_path"]).name in body
         assert "The names replaced are not recorded here" in body
+
+
+class TestATwoWordFormCarryingAnInvisibleCharacter:
+    """Fix round 4, R1, at tool level: the regression the judge measured.
+
+    A sidecar or a paste can carry a zero-width space or a soft hyphen
+    between the two words of a name. At `ac359e3` the residue counted the
+    file, the case and the memo that spell the name with a separator; at
+    `f664ab4` it counted none of them, while the rewrite fired on nothing
+    and the preview said so. Both readings must count them.
+    """
+
+    @pytest.mark.parametrize("label,char", [
+        ("zero-width space", "\u200b"), ("soft hyphen", "\u00ad"),
+        ("plain space, the control", " ")],
+        ids=["zwsp", "soft-hyphen", "plain"])
+    def test_the_separated_spellings_are_counted(self, project, label, char):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET name=? WHERE id=4", ("Mary_Ann.txt",))
+        con.execute("UPDATE cases SET name=? WHERE caseid=1", ("Mary-Ann",))
+        con.execute("UPDATE source SET memo=? WHERE id=2", ("about Mary Ann",))
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of(mapping=[{"original": f"Mary{char}Ann",
+                                   "pseudonym": "Sam"}])
+        residue = out["preview"]["residue"]
+        assert residue["file_names"] == 1, label
+        assert residue["case_names"] == 1, label
+        assert residue["memos"]["source"] == 1, label
 
 
 class TestTheLabelsAndMemosTheResidueCounts:

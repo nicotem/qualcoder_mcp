@@ -1788,6 +1788,10 @@ class TestNameDetector:
         ("variation selector 16", "\ufe0f"),
         ("byte order mark", "\ufeff"),
         ("Mongolian free variation selector", "\u180b"),
+        # Outside fix round 3's approximation (fix round 4, R2): a mark
+        # the hand list stopped short of, and a reserved code point.
+        ("Mongolian free variation selector four", "\u180f"),
+        ("reserved default-ignorable U+2065", "\u2065"),
     ]
 
     @pytest.mark.parametrize("label,char", INVISIBLE,
@@ -1835,6 +1839,47 @@ class TestNameDetector:
         assert detector.contains("\u0422homas") is False       # Cyrillic Te
         assert detector.contains("Th\u043emas") is False       # Cyrillic o
 
+    # The same four characters BETWEEN the two words of a form (fix round
+    # 4, R1). Fix round 3 stripped the form before splitting it, so
+    # `Mary<ZWSP>Ann` fused into the one word `MaryAnn` and the separated
+    # spellings a file list holds were no longer found: an under-report,
+    # and a regression against the round before. The byte order mark is
+    # refused by validation and reaches the detector directly only.
+    BETWEEN_TWO_WORDS = [
+        ("zero-width space", "\u200b"),
+        ("soft hyphen", "\u00ad"),
+        ("word joiner", "\u2060"),
+        ("byte order mark", "\ufeff"),
+    ]
+
+    @pytest.mark.parametrize("label,char", BETWEEN_TWO_WORDS,
+                             ids=[label for label, _ in BETWEEN_TWO_WORDS])
+    def test_an_invisible_character_between_two_words_of_a_form_separates_them(
+            self, label, char):
+        detector = P.NameDetector([f"Mary{char}Ann"])
+        for value in ("Mary Ann", "Mary_Ann.txt", "Mary-Ann", "MaryAnn",
+                      "MARY ANN", f"Mary{char}Ann"):
+            assert detector.contains(value) is True, (label, value)
+        assert detector.contains("Mary and Ann") is False
+        if char != "\ufeff":
+            through_validation = P.Compiled(P.validate_mapping(
+                [{"original": f"Mary{char}Ann", "pseudonym": "Zed"}])
+            ).detector
+            assert through_validation.contains("Mary_Ann.txt") is True
+
+    def test_a_space_of_any_width_is_a_separator_not_an_invisible_character(
+            self):
+        """Decided with the property table (fix round 4, R2): NFKC turns
+        a thin space (U+2009) or a hair space (U+200A) into a plain one,
+        and a plain space between the halves of a one-word name is a
+        gap the reader sees, exactly as it is for a plain space. Between
+        the words of a two-word name it is the separator it always was.
+        Pinned so that the code and this sentence move together."""
+        detector = self._detector()
+        for space in ("\u2009", "\u200a", " "):
+            assert detector.contains(f"Tho{space}mas") is False, repr(space)
+            assert detector.contains(f"Mary{space}Ann") is True, repr(space)
+
     def test_a_form_made_of_invisible_characters_matches_nothing(self):
         """Validation lets a zero-width space through and two of them
         pass the length rule; stripped, the form is empty, and an empty
@@ -1843,6 +1888,39 @@ class TestNameDetector:
             [{"original": "\u200b\u200b", "pseudonym": "Zed"}])).detector
         assert detector.contains("anything at all") is False
         assert detector.contains("\u200b\u200b") is False
+
+    # The Default_Ignorable_Code_Point table (fix round 4, R2), pinned at
+    # every range boundary: the first and last code point of each range
+    # are in it, the code points on either side are not, and the total
+    # is the file's own. A transcription slip in any range is red here.
+    def test_the_table_is_the_unicode_property_as_transcribed(self):
+        assert P.DEFAULT_IGNORABLE_UNICODE_VERSION == "15.1.0"
+        assert P.DEFAULT_IGNORABLE_COUNT == 4174
+        assert len(P._DEFAULT_IGNORABLE) == P.DEFAULT_IGNORABLE_COUNT
+        assert len(P.DEFAULT_IGNORABLE_RANGES) == 17
+        previous_high = -2
+        for low, high in P.DEFAULT_IGNORABLE_RANGES:
+            assert low <= high
+            assert low > previous_high + 1, "ranges ascend and never touch"
+            previous_high = high
+
+    @pytest.mark.parametrize("low,high", P.DEFAULT_IGNORABLE_RANGES,
+                             ids=[f"U+{low:04X}..U+{high:04X}"
+                                  for low, high in P.DEFAULT_IGNORABLE_RANGES])
+    def test_each_range_boundary_is_in_the_table_and_its_neighbours_are_not(
+            self, low, high):
+        assert P.is_default_ignorable(low) is True
+        assert P.is_default_ignorable(high) is True
+        assert P.is_default_ignorable(low - 1) is False
+        assert P.is_default_ignorable(high + 1) is False
+        # And the detector sees through both ends of the range inside a
+        # one-word name, on the value side, whatever category the
+        # interpreter's own Unicode tables give the code point.
+        detector = self._detector()
+        for code_point in (low, high):
+            assert detector.contains(
+                f"Tho{chr(code_point)}mas_interview.txt") is True, \
+                f"U+{code_point:04X}"
 
     def test_the_price_of_the_wider_reading_is_paid_knowingly(self):
         """An entry for "Tom" makes "tomorrow" count. A rule that
