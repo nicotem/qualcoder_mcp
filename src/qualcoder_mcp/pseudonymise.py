@@ -50,7 +50,7 @@ description and pinned by tests:
 
 import re
 import unicodedata
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------
@@ -115,9 +115,14 @@ CASE_MODES = ("exact", "insensitive", "insensitive_preserve")
 OVERLAP_POLICIES = ("snap_to_pseudonym", "qualcoder_edit_parity")
 
 # How a row's span changed. One vocabulary for both policies, because the
-# preview shape and the hidden-coder rule key on it.
+# preview shape and the hidden-coder rule key on it. `substituted` is the
+# owner's ruling of 2026-09-15 (QC40_PLATFORM 7.3(3), refining X1): a
+# span that sat exactly on a replaced name and now sits exactly on its
+# pseudonym is a pure substitution, whatever the two lengths, and is
+# exempt from the hidden-coder override like a pure shift.
 UNCHANGED = "unchanged"
 SHIFTED = "shifted"
+SUBSTITUTED = "substituted"
 RESIZED = "resized"
 SNAPPED = "snapped"
 DELETED = "deleted"
@@ -1199,6 +1204,25 @@ class SpanMapper:
 
     # -- shared ------------------------------------------------------------
 
+    def _substitutes(self, pos0: int, pos1: int, new0: int, new1: int
+                     ) -> bool:
+        """Whether the old span WAS one replaced name and the new span
+        IS that name's pseudonym, both boundaries on the edit's own.
+
+        Under `snap_to_pseudonym` the second half follows from the first
+        by the arithmetic of `map_start` and `map_end`; under
+        `qualcoder_edit_parity` such a span is deleted before it reaches
+        `_classify`. Both halves are checked all the same, because the
+        class is defined by both (owner ruling 7.3(3)) and a third
+        policy would inherit the definition rather than the coincidence.
+        """
+        index = bisect_left(self.starts, pos0)
+        if index >= len(self.starts) or self.starts[index] != pos0 \
+                or self.ends[index] != pos1:
+            return False
+        start = self.starts[index] + self.cumulative[index]
+        return (new0, new1) == (start, start + self.new_lengths[index])
+
     def _classify(self, pos0: int, pos1: int, new0: int, new1: int,
                   cut: bool) -> RemappedSpan:
         """One vocabulary for both policies.
@@ -1207,17 +1231,29 @@ class SpanMapper:
         replaced name: under `snap_to_pseudonym` a boundary that lay
         strictly inside a name snapped outward to contain the whole
         pseudonym; under `qualcoder_edit_parity` a head or tail cut
-        excluded the pseudonym from the span. `resized` is any other
-        length change, which is what a span that strictly contains a
-        name gets when the pseudonym is a different length. `shifted` is
-        a span that kept its length, which includes one containing a
-        name whose pseudonym is exactly as long: the hidden-coder rule
-        treats that as a pure shift, because the coder still marks the
-        same passage.
+        excluded the pseudonym from the span. `substituted` is a span
+        that sat exactly on one replaced name and now sits exactly on
+        that name's pseudonym, whatever the two lengths: the coder
+        marked the name and still marks it under its new spelling, so
+        no coding decision changed (owner ruling 7.3(3) of 2026-09-15,
+        refining X1; before it this span was classified by length, a
+        shift when the lengths matched and a resize when they did not).
+        `resized` is any other length change, which is what a span that
+        contains a name without being the name gets when the pseudonym
+        is a different length: "Thomas said" grows or shrinks with the
+        pseudonym and stays on the override side. `shifted` is a span
+        that kept its length and moved, which includes one containing a
+        name whose pseudonym is exactly as long: the coder still marks
+        the same passage.
+
+        The order matters. A cut is a snap before anything else, so no
+        span that had to grow can read as a substitution.
         """
         touched = self._intersects_edit(pos0, pos1) or cut
         if cut:
             change = SNAPPED
+        elif self._substitutes(pos0, pos1, new0, new1):
+            change = SUBSTITUTED
         elif (new1 - new0) != (pos1 - pos0):
             change = RESIZED
         elif (new0, new1) != (pos0, pos1):
@@ -1245,13 +1281,17 @@ class SpanMapper:
         the guarantee that no row is written with an end past the new
         text hold under both policies rather than only under one.
 
-        A clamped row is never classified as a pure shift. The classes
-        describe what happens to the STORED span, and a clamp truncates
-        it: the annotation stored at (76, 200) on an 81-character text
-        is written as (66, 71), which is a 119-character resize however
-        the rest of the run moved it. Classifying that as `shifted` put
-        it under ruling X1's exemption and let a hidden coder's row be
-        resized with no override asked for (Security S5).
+        A clamped row is never classified as a pure shift, and never as
+        a substitution either. The classes describe what happens to the
+        STORED span, and a clamp truncates it: the annotation stored at
+        (76, 200) on an 81-character text is written as (66, 71), which
+        is a 119-character resize however the rest of the run moved it.
+        Classifying that as `shifted` put it under ruling X1's exemption
+        and let a hidden coder's row be resized with no override asked
+        for (Security S5). The same holds when the clamp lands the
+        truncated span exactly on a name that ends the text: the coder
+        never marked that name alone, so the row is a resize and not a
+        substitution (ruling 7.3(3) leaves the clamp rule as it was).
         """
         if isinstance(pos0, bool) or isinstance(pos1, bool):
             return None
@@ -1274,7 +1314,7 @@ class SpanMapper:
                 f"overlap_policy must be one of "
                 f"{', '.join(OVERLAP_POLICIES)}.")
         mapped.clamped = clamped
-        if clamped and mapped.change in (UNCHANGED, SHIFTED):
+        if clamped and mapped.change in (UNCHANGED, SHIFTED, SUBSTITUTED):
             mapped.change = RESIZED
         return mapped
 

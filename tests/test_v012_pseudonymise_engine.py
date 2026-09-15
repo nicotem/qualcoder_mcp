@@ -606,6 +606,34 @@ class TestSnapProperties:
             assert (mapped.pos0, mapped.pos1) == (pos0 + delta, pos1 + delta)
             assert mapped.change in (P.UNCHANGED, P.SHIFTED)
 
+    @settings(max_examples=200, deadline=None,
+              suppress_health_check=[HealthCheck.too_slow])
+    @given(sample=_TEXT_AND_SPANS)
+    def test_a_span_is_substituted_exactly_when_it_is_a_replaced_name(
+            self, sample):
+        """Ruling 7.3(3) as a property: under the snap policy the class
+        `substituted` is given to a span if and only if the span equals
+        one replacement, and such a span comes out reading exactly the
+        pseudonym, whatever the two lengths ("Tom" grows, "Ann" keeps
+        its length here)."""
+        text, spans = sample
+        mapping = P.validate_mapping([
+            {"original": "Tom", "pseudonym": "Pseudo"},
+            {"original": "Ann", "pseudonym": "Quu"},
+        ])
+        compiled = P.Compiled(mapping)
+        replacements = P.find_replacements(compiled, text)
+        new_text = P.apply_replacements(text, replacements)
+        mapper = P.SpanMapper(replacements, len(text))
+        names = {(r.start, r.end): r.text for r in replacements}
+        for pos0, pos1 in spans + list(names):
+            mapped = mapper.map_row(pos0, pos1, "snap_to_pseudonym", True)
+            if (pos0, pos1) in names:
+                assert mapped.change == P.SUBSTITUTED
+                assert new_text[mapped.pos0:mapped.pos1] == names[(pos0, pos1)]
+            else:
+                assert mapped.change != P.SUBSTITUTED
+
     def test_a_span_equal_to_a_name_becomes_the_pseudonym(self):
         text = "say Tom now"
         mapping = P.validate_mapping(
@@ -616,7 +644,8 @@ class TestSnapProperties:
         mapper = P.SpanMapper(replacements, len(text))
         mapped = mapper.map_row(4, 7, "snap_to_pseudonym", True)
         assert new_text[mapped.pos0:mapped.pos1] == "Pseudo"
-        assert mapped.change == P.RESIZED
+        # A resize before ruling 7.3(3), by length; a substitution since.
+        assert mapped.change == P.SUBSTITUTED
 
     @pytest.mark.parametrize("span", [(5, 9), (0, 6), (5, 6)])
     def test_a_span_that_cut_a_name_now_contains_the_whole_pseudonym(
@@ -648,13 +677,70 @@ class TestSnapProperties:
 
 
 class TestChangeClassification:
-    """`snapped`, `resized`, `shifted`, `unchanged`: one vocabulary.
+    """`snapped`, `substituted`, `resized`, `shifted`, `unchanged`: one
+    vocabulary.
 
     The distinction matters beyond presentation: the hidden-coder rule
-    (D1 3.7, owner ruling X1) exempts a PURE SHIFT and requires the
+    (D1 3.7, owner ruling X1, refined by ruling 7.3(3) of 2026-09-15)
+    exempts a PURE SHIFT and a PURE SUBSTITUTION and requires the
     override for a resize, a snap or a deletion, so a row put in the
     wrong class is a row whose coder's consent was decided wrongly.
     """
+
+    _LENGTHS = {"shorter": "Alex", "equal": "Alexis", "longer": "Alexander"}
+
+    def _thomas(self, text, pseudonym):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": pseudonym}]))
+        replacements = P.find_replacements(compiled, text)
+        return (P.SpanMapper(replacements, len(text)),
+                P.apply_replacements(text, replacements))
+
+    @pytest.mark.parametrize("pseudonym", list(_LENGTHS.values()),
+                             ids=list(_LENGTHS))
+    def test_a_span_exactly_on_a_name_is_substituted_whatever_the_lengths(
+            self, pseudonym):
+        """Ruling 7.3(3): "Thomas" to "Alex", "Alexis" or "Alexander" is
+        one coding decision, unchanged. Before the ruling the shorter and
+        the longer read as a resize and the equal one as a shift."""
+        mapper, new_text = self._thomas("say Thomas now", pseudonym)
+        mapped = mapper.map_row(4, 10, "snap_to_pseudonym", False)
+        assert mapped.change == P.SUBSTITUTED
+        assert mapped.touched is True
+        assert new_text[mapped.pos0:mapped.pos1] == pseudonym
+
+    def test_a_later_occurrence_is_substituted_too(self):
+        """The second name moved by the first's delta and is still a
+        substitution: both boundaries land on the pseudonym's."""
+        mapper, new_text = self._thomas("Thomas met Thomas.", "Alex")
+        mapped = mapper.map_row(11, 17, "snap_to_pseudonym", False)
+        assert mapped.change == P.SUBSTITUTED
+        assert (mapped.pos0, mapped.pos1) == (9, 13)
+        assert new_text[9:13] == "Alex"
+
+    @pytest.mark.parametrize("span,reads", [
+        ((4, 15), "Thomas said"), ((1, 10), "ay Thomas"), ((4, 12), "Thomas s"),
+    ], ids=["runs past", "starts before", "runs two past"])
+    def test_a_span_that_contains_the_name_without_being_it_is_a_resize(
+            self, span, reads):
+        """"Thomas said" contained "Thomas" and shrinks by two characters:
+        a resize of a longer span, neither a shift nor a substitution,
+        and on the override side as ruled (7.3(3))."""
+        text = "say Thomas said so"
+        assert text[span[0]:span[1]] == reads
+        mapper, _ = self._thomas(text, "Alex")
+        mapped = mapper.map_row(span[0], span[1], "snap_to_pseudonym", False)
+        assert mapped.change == P.RESIZED
+
+    def test_under_parity_a_span_exactly_on_a_name_is_deleted_not_substituted(
+            self):
+        """The edit-parity policy deletes the row before the class is
+        decided, and a deletion is on the override side whatever the
+        lengths (7.3(3), point (b))."""
+        for pseudonym in self._LENGTHS.values():
+            mapper, _ = self._thomas("say Thomas now", pseudonym)
+            mapped = mapper.map_row(4, 10, "qualcoder_edit_parity", False)
+            assert mapped.change == P.DELETED, pseudonym
 
     def _mapper(self, text, pseudonym):
         compiled = P.Compiled(P.validate_mapping(

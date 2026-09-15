@@ -8149,9 +8149,9 @@ class QualcoderDatabase:
         the row moved or its text changed, so a row the run does not
         affect is not touched at all, and the count says how many were.
         """
-        counts = {"total": len(items), "shifted": 0, "resized": 0,
-                  "snapped": 0, "deleted": 0, "unchanged": 0, "clamped": 0,
-                  "not_mapped": 0}
+        counts = {"total": len(items), "shifted": 0, "substituted": 0,
+                  "resized": 0, "snapped": 0, "deleted": 0, "unchanged": 0,
+                  "clamped": 0, "not_mapped": 0}
         if has_seltext:
             counts["seltext_refreshed"] = 0
         if whole_file_length is not None:
