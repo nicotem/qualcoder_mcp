@@ -303,19 +303,19 @@ class TestNoResponseCarriesSessionId:
     ):
         # Every tool is called for real with its required arguments only,
         # so every OPTIONAL argument takes its production default. Pin the
-        # OBJECTS, not just the environment (fix round 3, S5). Every
-        # home-derived path in the server is computed once, at IMPORT:
-        # database.DEFAULT_WORKSPACE, server._MRU_FILE and the
-        # SessionManager built at server module scope. This test body runs
-        # long after the import at the top of this file, so the setenv
-        # below moves Path.home() for code that resolves it at CALL time
-        # (discover_projects is the one such caller) and for nothing else.
-        # Keep it for that class and redirect the constants as well: the
-        # sweep calls copy_project_to_workspace, whose `workspace` is not
-        # a tool argument and so falls through to DEFAULT_WORKSPACE, and
-        # cleanup_old_sessions, which takes its production default
-        # (days_old=30) and unlinks session files (fix round 2, R2, which
-        # pinned the environment alone and therefore pinned nothing).
+        # OBJECTS, not just the environment (fix round 3, S5). Two
+        # home-derived paths in the server are computed once, at IMPORT:
+        # server._MRU_FILE and the SessionManager built at server module
+        # scope. This test body runs long after the import at the top of
+        # this file, so the setenv below moves Path.home() for code that
+        # resolves it at CALL time (discover_projects, and since the 0.12
+        # release preparation database.default_workspace(), which the
+        # sweep reaches through copy_project_to_workspace because its
+        # `workspace` is not a tool argument) and for nothing else. Keep
+        # it for that class and redirect the frozen constants as well:
+        # cleanup_old_sessions takes its production default (days_old=30)
+        # and unlinks session files (fix round 2, R2, which pinned the
+        # environment alone and therefore pinned nothing).
         real_home = Path.home()
         home = tmp_path / "probe_home"
         home.mkdir()
@@ -323,7 +323,6 @@ class TestNoResponseCarriesSessionId:
         monkeypatch.setenv("USERPROFILE", str(home))   # ... and on Windows
 
         from qualcoder_mcp import database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", home / "workspace")
         monkeypatch.setattr(server, "_MRU_FILE",
                             home / ".qualcoder_mcp" / "mru_project.json")
 
@@ -332,7 +331,7 @@ class TestNoResponseCarriesSessionId:
         # that rather than relying on the fixture staying as it is,
         # because cleanup_old_sessions is called below and deletes session
         # files wherever the manager is pointing.
-        assert Path(database.DEFAULT_WORKSPACE).is_relative_to(tmp_path)
+        assert Path(database.default_workspace()).is_relative_to(tmp_path)
         assert Path(server._MRU_FILE).is_relative_to(tmp_path)
         assert Path(server.session_manager.storage_dir).is_relative_to(tmp_path)
         # And no module-level constant of any imported module of the
@@ -463,9 +462,6 @@ class TestTheRotGuardSurvivesATempRootInsideHome:
     ):
         """The Windows failure itself: redirected, inside the home, silent."""
         home, sandbox = _home_with_nested_sandbox(tmp_path)
-        from qualcoder_mcp import database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
-                            sandbox / "workspace")
         monkeypatch.setattr(server, "_MRU_FILE",
                             sandbox / ".qualcoder_mcp" / "mru_project.json")
         monkeypatch.setattr(server.session_manager, "storage_dir",
@@ -480,9 +476,6 @@ class TestTheRotGuardSurvivesATempRootInsideHome:
         Without this the fix above could have been `return []`.
         """
         home, sandbox = _home_with_nested_sandbox(tmp_path)
-        from qualcoder_mcp import database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
-                            sandbox / "workspace")
         monkeypatch.setattr(server.session_manager, "storage_dir",
                             sandbox / "sessions")
         # The one a careless redirection would leave behind.
@@ -508,10 +501,9 @@ class TestTheRotGuardWalksThePackageItClaims:
     """
 
     @staticmethod
-    def _redirect_the_three_known_constants(monkeypatch, sandbox):
-        from qualcoder_mcp import database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
-                            sandbox / "workspace")
+    def _redirect_the_known_constants(monkeypatch, sandbox):
+        # Two since the 0.12 release preparation: the workspace default
+        # is resolved at call time and is no longer a constant to move.
         monkeypatch.setattr(server, "_MRU_FILE", sandbox / "mru_project.json")
         monkeypatch.setattr(server.session_manager, "storage_dir",
                             sandbox / "sessions")
@@ -533,7 +525,7 @@ class TestTheRotGuardWalksThePackageItClaims:
         from qualcoder_mcp import memo_privacy
 
         home, sandbox = _home_with_nested_sandbox(tmp_path)
-        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        self._redirect_the_known_constants(monkeypatch, sandbox)
         monkeypatch.setattr(memo_privacy, "_PLANTED_CACHE",
                             home / ".qualcoder_mcp" / "memo_cache",
                             raising=False)
@@ -546,7 +538,7 @@ class TestTheRotGuardWalksThePackageItClaims:
         self, tmp_path, monkeypatch
     ):
         home, sandbox = _home_with_nested_sandbox(tmp_path)
-        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        self._redirect_the_known_constants(monkeypatch, sandbox)
         monkeypatch.setattr(server, "_PLANTED_DIR",
                             str(home / ".qualcoder_mcp" / "cache"),
                             raising=False)
@@ -561,7 +553,7 @@ class TestTheRotGuardWalksThePackageItClaims:
         """Most module-level strings are not paths at all, and none of
         them may make this guard shout: QUALCODER_LOCK_FILENAME is one."""
         home, sandbox = _home_with_nested_sandbox(tmp_path)
-        self._redirect_the_three_known_constants(monkeypatch, sandbox)
+        self._redirect_the_known_constants(monkeypatch, sandbox)
         monkeypatch.setattr(server, "_PLANTED_NAME", ".qualcoder.lock",
                             raising=False)
         assert _module_paths_under(home, sandbox) == []

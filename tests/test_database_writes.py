@@ -19,7 +19,6 @@ from qualcoder_mcp.database import (
     QualcoderDatabase,
     backup_project,
     copy_project_to_workspace,
-    DEFAULT_WORKSPACE,
 )
 
 

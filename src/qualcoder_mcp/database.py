@@ -658,9 +658,22 @@ def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
     logger.error(f"Database error in {where}: {e}")
     raise RuntimeError(message) from None
 
-# Workspace configuration
-# Users should work in this folder to keep MCP-modified projects separate from originals
-DEFAULT_WORKSPACE = Path.home() / "Documents" / "Qualcoder MCP Projects"
+# Workspace configuration. Users should work in this folder to keep
+# MCP-modified projects separate from originals.
+def default_workspace() -> Path:
+    """The folder `copy_project_to_workspace` copies into when none is given.
+
+    `~/Documents/Qualcoder MCP Projects`, resolved from the home directory
+    at CALL time. Until 0.12 this was a module constant computed once at
+    import, so a process that redirected HOME afterwards, which is what
+    the test sandbox does, still copied into the home the interpreter
+    started with: the suite had deposited 93 `test_project_<timestamp>.qda`
+    folders in the researcher's own workspace before anyone noticed. The
+    location is unchanged; only WHEN it is read has moved. A test that
+    needs another folder redirects HOME or patches this function, and
+    `tests/test_suite_hygiene.py` pins that the redirect takes effect.
+    """
+    return Path.home() / "Documents" / "Qualcoder MCP Projects"
 
 
 def _detect_file_type(mediapath: str) -> str:
@@ -1285,7 +1298,7 @@ def copy_project_to_workspace(
 
     Args:
         source_path: Path to the source .qda project
-        workspace: Workspace directory (defaults to DEFAULT_WORKSPACE)
+        workspace: Workspace directory (defaults to default_workspace())
         new_name: Optional new name for the project
         report: Optional dict; on success receives "skipped_symlinks",
                 the project-relative paths of skipped symlinks
@@ -1309,7 +1322,7 @@ def copy_project_to_workspace(
 
     # Setup workspace
     if workspace is None:
-        workspace = DEFAULT_WORKSPACE
+        workspace = default_workspace()
     else:
         workspace = Path(workspace)
 

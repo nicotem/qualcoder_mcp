@@ -63,7 +63,7 @@ class TestSecurityFixes:
                                             monkeypatch, evil_name):
         """S-1: new_name must never write outside the workspace."""
         workspace = tmp_path / "workspace"
-        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        monkeypatch.setattr(dbmod, "default_workspace", lambda: workspace)
         # Snapshot the whole tmp tree so we can prove nothing escaped
         before = set(tmp_path.rglob("*"))
         with pytest.raises(ValueError):
@@ -80,7 +80,7 @@ class TestSecurityFixes:
                                              monkeypatch):
         """S-1 through the registered MCP tool (the reported attack path)."""
         workspace = tmp_path / "ws"
-        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        monkeypatch.setattr(dbmod, "default_workspace", lambda: workspace)
         outside = tmp_path / "OUTSIDE"
         # OS-native absolute path (a real drive-qualified path on Windows,
         # a leading-slash path on POSIX) — both must be rejected
@@ -95,7 +95,7 @@ class TestSecurityFixes:
     def test_s1_plain_name_still_works(self, qualcoder_db_path, tmp_path,
                                        monkeypatch):
         workspace = tmp_path / "workspace"
-        monkeypatch.setattr(dbmod, "DEFAULT_WORKSPACE", workspace)
+        monkeypatch.setattr(dbmod, "default_workspace", lambda: workspace)
         dest = copy_project_to_workspace(qualcoder_db_path, new_name="My Copy")
         assert dest.parent == workspace.resolve() or dest.parent == workspace
         assert dest.name == "My Copy.qda"

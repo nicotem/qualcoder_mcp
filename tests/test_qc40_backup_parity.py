@@ -357,7 +357,8 @@ class TestOutwardSymlinksNotFollowed:
         _symlink(Path("real.txt"), project / "documents" / "in.txt")
         _symlink(project / "nowhere", project / "documents" / "dangling.txt")
         import qualcoder_mcp.database as database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        monkeypatch.setattr(database, "default_workspace",
+                            lambda: tmp_path / "ws")
         out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
         assert out["success"] is True
         assert out["skipped_symlinks"] == 2
@@ -371,7 +372,8 @@ class TestOutwardSymlinksNotFollowed:
     def test_clean_copy_reports_zero(self, setup_server, qualcoder_db_path,
                                      tmp_path, monkeypatch):
         import qualcoder_mcp.database as database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        monkeypatch.setattr(database, "default_workspace",
+                            lambda: tmp_path / "ws")
         out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
         assert out["skipped_symlinks"] == 0
         assert "skipped_symlink_names" not in out
@@ -517,7 +519,8 @@ class TestSymlinkLoopsNotFollowed:
         project, docs = self._project(qualcoder_db_path)
         _symlink(Path(".."), docs / "up")
         import qualcoder_mcp.database as database
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE", tmp_path / "ws")
+        monkeypatch.setattr(database, "default_workspace",
+                            lambda: tmp_path / "ws")
         out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))
         assert out["skipped_symlinks"] == 1
         assert out["skipped_symlink_names"] == [os.path.join("documents", "up")]

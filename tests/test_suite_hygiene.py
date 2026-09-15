@@ -26,26 +26,25 @@ class TestNothingIsWrittenOutsideTheSandbox:
     """The workspace half of the isolation (QA round 1, F1).
 
     `copy_project_to_workspace`'s `workspace` is not a tool argument, so
-    every tool-level call falls through to `database.DEFAULT_WORKSPACE`,
-    which is computed from `Path.home()` at import time. The autouse
-    `_isolate_workspace` fixture redirects that object; the session-wide
-    guard beside it fails the run if anything reaches the real folder
-    anyway.
+    every tool-level call falls through to `database.default_workspace()`,
+    resolved from the home directory at call time. The autouse
+    `_isolate_home` fixture moves the home into tmp_path; the
+    session-wide guard beside it fails the run if anything reaches the
+    real folder anyway.
     """
 
-    def test_the_workspace_constant_is_redirected_into_tmp_path(
+    def test_the_default_workspace_is_redirected_into_tmp_path(
             self, tmp_path):
-        assert pathlib.Path(database.DEFAULT_WORKSPACE).is_relative_to(
-            tmp_path)
-        assert not pathlib.Path(
-            database.DEFAULT_WORKSPACE).is_relative_to(H.REAL_WORKSPACE)
+        resolved = database.default_workspace().resolve()
+        assert resolved.is_relative_to(tmp_path.resolve())
+        assert not resolved.is_relative_to(H.REAL_WORKSPACE)
 
     def test_a_copy_lands_in_the_sandbox_not_in_the_real_workspace(
             self, qualcoder_db_path):
         copied = database.copy_project_to_workspace(qualcoder_db_path)
         assert copied.exists()
-        assert pathlib.Path(copied).is_relative_to(
-            database.DEFAULT_WORKSPACE)
+        assert pathlib.Path(copied).resolve().is_relative_to(
+            database.default_workspace().resolve())
         assert not pathlib.Path(copied).is_relative_to(H.REAL_WORKSPACE)
 
     def test_the_guard_sees_an_entry_that_appears_under_the_real_path(
@@ -120,16 +119,96 @@ class TestNothingIsWrittenOutsideTheSandbox:
         """
         monkeypatch.setattr(pathlib.Path, "cwd", lambda: tmp_path)
         monkeypatch.undo()
-        assert pathlib.Path(database.DEFAULT_WORKSPACE).is_relative_to(
-            tmp_path.parent)
-        assert not pathlib.Path(
-            database.DEFAULT_WORKSPACE).is_relative_to(H.REAL_WORKSPACE)
+        resolved = database.default_workspace().resolve()
+        assert resolved.is_relative_to(tmp_path.resolve())
+        assert not resolved.is_relative_to(H.REAL_WORKSPACE)
         import qualcoder_mcp.server as _server
         assert not pathlib.Path(
             _server.session_manager.storage_dir).is_relative_to(
                 H.REAL_STATE_HOME)
         assert not pathlib.Path(_server._MRU_FILE).is_relative_to(
             H.REAL_STATE_HOME)
+
+
+class TestTheDefaultWorkspaceIsResolvedWhenAsked:
+    """Release preparation for 0.12, carried defect (a).
+
+    `DEFAULT_WORKSPACE` was a module constant computed from `Path.home()`
+    at import, so a test that redirected HOME afterwards moved nothing and
+    `copy_project_to_workspace` wrote into the researcher's own
+    `~/Documents/Qualcoder MCP Projects`: 93 `test_project_<timestamp>.qda`
+    folders had accumulated there by 2026-09-14. The autouse fixture that
+    patched the constant closed the leak for the suite; this round makes
+    the binding itself late (`database.default_workspace()`), so a
+    redirected home is honoured by the code and not only by a fixture
+    that knows the constant's name, and pins the three facts that make
+    the sandbox real.
+
+    Every comparison is against the SANDBOX, resolved, never against the
+    home directory: on GitHub's windows-latest runners `%TEMP%` sits under
+    the user profile, so a path can be inside tmp_path AND inside the home
+    at once, and "not under the home" would report the redirection it was
+    handed (fix round 4, W1, in test_v012_session_id_removed.py).
+    """
+
+    def test_the_default_follows_the_home_directory_at_call_time(
+            self, tmp_path, monkeypatch):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("HOME", str(elsewhere))
+        monkeypatch.setenv("USERPROFILE", str(elsewhere))
+        expected = elsewhere / "Documents" / "Qualcoder MCP Projects"
+        assert database.default_workspace().resolve() == expected.resolve()
+        # And it follows the environment back: an answer cached on the
+        # first call would fail here, as the import-time constant did.
+        monkeypatch.undo()
+        sandbox_home = tmp_path / "qc_sandbox_home" / "Documents" / \
+            "Qualcoder MCP Projects"
+        assert database.default_workspace().resolve() == \
+            sandbox_home.resolve()
+
+    def test_a_copy_with_no_workspace_argument_lands_inside_the_sandbox(
+            self, setup_server, qualcoder_db_path, tmp_path):
+        sandbox = tmp_path.resolve()
+        copied = database.copy_project_to_workspace(qualcoder_db_path)
+        assert pathlib.Path(copied).resolve().is_relative_to(sandbox)
+        assert pathlib.Path(copied).resolve().is_relative_to(
+            database.default_workspace().resolve())
+        # Through the registered tool as well, which is the route the
+        # suite's whole-registry sweeps take with production defaults.
+        import json
+        import qualcoder_mcp.server as _server
+        out = json.loads(_server.copy_project_to_workspace(qualcoder_db_path))
+        assert out["success"] is True
+        assert pathlib.Path(out["workspace_copy"]).resolve().is_relative_to(
+            sandbox)
+
+    def test_every_home_derived_binding_resolves_inside_the_sandbox(
+            self, tmp_path):
+        """Nothing the suite could write through lies outside tmp_path.
+
+        The file-system guard in conftest watches the two REAL folders
+        for entries; this is the other half, on the bindings themselves,
+        so a constant redirected somewhere that is neither the sandbox
+        nor the real folder is reported too.
+        """
+        import qualcoder_mcp.server as _server
+        from qualcoder_mcp import preview_tokens
+        sandbox = tmp_path.resolve()
+        bindings = {
+            "Path.home()": pathlib.Path.home(),
+            "database.default_workspace()": database.default_workspace(),
+            "server._MRU_FILE": _server._MRU_FILE,
+            "preview_tokens.STATE_HOME": preview_tokens.STATE_HOME,
+            "preview_tokens.state_home()": preview_tokens.state_home(),
+            "server.session_manager.storage_dir":
+                _server.session_manager.storage_dir,
+        }
+        assert len(bindings) >= 6          # the walk is not empty
+        outside = {name: str(path) for name, path in bindings.items()
+                   if not pathlib.Path(path).resolve().is_relative_to(
+                       sandbox)}
+        assert outside == {}, outside
 
 
 class TestNoTestBindsTheResearchersOwnFolders:
@@ -203,7 +282,7 @@ class TestNoTestBindsTheResearchersOwnFolders:
                   '"QDA Projects" / "test_project.qda"')
         assert self._home_folder_paths(sample) == [1]
         assert self._home_folder_paths(
-            "REAL_WORKSPACE = Path(_database.DEFAULT_WORKSPACE)") == []
+            "REAL_WORKSPACE = Path(_database.default_workspace())") == []
 
     def test_nothing_skips_for_a_missing_personal_project(self):
         """The reason string those 44 skips carried."""

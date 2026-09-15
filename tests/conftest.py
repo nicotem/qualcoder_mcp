@@ -72,19 +72,35 @@ def _isolate_preview_secret(tmp_path, _sandbox_patch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_workspace(tmp_path, _sandbox_patch):
-    """Keep copy_project_to_workspace out of the real ~/Documents workspace.
+def _isolate_home(tmp_path, _sandbox_patch):
+    """Move the home directory itself into tmp_path, and with it every
+    path the server resolves from it at call time.
 
-    `copy_project_to_workspace`'s `workspace` is not a tool argument, so a
-    tool call falls through to database.DEFAULT_WORKSPACE, which is
-    computed from Path.home() at IMPORT time (database.py:583). A test
-    that moves HOME therefore redirects nothing and the copy lands in the
-    researcher's own workspace folder, one project tree per suite run.
-    Patch the OBJECT, the way fix round 3 (S5) pinned the other
-    home-derived constants.
+    `copy_project_to_workspace`'s `workspace` is not a tool argument, so
+    a tool call falls through to `database.default_workspace()`. Until
+    the 0.12 release preparation that was the constant
+    `DEFAULT_WORKSPACE`, computed from Path.home() at IMPORT time, so a
+    test that moved HOME redirected nothing and the copy landed in the
+    researcher's own workspace folder, one project tree per suite run;
+    the fixture that stood here then patched the constant object. The
+    binding is late now, so the sandbox moves the home: HOME on POSIX,
+    USERPROFILE on Windows, both through the sandbox's own MonkeyPatch.
+    The import-bound state paths (the MRU file, the preview secret, the
+    session manager) are still patched as objects by the fixtures around
+    this one, because a moved home cannot reach a value already frozen.
+    The two assertions are the guard's own liveness check: a sandbox that
+    moved nothing is worse than none.
     """
-    _sandbox_patch.setattr(_database, "DEFAULT_WORKSPACE",
-                           tmp_path / "workspace")
+    # A name no test uses for a home of its own: several fixtures make
+    # `tmp_path / "home"` themselves, without exist_ok, and must go on
+    # being able to.
+    home = tmp_path / "qc_sandbox_home"
+    home.mkdir(exist_ok=True)
+    _sandbox_patch.setenv("HOME", str(home))
+    _sandbox_patch.setenv("USERPROFILE", str(home))
+    assert Path.home().resolve() == home.resolve()
+    assert _database.default_workspace().resolve().is_relative_to(
+        tmp_path.resolve())
 
 
 # The baseline for the guard below, and the proof that it was taken

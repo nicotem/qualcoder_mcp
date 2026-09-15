@@ -561,8 +561,8 @@ class TestCopyProjectToWorkspace:
     @pytest.fixture(autouse=True)
     def _sandbox_workspace(self, tmp_path, monkeypatch):
         """Never write into the real ~/Documents workspace from tests."""
-        monkeypatch.setattr(database, "DEFAULT_WORKSPACE",
-                            tmp_path / "workspace")
+        monkeypatch.setattr(database, "default_workspace",
+                            lambda: tmp_path / "workspace")
 
     def test_copy_and_uniquify(self, setup_server, qualcoder_db_path):
         out = json.loads(server.copy_project_to_workspace(qualcoder_db_path))

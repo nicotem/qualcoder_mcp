@@ -50,13 +50,17 @@ TMP_ROOT = Path(__file__).resolve().parent / "tmp"
 # write there (QA round 1, F1). conftest's session-wide guard and
 # tests/test_suite_hygiene.py both work from these names.
 #
-# Both are read from the module constants rather than rebuilt from
-# Path.home(), so the guard watches what the code actually binds. The
-# workspace takes project copies; the state home takes the MRU hint, the
-# preview-token secret and the AI coding sessions, and it is watched in
-# FULL rather than at its top level, because a leaked session file lands
-# one directory down (fix round 2, the widening the gate asked for).
-REAL_WORKSPACE = Path(_database.DEFAULT_WORKSPACE)
+# Both are read through the module's own bindings rather than rebuilt
+# from Path.home() here, so the guard watches what the code actually
+# resolves: the workspace through `default_workspace()`, called once at
+# import while the home is still the real one (the binding itself is
+# late since the 0.12 release preparation), the state home from its
+# constant. The workspace takes project copies; the state home takes the
+# MRU hint, the preview-token secret and the AI coding sessions, and it
+# is watched in FULL rather than at its top level, because a leaked
+# session file lands one directory down (fix round 2, the widening the
+# gate asked for).
+REAL_WORKSPACE = Path(_database.default_workspace())
 REAL_STATE_HOME = Path(_preview_tokens.STATE_HOME)
 WORKSPACE_UNREADABLE = "unreadable"
 
