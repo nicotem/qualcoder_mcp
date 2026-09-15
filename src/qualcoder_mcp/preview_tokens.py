@@ -455,14 +455,18 @@ def bind_id(tool: str, args: Dict[str, Any], project: str,
 
     A plain digest for the tools whose arguments the conversation already
     holds; HMAC under the secret for the tools in `KEYED_BIND`, whose
-    arguments it may not. `secret` is taken when the caller already has
-    it (`issue` and `verify` do) and loaded otherwise, which can raise
-    `PreviewSecretUnavailable` exactly as `issue` would.
+    arguments it may not. For those the secret is the caller's to pass
+    (`issue`, `verify` and the flagship all hold it), never loaded here
+    on the caller's behalf: a keyed bind computed by any code running
+    as the researcher must say so, so that a verifier's recomputation
+    cannot be mistaken for an attacker's (fix round 4, L1).
     """
     payload = canonical(_binding(tool, args, project)).encode("utf-8")
     if tool in KEYED_BIND:
         if secret is None:
-            secret = load_secret()
+            raise TypeError(
+                f"bind_id needs the secret for {tool!r}: its bind is "
+                f"keyed, and the caller passes the secret it holds")
         return hmac.new(secret.encode("ascii"), payload,
                         hashlib.sha256).hexdigest()[:8]
     return hashlib.sha256(payload).hexdigest()[:8]

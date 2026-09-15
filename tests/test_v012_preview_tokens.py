@@ -215,7 +215,8 @@ class TestCanonicalJson:
             pt._binding("pseudonymise_source", args, "/p/data.qda")
         ).encode("utf-8"), pt.hashlib.sha256).hexdigest()[:8]
         assert bind == keyed
-        assert pt.bind_id("pseudonymise_source", args, "/p/data.qda") == keyed
+        assert pt.bind_id("pseudonymise_source", args, "/p/data.qda",
+                          secret) == keyed
         # The two refusals are still told apart.
         assert pt.verify(token, "pseudonymise_source", args, "/p/data.qda",
                          "s2") == pt.PROJECT_CHANGED
@@ -238,6 +239,30 @@ class TestCanonicalJson:
     def test_the_keyed_table_names_the_flagship_and_nothing_outside_the_registry(
             self):
         assert pt.KEYED_BIND == frozenset({"pseudonymise_source"})
+
+    def test_a_keyed_bind_is_never_computed_without_the_secret_being_passed(
+            self, tmp_path, monkeypatch):
+        """Fix round 4, L1. `bind_id` used to load the researcher's own
+        secret when none was passed, so any code running as the
+        researcher computed a keyed bind without saying so, and a
+        verifier's recomputation read like an attacker's recovery. For
+        a tool in `KEYED_BIND` the secret is the caller's to pass; the
+        codebook tools, whose bind is public, need none."""
+        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        args = pt.canonical_args(
+            "pseudonymise_source",
+            mapping=[{"original": "Thomas", "pseudonym": "Alex",
+                      "variants": []}],
+            file_ids=None, case_mode="exact", overlap_policy="snap_to_pseudonym")
+        with pytest.raises(TypeError, match="needs the secret"):
+            pt.bind_id("pseudonymise_source", args, "/p/data.qda")
+        assert not (tmp_path / "state").exists(), "nothing was loaded"
+        secret = pt.load_secret()
+        assert pt.bind_id("pseudonymise_source", args, "/p/data.qda",
+                          secret) == pt.issue(
+            "pseudonymise_source", args, "/p/data.qda", "s").split(".")[2]
+        assert len(pt.bind_id("delete_code", {"code_id": 1},
+                              "/p/data.qda")) == 8
         assert pt.KEYED_BIND <= set(pt.REGISTRY)
 
     def test_the_flagship_binds_only_what_decides_the_effect(self):

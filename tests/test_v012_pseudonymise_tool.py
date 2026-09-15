@@ -3427,7 +3427,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
             "pseudonymise_source", mapping=true_mapping,
             file_ids=ew.get("file_ids"), case_mode=ew["case_mode"],
             overlap_policy=ew["overlap_policy"])
-        assert pt.bind_id("pseudonymise_source", true_args, project_id) == bind
+        assert pt.bind_id("pseudonymise_source", true_args, project_id,
+                          pt.load_secret()) == bind
 
         result = execute_as_recipe(out)
         assert result.get("success") is True, result
