@@ -1477,9 +1477,19 @@ class TestTheGeneratorsExerciseWhatTheyClaim:
         return seen["hits"] / seen["examples"]
 
     def test_the_named_text_holds_a_replacement_in_most_examples(self):
+        """Fix round 4, L2: the bar stays at 0.5 and the sample grew.
+        Measured at 2,000 examples: 62.3 per cent under the derandomised
+        draw, 11.4 standard errors over the bar, and 62.2 to 67.9 per
+        cent under live seeds 1 to 5, 11.2 standard errors at the least.
+        At 500 examples the derandomised figure was 68.8 per cent but
+        one live seed sat 2.7 standard errors over the bar, a red
+        waiting for a hypothesis release. A red here now is a change in
+        what the generator draws, and the count in the message says by
+        how much; it is not a shrunk example."""
         rate = self._count(
             {"text": _NAMED_TEXT},
-            lambda text: bool(P.find_replacements(self.TOMANN, text)))
+            lambda text: bool(P.find_replacements(self.TOMANN, text)),
+            examples=2000)
         assert rate >= 0.5, rate
 
     def test_the_spans_touch_a_replacement_in_a_substantial_fraction(self):
@@ -1536,7 +1546,15 @@ class TestTheGeneratorsExerciseWhatTheyClaim:
         """Each name in `_NAMES` both matches and narrowly misses (a
         letter beside it) in the samples drawn for it, so the two
         boundary oracles compare our rule with master's on both sides of
-        the boundary for every shape of name."""
+        the boundary for every shape of name.
+
+        Fix round 4, L2: the floors stay at 15 and 3 and the sample
+        grew. Measured at 3,000 examples under the derandomised draw,
+        the fewest matches for any name is 136 (An-n) and the fewest
+        misses 43 (Tom), 10.6 and 6.1 standard errors over the floors;
+        under live seeds 1 to 5 the least margins are 10.1 and 5.4. At
+        1,200 examples the miss floor sat 2.0 standard errors under "ab"
+        and 0.9 under one live seed."""
         seen = {"match": 0, "miss": 0}
 
         def look(sample):
@@ -1548,7 +1566,7 @@ class TestTheGeneratorsExerciseWhatTheyClaim:
             if name in text and not master_boundary_spans(name, text):
                 seen["miss"] += 1
             return True
-        self._count({"sample": _BOUNDARY_SAMPLE}, look, examples=1200)
+        self._count({"sample": _BOUNDARY_SAMPLE}, look, examples=3000)
         assert seen["match"] >= 15 and seen["miss"] >= 3, (name, seen)
 
     def test_the_old_alphabet_alone_would_fail_these(self):
