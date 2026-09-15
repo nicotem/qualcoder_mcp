@@ -1032,7 +1032,18 @@ class TestWrite:
     def test_the_parity_policy_deletes_and_says_how_many(self, project):
         out = preview_of(overlap_policy="qualcoder_edit_parity")
         assert out["preview"]["totals"]["rows_deleted"] >= 1
-        assert any("would DELETE" in w for w in out["warnings"])
+        warning = [w for w in out["warnings"] if "would DELETE" in w]
+        assert len(warning) == 1
+        # Fix round 3, S5: the narrowed claim (D-10), not "exactly what
+        # QualCoder's own editor does": the editor diffs first, and its
+        # diff library keeps a coding this policy deletes whenever the
+        # pseudonym shares a prefix or suffix with the name.
+        assert ("which is what QualCoder's coding-view walk does when fed "
+                "this tool's exact edit list; the editor's own diff may "
+                "factor a shared prefix or suffix out of a replacement "
+                "(Tom to Tim) and keep a coding this policy deletes."
+                in warning[0])
+        assert "QualCoder's own editor does" not in warning[0]
         result = execute_from(out)
         assert result["files"][0]["codings_deleted"] >= 1
         assert query(project, "SELECT ctid FROM code_text WHERE ctid=1") == []
@@ -1342,6 +1353,9 @@ NAME_SHAPES = [
     "Tom_2.docx",                # a variant rather than an original
     "Mary_Ann.txt",              # a multi-word name, separator changed
     "MaryAnn_notes.txt",         # a multi-word name run together
+    "Tho\u00admas_interview.txt",   # a soft hyphen inside the name (S7)
+    "Tho\u200bmas_interview.txt",   # a zero-width space inside it (S7)
+    "\uff34\uff48\uff4f\uff4d\uff41\uff53.txt",   # fullwidth (S7)
 ]
 
 # Every spelling of a real name this fixture's mapping covers. Checked
@@ -1430,6 +1444,35 @@ class TestAFileNameThatCarriesAName:
         residue = preview_of()["preview"]["residue"]
         assert residue["file_names"] == 1
 
+    def test_an_nfd_mapping_still_withholds_an_nfc_file_name(self, project):
+        """Fix round 3, B2. The detector normalises the mapping's forms as
+        well as the values; dropping the form side reverted green, and at
+        tool level it put the NFC spelling of the name into the journal
+        body and the manifest when the mapping was typed in NFD (which
+        is what a Mac pasteboard gives). Both spellings, checked."""
+        nfd, nfc = "Rene\u0301", "Ren\u00e9"
+        assert nfd != nfc and len(nfd) == 5 and len(nfc) == 4
+        text = f"{nfd} spoke. {nfd} left."
+        folder = build_project(tmp_path_for(project) / "rene.qda", text)
+        add_coding(folder, 1, 1, 0, 5, text=text)
+        write_fixture_sidecar(str(folder))
+        rename = f"{nfc}_interview.txt"
+        with wired(folder):
+            rename_file(folder, rename)
+            mapping = [{"original": nfd, "pseudonym": "Alex"}]
+            out = preview_of(mapping=mapping)
+            assert out["preview"]["residue"]["file_names"] == 1
+            result = execute_from(out, mapping=mapping)
+            assert result.get("success") is True, result
+            row = query(folder, "SELECT name,jentry FROM journal")[0]
+            body = Path(result["manifest_path"]).read_text(encoding="utf-8")
+            for spelling in (nfd, nfc, "Ren"):
+                assert spelling not in row["name"], spelling
+                assert spelling not in row["jentry"], spelling
+                assert spelling not in body, spelling
+            assert "name withheld" in row["jentry"]
+            assert json.loads(body)["files"][0]["name"] is None
+
     def test_a_file_name_with_no_name_in_it_is_still_reported(self, project):
         """Over-withholding is cheap but not free: a researcher reading
         the journal should still see the file names that are safe."""
@@ -1499,17 +1542,129 @@ class TestTheLabelsAndMemosTheResidueCounts:
         assert residue["attribute_values"] == 1
         assert residue["memos"]["source"] == 1
 
+    # Every field the residue block reads, with a way to plant a name in
+    # that field ALONE. One case per field, because the pins lens showed
+    # seven of the ten memo fields could be dropped from
+    # `PSEUDONYMISE_MEMO_FIELDS` with the whole suite green (fix round 3,
+    # B2), and the five fields S6 added would have joined them. Each
+    # planter is a statement over the stock fixture, whose tables are
+    # QualCoder's own; the two media-coding memos are the ones a media
+    # project most needs counted.
+    RESIDUE_FIELDS = [
+        ("memos.code_text", "UPDATE code_text SET memo=? WHERE ctid=1"),
+        ("memos.annotation", "UPDATE annotation SET memo=? WHERE anid=1"),
+        ("memos.case_text", "UPDATE case_text SET memo=? WHERE id=1"),
+        ("memos.source", "UPDATE source SET memo=? WHERE id=1"),
+        ("memos.cases", "UPDATE cases SET memo=? WHERE caseid=1"),
+        ("memos.code_name", "UPDATE code_name SET memo=? WHERE cid=1"),
+        ("memos.code_cat", "INSERT INTO code_cat (catid,name,owner,date,"
+                           "memo) VALUES (1,'Themes','TestCoder','d',?)"),
+        ("memos.project", "UPDATE project SET memo=?"),
+        ("memos.attribute_type", "INSERT INTO attribute_type (name,date,"
+                                 "owner,memo,caseOrFile,valuetype) VALUES "
+                                 "('Role','d','TestCoder',?,'case',"
+                                 "'character')"),
+        ("memos.journal", "INSERT INTO journal (jid,name,jentry,date,owner) "
+                          "VALUES (1,'Entry 1',?,'d','TestCoder')"),
+        ("memos.code_av", "INSERT INTO code_av (avid,id,pos0,pos1,cid,memo,"
+                          "date,owner,important) VALUES (1,3,0,10,1,?,'d',"
+                          "'TestCoder',0)"),
+        ("memos.code_image", "INSERT INTO code_image (imid,id,x1,y1,width,"
+                             "height,cid,memo,date,owner,important) VALUES "
+                             "(1,2,0,0,10,10,1,?,'d','TestCoder',0)"),
+        ("case_names", "UPDATE cases SET name=? WHERE caseid=1"),
+        ("file_names", "UPDATE source SET name=? WHERE id=4"),
+        ("code_names", "UPDATE code_name SET name=? WHERE cid=2"),
+        ("category_names", "INSERT INTO code_cat (catid,name,owner,date,"
+                           "memo) VALUES (1,?,'TestCoder','d','')"),
+        ("attribute_names", "INSERT INTO attribute_type (name,date,owner,"
+                            "memo,caseOrFile,valuetype) VALUES (?,'d',"
+                            "'TestCoder','','case','character')"),
+        ("journal_names", "INSERT INTO journal (jid,name,jentry,date,owner) "
+                          "VALUES (1,?,'a clean entry','d','TestCoder')"),
+        ("attribute_values", ["INSERT INTO attribute_type (name,date,owner,"
+                              "memo,caseOrFile,valuetype) VALUES ('Role',"
+                              "'d','TestCoder','','case','character')",
+                              "INSERT INTO attribute (attrid,name,attr_type,"
+                              "value,id,date,owner) VALUES (1,'Role','case',"
+                              "?,1,'d','TestCoder')"]),
+    ]
+
+    @staticmethod
+    def _count_at(residue, field):
+        block = residue
+        for part in field.split("."):
+            block = block[part]
+        return block
+
+    @staticmethod
+    def _every_count(residue):
+        """Every count in the block, keyed the way RESIDUE_FIELDS is."""
+        counts = {f"memos.{k}": v for k, v in residue["memos"].items()}
+        for key, value in residue.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                counts[key] = value
+        return counts
+
+    @pytest.mark.parametrize("field,sql", RESIDUE_FIELDS,
+                             ids=[f for f, _ in RESIDUE_FIELDS])
+    def test_each_field_is_counted_on_its_own(self, project, field, sql):
+        value = "Interviewed Thomas_Smith at home."
+        con = sqlite3.connect(str(project / "data.qda"))
+        for statement in ([sql] if isinstance(sql, str) else sql):
+            con.execute(statement, (value,) if "?" in statement else ())
+        con.commit()
+        con.close()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of()
+        residue = out["preview"]["residue"]
+        assert self._count_at(residue, field) == 1, field
+        # The field ALONE: every other count is zero, so the one above
+        # is this field's and not a neighbour's.
+        others = {k: v for k, v in self._every_count(residue).items()
+                  if k != field and k != "memos_with_private_zones_not_scanned"}
+        assert all(v == 0 for v in others.values()), others
+        assert "unreadable" not in residue
+        # And it reaches the warning the researcher is read, as one.
+        warning = [w for w in out["warnings"]
+                   if "attribute value(s) may still show" in w]
+        assert len(warning) == 1 and warning[0].startswith("Warning: 1 ")
+
+    def test_the_field_table_is_the_whole_scan(self):
+        """So a field added to the scan cannot go unpinned: the table
+        above and the two tuples in the database layer name the same
+        fields, and the warning sums every label key."""
+        memo_fields = {f"memos.{table}"
+                       for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
+        label_keys = set(QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS)
+        assert {f for f, _ in self.RESIDUE_FIELDS} == memo_fields | label_keys
+        assert len(QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS) == 12
+        assert len(QualcoderDatabase.PSEUDONYMISE_LABEL_FIELDS) == 6
+
     def test_a_project_with_no_residue_counts_none_of_it(self, project):
         residue = preview_of()["preview"]["residue"]
-        for key in ("file_names", "case_names", "code_names",
-                    "attribute_values"):
+        for key in QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS:
             assert residue[key] == 0, key
+        assert set(residue["memos"]) == {
+            table for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
         assert all(count == 0 for count in residue["memos"].values())
+        assert not any("attribute value(s) may still show" in w
+                       for w in preview_of().get("warnings", []))
 
     def test_the_block_says_which_reading_its_counts_are(self, project):
         residue = preview_of()["preview"]["residue"]
         note = residue["reading_note"]
         assert "wider than the rewrite" in note
+        # Fix round 3, L1: a rule used as a proxy for "a name remains
+        # here" is a heuristic in the sense this repository uses the
+        # word, and heuristics say so.
+        assert note.startswith("These counts are a heuristic")
+        # Fix round 3, S7: the reading has a stated limit.
+        assert ("compared after Unicode normalisation with invisible "
+                "characters removed; a look-alike letter from another "
+                "script is not caught." in note)
+        assert "must never under-report" not in note
         # The example is the one that shows the cost, not a near miss:
         # 'Lee' inside 'Leeds' reads as bad luck, 'Ed' inside 'edited'
         # reads as what it is (re-verification 6.1).
@@ -1527,6 +1682,40 @@ class TestTheLabelsAndMemosTheResidueCounts:
         note = preview_of()["preview"]["residue"]["scope_note"]
         assert "covers memos, labels and attribute values" in note
         assert "does NOT count what remains in the file text itself" in note
+        # Fix round 3, L2: a count is a list of fields to check, and the
+        # researcher needs a route to them.
+        assert ("To find the memos and journal entries a count points at, "
+                "call search_memos with the name." in note)
+
+    def test_a_short_form_is_warned_about_as_a_heuristic(self, project):
+        """Fix round 3, L3 (re-verification 6.2). QualCoder's minimum for
+        an original is two characters, and at that length the wide
+        reading turns generous; the researcher hears it before
+        approving. Entry indices and no form, so the warning is the same
+        on the sidecar path."""
+        out = preview_of(mapping=[{"original": "Ed", "pseudonym": "Kim"},
+                                  {"original": "Thomas", "pseudonym": "Alex",
+                                   "variants": ["Tom"]},
+                                  {"original": "Mary Ann",
+                                   "pseudonym": "Sam"}])
+        assert out["preview"]["short_forms"] == [
+            {"entry": 0, "length": 2}, {"entry": 1, "length": 3}]
+        warning = [w for w in out["warnings"] if "surface form of fewer" in w]
+        assert len(warning) == 1, out["warnings"]
+        assert warning[0].startswith(
+            "Warning: mapping entries [0, 1] have a surface form of fewer "
+            "than 4 characters. The residue counts are a heuristic that "
+            "reads wider than the rewrite, so a short form makes them "
+            "generous")
+        assert "still replaces whole words only" in warning[0]
+        for forbidden in ("Ed", "Tom", "Kim"):
+            assert forbidden not in warning[0], forbidden
+        _house_rules(warning, ["short-form warning"])
+        # Nothing shorter than four: no block and no warning.
+        out = preview_of(mapping=[{"original": "Thomas", "pseudonym": "Alex"}])
+        assert "short_forms" not in out["preview"]
+        assert not any("surface form of fewer" in w
+                       for w in out.get("warnings", []))
 
     def test_the_counts_reach_the_warning_the_researcher_is_read(
             self, project):
@@ -1564,13 +1753,18 @@ class TestTheLabelsAndMemosTheResidueCounts:
             "Warning: 1 memo(s), label(s) or attribute value(s) may still "
             "show one of these names, and this tool does not rewrite any "
             "of them.")
-        assert ("The count is deliberately wide: it reports anything a "
-                "reader might see, including inside a longer word and in "
-                "any letter case, so it over-reports rather than "
-                "under-reports." in warning)
+        assert ("The count is a heuristic and deliberately wide: it "
+                "reports anything a reader might see in the spelling you "
+                "gave, including inside a longer word and in any letter "
+                "case, so it over-reports rather than under-reports; a "
+                "look-alike letter from another script is not caught."
+                in warning)
         assert "tell the user which fields to check" in warning
         # The claim that is now false, in the exact words it used.
         assert "the names in this mapping also occur in" not in warning
+        # Fix round 3: the absolute clause it used to make.
+        assert "it reports anything a reader might see, including" \
+            not in warning
         _house_rules([warning], ["residue warning"])
 
 

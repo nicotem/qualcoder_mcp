@@ -103,6 +103,13 @@ MAX_SPANS_PER_ENTRY = 500
 # is part of the signed effect block, so its size must be the same on the
 # preview call and on the execute call.
 MAX_OVERLAP_CONFLICTS = 200
+# Ours, a WARNING threshold and not a limit. The residue block reads a
+# name as a bare substring, and QualCoder's own two-character minimum
+# is well below the length at which that reading stops being exact: a
+# form of fewer than four characters makes the residue counts generous
+# (re-verification 6.2 measured the turn from zero false hits to one in
+# five at four). The rewrite is whole-word and is not affected.
+SHORT_FORM_CHARS = 4
 
 CASE_MODES = ("exact", "insensitive", "insensitive_preserve")
 OVERLAP_POLICIES = ("snap_to_pseudonym", "qualcoder_edit_parity")
@@ -492,6 +499,45 @@ def _detector_alternative(form: str) -> str:
     return _SEPARATOR_RUN.join(re.escape(part) for part in parts)
 
 
+# Code points a reader does not see. Unicode's Default_Ignorable_Code_Point
+# property is not in `unicodedata`, so it is approximated here by the
+# format category (Cf: the soft hyphen, the zero-width space, joiner and
+# non-joiner, the word joiner, the bidi marks and controls, the byte order
+# mark) plus the combining marks and fillers the property also lists: the
+# combining grapheme joiner, the variation selectors, the Mongolian free
+# variation selectors and the Hangul fillers. A name with one of these
+# inside it renders exactly as the name, which is how a soft hyphen
+# copied out of a PDF walked `Thomas` past the detector into the journal
+# body and the manifest (fix round 3, S7).
+_IGNORABLE_EXPLICIT = frozenset(
+    [0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0]
+    + list(range(0x180B, 0x180E))
+    + list(range(0xFE00, 0xFE10))
+    + list(range(0xE0100, 0xE01F0)))
+# A pattern that matches nothing, for a mapping whose every surface form
+# is made of characters a reader does not see.
+_NEVER = re.compile(r"(?!x)x")
+
+
+def _reader_sees(value: str) -> str:
+    """`value` as a reader sees it.
+
+    Compatibility normalisation (NFKC), so a fullwidth or otherwise
+    compatibility-equivalent spelling reads as the plain one, and the
+    default-ignorable code points removed, so an invisible character
+    inside a word does not split it. Applied to the mapping's forms and
+    to every value alike, which is what makes an NFD form find an NFC
+    label and the other way round. What this does NOT do, stated
+    because the residue prose says so too: a look-alike letter from
+    another script (a Cyrillic "о" for a Latin "o") is a different code
+    point after every normalisation there is, and is out of scope.
+    """
+    text = unicodedata.normalize("NFKC", value)
+    return "".join(ch for ch in text
+                   if unicodedata.category(ch) != "Cf"
+                   and ord(ch) not in _IGNORABLE_EXPLICIT)
+
+
 class NameDetector:
     """Would a human reading this string see one of the mapping's names?
 
@@ -530,7 +576,16 @@ class NameDetector:
     __slots__ = ("_direct", "_folded")
 
     def __init__(self, forms: Sequence[str]):
-        normalised = [unicodedata.normalize("NFC", form) for form in forms]
+        # The forms as a reader sees them, and never an empty one: a
+        # form made entirely of invisible characters (validation lets a
+        # zero-width space through, and two of them pass the length
+        # rule) would otherwise be an empty alternative, which matches
+        # every string.
+        normalised = [seen for seen in (_reader_sees(form) for form in forms)
+                      if seen]
+        if not normalised:
+            self._direct = self._folded = _NEVER
+            return
         self._direct = re.compile(
             "|".join(_detector_alternative(form) for form in normalised),
             re.IGNORECASE)
@@ -552,7 +607,7 @@ class NameDetector:
         """
         if not isinstance(value, str) or not value:
             return False
-        text = unicodedata.normalize("NFC", value)
+        text = _reader_sees(value)
         return bool(self._direct.search(text)
                     or self._folded.search(_fold(text)))
 
@@ -823,6 +878,22 @@ def overlap_conflicts(compiled: Compiled, text: str,
                     "chosen_span": [item.start, item.end],
                 })
     return conflicts, truncated
+
+
+def short_forms(mapping: Mapping) -> List[Dict[str, Any]]:
+    """The surface forms shorter than `SHORT_FORM_CHARS` (a warning).
+
+    Entry index and length only, never the form: this block travels on
+    the sidecar path too, where a surface form is the researcher's
+    reverse key. Length is in code points, the same measure the
+    validator's minimums use.
+    """
+    found: List[Dict[str, Any]] = []
+    for entry in mapping.entries:
+        for form in entry.forms:
+            if len(form) < SHORT_FORM_CHARS:
+                found.append({"entry": entry.index, "length": len(form)})
+    return found
 
 
 def case_variants_seen(compiled: Compiled, text: str) -> List[Dict[str, Any]]:

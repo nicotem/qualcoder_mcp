@@ -1537,6 +1537,96 @@ class TestNameDetector:
             [{"original": "René", "pseudonym": "Zed"}])).detector
         assert detector.contains("René_interview.txt") is True
 
+    NFD, NFC = "Rene\u0301", "Ren\u00e9"
+
+    @pytest.mark.parametrize("form,value", [
+        (NFD, NFC + "_interview.txt"),          # the mapping side is NFD
+        (NFC, NFD + "_interview.txt"),          # the value side is NFD
+        (NFD, NFD + "_interview.txt"),
+        (NFC, NFC + "_interview.txt"),
+    ], ids=["nfd-form", "nfd-value", "both-nfd", "both-nfc"])
+    def test_either_side_may_be_decomposed(self, form, value):
+        """Fix round 3, B2. The FORM side of the normalisation reverted
+        green: the shapes above were value-side only, so
+        `normalised = list(forms)` passed everything, and at tool level
+        an NFD mapping let the NFC spelling of a file name into the
+        journal body. One case per side, and the two controls."""
+        assert self.NFD != self.NFC
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": form, "pseudonym": "Zed"}])).detector
+        assert detector.contains(value) is True
+
+    # Characters a reader does not see, inside a one-word name (fix
+    # round 3, S7). Each renders as "Thomas" and each walked past the
+    # detector, so a file called `Tho\u00admas_interview.txt` went into
+    # the journal body and the manifest.
+    INVISIBLE = [
+        ("soft hyphen", "\u00ad"),
+        ("zero-width space", "\u200b"),
+        ("zero-width non-joiner", "\u200c"),
+        ("zero-width joiner", "\u200d"),
+        ("left-to-right mark", "\u200e"),
+        ("word joiner", "\u2060"),
+        ("combining grapheme joiner", "\u034f"),
+        ("variation selector 16", "\ufe0f"),
+        ("byte order mark", "\ufeff"),
+        ("Mongolian free variation selector", "\u180b"),
+    ]
+
+    @pytest.mark.parametrize("label,char", INVISIBLE,
+                             ids=[label for label, _ in INVISIBLE])
+    def test_an_invisible_character_inside_the_name_is_seen_through(
+            self, label, char):
+        detector = self._detector()
+        assert detector.contains(f"Tho{char}mas_interview.txt") is True
+        assert detector.contains(f"Tho{char}mas") is True
+        assert detector.contains(f"Mary{char}Ann") is True
+
+    # The same list less the two characters a mapping string may not
+    # contain at all: the left-to-right mark is a bidi control and the
+    # byte order mark is refused by name (`_FORBIDDEN_RANGES`), so neither
+    # can reach the detector from the form side.
+    INVISIBLE_IN_A_FORM = [(label, char) for label, char in INVISIBLE
+                           if char not in ("\u200e", "\ufeff")]
+
+    @pytest.mark.parametrize("label,char", INVISIBLE_IN_A_FORM,
+                             ids=[label for label, _ in INVISIBLE_IN_A_FORM])
+    def test_an_invisible_character_inside_the_form_is_seen_through(
+            self, label, char):
+        """The mapping side too: a name pasted with a soft hyphen in it
+        still finds the plain spelling in a label."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": f"Tho{char}mas", "pseudonym": "Zed"}])).detector
+        assert detector.contains("Thomas_interview.txt") is True
+
+    def test_a_fullwidth_spelling_is_the_same_name(self):
+        """Compatibility normalisation (NFKC) on both sides: a fullwidth
+        spelling renders as the name and used to be missed."""
+        detector = self._detector()
+        assert detector.contains("\uff34\uff48\uff4f\uff4d\uff41\uff53"
+                                 " case memo") is True
+        assert P.Compiled(P.validate_mapping(
+            [{"original": "\uff34\uff48\uff4f\uff4d\uff41\uff53",
+              "pseudonym": "Zed"}])).detector.contains("Thomas_P01") is True
+
+    def test_a_look_alike_from_another_script_is_out_of_scope(self):
+        """Pinned as the LIMIT the prose states, not as a wish: a
+        Cyrillic letter is a different code point after every
+        normalisation there is, and PRIVACY.md says the detector does not
+        reach it. If this ever passes, the prose must change with it."""
+        detector = self._detector()
+        assert detector.contains("\u0422homas") is False       # Cyrillic Te
+        assert detector.contains("Th\u043emas") is False       # Cyrillic o
+
+    def test_a_form_made_of_invisible_characters_matches_nothing(self):
+        """Validation lets a zero-width space through and two of them
+        pass the length rule; stripped, the form is empty, and an empty
+        alternative would match every string in the project."""
+        detector = P.Compiled(P.validate_mapping(
+            [{"original": "\u200b\u200b", "pseudonym": "Zed"}])).detector
+        assert detector.contains("anything at all") is False
+        assert detector.contains("\u200b\u200b") is False
+
     def test_the_price_of_the_wider_reading_is_paid_knowingly(self):
         """An entry for "Tom" makes "tomorrow" count. A rule that
         catches `ThomasB.txt` cannot spare `tomorrow`, and of the two

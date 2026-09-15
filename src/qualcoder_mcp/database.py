@@ -8217,22 +8217,35 @@ class QualcoderDatabase:
                 for r in item["rows"]["case_text"]]
         return digests
 
-    # The ten memo fields a name can survive in, and the label columns
-    # beside them (D1 3.9). Scanned and COUNTED in v0.12, never rewritten:
-    # memos are the researcher's own notes and rewriting them crosses into
-    # the private-zone convention, which the owner ruled needs its own
-    # dossier (Q4, ruling (a)).
+    # The twelve memo fields a name can survive in, and the six label
+    # columns beside them (D1 3.9, which listed ten and three; the
+    # media-coding memos, the category, attribute-type and journal names
+    # were added in fix round 3 after a project named after its
+    # participant in fourteen fields reported four). Scanned and COUNTED
+    # in v0.12, never rewritten: memos are the researcher's own notes and
+    # rewriting them crosses into the private-zone convention, which the
+    # owner ruled needs its own dossier (Q4, ruling (a)). Every field
+    # here is pinned one at a time, because seven of them could once be
+    # dropped from this tuple with the suite green.
     PSEUDONYMISE_MEMO_FIELDS = (
         ("code_text", "memo"), ("annotation", "memo"), ("case_text", "memo"),
         ("source", "memo"), ("cases", "memo"), ("code_name", "memo"),
         ("code_cat", "memo"), ("project", "memo"),
         ("attribute_type", "memo"), ("journal", "jentry"),
+        ("code_av", "memo"), ("code_image", "memo"),
     )
     PSEUDONYMISE_LABEL_FIELDS = (
         ("cases", "name", "case_names"),
         ("source", "name", "file_names"),
         ("code_name", "name", "code_names"),
+        ("code_cat", "name", "category_names"),
+        ("attribute_type", "name", "attribute_names"),
+        ("journal", "name", "journal_names"),
     )
+    # The residue keys that are label counts, in the order the block
+    # carries them, plus the attribute values: what the warning sums.
+    PSEUDONYMISE_RESIDUE_LABEL_KEYS = tuple(
+        key for _, _, key in PSEUDONYMISE_LABEL_FIELDS) + ("attribute_values",)
     # Presence only, never parsed: `speakers.json` is not ours to read and
     # `pseudonyms.json` IS the mapping (view_av.py:149, speakers.py:719-731).
     PSEUDONYMISE_SIDECARS = ("pseudonyms.json", "speakers.json",
@@ -8315,21 +8328,26 @@ class QualcoderDatabase:
                 continue
         residue["sidecars_present"] = present
         residue["reading_note"] = (
-            "These counts read wider than the rewrite: any occurrence a "
-            "person would see, including inside a longer word and in any "
-            "case, and a name of several words however its parts are "
-            "joined. That is deliberate, because a report that says where "
-            "names remain must never under-report. It does mean a short "
-            "name is generous: an entry for 'Ed' counts every memo that "
-            "says 'edited' or 'provided'. Read a high count as a list of "
-            "fields to check, not as a count of names.")
+            "These counts are a heuristic that reads wider than the "
+            "rewrite: any occurrence a person would see, including inside "
+            "a longer word and in any case, and a name of several words "
+            "however its parts are joined. That is deliberate, because a "
+            "report that says where names remain should not under-report. "
+            "It does mean a short name is generous: an entry for 'Ed' "
+            "counts every memo that says 'edited' or 'provided'. Read a "
+            "high count as a list of fields to check, not as a count of "
+            "names. The reading is of the spelling you gave, compared "
+            "after Unicode normalisation with invisible characters "
+            "removed; a look-alike letter from another script is not "
+            "caught.")
         residue["scope_note"] = (
             "This block covers memos, labels and attribute values. It does "
             "NOT count what remains in the file text itself: the rewrite "
             "replaces whole words in the case mode you chose, so a "
             "spelling it did not match is still in the text and is not "
             "reported here. Use include_context or read the file to check "
-            "that.")
+            "that. To find the memos and journal entries a count points "
+            "at, call search_memos with the name.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
@@ -8569,6 +8587,11 @@ class QualcoderDatabase:
         if compiled.mapping.shared_pseudonyms:
             preview["shared_pseudonyms"] = [
                 dict(item) for item in compiled.mapping.shared_pseudonyms]
+        short = engine.short_forms(compiled.mapping)
+        if short:
+            # Presentation, not effect: the warning it drives says how to
+            # read the residue counts, and changes nothing the run does.
+            preview["short_forms"] = short
         if scan_residue:
             preview["residue"] = self.pseudonymise_residue(compiled)
         return preview

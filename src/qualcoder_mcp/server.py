@@ -10222,8 +10222,12 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         warnings.append(
             f"Warning: overlap_policy=qualcoder_edit_parity would DELETE "
             f"{totals['rows_deleted']} row(s) whose span sits inside a "
-            f"replaced name, which is what QualCoder's own editor does. "
-            f"The default policy, snap_to_pseudonym, deletes nothing.")
+            f"replaced name, which is what QualCoder's coding-view walk "
+            f"does when fed this tool's exact edit list; the editor's own "
+            f"diff may factor a shared prefix or suffix out of a "
+            f"replacement (Tom to Tim) and keep a coding this policy "
+            f"deletes. The default policy, snap_to_pseudonym, deletes "
+            f"nothing.")
     pre_existing = [item for item in preview.get("files", [])
                     if item.get("pre_existing_pseudonym_occurrences")]
     if pre_existing:
@@ -10253,24 +10257,45 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"documented emoji bug). This run does not make that worse and "
             f"does not fix it.")
     residue = preview.get("residue") or {}
+    # Every label key the residue block carries, from the one table that
+    # defines them, so a field added to the scan reaches this sum.
     residue_total = sum(v for v in residue.get("memos", {}).values()) + sum(
-        residue.get(key, 0) for key in
-        ("case_names", "file_names", "code_names", "attribute_values"))
+        residue.get(key, 0)
+        for key in QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS)
     if residue_total:
         # What this count MEASURES, rather than what it would be nice to
         # say it measures (re-verification 6.1). The detector reads
         # wider than the rewrite on purpose, so "the names occur in N
         # memos" is false wherever the wide reading fired: with an entry
         # for 'Ed' the names do not occur in eleven memos, the letters
-        # do. Shipped prose does not claim more than the code does.
+        # do. Shipped prose does not claim more than the code does, and
+        # the reading is named as the heuristic it is (fix round 3, L1),
+        # with the one class it does not reach said in the same breath.
         warnings.append(
             f"Warning: {residue_total} memo(s), label(s) or attribute "
             f"value(s) may still show one of these names, and this tool "
-            f"does not rewrite any of them. The count is deliberately "
-            f"wide: it reports anything a reader might see, including "
-            f"inside a longer word and in any letter case, so it "
-            f"over-reports rather than under-reports. See residue, and "
-            f"tell the user which fields to check.")
+            f"does not rewrite any of them. The count is a heuristic and "
+            f"deliberately wide: it reports anything a reader might see "
+            f"in the spelling you gave, including inside a longer word "
+            f"and in any letter case, so it over-reports rather than "
+            f"under-reports; a look-alike letter from another script is "
+            f"not caught. See residue, and tell the user which fields to "
+            f"check.")
+    short = preview.get("short_forms") or []
+    if short:
+        # Fix round 3, L3. QualCoder's own minimum for an original is two
+        # characters, and at that length the wide reading above turns
+        # from exact to generous (re-verification 6.2 measured the turn
+        # at four); the researcher hears that before approving.
+        entries = sorted({item["entry"] for item in short})
+        noun = "entry" if len(entries) == 1 else "entries"
+        warnings.append(
+            f"Warning: mapping {noun} {entries} have a surface form of "
+            f"fewer than {pseudo.SHORT_FORM_CHARS} characters. The residue "
+            f"counts are a heuristic that reads wider than the rewrite, so "
+            f"a short form makes them generous: they will report fields "
+            f"that merely contain those letters. The rewrite itself is "
+            f"unaffected and still replaces whole words only.")
     if not totals.get("replacements"):
         warnings.append(
             "None of the names in this mapping occurs in the selected "
