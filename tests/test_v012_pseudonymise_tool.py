@@ -573,6 +573,54 @@ class TestToken:
         assert query(project, "SELECT fulltext FROM source WHERE id=1"
                      )[0]["fulltext"].startswith("Alex said")
 
+    # A mapping in which one entry's form sits inside another's, so the
+    # rewrite records an overlap conflict BETWEEN two entries. The
+    # fixture MAPPING has no such pair, which is why the pin above could
+    # not see the conflicts half of the S3 fix (fix round 4, B1).
+    CONFLICTING = [{"original": "Thomas", "pseudonym": "Alex"},
+                   {"original": "Mary Ann", "pseudonym": "Sam"},
+                   {"original": "Ann", "pseudonym": "Beth"}]
+
+    def test_a_mapping_with_an_overlap_conflict_executes_in_another_order(
+            self, project):
+        """Fix round 4, B1. The signed effect keys the replacements AND
+        the overlap conflicts on the canonical position. The two lines
+        that canonicalise a conflict's `entry` and `loses_to_entry`
+        reverted with the whole suite green, because no pin's mapping
+        produced a conflict; under that revert this mapping, reordered,
+        was refused as "the project changed" on a project nothing had
+        touched. With "Ann" inside "Mary Ann" the conflict is recorded,
+        the readable preview shows it under the caller's indices in
+        either order, the signed effect is identical in both, and the
+        reversed order executes.
+        """
+        out = preview_of(mapping=self.CONFLICTING)
+        assert out["preview"]["files"][0]["overlap_conflicts"] == [
+            {"entry": 2, "form": "Ann", "span": [39, 42],
+             "loses_to_entry": 1, "chosen_span": [34, 42]}]
+        reversed_mapping = list(reversed(self.CONFLICTING))
+        again = preview_of(mapping=reversed_mapping)
+        assert again["preview"]["files"][0]["overlap_conflicts"] == [
+            {"entry": 0, "form": "Ann", "span": [39, 42],
+             "loses_to_entry": 1, "chosen_span": [34, 42]}]
+        assert again["preview_token"].split(".")[2] == \
+            out["preview_token"].split(".")[2]          # one bind
+        effects = []
+        for mapping in (self.CONFLICTING, reversed_mapping):
+            compiled = P.Compiled(P.validate_mapping(mapping))
+            plan = server.db.pseudonymise_plan(compiled, "snap_to_pseudonym",
+                                               None)
+            effects.append(server.db.pseudonymise_effect(plan))
+        signed = effects[0]["files"][0]["overlap_conflicts"]
+        assert signed, "the conflict must reach the signed effect"
+        assert effects[0] == effects[1]
+        result = execute_from(out, mapping=reversed_mapping)
+        assert result.get("success") is True, result
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == (
+            "Alex said he met Tom yesterday. Sam agreed with Alex. "
+            "Later Alex left.")
+
     def test_an_expired_token_sends_the_model_back_to_the_preview(
             self, project, monkeypatch):
         """No test sleeps and none reads the clock twice: the token's own
@@ -3115,6 +3163,24 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
         out = preview_of(mapping=None, use_project_pseudonyms=True)
         result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"},
                                {"original": "Mary Ann", "pseudonym": "Sam"}],
+                      preview_token=out["preview_token"])
+        assert result.get("success") is True, result
+
+    def test_a_sidecar_token_with_an_overlap_conflict_executes_in_any_order(
+            self, project):
+        """Fix round 4, B1, on this path: the conflict between "Ann" and
+        "Mary Ann" is signed by canonical position here too, so the
+        sidecar's order and the typed order share one effect."""
+        self._sidecar(project, [{"original": "Ann", "pseudonym": "Beth"},
+                                {"original": "Mary Ann", "pseudonym": "Sam"},
+                                {"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        conflicts = out["preview"]["files"][0]["overlap_conflicts"]
+        assert [(c["entry"], c["loses_to_entry"]) for c in conflicts] == \
+            [(0, 1)]
+        result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"},
+                               {"original": "Mary Ann", "pseudonym": "Sam"},
+                               {"original": "Ann", "pseudonym": "Beth"}],
                       preview_token=out["preview_token"])
         assert result.get("success") is True, result
 
