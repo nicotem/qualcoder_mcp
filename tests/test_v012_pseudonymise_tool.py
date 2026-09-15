@@ -882,12 +882,14 @@ class TestHiddenCoders:
         mapping = _with_pseudonym(pseudonym)
         out = preview_of(mapping=mapping)
         hidden = out["preview"]["hidden_coder_rows"]
+        assert hidden["substituted"] == 1
         assert (hidden["resized"], hidden["snapped"], hidden["deleted"]) \
             == (0, 0, 0)
         assert hidden["override_required"] is False
         assert "allow_hidden_coder" not in out["execute_with"]["arguments"]
         result = execute_from(out, mapping=mapping)
         assert result["success"] is True
+        assert result["hidden_coder_rows_updated"] == 1
         assert query(project, "SELECT pos0, pos1, seltext FROM code_text "
                               "WHERE ctid=10") == [
             {"pos0": 0, "pos1": len(pseudonym), "seltext": pseudonym}]
@@ -996,6 +998,7 @@ class TestHiddenCoders:
         out = preview_of(overlap_policy="qualcoder_edit_parity")
         hidden = out["preview"]["hidden_coder_rows"]
         assert hidden["deleted"] == 1
+        assert hidden["substituted"] == 0
         assert hidden["override_required"] is True
         assert out["execute_with"]["arguments"]["allow_hidden_coder"] is True
         refused = call(mapping=MAPPING, overlap_policy="qualcoder_edit_parity",
@@ -1006,6 +1009,22 @@ class TestHiddenCoders:
         result = execute_from(out, allow_hidden_coder=True)
         assert result["success"] is True
         assert query(project, "SELECT ctid FROM code_text WHERE ctid=10") == []
+
+    def test_the_counts_are_reported_per_file_and_in_the_totals(
+            self, project):
+        """Counts only, never names, as always: the new class sits beside
+        the four others in the file's block and in the totals, and the
+        execute's own count includes it."""
+        _hidden(project, ("coding", 10, 0, 6), ("coding", 11, 63, 68),
+                ("coding", 12, 0, 11))
+        out = preview_of()
+        expected = {"shifted": 1, "substituted": 1, "resized": 1,
+                    "snapped": 0, "deleted": 0, "override_required": True}
+        assert out["preview"]["hidden_coder_rows"] == expected
+        assert out["preview"]["files"][0]["hidden_coder_rows"] == expected
+        assert "Hidden Coder" not in json.dumps(out)
+        result = execute_from(out, allow_hidden_coder=True)
+        assert result["hidden_coder_rows_updated"] == 3
 
     def test_a_hidden_coder_is_never_named_anywhere(self, project):
         """A resize (the override's reason) beside a substitution (exempt):
@@ -1064,6 +1083,7 @@ class TestHiddenCoders:
         _hidden(project, ("annotation", 9, 0, 6))
         out = preview_of()
         hidden = out["preview"]["hidden_coder_rows"]
+        assert hidden["substituted"] == 1
         assert (hidden["resized"], hidden["snapped"], hidden["deleted"]) \
             == (0, 0, 0)
         assert hidden["override_required"] is False
@@ -2480,6 +2500,7 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             hidden = out["preview"]["hidden_coder_rows"]
             assert hidden["override_required"] is True
             assert hidden["resized"] >= 1            # coding 8, the reason
+            assert hidden["substituted"] >= 1        # codings 5 and 7
             result = execute_as_recipe(out, allow_hidden_coder=True)
             assert result.get("success") is True, result
             assert result["hidden_coder_rows_updated"] >= 1

@@ -8258,14 +8258,20 @@ class QualcoderDatabase:
         Never names, and never a total number of hidden coders: the
         cascade previews set that convention (`database.py` at
         `collateral_for_cids`) and a pseudonymisation preview keeps it.
-        `override_required` is the owner's ruling X1 in one boolean: a
-        pure position shift changes no coding decision and is exempt; a
-        resize, a snap or a deletion changes what the coder marked and is
-        not.
+        `override_required` is the owner's ruling X1, refined by ruling
+        7.3(3) of 2026-09-15, in one boolean: a pure position shift
+        changes no coding decision and is exempt, and so is a pure
+        substitution (the row covered the whole name and afterwards
+        covers the whole pseudonym, whatever the two lengths); a
+        resize, a snap or a deletion changes what the coder marked and
+        is not. The exempt classes are counted beside the others, so
+        the preview says what the run does to every hidden row and not
+        only to the ones that gate it.
         """
         from . import pseudonymise as engine
 
-        counts = {"shifted": 0, "resized": 0, "snapped": 0, "deleted": 0}
+        counts = {"shifted": 0, "substituted": 0, "resized": 0,
+                  "snapped": 0, "deleted": 0}
         for table in QualcoderDatabase.PSEUDONYMISE_HIDEABLE:
             for row in item["rows"].get(table, ()):
                 mapped = row["map"]
@@ -8551,8 +8557,9 @@ class QualcoderDatabase:
         totals = {"replacements": 0, "files": 0, "codings_changed": 0,
                   "annotations_changed": 0, "case_links_changed": 0,
                   "rows_deleted": 0, "unique_constraint_collisions": 0}
-        hidden_totals = {"shifted": 0, "resized": 0, "snapped": 0,
-                         "deleted": 0, "override_required": False}
+        hidden_totals = {"shifted": 0, "substituted": 0, "resized": 0,
+                         "snapped": 0, "deleted": 0,
+                         "override_required": False}
         # One budget for the whole preview, spent across every file and
         # every entry (engine.MAX_CONTEXT_TOTAL_CHARS).
         context_budget = engine.MAX_CONTEXT_TOTAL_CHARS
@@ -8594,7 +8601,8 @@ class QualcoderDatabase:
             case_links = self._pseudonymise_counts(item["rows"]["case_text"],
                                                   len(text))
             hidden = self.pseudonymise_hidden_rows(item)
-            for key in ("shifted", "resized", "snapped", "deleted"):
+            for key in ("shifted", "substituted", "resized", "snapped",
+                        "deleted"):
                 hidden_totals[key] += hidden[key]
             hidden_totals["override_required"] = (
                 hidden_totals["override_required"] or
