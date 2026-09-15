@@ -401,7 +401,7 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   replaces the fixed cap, and content matches carry `match_start`,
   `match_end`, `match_text` and `preview_start`, so a hit can become a
   coding without arithmetic on the preview.
-- Serialised tool JSON after the flagship and its four fix rounds: full =
+- Serialised tool JSON after the flagship and its five fix rounds: full =
   155,323 characters (about 38.8k tokens at chars/4) over 70 tools,
   core = 56,317 (about 14.1k) over 21. Before the flagship, after Batch B: 143,793 and
   56,317, over 69 tools and 21. At the Batch A point: 128,297 and

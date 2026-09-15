@@ -4250,10 +4250,12 @@ class TestTheDocumentsTellTheTruth:
         "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
         "both keyed with the per-user token secret rather than plain "
         "digests",
-        # Fix round 4, L3: prune_backups opens no database connection.
+        # Fix round 4, L3, worded exactly in fix round 5: prune_backups
+        # probes data.qda read-only through validate_qda_path and
+        # constructs no fresh project connection, so it settles nothing.
         "and so does any write that opens the database, because such a "
-        "write opens a fresh connection (`prune_backups` touches only the "
-        "file system and settles nothing)",
+        "write opens a fresh connection (`prune_backups` opens no fresh "
+        "project connection and settles nothing)",
         # Fix round 4, R3: the symlink route.
         "On `pseudonymise_source`'s result the name of a skipped symlink "
         "is withheld where a reader of it would see a name from the "
@@ -4271,7 +4273,8 @@ class TestTheDocumentsTellTheTruth:
 
     def test_the_changelog_counts_the_rounds(self):
         entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
-        assert "after the flagship and its four fix rounds" in entry
+        assert "after the flagship and its five fix rounds" in entry
+        assert "after the flagship and its four fix rounds" not in entry
         assert "after the flagship and its three fix rounds" not in entry
         assert "after the flagship and its fix round:" not in entry
 
