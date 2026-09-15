@@ -10,6 +10,7 @@ import logging
 import sqlite3
 import tempfile
 import hashlib
+import hmac
 import functools
 import unicodedata
 from pathlib import Path
@@ -90,6 +91,7 @@ from .preview_tokens import (
     ensure_state_dir,
     fingerprint_rows,
     issue,
+    load_secret,
     state_home as preview_tokens_state_home,
     verify,
 )
@@ -10495,7 +10497,7 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
 def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            compiled, bind: str, backup_path: Optional[str],
                            journal_entry: Optional[str],
-                           when: datetime) -> Dict[str, Any]:
+                           when: datetime, secret: str) -> Dict[str, Any]:
     """The run record kept in the state home (D1 3.2).
 
     Spans in the NEW text plus row ids and old and new offsets: enough
@@ -10562,10 +10564,19 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         "case_mode": plan["case_mode"],
         "overlap_policy": plan["overlap_policy"],
         # The mapping itself is never stored; this is only enough to
-        # tell whether a later reversal was given the same one.
-        "mapping_sha256": hashlib.sha256(
+        # tell whether a later reversal was given the same one. Keyed
+        # with the per-user token secret rather than a plain digest,
+        # because a plain digest of a mapping whose pseudonyms are
+        # listed two lines below is a confirmation oracle for the
+        # originals: a dictionary of first names recovered one in twenty
+        # guesses (fix round 3, S2). A reversal on the same account
+        # recomputes it; on another, or after a rotation, it cannot be
+        # confirmed, which is the safe direction.
+        "mapping_hmac_sha256": hmac.new(
+            secret.encode("ascii"),
             json.dumps(canonical_map, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False).encode("utf-8")).hexdigest(),
+                       ensure_ascii=False).encode("utf-8"),
+            hashlib.sha256).hexdigest(),
         "entries": [{"index": entry.index, "pseudonym": entry.pseudonym}
                     for entry in entries],
         "files": files,
@@ -10895,10 +10906,24 @@ def pseudonymise_source(
                     "backup was taken."),
                 "skipped_files": preview.get("skipped_files", []),
             }
+        if owner_error is not None:
+            # The last check before the write, where `_resolve_write_owner`
+            # says it belongs: after the token, the hidden-coder rule and
+            # the collision rule, on a run that would write a journal row.
+            return owner_error
         return None
 
+    # The owner the journal entry would be written under, resolved on the
+    # PREVIEW as well as on the execute: a project with no AI coder name
+    # used to preview cleanly and refuse only at execute time, after the
+    # researcher had said yes (fix round 3, S4). On the preview the ask
+    # rides in `execute_with` and a warning says it; on the execute it is
+    # the last refusal before the write, AFTER the token is verified, so
+    # a malformed token is answered as malformed and not with a naming
+    # question (D1 3.8's order).
     owner = None
-    if preview_token is not None and record_in_journal:
+    owner_error = None
+    if record_in_journal:
         owner, owner_error = _resolve_write_owner()
         if owner_error is not None:
             # The rebate: the journal entry is an audit record, not the
@@ -10911,16 +10936,25 @@ def pseudonymise_source(
                 "rewrite itself writes no owner, so it needs no coder "
                 "name. The run manifest in ~/.qualcoder_mcp still records "
                 "it.")
-            return json.dumps(owner_error, indent=2)
 
     captured: Dict[str, Any] = {}
     # Both fixed before the write, because the journal entry is written
     # INSIDE the transaction and has to be able to name the manifest that
     # will sit beside it. `bind` covers the tool, the arguments and the
     # project, all of which are settled here; `when` is read once so the
-    # name in the journal and the name on disk cannot disagree.
+    # name in the journal and the name on disk cannot disagree. The
+    # bind is keyed with the secret for this tool (`KEYED_BIND`), so
+    # the secret is read here, once, and the refusal when it cannot be
+    # is the one the token gate would have given a line later.
     when = datetime.now(timezone.utc)
-    bind = bind_id("pseudonymise_source", token_args, _token_project())
+    try:
+        secret = load_secret()
+    except PreviewSecretUnavailable:
+        return json.dumps(
+            _token_error("preview_secret_unavailable", "pseudonymise_source"),
+            indent=2)
+    bind = bind_id("pseudonymise_source", token_args, _token_project(),
+                   secret)
     manifest_name = f"run_{when.strftime('%Y%m%dT%H%M%SZ')}_{bind}.json"
 
     def _state_on_write_connection(wdb):
@@ -11027,6 +11061,21 @@ def pseudonymise_source(
         preview = result.get("preview")
         if isinstance(preview, dict):
             preview.pop("_effect", None)
+        if owner_error is not None and "execute_with" in result:
+            # The preview carries the ask, so the researcher hears it
+            # before approving and the model has the arguments to act on
+            # it in the same place it finds the execute recipe.
+            ask = dict(owner_error)
+            ask["message"] = ask.pop("error")
+            result["execute_with"]["before_executing"] = ask
+            result.setdefault("warnings", []).append(
+                "Warning: no AI coder name is set for this project, and the "
+                "journal entry this run writes by default needs one. Before "
+                "executing, ask the user which name to use and call "
+                "set_project_ai_coder_name (see execute_with.before_executing "
+                "for the quick picks), or execute with "
+                "record_in_journal=false; the run manifest records the run "
+                "either way.")
     if not isinstance(result, dict) or "error" in result or \
             not captured.get("written"):
         return json.dumps(result, indent=2)
@@ -11034,7 +11083,7 @@ def pseudonymise_source(
     backup_path = result.get("backup_path")
     manifest = _pseudonymise_manifest(
         captured["plan"], captured["written"], compiled, bind, backup_path,
-        captured.get("journal_entry"), when)
+        captured.get("journal_entry"), when, secret)
     written_to = _write_run_manifest(manifest, manifest_name)
     if written_to is None:
         result["manifest_path"] = None

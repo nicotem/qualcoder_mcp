@@ -1114,6 +1114,24 @@ class TestCanonicalMapping:
         assert a == b
         assert a[1]["variants"] == ["T1", "T2"]
 
+    def test_canonical_positions_follow_the_canonical_order(self):
+        """Fix round 3, S3: the signed effect keys entries on these
+        positions, so the same mapping in another order signs the same
+        effect. Caller index 0 is "Zed" here and sorts last."""
+        mapping = P.validate_mapping([
+            {"original": "Zed", "pseudonym": "Pat"},
+            {"original": "Ann", "pseudonym": "Sam", "variants": ["Annie"]},
+            {"original": "Mary", "pseudonym": "Kim"},
+        ])
+        assert P.canonical_entry_positions(mapping) == {0: 2, 1: 0, 2: 1}
+        reordered = P.validate_mapping([
+            {"original": "Mary", "pseudonym": "Kim"},
+            {"original": "Zed", "pseudonym": "Pat"},
+            {"original": "Ann", "pseudonym": "Sam", "variants": ["Annie"]},
+        ])
+        assert P.canonical_entry_positions(reordered) == {0: 1, 1: 2, 2: 0}
+        assert P.canonical_mapping(mapping) == P.canonical_mapping(reordered)
+
     def test_the_canonical_form_is_nfc(self):
         composed = "José"
         decomposed = "José"

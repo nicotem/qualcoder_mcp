@@ -8185,12 +8185,27 @@ class QualcoderDatabase:
         absent, and the replacement spans here are the FULL set rather
         than the truncated list the model reads.
         """
+        from . import pseudonymise as engine
+
+        # Entries are signed by their CANONICAL position, never by the
+        # caller's index: the token binds the canonical mapping, so the
+        # effect it signs must not depend on the order the caller typed
+        # the entries in (fix round 3, S3). The readable preview keeps
+        # the caller's indices, which are what the model can relay.
+        canon = engine.canonical_entry_positions(plan["compiled"].mapping)
         files = []
         for item in plan["files"]:
             per_entry: Dict[int, List[List[int]]] = {}
             for replacement in item["replacements"]:
-                per_entry.setdefault(replacement.entry, []).append(
+                per_entry.setdefault(canon[replacement.entry], []).append(
                     [replacement.start, replacement.end])
+            conflicts = sorted(
+                ({**conflict,
+                  "entry": canon[conflict["entry"]],
+                  "loses_to_entry": canon[conflict["loses_to_entry"]]}
+                 for conflict in item["overlap_conflicts"]),
+                key=lambda c: (c["span"], c["entry"], c["chosen_span"],
+                               c["loses_to_entry"], c["form"]))
             files.append({
                 "file_id": item["file_id"],
                 "replacements": [{"entry": index, "count": len(spans),
@@ -8202,7 +8217,7 @@ class QualcoderDatabase:
                     item["rows"]["annotation"]),
                 "case_links": self._pseudonymise_counts(
                     item["rows"]["case_text"], len(item["old_text"])),
-                "overlap_conflicts": item["overlap_conflicts"],
+                "overlap_conflicts": conflicts,
                 "overlap_conflicts_truncated":
                     item["overlap_conflicts_truncated"],
                 "unique_constraint_collisions": item["collisions"],

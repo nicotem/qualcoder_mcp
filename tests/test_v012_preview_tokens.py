@@ -188,6 +188,58 @@ class TestCanonicalJson:
         with pytest.raises(KeyError):
             pt.canonical_args("set_memo", target_id=1)
 
+    def test_the_flagship_bind_is_keyed_with_the_secret(self, tmp_path,
+                                                       monkeypatch):
+        """Fix round 3, S2. D3 3.2 made `bind` a plain digest on the
+        premise that every bound argument was already in the
+        conversation. The flagship binds a mapping that can be the
+        researcher's reverse key, and a plain digest of it, beside the
+        pseudonym the preview shows, confirmed a guessed original in
+        twenty tries. Keyed with the secret it confirms nothing to
+        anyone without it, and the verifier, which has it, still tells
+        the two refusals apart."""
+        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        args = pt.canonical_args(
+            "pseudonymise_source",
+            mapping=[{"original": "Thomas", "pseudonym": "Alex",
+                      "variants": []}],
+            file_ids=None, case_mode="exact", overlap_policy="snap_to_pseudonym")
+        token = pt.issue("pseudonymise_source", args, "/p/data.qda", "s1")
+        bind = token.split(".")[2]
+        plain = pt.hashlib.sha256(pt.canonical(
+            pt._binding("pseudonymise_source", args, "/p/data.qda")
+        ).encode("utf-8")).hexdigest()[:8]
+        assert bind != plain
+        secret = pt.load_secret()
+        keyed = pt.hmac.new(secret.encode("ascii"), pt.canonical(
+            pt._binding("pseudonymise_source", args, "/p/data.qda")
+        ).encode("utf-8"), pt.hashlib.sha256).hexdigest()[:8]
+        assert bind == keyed
+        assert pt.bind_id("pseudonymise_source", args, "/p/data.qda") == keyed
+        # The two refusals are still told apart.
+        assert pt.verify(token, "pseudonymise_source", args, "/p/data.qda",
+                         "s2") == pt.PROJECT_CHANGED
+        other = dict(args, case_mode="insensitive")
+        assert pt.verify(token, "pseudonymise_source", other, "/p/data.qda",
+                         "s1") == pt.OTHER_OPERATION
+
+    def test_the_codebook_binds_stay_public(self, tmp_path, monkeypatch):
+        """The six older tools bind ids the conversation holds; their
+        bind is the plain digest it always was, and D3's tampered-bind
+        experiment above still holds for them."""
+        monkeypatch.setattr(pt, "STATE_HOME", tmp_path / "state")
+        args = {"code_id": 1}
+        token = pt.issue("delete_code", args, "/p/data.qda", "s")
+        plain = pt.hashlib.sha256(pt.canonical(
+            pt._binding("delete_code", args, "/p/data.qda")
+        ).encode("utf-8")).hexdigest()[:8]
+        assert token.split(".")[2] == plain
+
+    def test_the_keyed_table_names_the_flagship_and_nothing_outside_the_registry(
+            self):
+        assert pt.KEYED_BIND == frozenset({"pseudonymise_source"})
+        assert pt.KEYED_BIND <= set(pt.REGISTRY)
+
     def test_the_flagship_binds_only_what_decides_the_effect(self):
         """The four arguments that change the text or a row, and no more.
 

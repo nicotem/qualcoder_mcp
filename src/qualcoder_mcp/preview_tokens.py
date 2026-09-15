@@ -16,7 +16,11 @@ process between the preview and the execute changes nothing.
 This module is the ONLY authorisation-token codec in this server. Every
 gated tool is one row in `REGISTRY` below, which says how to canonicalise
 its arguments; there is no tool-specific branch anywhere else, so adding
-a tool (the flagship's `pseudonymise_source` next) is one row.
+a tool (the flagship's `pseudonymise_source` next) is one row. A second
+table, `KEYED_BIND`, names the tools whose bound arguments carry a value
+the conversation never supplied; for those the public `bind` is keyed
+with the secret, because an unkeyed digest of a secret is a confirmation
+oracle for it (fix round 3, S2).
 
 B4's cursor tokens are a different thing and deliberately do not share
 this codec (D4 3.11): a cursor is a position and is replayable by design;
@@ -42,10 +46,13 @@ logger = logging.getLogger(__name__)
 TOKEN_PREFIX = "qcp1"
 # The grammar of a token this server issues, so exactly one spelling of
 # each AUTHENTICATED field verifies. `bind` is outside that claim by
-# design: it is public and non-authoritative (D3 3.2), the MAC does not
-# cover it, and a token with `bind` overwritten still verifies, which a
-# gate confirmed by experiment. Nothing downstream reads it from the
-# token; the flagship recomputes it server-side. `[0-9]`, never `\d`: in
+# design: it is non-authoritative (D3 3.2), the MAC does not cover it,
+# and a token with `bind` overwritten still verifies, which a gate
+# confirmed by experiment. Nothing downstream reads it from the token;
+# the flagship recomputes it server-side. Public for the six codebook
+# tools, whose bound arguments are ids the conversation already holds;
+# keyed with the secret for the flagship, whose bound mapping can be the
+# researcher's reverse key (`KEYED_BIND`). `[0-9]`, never `\d`: in
 # a str pattern `\d`
 # matches every Unicode Nd digit and `int()` decodes fullwidth,
 # Arabic-Indic, Devanagari and the rest to the same integer, so a live
@@ -397,6 +404,18 @@ REGISTRY: Dict[str, Any] = {
     "pseudonymise_source": _args_pseudonymise_source,
 }
 
+# The tools whose public `bind` is keyed with the secret. D3 3.2 declared
+# `bind` public on the premise that every bound argument was already in
+# the conversation, which is true of a code id and false of a mapping
+# read from the project's own `pseudonyms.json`: with the pseudonym and
+# the other three arguments visible in the preview, an unkeyed sha256
+# over the canonical mapping let a dictionary of first names confirm
+# the original in twenty guesses. Keying it costs nothing the verifier
+# does not already have (it holds the secret), so `verify` still tells
+# `project_changed` from `token_other_operation`, and nobody without the
+# secret can confirm a guess (fix round 3, S2).
+KEYED_BIND = frozenset({"pseudonymise_source"})
+
 
 def canonical_args(tool: str, **kwargs) -> Dict[str, Any]:
     """The canonical arguments for a gated tool (the only place they live)."""
@@ -425,17 +444,28 @@ def _binding(tool: str, args: Dict[str, Any], project: str) -> Dict[str, Any]:
             "project": project}
 
 
-def bind_id(tool: str, args: Dict[str, Any], project: str) -> str:
-    """The public, non-authoritative operation id carried in the token.
+def bind_id(tool: str, args: Dict[str, Any], project: str,
+            secret: Optional[str] = None) -> str:
+    """The non-authoritative operation id carried in the token.
 
     Eight hex characters over the binding, so the verifier can tell "this
     token is for another operation" from "the project changed under this
     one" and say the more useful of the two. It proves nothing by itself;
     the MAC does that.
+
+    A plain digest for the tools whose arguments the conversation already
+    holds; HMAC under the secret for the tools in `KEYED_BIND`, whose
+    arguments it may not. `secret` is taken when the caller already has
+    it (`issue` and `verify` do) and loaded otherwise, which can raise
+    `PreviewSecretUnavailable` exactly as `issue` would.
     """
-    return hashlib.sha256(
-        canonical(_binding(tool, args, project)).encode("utf-8")
-    ).hexdigest()[:8]
+    payload = canonical(_binding(tool, args, project)).encode("utf-8")
+    if tool in KEYED_BIND:
+        if secret is None:
+            secret = load_secret()
+        return hmac.new(secret.encode("ascii"), payload,
+                        hashlib.sha256).hexdigest()[:8]
+    return hashlib.sha256(payload).hexdigest()[:8]
 
 
 def _mac(secret: str, tool: str, args: Dict[str, Any], project: str,
@@ -453,10 +483,10 @@ def issue(tool: str, args: Dict[str, Any], project: str, state: str,
     """Mint a token for one previewed operation."""
     issued = _now() if now is None else int(now)
     secret = load_secret()
-    token = (f"{TOKEN_PREFIX}.{issued}.{bind_id(tool, args, project)}."
+    bind = bind_id(tool, args, project, secret)
+    token = (f"{TOKEN_PREFIX}.{issued}.{bind}."
              f"{_mac(secret, tool, args, project, state, issued)}")
-    logger.debug("Issued preview token for %s (%s)", tool,
-                 bind_id(tool, args, project))
+    logger.debug("Issued preview token for %s (%s)", tool, bind)
     return token
 
 
@@ -524,7 +554,7 @@ def verify(token: Any, tool: str, args: Dict[str, Any], project: str,
         # for THIS operation and the project has changed under it, which
         # is the more useful thing to say. It is public and proves
         # nothing on its own; the MAC has already refused either way.
-        if hmac.compare_digest(bind, bind_id(tool, args, project)):
+        if hmac.compare_digest(bind, bind_id(tool, args, project, secret)):
             return PROJECT_CHANGED
         return OTHER_OPERATION
     return OK

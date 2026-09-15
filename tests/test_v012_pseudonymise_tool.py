@@ -543,6 +543,29 @@ class TestToken:
         assert result.get("success") is True, result
         assert "reason" not in result
 
+    def test_the_same_mapping_in_another_order_executes(self, project):
+        """Fix round 3, S3. `canonical_mapping` binds the same token for
+        the same entries in any order, and the signed effect used to key
+        each replacement on the caller's index, so the reversed mapping
+        was refused as "the project changed" on a project that had not.
+        """
+        out = preview_of()
+        reversed_mapping = list(reversed(MAPPING))
+        assert reversed_mapping != MAPPING
+        # The readable preview keeps the CALLER's indices, which are
+        # what the model can relay; only the signed effect is canonical.
+        again = preview_of(mapping=reversed_mapping)
+        assert [b["entry"] for b in again["preview"]["files"][0]["replacements"]
+                ] == [0, 1]
+        assert again["preview"]["files"][0]["replacements"][0]["pseudonym"] \
+            == "Sam"
+        assert again["preview_token"].split(".")[2] == \
+            out["preview_token"].split(".")[2]          # one bind
+        result = execute_from(out, mapping=reversed_mapping)
+        assert result.get("success") is True, result
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"].startswith("Alex said")
+
     def test_an_expired_token_sends_the_model_back_to_the_preview(
             self, project, monkeypatch):
         """No test sleeps and none reads the clock twice: the token's own
@@ -1311,22 +1334,73 @@ class TestJournal:
         assert "Thomas" not in row["jentry"]
         assert "name withheld" in row["jentry"]
 
-    def test_an_unset_ai_coder_name_asks_and_offers_the_rebate(
-            self, project):
-        """The rewrite writes no owner anywhere, so the only row that
-        needs a coder name is the journal entry. The refusal says so and
-        names the argument that skips it."""
+    def _unset(self, project):
         (project / SIDECAR_NAME).unlink()
         server.db.close()
         server.db = QualcoderDatabase(str(project))
+
+    def test_an_unset_ai_coder_name_is_asked_for_in_the_preview(
+            self, project):
+        """Fix round 3, S4. The ask used to land at execute time, after
+        the researcher had approved. The preview now carries it: a
+        warning the model relays, and the ask itself in `execute_with`,
+        with the quick picks, beside the recipe it belongs to."""
+        self._unset(project)
         out = preview_of()
+        assert out["requires_confirmation"] is True
+        assert out["preview_token"]
+        ask = out["execute_with"]["before_executing"]
+        assert ask["action_required"] == "set_project_ai_coder_name"
+        assert "No AI coder name is set for this project yet" in ask["message"]
+        assert "error" not in ask
+        assert ask["quick_picks"]
+        assert "record_in_journal=false" in ask["alternative"]
+        warning = [w for w in out["warnings"]
+                   if "no AI coder name is set" in w]
+        assert len(warning) == 1
+        assert "execute_with.before_executing" in warning[0]
+        _house_rules(warning + [ask["message"]], ["warning", "ask"])
+        # With record_in_journal=false the run needs no owner, and the
+        # preview says nothing about one.
+        quiet = preview_of(record_in_journal=False)
+        assert "before_executing" not in quiet["execute_with"]
+        assert not any("no AI coder name is set" in w
+                       for w in quiet.get("warnings", []))
+
+    def test_the_ask_comes_after_the_token_and_before_the_write(
+            self, project):
+        """D1 3.8's order: a malformed token is answered as malformed,
+        not with a naming question; a valid one is answered with the
+        ask, nothing is written, and the same token executes once the
+        name is set, because the setting is not in the signed state."""
+        self._unset(project)
+        out = preview_of()
+        malformed = call(mapping=MAPPING, preview_token="qcp1.1.2.3")
+        assert malformed["reason"] == "token_malformed"
+        assert "action_required" not in malformed
         refused = execute_from(out)
-        assert refused["action_required"]
+        assert refused["action_required"] == "set_project_ai_coder_name"
         assert "record_in_journal=false" in refused["alternative"]
         assert backups(project) == []
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == TEXT
+        named = json.loads(server.set_project_ai_coder_name("Model X"))
+        assert named["ai_coder_name"]["name"] == "Model X"
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert query(project, "SELECT owner FROM journal")[0]["owner"] == \
+            "Model X"
+
+    def test_the_rebate_still_stands(self, project):
+        """The rewrite writes no owner anywhere, so the only row that
+        needs a coder name is the journal entry; turning it off is the
+        alternative the ask names."""
+        self._unset(project)
+        out = preview_of()
         result = execute_from(out, record_in_journal=False)
         assert result["success"] is True
         assert result["journal_entry"] is None
+        assert query(project, "SELECT jid FROM journal") == []
 
 
 # =============================================================================
@@ -3006,6 +3080,96 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
         result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"}],
                       preview_token=out["preview_token"])
         assert result.get("success") is True, result
+
+    def test_a_sidecar_token_executes_from_a_typed_mapping_in_any_order(
+            self, project):
+        """Fix round 3, S3: the claim above held only when the typed
+        order equalled the sidecar's."""
+        self._sidecar(project, [{"original": "Mary Ann", "pseudonym": "Sam"},
+                                {"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        result = call(mapping=[{"original": "Thomas", "pseudonym": "Alex"},
+                               {"original": "Mary Ann", "pseudonym": "Sam"}],
+                      preview_token=out["preview_token"])
+        assert result.get("success") is True, result
+
+    # A dictionary of first names, the judge's own, with the real one in
+    # it. Nobody without the secret can tell which.
+    DICTIONARY = ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace",
+                  "Heidi", "Ivan", "Judy", "Mallory", "Niaj", "Olivia",
+                  "Peggy", "Rupert", "Sybil", "Trent", "Victor", "Walter",
+                  "Thomas", "Mary Ann", "Tom"]
+
+    def test_neither_the_bind_nor_the_manifest_confirms_a_guessed_name(
+            self, project):
+        """Fix round 3, S2: the final-verification judge's attack, kept.
+
+        From the preview payload alone (the project path, the pseudonym,
+        the execute_with arguments and the token's public bind) a plain
+        sha256 over each candidate mapping matched the bind after twenty
+        guesses; after the execute, the manifest's plain mapping digest
+        confirmed the same guess. Both are keyed with the per-user secret
+        now, so the attacker's recomputation, which is all the attacker
+        has, matches nothing; and the verifier, which holds the secret,
+        still recomputes the bind exactly.
+        """
+        self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        assert_carries_no_name(json.dumps(out), "preview")
+        bind = out["preview_token"].split(".")[2]
+        ew = out["execute_with"]["arguments"]
+        pseudonym = out["preview"]["files"][0]["replacements"][0]["pseudonym"]
+        project_id = server._token_project()
+
+        def plain_bind(candidate):
+            mapping = P.canonical_mapping(P.validate_mapping(
+                [{"original": candidate, "pseudonym": pseudonym}]))
+            args = pt.canonical_args(
+                "pseudonymise_source", mapping=mapping,
+                file_ids=ew.get("file_ids"), case_mode=ew["case_mode"],
+                overlap_policy=ew["overlap_policy"])
+            return pt.hashlib.sha256(pt.canonical(pt._binding(
+                "pseudonymise_source", args, project_id)).encode("utf-8")
+            ).hexdigest()[:8]
+
+        recovered = [name for name in self.DICTIONARY
+                     if plain_bind(name) == bind]
+        assert recovered == [], recovered
+        # The secret holder's recomputation is exact, so the bind is
+        # keyed rather than merely different.
+        true_mapping = P.canonical_mapping(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        true_args = pt.canonical_args(
+            "pseudonymise_source", mapping=true_mapping,
+            file_ids=ew.get("file_ids"), case_mode=ew["case_mode"],
+            overlap_policy=ew["overlap_policy"])
+        assert pt.bind_id("pseudonymise_source", true_args, project_id) == bind
+
+        result = execute_as_recipe(out)
+        assert result.get("success") is True, result
+        manifest = json.loads(
+            Path(result["manifest_path"]).read_text(encoding="utf-8"))
+        assert "mapping_sha256" not in manifest
+        digest = manifest["mapping_hmac_sha256"]
+        assert re.fullmatch(r"[0-9a-f]{64}", digest)
+        assert manifest["token_bind"] == bind
+
+        def plain_digest(candidate):
+            mapping = P.canonical_mapping(P.validate_mapping(
+                [{"original": candidate, "pseudonym": pseudonym}]))
+            return pt.hashlib.sha256(json.dumps(
+                mapping, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False).encode("utf-8")).hexdigest()
+
+        assert [name for name in self.DICTIONARY
+                if plain_digest(name) == digest] == []
+        # And the keyed digest is the one a reversal on this account
+        # would recompute.
+        keyed = pt.hmac.new(pt.load_secret().encode("ascii"), json.dumps(
+            true_mapping, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8"),
+            pt.hashlib.sha256).hexdigest()
+        assert digest == keyed
 
 
 # =============================================================================

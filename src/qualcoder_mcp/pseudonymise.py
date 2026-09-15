@@ -457,6 +457,29 @@ def canonical_mapping(mapping: Mapping) -> List[Dict[str, Any]]:
                           item["variants"]))
 
 
+def canonical_entry_positions(mapping: Mapping) -> Dict[int, int]:
+    """Each caller entry index, as its position in `canonical_mapping`.
+
+    The signed effect block records which ENTRY made each replacement,
+    and it used to record the caller's index: so the identical mapping
+    given in a different order, which `canonical_mapping` binds to the
+    same token, signed a different effect and was refused as
+    "the project changed" on a project that had not (fix round 3, S3).
+    Keyed on the canonical order, the same mapping signs the same effect
+    however it was typed, and a token issued from `pseudonyms.json`
+    executes from the identical typed mapping in any order.
+    """
+    def nfc(value: str) -> str:
+        return unicodedata.normalize("NFC", value)
+
+    order = sorted(
+        range(len(mapping.entries)),
+        key=lambda index: (nfc(mapping.entries[index].original),
+                           nfc(mapping.entries[index].pseudonym),
+                           sorted(nfc(v) for v in mapping.entries[index].variants)))
+    return {caller: position for position, caller in enumerate(order)}
+
+
 # --------------------------------------------------------------------------
 # Compiling and matching
 # --------------------------------------------------------------------------
