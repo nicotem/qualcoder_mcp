@@ -571,7 +571,11 @@ def _strip_unseen(text: str) -> str:
     hieroglyph format controls) are visible marks by Unicode's own
     account, so stripping them is a widening rather than the property;
     it is kept because a wider reading here is the safe one and the
-    round before this one already read that wide.
+    round before this one already read that wide. Unlike the table,
+    the sweep reads the interpreter's own Unicode tables, so which
+    visible format marks it removes beyond the property varies with
+    the interpreter, in the over-detect direction only (fix round 5,
+    D-1 note); the table does not move.
     """
     return "".join(ch for ch in text
                    if ord(ch) not in _DEFAULT_IGNORABLE

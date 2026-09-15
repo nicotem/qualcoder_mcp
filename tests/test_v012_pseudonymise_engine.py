@@ -24,6 +24,7 @@ whole name and inserts the whole pseudonym at the same offset. Parity is
 with the WALK, for that edit shape, and a test below says so.
 """
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -1938,7 +1939,11 @@ class TestNameDetector:
     # The Default_Ignorable_Code_Point table (fix round 4, R2), pinned at
     # every range boundary: the first and last code point of each range
     # are in it, the code points on either side are not, and the total
-    # is the file's own. A transcription slip in any range is red here.
+    # is the file's own. A dropped range, or one boundary moved on its
+    # own, is red here. A range shifted by one at BOTH ends is not: the
+    # count and the range total are unchanged, and the boundary pin
+    # reads its boundaries from the table it pins (fix round 5, S3).
+    # The digest below states the set independently of the module.
     def test_the_table_is_the_unicode_property_as_transcribed(self):
         assert P.DEFAULT_IGNORABLE_UNICODE_VERSION == "15.1.0"
         assert P.DEFAULT_IGNORABLE_COUNT == 4174
@@ -1967,6 +1972,22 @@ class TestNameDetector:
             assert detector.contains(
                 f"Tho{chr(code_point)}mas_interview.txt") is True, \
                 f"U+{code_point:04X}"
+
+    # The set stated independently of the module (fix round 5, S3): the
+    # sha256 of the Default_Ignorable_Code_Point code points of Unicode
+    # 15.1.0's DerivedCoreProperties.txt, one per line as `U+XXXX` in
+    # ascending order with no trailing newline, computed from the file
+    # itself (14.0.0 and 16.0.0 give the same digest; 13.0.0, which had
+    # not assigned U+180F, gives 9be1ed89...). An edit to a range that
+    # keeps the count and the range total is red here.
+    DEFAULT_IGNORABLE_SHA256 = (
+        "b4a55dee5bbfce621938f79f5e5d3581f65d359afeb4c406ea8d79ab6ee54ed8")
+
+    def test_the_table_is_the_property_file_by_digest(self):
+        listing = "\n".join(f"U+{code_point:04X}"
+                            for code_point in sorted(P._DEFAULT_IGNORABLE))
+        assert hashlib.sha256(listing.encode("ascii")).hexdigest() == \
+            self.DEFAULT_IGNORABLE_SHA256
 
     def test_the_price_of_the_wider_reading_is_paid_knowingly(self):
         """An entry for "Tom" makes "tomorrow" count. A rule that
