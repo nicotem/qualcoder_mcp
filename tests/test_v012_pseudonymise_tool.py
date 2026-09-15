@@ -882,10 +882,13 @@ class TestHiddenCoders:
         mapping = _with_pseudonym(pseudonym)
         out = preview_of(mapping=mapping)
         hidden = out["preview"]["hidden_coder_rows"]
-        assert hidden["substituted"] == 1
+        # The gate first, so a revert to the length rule fails the
+        # shorter and the longer case HERE and the equal case only on
+        # the count below (the equal case was exempt before as well).
+        assert hidden["override_required"] is False
         assert (hidden["resized"], hidden["snapped"], hidden["deleted"]) \
             == (0, 0, 0)
-        assert hidden["override_required"] is False
+        assert hidden["substituted"] == 1
         assert "allow_hidden_coder" not in out["execute_with"]["arguments"]
         result = execute_from(out, mapping=mapping)
         assert result["success"] is True
