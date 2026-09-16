@@ -60,7 +60,7 @@ Issues help everyone, permanently. Please use
   (`qualcoder-mcp --version` in the environment you installed into, or
   `python -m qualcoder_mcp.server --version` for a git install; `pip
   show qualcoder-mcp`, `pipx list` and `uv tool list` still work and
-  spell `0.11.0-alpha` as `0.11.0a0`), your MCP host (Claude Desktop, Claude
+  spell `0.12.0-alpha` as `0.12.0a0`), your MCP host (Claude Desktop, Claude
   Code, LM Studio, other), and the toolset (`QUALCODER_MCP_TOOLSET`:
   `core`, or `full` when the variable is not set). The bug report
   template asks for all of these.
