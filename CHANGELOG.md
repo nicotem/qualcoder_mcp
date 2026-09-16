@@ -7,17 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-v0.12 in two batches and a flagship, from the QualCoder 4.0 ground-truth
-study, with the owner rulings of 2026-09-10 and the interface ruling of
-2026-09-14. Batch A: colour snapping, idempotent creates, methodology
-vocabulary (dossiers D5 and D6, including X2 on duplicate names); one
-resource added. Batch B: the project's AI coder name, preview tokens
-with collateral disclosure, the coder comparison, and the novelty filter
-with cursors and sampling (dossiers D7, D3, D2, D4). The flagship:
-`pseudonymise_source` (dossier D1). Three tools added,
+Nothing yet.
+
+## [0.12.0-alpha] - 2026-09-DD
+
+v0.12 in two batches, a flagship and one follow-up, from the QualCoder
+4.0 ground-truth study, with the owner rulings of 2026-09-10, the
+interface ruling of 2026-09-14 and the rulings of 2026-09-15. Batch A:
+colour snapping, idempotent creates, methodology vocabulary (dossiers
+D5 and D6, including X2 on duplicate names), `--version`, the
+`session_id` duplicate removed, Dependabot; one resource added. Batch
+B: the project's AI coder name, preview tokens with collateral
+disclosure, the coder comparison, and the novelty filter with cursors
+and sampling (dossiers D7, D3, D2, D4). The flagship:
+`pseudonymise_source` (dossier D1), through five fix rounds. The
+follow-up: the hidden-coder override no longer depends on pseudonym
+length (owner ruling 7.3(3)). Three tools added,
 `set_project_ai_coder_name`, `compare_coders` and `pseudonymise_source`:
-70 in the full toolset, 21 in `core`. Parity claims cite QualCoder
-master at pinned commit 9bddf17 and the 3.8.2 tag.
+70 in the full toolset, 21 in `core`. The declared dependency floor is
+`mcp>=1.17.0,<2`. Parity claims cite QualCoder master at pinned commit
+9bddf17 and the 3.8.2 tag. Each batch went through a QA gate, a
+Security gate and re-verification until clean, then six-platform CI;
+the suite at the release commit: 3022 passed, 3 skipped, 0 failed. The
+six in-QualCoder acceptance checks for the flagship (D1 6.5) were
+prepared, fixture and script, and were NOT run before this release; the
+release notes say so under known limits.
+
+### Upgrading from 0.11.x
+
+- Upgrade the package and restart the MCP host fully so it reloads the
+  tool descriptions (`qualcoder-mcp --version` confirms what is
+  installed: `0.12.0a0`). There is no migration step; project files and
+  session files are unchanged. One new file appears, `qualcoder_mcp.json`,
+  described below.
+- **The `mcp` floor is `>=1.17.0,<2`** (it read `>=1.2.0`). `pip
+  install --upgrade qualcoder-mcp` upgrades mcp with it. An environment
+  that cannot move mcp past 1.16.x (a constraints file, a frozen
+  environment) cannot install 0.12; such an environment could start
+  0.11 but not honour `QUALCODER_MCP_TOOLSET=core`. The upper cap is
+  unchanged.
+- **`confirm` is inert on the six destructive tools.** `merge_codes`,
+  `delete_code`, `delete_category`, `merge_category`, `restore_backup`
+  and `prune_backups` are two-step: call without `preview_token` for a
+  preview of exactly what would change, then again with the token the
+  preview returned. A call with `confirm=true` and no token gets the
+  preview and a note; nothing is executed. The preview's `execute_with`
+  spells out the follow-up call, including `cascade` and
+  `allow_hidden_coder` when they are needed. `confirm` stays in the six
+  signatures for this release and is removed in v0.13.
+- **Duplicate names are compared case-insensitively**, reversing the
+  v0.10 rule that "Stress" and "stress" were two codes through this
+  server. `create_code`, `create_category` and `create_case` answer a
+  name that already exists, ignoring letter case, spacing and Unicode
+  form, with `created: false, reason: already_exists` and the existing
+  row; a rename to a case variant of ANOTHER row is refused, a case-only
+  respelling of the same row is allowed; a pair QualCoder's own GUI made
+  (its constraint is binary) is refused with the candidates listed.
+  Duplicate creates and no-op writes are answers, not errors: read
+  `created` and `changed`. Colours you supply are stored as the nearest
+  palette colour (`color_snapped` tells you when).
+- **The first write to each project asks for the project's AI coder
+  name** instead of writing under a default. Answer with
+  `set_project_ai_coder_name`. Choosing `AI Coding Assistant` keeps
+  continuity with everything v0.11 wrote; the ask says so when the
+  project already holds rows under a name this server knows. Reads
+  never ask. `QUALCODER_MCP_AI_CODER_NAME` is now this host's
+  DECLARATION rather than an attribution: it is offered as the first
+  quick pick, it never writes a row by itself, and nothing is
+  re-attributed. Passing `owner=` to `apply_codings` or
+  `import_text_file` to write under a different name no longer works:
+  change the project's AI coder name instead, or import the file in
+  QualCoder to have it under your own name.
+- **A sidecar file, `qualcoder_mcp.json`, appears in the project
+  folder** beside `data.qda` once a name has been chosen. It holds the
+  chosen name, when it was set, the note you typed and the names the
+  project has used; QualCoder ignores it. It travels with this
+  server's backups and workspace copies and with QualCoder's own
+  `_BKUP_` backups, and `restore_backup` puts back whatever the backup
+  held. Deleting it makes the next write ask again.
+- `apply_codings` no longer fails a batch because one approved
+  suggestion is already in the database; that suggestion is reported
+  as already existing (`already_existing_count`) and marked applied.
+- Scripted consumers that still read `session_id` from a session-tool
+  response must read `coding_session_id`. `export_frequencies_csv`'s
+  JSON result lists visible coders only, and omits the `coders` key on
+  a project whose coder-visibility table cannot be read.
+- The server parses its command line: an argument the documented host
+  configurations never pass stops it with a usage message and exit code
+  2 where 0.11 ignored it.
 
 ### Added: retroactive pseudonymisation that keeps the coding
 
@@ -360,14 +437,6 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   secret, the session files and the last-used-project pointer, and no
   export has business there.
 
-### Upgrading from 0.11.x (destructive tools)
-
-- Scripts or prompts that called a destructive tool with `confirm=true`
-  no longer execute: they get the preview and a note. Take
-  `preview_token` from the preview and call again with it. The preview
-  also returns `execute_with`, which spells out the exact follow-up call
-  including `cascade` and `allow_hidden_coder` when they are needed.
-
 ### Added: ask what is NOT already coded, and page through the answer
 
 - `exclude_code_ids` on `search_files` (with `search_content=true`) and
@@ -509,23 +578,6 @@ master at pinned commit 9bddf17 and the 3.8.2 tag.
   moment it was created; applying it after a name change writes under
   the current name and says which name the suggestions were recorded
   under.
-
-### Upgrading from 0.11.x (AI coder name)
-
-- The first write to each project after upgrading will ask for the
-  project's AI coder name instead of writing. Answer with
-  `set_project_ai_coder_name`. Choosing `AI Coding Assistant` keeps
-  continuity with everything v0.11 wrote; the ask says so when the
-  project already holds rows under a name this server knows.
-- If you set `QUALCODER_MCP_AI_CODER_NAME` to attribute your writes,
-  that value is now a declaration rather than an attribution. Nothing is
-  re-attributed, and the first write on each project offers the declared
-  name as the first quick pick.
-- If you passed `owner=` to `apply_codings` or `import_text_file` to
-  write under a different name, that no longer works. Change the
-  project's AI coder name instead. A researcher who wants a file under
-  their own name should import it in QualCoder, which attributes it to
-  them.
 
 ### Changed: colours are snapped onto QualCoder's palette
 
@@ -752,6 +804,30 @@ withholds project data.
   `get_coded_segments`, `link_file_to_case`, `set_attribute` and
   `export_coded_segments_report`.
 
+### Fixed: the test suite stays inside its sandbox, and duplicate inserts are driven
+
+- `copy_project_to_workspace`'s default folder,
+  `~/Documents/Qualcoder MCP Projects`, was a module constant computed
+  from the home directory at import, so a test that redirected HOME
+  afterwards moved nothing, and the suite had deposited 93
+  `test_project_<timestamp>.qda` folders in the maintainer's own
+  workspace before it was noticed (removed 2026-09-14). The default is
+  resolved when it is asked for (`database.default_workspace()`); the
+  location is unchanged and no tool behaves differently. The suite's
+  sandbox now moves the home directory itself and pins that every
+  home-derived path resolves inside the test's temporary directory,
+  comparing against that directory rather than against the home, since
+  on Windows the temporary directory lives inside the home.
+- The fixtures have carried QualCoder's `annotation
+  unique(fid,pos0,pos1,owner)` and `attribute unique(name,attr_type,id)`
+  constraints since the flagship's first fix round, and no test drove a
+  duplicate insert into them. Tests now blind the app-side pre-check so
+  the INSERT reaches the constraint: `add_annotation` answers its own
+  text and leaves one row, `set_attribute` answers the generic
+  query-error text and changes nothing (pinned as it ships), and
+  `update_annotation` leaves the key alone and frees the span when it
+  clears.
+
 ### CI
 
 - GitHub Actions bumped by Dependabot (SHA-pinned, version comments
@@ -790,6 +866,12 @@ withholds project data.
 - `uv.lock` still recorded `mcp>=1.2.0` in its requirements after the
   floor was raised to `mcp>=1.17.0,<2`, so the one file a reader
   consults to learn what this package needs disagreed with the package.
+  In release preparation the whole lock was then regenerated: it had
+  last been resolved at 0.6.0a0 and carried no `dev` extra, which is
+  why `uv lock --check` failed on it. Regenerated against 0.12.0-alpha:
+  29 packages added, all from the dev extra's build and twine trees;
+  `packaging` 25.0 to 26.3; nothing removed; `mcp` unchanged at 1.19.0,
+  which already satisfies the floor.
 - The deprecation note on `confirm` said the preview token "proves that
   the preview the user saw is the operation being executed". The token
   is a MAC over the tool, the effect-deciding arguments, the project and
@@ -908,26 +990,6 @@ withholds project data.
 - Duplicate rows in `coder_names` fold the way QualCoder's views fold
   them: ANY row with visibility 0 hides that coder. The hidden-coder
   count counts coders, not rows.
-
-### Upgrading from 0.11.x
-
-- Upgrade the package and restart the MCP host fully so it reloads the
-  tool descriptions (`qualcoder-mcp --version` confirms what is
-  installed). There is no migration step; project files and session
-  files are unchanged.
-- Duplicate creates and no-op writes are answers, not errors: read
-  `created` and `changed` (`created: false, reason: already_exists`
-  carries the existing row's id; `changed: false, reason: unchanged`
-  wrote nothing). Case variants of an existing code, category or case
-  name now resolve to the existing row instead of creating a second
-  one; renames to a case variant of another row are refused. Colours
-  you supply are stored as the nearest palette colour (`color_snapped`
-  tells you when).
-- `apply_codings` no longer fails a batch because one approved
-  suggestion is already in the database; that suggestion is reported as
-  already existing and marked applied.
-- Scripted consumers that still read `session_id` from a session-tool
-  response must read `coding_session_id`.
 
 ## [0.11.0-alpha] - 2026-09-07
 
