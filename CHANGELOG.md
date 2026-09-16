@@ -30,8 +30,9 @@ length (owner ruling 7.3(3)). Three tools added,
 Security gate and re-verification until clean, then six-platform CI;
 the suite at the release commit: 3022 passed, 3 skipped, 0 failed. The
 six in-QualCoder acceptance checks for the flagship (D1 6.5) were
-prepared, fixture and script, and were NOT run before this release; the
-release notes say so under known limits.
+prepared, fixture and script, and are recorded as not run in this
+release and planned for 0.12.1; the release notes say so under known
+limits.
 
 ### Upgrading from 0.11.x
 
