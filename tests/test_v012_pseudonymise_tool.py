@@ -2251,6 +2251,31 @@ class TestTheLabelsAndMemosTheResidueCounts:
         _house_rules([warning], ["residue warning"])
 
 
+class TestTheSafeNameHelperOnWhatIsNotAName:
+    """Re-verification of fix round 1, R-8: the empty-string guard in
+    `_pseudonymise_safe_name` reverted with the suite green. A name that
+    is empty, or not a string at all, is withheld (None) rather than
+    passed through as itself: "" is not a file name, and a `Path(...).name`
+    of "" would otherwise reach the journal body as an empty label while
+    the detector, asked about "", answers that no name is in it. Taken in
+    the 0.12 release preparation as a single test row (T7); no behaviour
+    changes."""
+
+    @pytest.mark.parametrize("value", ["", None, 5, b"Thomas", []],
+                             ids=repr)
+    def test_anything_that_is_not_a_non_empty_string_is_withheld(
+            self, value):
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        assert server._pseudonymise_safe_name(value, compiled) is None
+
+    def test_a_real_name_gets_one_of_the_two_answers(self):
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        assert server._pseudonymise_safe_name(
+            "interview.txt", compiled) == "interview.txt"
+        assert server._pseudonymise_safe_name(
+            "Thomas_interview.txt", compiled) is None
+
+
 class TestTheProjectFolderName:
     """The second route, which had no guard at all (Security S1).
 
