@@ -866,9 +866,11 @@ withholds project data.
 - `uv.lock` still recorded `mcp>=1.2.0` in its requirements after the
   floor was raised to `mcp>=1.17.0,<2`, so the one file a reader
   consults to learn what this package needs disagreed with the package.
-  In release preparation the whole lock was then regenerated: it had
-  last been resolved at 0.6.0a0 and carried no `dev` extra, which is
-  why `uv lock --check` failed on it. Regenerated against 0.12.0-alpha:
+  In release preparation the whole lock was then regenerated: its
+  project entry was still recorded at 0.6.0a0 and its `dev` extra
+  lacked `build` and `twine`, added to `pyproject.toml` after the lock
+  was last resolved, which is why `uv lock --check` failed on it.
+  Regenerated against 0.12.0-alpha:
   29 packages added, all from the dev extra's build and twine trees;
   `packaging` 25.0 to 26.3; nothing removed; `mcp` unchanged at 1.19.0,
   which already satisfies the floor.
