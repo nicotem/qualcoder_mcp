@@ -163,25 +163,28 @@ release notes say so under known limits.
   returned as they stand, because a preview whose files cannot be named
   cannot be relayed, and the tool's description says so rather than
   promising otherwise.
-- Hidden coders, under owner ruling X1 as refined on 2026-09-15: a
-  coding that covered the name and now covers the pseudonym needs no
-  override, whatever the two lengths, and neither does a pure position
-  shift, because neither changes a coding decision; a coding that grew
-  to swallow a pseudonym, one that contained a name and changed length
-  with it, or one that would be deleted (which only
-  `qualcoder_edit_parity` does) requires `allow_hidden_coder`. Under
+- Hidden coders, under owner ruling X1 as refined on 2026-09-15 and on
+  2026-09-16: a coding that covered a name, or contained one, and now
+  covers or contains its pseudonym needs no override, whatever the two
+  lengths, and neither does a pure position shift, because neither
+  changes a coding decision; a coding that grew to swallow a pseudonym,
+  one that would be deleted (which only `qualcoder_edit_parity` does),
+  or one that had to be clamped because its stored end lay past the end
+  of the text requires `allow_hidden_coder`. Under
   `qualcoder_edit_parity` a coding that cut into a name is cut back at
   its head or tail to exclude the pseudonym rather than grown to contain
   it, which shrinks it; that too is `snapped` and requires the override.
-  Before the refinement the tool classified the substitution by length,
-  so `Thomas -> Alex` needed the override and `Thomas -> Alexis` did
-  not, for one and the same coding decision. The preview reports what
-  the run would do to those rows as counts (`shifted`, `substituted`,
-  `resized`, `snapped`, `deleted`), never names. A row whose stored end
-  lies past the end of the text is clamped to it, as QualCoder clamps
-  its own, and a clamp is counted as a resize rather than a shift or a
-  substitution, because it changes the span's length: so a hidden
-  coder's damaged row is not carried through the exemption.
+  Before the first refinement the tool classified the substitution by
+  length, so `Thomas -> Alex` needed the override and `Thomas -> Alexis`
+  did not, for one and the same coding decision; before the second it
+  also gated a coding that merely CONTAINED a name and changed length
+  with it, which records the same decision about the same words. The
+  preview reports what the run would do to those rows as counts
+  (`shifted`, `substituted`, `resized`, `snapped`, `deleted`,
+  `clamped`), never names. A row whose stored end lies past the end of
+  the text is clamped to it, as QualCoder clamps its own, and a clamp is
+  counted under its own class rather than under one the exemption
+  carries, so a hidden coder's damaged row is not carried through it.
 - The limits a mapping has to live within, all refused with their own
   text: at most 500 entries, at most 2,000 surface forms in total and 50
   variants per entry, an original or variant of 2 to 200 characters, a

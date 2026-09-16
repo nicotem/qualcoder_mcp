@@ -4615,14 +4615,16 @@ class TestTheDocumentsTellTheTruth:
         "is withheld where a reader of it would see a name from the "
         "mapping, the count kept; and the log line that reports a skipped "
         "symlink carries the count and the reason, never the path",
-        # Ruling 7.3(3): the flagship's override rule, in plain words.
-        "a coding that covered the name and now covers the pseudonym "
-        "needs no override, whatever the two lengths, and neither does a "
-        "pure position shift, because neither changes a coding decision; "
-        "a coding that grew to swallow a pseudonym, one that contained a "
-        "name and changed length with it, or one that would be deleted "
-        "(which only the `qualcoder_edit_parity` policy does) requires "
-        "the override.",
+        # Rulings 7.3(3) and 7.4: the flagship's override rule, in
+        # plain words.
+        "a coding that covered a name, or contained one, and now covers "
+        "or contains its pseudonym needs no override, whatever the two "
+        "lengths, and neither does a pure position shift, because "
+        "neither changes a coding decision; a coding that grew to "
+        "swallow a pseudonym, one that would be deleted (which only the "
+        "`qualcoder_edit_parity` policy does), or one that had to be "
+        "clamped because its stored end lay past the end of the text "
+        "requires the override.",
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
@@ -4634,26 +4636,30 @@ class TestTheDocumentsTellTheTruth:
                 "detected by it" not in flat)
 
     def test_the_changelog_says_the_override_rule_as_ruled(self):
-        """Ruling 7.3(3). The entry stated the length rule by
+        """Rulings 7.3(3) and 7.4. The entry stated the length rule by
         implication ("a pure position shift ... proceeds ... and a
         resize, a snap or a deletion requires"), which is what made
-        `Thomas -> Alex` need an override `Thomas -> Alexis` did not."""
+        `Thomas -> Alex` need an override `Thomas -> Alexis` did not;
+        then it gated the resize, which records the same decision about
+        the same words."""
         entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
-        assert ("a coding that covered the name and now covers the pseudonym "
-                "needs no override, whatever the two lengths, and neither "
-                "does a pure position shift, because neither changes a "
-                "coding decision; a coding that grew to swallow a pseudonym, "
-                "one that contained a name and changed length with it, or "
-                "one that would be deleted (which only "
-                "`qualcoder_edit_parity` does) requires `allow_hidden_coder`."
-                ) in entry
+        assert ("a coding that covered a name, or contained one, and now "
+                "covers or contains its pseudonym needs no override, "
+                "whatever the two lengths, and neither does a pure position "
+                "shift, because neither changes a coding decision; a coding "
+                "that grew to swallow a pseudonym, one that would be deleted "
+                "(which only `qualcoder_edit_parity` does), or one that had "
+                "to be clamped because its stored end lay past the end of "
+                "the text requires `allow_hidden_coder`.") in entry
         assert "`Thomas -> Alex` needed the override and `Thomas -> Alexis` " \
                "did not" in entry
         assert ("a pure position shift of a hidden coder's row proceeds, "
                 "because it changes no coding decision, and a resize, a snap "
                 "or a deletion requires") not in entry
-        assert "a clamp is counted as a resize rather than a shift or a " \
-               "substitution" in entry
+        assert "one that contained a name and changed length with it, or " \
+               "one that would be deleted" not in entry
+        assert "a clamp is counted under its own class rather than under " \
+               "one the exemption carries" in entry
 
     def test_the_changelog_counts_the_rounds(self):
         entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
