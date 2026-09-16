@@ -75,10 +75,11 @@ What stays local, always:
   AI write ask for the name again.
 - the pseudonymisation run manifests (`~/.qualcoder_mcp/pseudonymisation/`,
   one JSON file per `pseudonymise_source` run, created owner-only on
-  POSIX systems): the pseudonyms applied, the counts, the row ids and
-  the old and new offsets of every row the run moved, the case mode and
-  overlap policy, and two digests keyed with the preview-token secret
-  (`token_bind`, `mapping_hmac_sha256`). Never an original name: the
+  POSIX systems): the pseudonyms applied, the replacement spans, the
+  row ids and the old and new offsets of every row the run moved, the
+  case mode and overlap policy, and two digests keyed with the
+  preview-token secret (`token_bind`, `mapping_hmac_sha256`). Never an
+  original name: the
   project path, the backup path and a file's name are withheld where a
   reader would see one, and "Practical mitigations" below says how. No
   tool reads these files back in this release; they exist so that a
