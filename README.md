@@ -931,8 +931,9 @@ Every preview says whose work is at stake: how many of the affected
 codings were made under this project's AI coder name(s), a per-owner
 breakdown of the rest, how many belong to coders currently hidden in
 QualCoder (a count, never a name), and how many rows carry a `#####`
-private note. Executing when hidden coders' codings are affected
-requires `allow_hidden_coder=true`.
+private note. For these six tools, executing when hidden coders'
+codings are affected requires `allow_hidden_coder=true`;
+`pseudonymise_source` gates a narrower set (see its own entry).
 
 ## Available Prompts
 

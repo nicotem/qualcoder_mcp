@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.12.0-alpha] - 2026-09-DD
+## [0.12.0-alpha] - 2026-09-16
 
-v0.12 in two batches, a flagship and one follow-up, from the QualCoder
+v0.12 in two batches, a flagship and two follow-ups, from the QualCoder
 4.0 ground-truth study, with the owner rulings of 2026-09-10, the
-interface ruling of 2026-09-14 and the rulings of 2026-09-15. Batch A:
+interface ruling of 2026-09-14 and the rulings of 2026-09-15 and
+2026-09-16. Batch A:
 colour snapping, idempotent creates, methodology vocabulary (dossiers
 D5 and D6, including X2 on duplicate names), `--version`, the
 `session_id` duplicate removed, Dependabot; one resource added. Batch
@@ -21,14 +22,16 @@ B: the project's AI coder name, preview tokens with collateral
 disclosure, the coder comparison, and the novelty filter with cursors
 and sampling (dossiers D7, D3, D2, D4). The flagship:
 `pseudonymise_source` (dossier D1), through five fix rounds. The
-follow-up: the hidden-coder override no longer depends on pseudonym
-length (owner ruling 7.3(3)). Three tools added,
+follow-ups: the hidden-coder override no longer depends on pseudonym
+length (owner ruling 7.3(3)), and a coding that merely contained a
+replaced name is exempt from it as well, leaving the override for a
+snap, a deletion and a clamp (owner ruling 7.4). Three tools added,
 `set_project_ai_coder_name`, `compare_coders` and `pseudonymise_source`:
 70 in the full toolset, 21 in `core`. The declared dependency floor is
 `mcp>=1.17.0,<2`. Parity claims cite QualCoder master at pinned commit
 9bddf17 and the 3.8.2 tag. Each batch went through a QA gate, a
 Security gate and re-verification until clean, then six-platform CI;
-the suite at the release commit: 3022 passed, 3 skipped, 0 failed. The
+the suite at the release commit: 3035 passed, 3 skipped, 0 failed. The
 six in-QualCoder acceptance checks for the flagship (D1 6.5) were
 prepared, fixture and script, and are recorded as not run in this
 release and planned for 0.12.1; the release notes say so under known
