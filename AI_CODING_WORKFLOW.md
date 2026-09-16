@@ -70,7 +70,7 @@ listed too) and `restore_backup` to roll the project back; it previews
 first and executes only when called again with the `preview_token` that
 preview returned, and it saves a safety backup of the current state so
 even a restore can be undone. A single wrong coding can
-be removed with `delete_coding(ctid)` instead.
+be removed with `delete_coding(coding_id)` instead.
 
 ## Workflow Steps
 

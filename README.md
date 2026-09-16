@@ -728,7 +728,7 @@ Claude will:
 - Report success with coding IDs
 - Then open the project in QualCoder to see the results (a QualCoder 4.0 window that was already open will not show them until the project is reopened)
 
-**If something went wrong**: `delete_coding(ctid)` removes a single coding;
+**If something went wrong**: `delete_coding(coding_id)` removes a single coding;
 `list_backups` + `restore_backup` roll the whole project back to a snapshot.
 
 ### Key Features
