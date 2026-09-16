@@ -36,6 +36,7 @@ import re
 import stat
 import shutil
 from contextlib import contextmanager
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -1166,6 +1167,32 @@ class TestHiddenCoders:
                 "two lengths.") in refused["error"]
         assert "Hidden Coder" not in json.dumps(out) + json.dumps(refused)
         _house_rules([warnings[0], refused["error"]], ["warning", "refusal"])
+
+    def test_the_gate_is_exactly_snapped_deleted_and_clamped(self):
+        """The identity ruling 7.4 leaves behind, over all 64
+        combinations of the six classes: `override_required` is true
+        exactly when a snap, a deletion or a clamp is among them, and
+        never because a shift, a substitution or a resize is."""
+        classes = ("shifted", "substituted", "resized", "snapped",
+                   "deleted", "clamped")
+        seen = set()
+        for present in product((0, 1), repeat=6):
+            rows = [{"hidden": True,
+                     "map": P.RemappedSpan(0, 1, name, name == "clamped",
+                                           True)}
+                    for name, flag in zip(classes, present) if flag]
+            item = {"rows": {"code_text": rows, "annotation": [],
+                             "case_text": []}}
+            counts = QualcoderDatabase.pseudonymise_hidden_rows(item)
+            assert sorted(counts) == sorted(classes + ("override_required",))
+            for name, flag in zip(classes, present):
+                assert counts[name] == flag, (present, name)
+            assert counts["override_required"] is bool(
+                counts["snapped"] or counts["deleted"]
+                or counts["clamped"]), present
+            seen.add((present, counts["override_required"]))
+        assert len(seen) == 64
+        assert sum(1 for _, gate in seen if gate) == 56
 
     def test_a_case_link_is_never_hidden(self, project):
         """`case_text` has no visibility view at either pin, so QualCoder
@@ -4667,6 +4694,29 @@ class TestTheDocumentsTellTheTruth:
         assert "after the flagship and its four fix rounds" not in entry
         assert "after the flagship and its three fix rounds" not in entry
         assert "after the flagship and its fix round:" not in entry
+
+    def test_the_readme_says_the_override_rule_as_ruled(self):
+        """Ruling 7.4. README's entry for the tool lists the classes the
+        preview reports and names the ones that gate the run; it is what
+        a researcher reads instead of the description."""
+        readme = self._flat("README.md")
+        assert ("counts (`shifted`, `substituted`, `resized`, `snapped`, "
+                "`deleted`, `clamped`), never names, and "
+                "`allow_hidden_coder` is required when `snapped`, "
+                "`deleted` or `clamped` is non-zero: a pure shift, a "
+                "substitution and a resize change no coding decision, "
+                "whatever the two lengths") in readme
+        assert "when `snapped`, `resized` or `deleted` is non-zero" \
+            not in readme
+
+    def test_the_changelog_records_the_acceptance_checks_as_planned(self):
+        """The owner's second ruling of 2026-09-16: the six in-QualCoder
+        checks (D1 6.5) are recorded as not run in this release and
+        planned for 0.12.1, rather than merely not run."""
+        entry = self._flat("CHANGELOG.md").split("## [0.11")[0]
+        assert ("are recorded as not run in this release and planned for "
+                "0.12.1") in entry
+        assert "and were NOT run before this release" not in entry
 
 
 # =============================================================================
