@@ -994,8 +994,9 @@ def validate_coder_name(value: Any, param_name: str = "owner") -> str:
 
 
 # The tables QualCoder harvests coder names from when it opens a project
-# and fills `coder_names` (app.py:1480-1494 at 9bddf17, byte-identical in
-# the 3.8.2 tag at __main__.py:1230-1244). Kept in upstream's own order so
+# and fills `coder_names` (app.py:1480-1494 at 9bddf17; the 3.8.2 tag has
+# the same statement at __main__.py:1230-1244, identical apart from line
+# endings, master's app.py being CRLF). Kept in upstream's own order so
 # the two lists can be compared by eye. Every use is guarded by
 # SchemaCapabilities.table_exists, because older schemas lack some of them.
 HARVEST_OWNER_TABLES = (

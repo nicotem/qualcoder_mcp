@@ -248,9 +248,9 @@ release notes say so under known limits.
   `ai_user_name_source`.
 - This server still never inserts into `coder_names`. QualCoder harvests
   every owner column into that table when it next opens the project
-  (`app.py:1480-1494` at 9bddf17, byte-identical in the 3.8.2 tag at
-  `__main__.py:1230-1244`), with visibility 1, so a new name appears in
-  its coder list by itself.
+  (`app.py:1480-1494` at 9bddf17; the same statement in the 3.8.2 tag
+  at `__main__.py:1230-1244`, identical apart from line endings), with
+  visibility 1, so a new name appears in its coder list by itself.
 
 ### Added: `compare_coders`, with both agreement coefficients named
 

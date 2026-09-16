@@ -250,9 +250,10 @@ class TestUpstreamParity:
     the 3.8.2 tag reachable through `git show 3.8.2:src/qualcoder/...`.
     """
 
-    # app.py:1480-1494 at 9bddf17, byte-identical at
-    # 3.8.2:__main__.py:1230-1244. Copied verbatim so a pin bump that
-    # changes upstream's statement fails here rather than silently.
+    # app.py:1480-1494 at 9bddf17; identical apart from line endings at
+    # 3.8.2:__main__.py:1230-1244 (master's app.py is CRLF). Copied
+    # verbatim so a pin bump that changes upstream's statement fails
+    # here rather than silently.
     HARVEST_SQL = """
                 INSERT OR IGNORE INTO coder_names (name)
                     SELECT owner FROM code_image WHERE owner IS NOT NULL
