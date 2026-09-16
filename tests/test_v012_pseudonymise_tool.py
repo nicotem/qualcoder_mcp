@@ -837,19 +837,23 @@ def _with_pseudonym(pseudonym):
 
 class TestHiddenCoders:
     """Ruling X1 (QC40_PLATFORM 7.2), refined by ruling 7.3(3) of
-    2026-09-15: a hidden coder's row that changes no coding decision
-    needs no override, and a row that changes one does.
+    2026-09-15 and by ruling 7.4 of 2026-09-16: a hidden coder's row
+    that changes no coding decision needs no override, and a row that
+    changes one does.
 
     Exempt: a pure position shift (the row moved because text before it
-    changed length) and a pure substitution (the row covered the whole
-    name and afterwards covers the whole pseudonym, whatever the two
-    lengths). Not exempt: a snap (the row partially overlapped a name
-    and grew to swallow the pseudonym), a resize (the row contained a
-    name and changed length with it without being the name), and a
-    deletion (the edit-parity policy alone). Before the refinement the
-    substitution was classified by length, so `Thomas -> Alex` needed
-    the override and `Thomas -> Alexis` did not, for one and the same
-    coding decision.
+    changed length); a pure substitution (the row covered the whole name
+    and afterwards covers the whole pseudonym, whatever the two
+    lengths); and a resize (the row CONTAINED a whole name and changed
+    length only because that name did). Not exempt: a snap (the row
+    partially overlapped a name and its boundary had to move), a
+    deletion (the edit-parity policy alone), and a clamp (a damaged row
+    whose stored end lay past the end of the text and was pulled back
+    to it). Before ruling 7.3(3) the substitution was classified by
+    length, so `Thomas -> Alex` needed the override and
+    `Thomas -> Alexis` did not, for one and the same coding decision;
+    before ruling 7.4 the resize was gated as well, though it records
+    the same decision about the same words.
 
     Every span here is read against TEXT: "Thomas" is (0, 6), "Thomas
     said" (0, 11), "Thomas sa" (0, 9), "homas sa" (1, 9), "Later" (63,
@@ -946,35 +950,67 @@ class TestHiddenCoders:
                               "WHERE ctid=10") == [
             {"pos0": 0, "pos1": 7, "seltext": "Alex sa"}]
 
-    def test_a_resize_of_a_hidden_row_requires_the_override(
-            self, project, tmp_path):
-        """"Mr Thomas said" contained the name and changes length with
-        it: neither a shift nor a substitution, so it stays on the
-        override side, as ruled (7.3(3))."""
+    @pytest.mark.parametrize("pseudonym,reads", [("Alex", "Mr Alex said"),
+                                                ("Alexander",
+                                                 "Mr Alexander said")],
+                             ids=["shorter", "longer"])
+    def test_a_resize_of_a_hidden_row_needs_no_override(
+            self, project, tmp_path, pseudonym, reads):
+        """Ruling 7.4, decision 7. "Mr Thomas said" CONTAINED the whole
+        name and changes length only because the name did: the coder
+        marked those words and still marks them, exactly as a pure
+        substitution does, so the row is exempt whether the pseudonym is
+        shorter or longer. The preview asks for nothing, the recipe
+        carries no override, and the execute without one succeeds."""
         text = "Mr Thomas said hello. Thomas left."
-        folder = build_project(tmp_path / "mr.qda", text=text)
+        folder = build_project(tmp_path / f"mr_{pseudonym}.qda", text=text)
         add_coding(folder, 10, 1, 0, 14, owner="Hidden Coder", text=text)
         assert text[0:14] == "Mr Thomas said"
+        hide_coder(folder, "Hidden Coder")
+        write_fixture_sidecar(str(folder))
+        mapping = _with_pseudonym(pseudonym)
+        with wired(folder):
+            out = preview_of(mapping=mapping)
+            hidden = out["preview"]["hidden_coder_rows"]
+            # The gate first, so a revert that puts `resized` back into
+            # it fails HERE rather than on a count.
+            assert hidden["override_required"] is False
+            assert (hidden["snapped"], hidden["deleted"],
+                    hidden["clamped"]) == (0, 0, 0)
+            assert hidden["resized"] == 1
+            assert "allow_hidden_coder" not in out["execute_with"]["arguments"]
+            result = execute_from(out, mapping=mapping)
+            assert result["success"] is True
+            assert result["hidden_coder_rows_updated"] == 1
+            assert query(folder, "SELECT pos0, pos1, seltext FROM code_text "
+                                 "WHERE ctid=10") == [
+                {"pos0": 0, "pos1": len(reads), "seltext": reads}]
+
+    def test_a_resize_that_swallowed_two_names_needs_no_override(
+            self, project, tmp_path):
+        """The same rule where the row contains TWO replaced names whose
+        pseudonyms differ in length, so the row's length changes by the
+        sum of two deltas: still one coding decision about the same
+        words, still `resized`, still exempt (ruling 7.4)."""
+        text = "Mr Thomas met Mary Ann there. Thomas left."
+        folder = build_project(tmp_path / "two.qda", text=text)
+        add_coding(folder, 10, 1, 0, 28, owner="Hidden Coder", text=text)
+        assert text[0:28] == "Mr Thomas met Mary Ann there"
         hide_coder(folder, "Hidden Coder")
         write_fixture_sidecar(str(folder))
         with wired(folder):
             out = preview_of()
             hidden = out["preview"]["hidden_coder_rows"]
+            assert hidden["override_required"] is False
             assert hidden["resized"] == 1
-            assert (hidden["snapped"], hidden["deleted"]) == (0, 0)
-            assert hidden["override_required"] is True
-            assert out["execute_with"]["arguments"]["allow_hidden_coder"] \
-                is True
-            refused = call(mapping=MAPPING, preview_token=out["preview_token"])
-            assert refused["reason"] == "hidden_coder_override_required"
-            assert refused["nothing_changed"] is True
-            assert "Hidden Coder" not in json.dumps(refused)
-            assert backups(folder) == []
-            result = execute_from(out, allow_hidden_coder=True)
+            assert (hidden["snapped"], hidden["deleted"],
+                    hidden["clamped"]) == (0, 0, 0)
+            assert "allow_hidden_coder" not in out["execute_with"]["arguments"]
+            result = execute_from(out)
             assert result["success"] is True
             assert query(folder, "SELECT pos0, pos1, seltext FROM code_text "
                                  "WHERE ctid=10") == [
-                {"pos0": 0, "pos1": 12, "seltext": "Mr Alex said"}]
+                {"pos0": 0, "pos1": 21, "seltext": "Mr Alex met Sam there"}]
 
     @pytest.mark.parametrize("span,reads", [((0, 11), "Thomas said"),
                                             ((0, 9), "Thomas sa")],
@@ -984,13 +1020,14 @@ class TestHiddenCoders:
         """One boundary on the name's own is not both. "Thomas sa" holds
         the whole name and two more characters, so it is a resize and
         not a substitution, and not a snap either: no boundary lay
-        inside the name."""
+        inside the name. Exempt since ruling 7.4."""
         assert TEXT[span[0]:span[1]] == reads
         _hidden(project, ("coding", 10, span[0], span[1]))
         hidden = preview_of()["preview"]["hidden_coder_rows"]
+        assert hidden["override_required"] is False
         assert hidden["resized"] == 1
-        assert (hidden["snapped"], hidden["deleted"]) == (0, 0)
-        assert hidden["override_required"] is True
+        assert (hidden["snapped"], hidden["deleted"],
+                hidden["clamped"]) == (0, 0, 0)
 
     def test_under_edit_parity_a_hidden_row_exactly_on_the_name_is_deleted(
             self, project):
@@ -1015,24 +1052,29 @@ class TestHiddenCoders:
 
     def test_the_counts_are_reported_per_file_and_in_the_totals(
             self, project):
-        """Counts only, never names, as always: the new class sits beside
-        the four others in the file's block and in the totals, and the
-        execute's own count includes it."""
+        """Counts only, never names, as always: all six classes sit
+        together in the file's block and in the totals, exempt beside
+        gated, and the execute's own count sums every one of them.
+        Annotation 9 is stored (76, 300) on an 81-character text, the
+        damaged row ruling 7.4 keeps gated."""
         _hidden(project, ("coding", 10, 0, 6), ("coding", 11, 63, 68),
-                ("coding", 12, 0, 11))
+                ("coding", 12, 0, 11), ("annotation", 9, 76, 300))
         out = preview_of()
         expected = {"shifted": 1, "substituted": 1, "resized": 1,
-                    "snapped": 0, "deleted": 0, "override_required": True}
+                    "snapped": 0, "deleted": 0, "clamped": 1,
+                    "override_required": True}
         assert out["preview"]["hidden_coder_rows"] == expected
         assert out["preview"]["files"][0]["hidden_coder_rows"] == expected
         assert "Hidden Coder" not in json.dumps(out)
         result = execute_from(out, allow_hidden_coder=True)
-        assert result["hidden_coder_rows_updated"] == 3
+        assert result["hidden_coder_rows_updated"] == 4
 
     def test_a_hidden_coder_is_never_named_anywhere(self, project):
-        """A resize (the override's reason) beside a substitution (exempt):
-        the preview, the refusal and the result name the coder nowhere."""
-        _hidden(project, ("coding", 10, 0, 11), ("coding", 11, 0, 6))
+        """A snap (the override's reason) beside a substitution and a
+        resize (both exempt since ruling 7.4): the preview, the refusal
+        and the result name the coder nowhere."""
+        _hidden(project, ("coding", 10, 1, 9), ("coding", 11, 0, 6),
+                ("coding", 12, 0, 11))
         out = preview_of()
         assert out["preview"]["hidden_coder_rows"]["override_required"] is True
         assert "Hidden Coder" not in json.dumps(out)
@@ -1079,7 +1121,7 @@ class TestHiddenCoders:
         _hidden(project, ("annotation", 9, 0, 11))
         hidden = preview_of()["preview"]["hidden_coder_rows"]
         assert hidden["resized"] == 1
-        assert hidden["override_required"] is True
+        assert hidden["override_required"] is False
 
     def test_a_hidden_annotation_exactly_on_a_name_is_a_substitution(
             self, project):
@@ -2466,10 +2508,14 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
         add_coding(folder, 5, 1, 0, 6, owner=HIDDEN_COLLEAGUE)  # "Thomas"
         add_coding(folder, 7, 1, 19, 22, owner=HIDDEN_COLLEAGUE,
                    memo=f"{HIDDEN_COLLEAGUE}: {PARTICIPANT} again")
-        # "Thomas said": a resize, so the override path is walked. The
-        # rows on a name alone are substitutions since ruling 7.3(3)
-        # and ride along exempt.
+        # "Thomas said": a resize, exempt since ruling 7.4 and counted.
+        # The rows on a name alone are substitutions since ruling 7.3(3)
+        # and ride along exempt too. Annotation 3 is the damaged row
+        # stored past the end of the text: a clamp, which is what walks
+        # the override path on the non-colliding build.
         add_coding(folder, 8, 1, 0, 11, owner=HIDDEN_COLLEAGUE)
+        add_annotation(folder, 3, 76, 300, owner=HIDDEN_COLLEAGUE,
+                       memo=f"{HIDDEN_COLLEAGUE} damaged row")
         add_annotation(folder, 1, 0, 6, owner=HIDDEN_COLLEAGUE,
                        memo=f"{HIDDEN_COLLEAGUE} annotation")
         add_case_link(folder, 1, 0, len(TEXT), owner=HIDDEN_COLLEAGUE)
@@ -2553,7 +2599,8 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             out = self._sidecar_preview()
             hidden = out["preview"]["hidden_coder_rows"]
             assert hidden["override_required"] is True
-            assert hidden["resized"] >= 1            # coding 8, the reason
+            assert hidden["clamped"] == 1            # annotation 3, the reason
+            assert hidden["resized"] >= 1            # coding 8, exempt
             assert hidden["substituted"] >= 1        # codings 5 and 7
             result = execute_as_recipe(out, allow_hidden_coder=True)
             assert result.get("success") is True, result
@@ -3267,6 +3314,10 @@ class TestTheClampIsNotAShift:
     reported as a pure shift, which ruling X1 exempts. A hidden coder's
     annotation stored at (76, 200) on an 81-character text was written
     as (66, 71) with no override asked for: a 119-character truncation.
+
+    Fix round 1 (B6) kept it gated by calling it a resize. Ruling 7.4 of
+    2026-09-16 exempts the resize, so the clamp has its own class now and
+    is gated on its own account.
     """
 
     def _damaged_hidden_row(self, project):
@@ -3275,22 +3326,33 @@ class TestTheClampIsNotAShift:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
 
-    def test_a_clamped_row_is_classified_as_a_resize(self, project):
+    def test_a_clamped_row_is_classified_as_clamped_and_counted_once(
+            self, project):
+        """The per-table `clamped` key still counts every row whose end
+        was pulled back, and the row is not counted twice now that
+        `clamped` is also a class: the classes and `not_mapped` add up
+        to `total`."""
         add_annotation(project, 2, 76, 200)
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         counts = preview_of()["preview"]["files"][0]["annotations"]
         assert counts["clamped"] == 1
-        assert counts["resized"] >= 1
         assert counts["shifted"] == 0
+        assert sum(counts[key] for key in
+                   ("shifted", "substituted", "resized", "snapped",
+                    "deleted", "unchanged", "clamped", "not_mapped")) \
+            == counts["total"]
 
     def test_a_clamped_hidden_row_requires_the_override(self, project):
+        """Ruling 7.4: `clamped` is its own count and it alone gates
+        this row. A revert that folded it back into `resized` and
+        exempted it lets the truncation through."""
         self._damaged_hidden_row(project)
         out = preview_of()
         hidden = out["preview"]["hidden_coder_rows"]
         assert hidden["override_required"] is True
-        assert hidden["resized"] == 1
-        assert hidden["shifted"] == 0
+        assert hidden["clamped"] == 1
+        assert (hidden["resized"], hidden["shifted"]) == (0, 0)
         refused = call(mapping=MAPPING, preview_token=out["preview_token"])
         assert refused["reason"] == "hidden_coder_override_required"
         assert refused["nothing_changed"] is True
@@ -3305,13 +3367,13 @@ class TestTheClampIsNotAShift:
         assert query(project, "SELECT pos0,pos1 FROM annotation "
                               "WHERE anid=2") == [{"pos0": 66, "pos1": 71}]
 
-    def test_a_clamp_that_lands_exactly_on_a_name_is_still_a_resize(
+    def test_a_clamp_that_lands_exactly_on_a_name_is_still_gated(
             self, project, tmp_path):
-        """Ruling 7.3(3) leaves this rule as it was. A hidden coder's
-        row stored as (4, 200) on "say Thomas" is clamped to (4, 10),
-        which is exactly the name; the coder never marked the name
-        alone, so the truncation is a resize and not a substitution,
-        and the override is asked for."""
+        """A hidden coder's row stored as (4, 200) on "say Thomas" is
+        clamped to (4, 10), which is exactly the name; the coder never
+        marked the name alone, so the truncation is neither a
+        substitution nor an ordinary resize but a clamp, and the
+        override is asked for (rulings 7.3(3) and 7.4)."""
         text = "say Thomas"
         folder = build_project(tmp_path / "end.qda", text=text)
         add_annotation(folder, 2, 4, 200, owner="Hidden Helga")
@@ -3320,8 +3382,8 @@ class TestTheClampIsNotAShift:
         with wired(folder):
             out = preview_of()
             hidden = out["preview"]["hidden_coder_rows"]
-            assert hidden["resized"] == 1
-            assert hidden["substituted"] == 0
+            assert hidden["clamped"] == 1
+            assert (hidden["substituted"], hidden["resized"]) == (0, 0)
             assert hidden["override_required"] is True
             assert out["preview"]["files"][0]["annotations"]["clamped"] == 1
             refused = call(mapping=MAPPING, preview_token=out["preview_token"])
@@ -4625,10 +4687,12 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         """A project with no visibility declaration when we connect."""
         folder = build_project(tmp_path / "late.qda")
         add_coding(folder, 1, 1, 0, 6)
-        # "Mary Ann agreed": a resize, so the override is at stake. The
-        # name alone, (34, 42), is a substitution since ruling 7.3(3)
-        # and would need no override however the declaration read.
-        add_coding(folder, 2, 1, 34, 49, owner="Hidden Helga")
+        # "ary Ann agreed" cuts into "Mary Ann": a snap, so the override
+        # is at stake. The name alone, (34, 42), is a substitution since
+        # ruling 7.3(3), and a row that merely contains it is a resize,
+        # exempt since ruling 7.4; neither would need an override
+        # however the declaration read.
+        add_coding(folder, 2, 1, 35, 49, owner="Hidden Helga")
         write_fixture_sidecar(str(folder))
         server.db.close()
         server.db = QualcoderDatabase(str(folder))
@@ -4758,10 +4822,12 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         same fault changes nothing."""
         folder = build_project(tmp_path / "early.qda")
         add_coding(folder, 1, 1, 0, 6)
-        # "Mary Ann agreed": a resize, so the override is at stake. The
-        # name alone, (34, 42), is a substitution since ruling 7.3(3)
-        # and would need no override however the declaration read.
-        add_coding(folder, 2, 1, 34, 49, owner="Hidden Helga")
+        # "ary Ann agreed" cuts into "Mary Ann": a snap, so the override
+        # is at stake. The name alone, (34, 42), is a substitution since
+        # ruling 7.3(3), and a row that merely contains it is a resize,
+        # exempt since ruling 7.4; neither would need an override
+        # however the declaration read.
+        add_coding(folder, 2, 1, 35, 49, owner="Hidden Helga")
         write_fixture_sidecar(str(folder))
         hide_coder(folder, "Hidden Helga")
         server.db.close()

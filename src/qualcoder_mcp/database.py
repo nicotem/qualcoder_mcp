@@ -8162,7 +8162,17 @@ class QualcoderDatabase:
         exit (`code_text.py:6234-6235`); this run rewrites it only where
         the row moved or its text changed, so a row the run does not
         affect is not touched at all, and the count says how many were.
+
+        `clamped` counts rows whose stored end lay past the end of the
+        text, which is what it has always counted here. Since ruling 7.4
+        of 2026-09-16 that is also a change class, and a clamped row
+        whose class is `clamped` must not be counted under the key
+        twice; a clamped row that was snapped or deleted keeps that
+        class and is still counted here, so the key reports every
+        clamped row whatever else happened to it.
         """
+        from . import pseudonymise as engine
+
         counts = {"total": len(items), "shifted": 0, "substituted": 0,
                   "resized": 0, "snapped": 0, "deleted": 0, "unchanged": 0,
                   "clamped": 0, "not_mapped": 0}
@@ -8176,7 +8186,7 @@ class QualcoderDatabase:
                 counts["not_mapped"] += 1
                 continue
             counts[mapped.change] += 1
-            if mapped.clamped:
+            if mapped.clamped and mapped.change != engine.CLAMPED:
                 counts["clamped"] += 1
             if has_seltext and (
                     mapped.touched
@@ -8273,19 +8283,25 @@ class QualcoderDatabase:
         cascade previews set that convention (`database.py` at
         `collateral_for_cids`) and a pseudonymisation preview keeps it.
         `override_required` is the owner's ruling X1, refined by ruling
-        7.3(3) of 2026-09-15, in one boolean: a pure position shift
-        changes no coding decision and is exempt, and so is a pure
+        7.3(3) of 2026-09-15 and by ruling 7.4 of 2026-09-16, in one
+        boolean. Exempt, because none of them changes what the coder
+        decided about which words: a pure position shift; a pure
         substitution (the row covered the whole name and afterwards
-        covers the whole pseudonym, whatever the two lengths); a
-        resize, a snap or a deletion changes what the coder marked and
-        is not. The exempt classes are counted beside the others, so
-        the preview says what the run does to every hidden row and not
-        only to the ones that gate it.
+        covers the whole pseudonym, whatever the two lengths); and a
+        resize, which is a row that CONTAINED a whole name and changed
+        length only because that name did. Not exempt: a snap (the row
+        partially overlapped a name and its boundary had to move), a
+        deletion (the `qualcoder_edit_parity` policy alone), and a clamp
+        (a damaged row whose stored end lay past the end of the text and
+        was pulled back to it, whose extent changed for a reason the
+        rewrite does not explain). The exempt classes are counted beside
+        the others, so the preview says what the run does to every
+        hidden row and not only to the ones that gate it.
         """
         from . import pseudonymise as engine
 
         counts = {"shifted": 0, "substituted": 0, "resized": 0,
-                  "snapped": 0, "deleted": 0}
+                  "snapped": 0, "deleted": 0, "clamped": 0}
         for table in QualcoderDatabase.PSEUDONYMISE_HIDEABLE:
             for row in item["rows"].get(table, ()):
                 mapped = row["map"]
@@ -8294,7 +8310,7 @@ class QualcoderDatabase:
                 if mapped.change in counts:
                     counts[mapped.change] += 1
         counts["override_required"] = bool(
-            counts["resized"] or counts["snapped"] or counts["deleted"])
+            counts["snapped"] or counts["deleted"] or counts["clamped"])
         return counts
 
     def pseudonymise_row_digests(self, plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -8572,7 +8588,7 @@ class QualcoderDatabase:
                   "annotations_changed": 0, "case_links_changed": 0,
                   "rows_deleted": 0, "unique_constraint_collisions": 0}
         hidden_totals = {"shifted": 0, "substituted": 0, "resized": 0,
-                         "snapped": 0, "deleted": 0,
+                         "snapped": 0, "deleted": 0, "clamped": 0,
                          "override_required": False}
         # One budget for the whole preview, spent across every file and
         # every entry (engine.MAX_CONTEXT_TOTAL_CHARS).
@@ -8616,7 +8632,7 @@ class QualcoderDatabase:
                                                   len(text))
             hidden = self.pseudonymise_hidden_rows(item)
             for key in ("shifted", "substituted", "resized", "snapped",
-                        "deleted"):
+                        "deleted", "clamped"):
                 hidden_totals[key] += hidden[key]
             hidden_totals["override_required"] = (
                 hidden_totals["override_required"] or

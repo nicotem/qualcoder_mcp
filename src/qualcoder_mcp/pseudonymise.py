@@ -119,13 +119,20 @@ OVERLAP_POLICIES = ("snap_to_pseudonym", "qualcoder_edit_parity")
 # owner's ruling of 2026-09-15 (QC40_PLATFORM 7.3(3), refining X1): a
 # span that sat exactly on a replaced name and now sits exactly on its
 # pseudonym is a pure substitution, whatever the two lengths, and is
-# exempt from the hidden-coder override like a pure shift.
+# exempt from the hidden-coder override like a pure shift. `clamped` is
+# the owner's ruling of 2026-09-16 (QC40_PLATFORM 7.4, decision 7): a
+# span that CONTAINED a whole replaced name and changed length only
+# because that name did is `resized` and is exempt too, so the one row
+# whose extent changed for a reason the rewrite does not explain, the
+# damaged row whose stored end lay past the end of the text, needs a
+# class of its own to stay on the override side.
 UNCHANGED = "unchanged"
 SHIFTED = "shifted"
 SUBSTITUTED = "substituted"
 RESIZED = "resized"
 SNAPPED = "snapped"
 DELETED = "deleted"
+CLAMPED = "clamped"
 
 # Characters refused in any mapping string.
 #
@@ -1240,14 +1247,18 @@ class SpanMapper:
         shift when the lengths matched and a resize when they did not).
         `resized` is any other length change, which is what a span that
         contains a name without being the name gets when the pseudonym
-        is a different length: "Thomas said" grows or shrinks with the
-        pseudonym and stays on the override side. `shifted` is a span
-        that kept its length and moved, which includes one containing a
-        name whose pseudonym is exactly as long: the coder still marks
-        the same passage.
+        is a different length: "Mr Thomas said" grows or shrinks with the
+        pseudonym and records the same decision about the same words, so
+        ruling 7.4 of 2026-09-16 exempts it from the hidden-coder
+        override as well. `shifted` is a span that kept its length and
+        moved, which includes one containing a name whose pseudonym is
+        exactly as long: the coder still marks the same passage.
 
         The order matters. A cut is a snap before anything else, so no
-        span that had to grow can read as a substitution.
+        span that had to grow can read as a substitution. `clamped` is
+        decided in `map_row`, which alone holds the flag, and it comes
+        before every test here but the two whose classes are gated
+        already.
         """
         touched = self._intersects_edit(pos0, pos1) or cut
         if cut:
@@ -1281,17 +1292,23 @@ class SpanMapper:
         the guarantee that no row is written with an end past the new
         text hold under both policies rather than only under one.
 
-        A clamped row is never classified as a pure shift, and never as
-        a substitution either. The classes describe what happens to the
-        STORED span, and a clamp truncates it: the annotation stored at
+        A clamped row has a class of its own, `clamped`, which nothing
+        else produces. The classes describe what happens to the STORED
+        span, and a clamp truncates it: the annotation stored at
         (76, 200) on an 81-character text is written as (66, 71), which
-        is a 119-character resize however the rest of the run moved it.
-        Classifying that as `shifted` put it under ruling X1's exemption
-        and let a hidden coder's row be resized with no override asked
-        for (Security S5). The same holds when the clamp lands the
+        is a 119-character truncation however the rest of the run moved
+        it. Classifying that as `shifted` put it under ruling X1's
+        exemption and let a hidden coder's row be cut back with no
+        override asked for (Security S5); classifying it as `resized`
+        kept it gated until ruling 7.4 of 2026-09-16 exempted the
+        ordinary resize, which is why the clamp now has a class instead
+        of borrowing one. The same holds when the clamp lands the
         truncated span exactly on a name that ends the text: the coder
-        never marked that name alone, so the row is a resize and not a
-        substitution (ruling 7.3(3) leaves the clamp rule as it was).
+        never marked that name alone, so the row is `clamped` and not a
+        substitution. Only a snap and a deletion keep their own class
+        through a clamp, both being on the override side already; the
+        test is written that way round so that a class added later
+        stays gated rather than exempt by omission.
         """
         if isinstance(pos0, bool) or isinstance(pos1, bool):
             return None
@@ -1314,8 +1331,8 @@ class SpanMapper:
                 f"overlap_policy must be one of "
                 f"{', '.join(OVERLAP_POLICIES)}.")
         mapped.clamped = clamped
-        if clamped and mapped.change in (UNCHANGED, SHIFTED, SUBSTITUTED):
-            mapped.change = RESIZED
+        if clamped and mapped.change not in (SNAPPED, DELETED):
+            mapped.change = CLAMPED
         return mapped
 
 

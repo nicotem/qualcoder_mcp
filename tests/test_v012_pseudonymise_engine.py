@@ -677,14 +677,16 @@ class TestSnapProperties:
 
 
 class TestChangeClassification:
-    """`snapped`, `substituted`, `resized`, `shifted`, `unchanged`: one
-    vocabulary.
+    """`snapped`, `substituted`, `resized`, `shifted`, `clamped`,
+    `unchanged`: one vocabulary.
 
     The distinction matters beyond presentation: the hidden-coder rule
-    (D1 3.7, owner ruling X1, refined by ruling 7.3(3) of 2026-09-15)
-    exempts a PURE SHIFT and a PURE SUBSTITUTION and requires the
-    override for a resize, a snap or a deletion, so a row put in the
-    wrong class is a row whose coder's consent was decided wrongly.
+    (D1 3.7, owner ruling X1, refined by ruling 7.3(3) of 2026-09-15 and
+    by ruling 7.4 of 2026-09-16) exempts a PURE SHIFT, a PURE
+    SUBSTITUTION and a RESIZE that only follows the pseudonym's own
+    length, and requires the override for a snap, a deletion and a
+    clamp, so a row put in the wrong class is a row whose coder's
+    consent was decided wrongly.
     """
 
     _LENGTHS = {"shorter": "Alex", "equal": "Alexis", "longer": "Alexander"}
@@ -724,28 +726,61 @@ class TestChangeClassification:
     def test_a_span_that_contains_the_name_without_being_it_is_a_resize(
             self, span, reads):
         """"Thomas said" contained "Thomas" and shrinks by two characters:
-        a resize of a longer span, neither a shift nor a substitution,
-        and on the override side as ruled (7.3(3))."""
+        a resize of a longer span, neither a shift nor a substitution.
+        Ruling 7.4 exempts it from the override; the class is what says
+        which rule applies, and it is unchanged."""
         text = "say Thomas said so"
         assert text[span[0]:span[1]] == reads
         mapper, _ = self._thomas(text, "Alex")
         mapped = mapper.map_row(span[0], span[1], "snap_to_pseudonym", False)
         assert mapped.change == P.RESIZED
 
-    def test_a_clamped_span_that_lands_exactly_on_a_name_is_a_resize(self):
-        """The clamp rule is unchanged by ruling 7.3(3) (fix round 1,
-        B6). The stored row (4, 40) on "say Thomas" is a 36-character
-        span the coder never confined to the name, so its truncation is
-        a resize and not a substitution, and it stays on the override
-        side; the same span stored as the name is the substitution."""
+    def test_a_clamped_span_that_lands_exactly_on_a_name_is_clamped(self):
+        """Ruling 7.4 gives the clamp its own class (fix round 1, B6).
+        The stored row (4, 40) on "say Thomas" is a 36-character span
+        the coder never confined to the name, so its truncation is
+        neither a substitution nor an ordinary resize, and `clamped` is
+        what keeps it on the override side now that a resize is exempt;
+        the same span stored as the name is the substitution."""
         mapper, new_text = self._thomas("say Thomas", "Alex")
         mapped = mapper.map_row(4, 40, "snap_to_pseudonym", False)
         assert mapped.clamped is True
-        assert mapped.change == P.RESIZED
+        assert mapped.change == P.CLAMPED
         assert new_text[mapped.pos0:mapped.pos1] == "Alex"
         unclamped = mapper.map_row(4, 10, "snap_to_pseudonym", False)
         assert unclamped.clamped is False
         assert unclamped.change == P.SUBSTITUTED
+
+    def test_a_clamped_span_that_would_be_an_ordinary_resize_is_clamped(self):
+        """The row the ruling turns on. (0, 40) on "say Thomas" contains
+        the name and would change length with it, which ruling 7.4
+        exempts; its end also lay past the text, which ruling 7.4 does
+        not exempt. The clamp wins, so the row stays gated."""
+        mapper, _ = self._thomas("say Thomas", "Alex")
+        mapped = mapper.map_row(0, 40, "snap_to_pseudonym", False)
+        assert mapped.clamped is True
+        assert mapped.change == P.CLAMPED
+        unclamped = mapper.map_row(0, 10, "snap_to_pseudonym", False)
+        assert unclamped.clamped is False
+        assert unclamped.change == P.RESIZED
+
+    def test_a_clamped_span_that_was_snapped_stays_snapped(self):
+        """A snap is on the override side already, so the clamp does not
+        take its class away: (5, 40) on "say Thomas" clamps to (5, 10),
+        which cuts into the name and snaps out to hold the pseudonym."""
+        mapper, new_text = self._thomas("say Thomas", "Alex")
+        mapped = mapper.map_row(5, 40, "snap_to_pseudonym", False)
+        assert mapped.clamped is True
+        assert mapped.change == P.SNAPPED
+        assert new_text[mapped.pos0:mapped.pos1] == "Alex"
+
+    def test_under_parity_a_clamped_span_on_a_name_is_still_deleted(self):
+        """The other class the clamp leaves alone, for the same reason:
+        a deletion is gated whatever else happened to the row."""
+        mapper, _ = self._thomas("say Thomas", "Alex")
+        mapped = mapper.map_row(4, 40, "qualcoder_edit_parity", False)
+        assert mapped.clamped is True
+        assert mapped.change == P.DELETED
 
     def test_under_parity_a_span_exactly_on_a_name_is_deleted_not_substituted(
             self):

@@ -11021,7 +11021,7 @@ def pseudonymise_source(
             hidden = wdb.pseudonymise_hidden_rows(item)
             hidden_updated += sum(hidden[key] for key in
                                   ("shifted", "substituted", "resized",
-                                   "snapped", "deleted"))
+                                   "snapped", "deleted", "clamped"))
         journal_entry = None
         if record_in_journal:
             backup = getattr(wdb, "last_backup_path", None)
