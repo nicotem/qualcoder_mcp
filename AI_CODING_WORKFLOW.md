@@ -562,11 +562,14 @@ Delete sessions older than 30 days
 
 ### Backup Management
 
-Backups are created automatically, but you can also:
+Backups are created automatically before each write; there is no tool
+that takes one on request. To keep a separate copy of a project, copy
+it to the workspace:
 
-**Create manual backup:**
+**Copy a project to the workspace:**
 ```
-Create a backup of the current workspace project
+Copy the project at <path> to the workspace   (copy_project_to_workspace;
+                                               open the copy with select_project)
 ```
 
 **Find backups:**
