@@ -79,10 +79,10 @@ What stays local, always:
   row ids and the old and new offsets of every row the run moved, the
   case mode and overlap policy, and two digests keyed with the
   preview-token secret (`token_bind`, `mapping_hmac_sha256`). Never an
-  original name: the
-  project path, the backup path and a file's name are withheld where a
-  reader would see one, and "Practical mitigations" below says how. No
-  tool reads these files back in this release; they exist so that a
+  original name: the project path, the backup path and a file's name
+  are withheld where a reader would see one, and "Practical
+  mitigations" below says how. No tool reads these files back in this
+  release; they exist so that a
   later release can reverse a run over spans rather than by matching
   text.
 
@@ -271,10 +271,13 @@ project has the coder-visibility capability:
   changes a coding decision; a coding that grew to swallow a pseudonym,
   one that contained a name and changed length with it, or one that
   would be deleted (which only the `qualcoder_edit_parity` policy does)
-  requires the override. The refusal names neither the coder nor a
-  count. A row whose stored end lies past the end of the text is
-  clamped first and counted as a resize, never carried through the
-  exemption.
+  requires the override. Under the `qualcoder_edit_parity` policy a
+  coding that cut into a name is cut back at its head or tail to exclude
+  the pseudonym rather than grown to contain it, which shrinks it; that
+  too is classed `snapped` and needs the override. The refusal names
+  neither the coder nor a count. A row whose stored end lies past the
+  end of the text is clamped first and counted as a resize, never
+  carried through the exemption.
 - Codes, categories, files, cases and journal entries have no
   per-coder visibility in QualCoder; their owner columns are read as
   before.
