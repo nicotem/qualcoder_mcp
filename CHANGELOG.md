@@ -726,7 +726,7 @@ withholds project data.
   (Friese 2024; Lieder and Schaeffer 2024), in our own words, never a
   copy of upstream prompt bodies. Ten resources in total (seven
   concrete, three templates); available in `core` mode too.
-- The MCP initialize handshake now carries an `instructions` string
+- The MCP `initialize` handshake now carries an `instructions` string
   (three sentences on evidence discipline, and on the per-item approval
   that governs coding suggestions and code proposals; the direct write
   tools write on the call itself, after a backup); whether a host shows
