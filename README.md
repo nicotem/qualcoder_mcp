@@ -24,6 +24,8 @@ This MCP server lets an AI assistant directly access and analyse your Qualcoder 
 - 📥 **Import transcripts** and link files to cases
 - 🔄 **REFI-QDA export** (.qdpx) for interchange with NVivo, ATLAS.ti, and MAXQDA
 - 📤 **Report exports**: codebook, coded segments, code frequencies and case-code matrix as CSV, txt or Markdown files
+- 🕵️ **Pseudonymisation that keeps the coding** (`pseudonymise_source`): replace the names you list, as whole words, in the stored text of chosen text sources, moving every coding, annotation and case link with the text; a preview and a residue report come first, a mandatory backup is taken, and what the tool does not rewrite is counted rather than left to be discovered
+- ⚖️ **Coder comparison** (`compare_coders`): per-code agreement between two coders, with QualCoder's own coefficient and Cohen's kappa side by side
 - 🤝 **QualCoder 4.0 conventions**: `#####` private memo sections are never shown to the AI, reads follow QualCoder's per-coder visibility (on projects with that capability: QualCoder 3.8.2 and 4.0, schema v14 and later), and AI work is written under one coder name that you choose per project (see "Working alongside QualCoder 4.0" below)
 
 You can work with read-only analysis OR use write-enabled tools. The database is opened read-only by default; every write is preceded by an automatic backup, verified against QualCoder's format, and refused while a released QualCoder version (3.x) has the project open, which its lock file signals. QualCoder 4.0 (the 4.0-Beta pre-release) writes no lock file, so for it the server can only warn on best-effort heuristics; never write while any QualCoder window has the same project open (see "Supported QualCoder versions" below).
@@ -470,7 +472,12 @@ capability after this server connected to it; PRIVACY.md's "Coder
 visibility" section says what is and is not re-read). Passing an
 explicit `coder` argument reads that coder's rows from the full data
 instead. File exports keep reading the full data, as QualCoder's own
-reports do. Writes that target an existing row
+reports do: QualCoder's own coding report does the same in both pinned
+builds (Reports > Coding reports in 3.8.2, Reports > Code retrieval in
+4.0) and lists a hidden coder's segments, because it reads the base
+`code_text` table (`report_codes.py:1712-1724` at `9bddf17`,
+`:1504-1515` at the 3.8.2 tag); only the coding screen reads through
+the visibility view. Writes that target an existing row
 by id (`delete_coding`, `update_annotation`, `delete_annotation`,
 `set_memo` on a coding) refuse a hidden coder's row unless
 `allow_hidden_coder=true`; with the override the result carries ids
@@ -794,7 +801,7 @@ carries the complete list.
 > set_project_ai_coder_name,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
-> loudly at startup. Measured for the 0.12 development branch (the
+> loudly at startup. Measured for 0.12.0 (the
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
@@ -903,7 +910,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `move_category(category_id, parent_category)` - **WRITES TO DATABASE** - Reparent a category (refuses moves that would create a cycle; `changed: false` when it is already under that parent). The result names the new parent (`new_parent`)
 
 **Source Text, Destructive (preview, then token, then safety backup):**
-- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces the walk QualCoder's coding-view editor applies, fed this tool's exact edit list (the editor's own diff may factor a shared prefix or suffix out of a replacement and keep a coding this policy deletes), which deletes a coding sitting on a name. Memos, journal entries, case, file, code, category and attribute-type names and attribute values are scanned and counted, never rewritten, and the preview's `residue` block says where names remain; PDFs, media files and `ai_data/` are out of scope and are neither rewritten nor scanned. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name, and a file name, folder name or path that carries one is withheld from both in favour of the file id. The `residue` counts read wider than the rewrite does: any occurrence a person would see, including inside a longer word and in any case, and they cover memos, labels and attribute values rather than the file text. With `use_project_pseudonyms` the mapping is the researcher's own `pseudonyms.json`, which the caller never supplied, so no diagnostic and no refusal quotes a name from it and `include_context` returns nothing; file names and the project path are still returned as they stand. The mandatory backup does contain the real names
+- `pseudonymise_source(mapping, file_ids, use_project_pseudonyms, case_mode, overlap_policy, preview_token, allow_hidden_coder, record_in_journal, include_context, context_chars, scan_residue, max_spans_per_entry)` - **WRITES TO DATABASE** - Replace names with pseudonyms in the stored text of chosen text sources, moving every coding, annotation and case link with the text. The only tool here that rewrites the text positions are measured against. Deterministic and rule-based: only the names in `mapping` are replaced, as whole words, case-sensitively unless `case_mode` says otherwise; no name detection. `overlap_policy` decides what happens to a coding that cut into a name: `snap_to_pseudonym` (default) grows it to contain the whole pseudonym and never deletes anything, `qualcoder_edit_parity` reproduces the walk QualCoder's coding-view editor applies, fed this tool's exact edit list (the editor's own diff may factor a shared prefix or suffix out of a replacement and keep a coding this policy deletes), which deletes a coding sitting on a name. Memos, journal entries, case, file, code, category and attribute-type names and attribute values are scanned and counted, never rewritten, and the preview's `residue` block says where names remain; PDFs, media files and `ai_data/` are out of scope and are neither rewritten nor scanned. Writes a run manifest to `~/.qualcoder_mcp/pseudonymisation/` and, by default, a journal entry in the project; neither ever contains an original name, and a file name, folder name or path that carries one is withheld from both in favour of the file id. The `residue` counts read wider than the rewrite does: any occurrence a person would see, including inside a longer word and in any case, and they cover memos, labels and attribute values rather than the file text. With `use_project_pseudonyms` the mapping is the researcher's own `pseudonyms.json`, which the caller never supplied, so no diagnostic and no refusal quotes a name from it and `include_context` returns nothing; file names and the project path are still returned as they stand. The mandatory backup does contain the real names. On a project that hides coders, the preview reports what the run would do to their rows as counts (`shifted`, `substituted`, `resized`, `snapped`, `deleted`), never names, and `allow_hidden_coder` is required when `snapped`, `resized` or `deleted` is non-zero: a pure shift and a pure substitution change no coding decision, whatever the two lengths
 
 **Codebook, Destructive (preview, then token, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
@@ -1064,11 +1071,16 @@ qualcoder_mcp/
 ├── src/
 │   └── qualcoder_mcp/
 │       ├── __init__.py
-│       ├── server.py        # Main MCP server with resources, tools, prompts
-│       ├── database.py      # SQLite database interface
-│       ├── memo_privacy.py  # QualCoder's '#####' private-memo convention
-│       ├── sessions.py      # AI coding session management
-│       └── refi_export.py   # REFI-QDA XML export
+│       ├── server.py            # Main MCP server with resources, tools, prompts
+│       ├── database.py          # SQLite database interface
+│       ├── memo_privacy.py      # QualCoder's '#####' private-memo convention
+│       ├── sessions.py          # AI coding session management
+│       ├── project_settings.py  # The project's AI coder name (qualcoder_mcp.json)
+│       ├── preview_tokens.py    # Preview tokens for the destructive tools
+│       ├── cursors.py           # Paging cursors for the search and segment tools
+│       ├── coder_comparison.py  # compare_coders: agreement and the two kappas
+│       ├── pseudonymise.py      # pseudonymise_source: matching, remapping, the residue detector
+│       └── refi_export.py       # REFI-QDA XML export
 ├── scripts/
 │   ├── create_test_project.py  # Test project generator
 │   ├── generate_test_export.py
@@ -1078,6 +1090,8 @@ qualcoder_mcp/
 ├── CHANGELOG.md            # Version history
 ├── INSTALL.md              # Detailed installation guide
 ├── PRIVACY.md              # Data-flow disclosure
+├── CONTRIBUTING.md         # How to report, propose and review changes
+├── CITATION.cff            # Citation metadata
 └── SUPPORT.md              # Support policy (GitHub Issues only)
 ```
 
@@ -1140,27 +1154,56 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ **Multi-host support (Experimental)**: the reduced core toolset (`QUALCODER_MCP_TOOLSET=core`) plus setup recipes for [LM Studio (fully local)](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#lm-studio-fully-local-experimental) and [Claude Code with an Anthropic API key](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md#claude-code-with-an-anthropic-api-key-experimental)
 - ✅ v0.10.1: the session tools take `coding_session_id` (some MCP middleware strips an argument named `session_id`)
 
-**Completed in v0.11.0 (this release): QualCoder 4.0 interop conventions, Phase 1**
+**Completed in v0.11.0: QualCoder 4.0 interop conventions, Phase 1**
 - ✅ `#####` private memo sections are never shown to the AI, survive every memo write, and stay in exported files for parity with QualCoder's own exports
 - ✅ Configurable AI coder name (`QUALCODER_MCP_AI_CODER_NAME`), with `AI Agent` as the QualCoder 4.0 opt-in
 - ✅ Reads follow QualCoder's per-coder visibility wherever the project has that capability (QualCoder 3.8.2 and 4.0, schema v14 and later), with a `coder` override; by-id writes on a hidden coder's row need `allow_hidden_coder`
 - ✅ Backups and workspace copies include `ai_data/` minus QualCoder's own ignore set; symlinks pointing outside the project are not followed
 - ✅ Best-effort detection of an open QualCoder 4.0 window (`qualcoder_gui_signals`), and the last-used project named in "no project selected" errors
 
-**In the v0.12 development branch:**
+**Completed in v0.12.0 (this release): the QualCoder 4.0 ground-truth study, two batches and a flagship**
 - ✅ 🕵️ Pseudonymisation tooling, retroactive and position-preserving
   (`pseudonymise_source`): rewrites the stored text of chosen text
   sources and moves every coding, annotation and case link with it, in
-  one transaction, behind a preview and a mandatory backup. Rule-based
-  and deterministic: only the names you list are replaced, as whole
-  words. Memos, journal entries, case names, file names and attribute
-  values are scanned and counted, never rewritten, so the preview tells
-  you where names remain; PDFs, media files and `ai_data/` are out of
-  scope and are neither rewritten nor scanned.
+  one transaction, behind a preview, a token bound to that preview and a
+  mandatory backup. Rule-based and deterministic: only the names you
+  list are replaced, as whole words. Memos, journal entries, case, file,
+  code, category and attribute-type names and attribute values are
+  scanned and counted, never rewritten, so the preview's residue report
+  tells you where names remain; PDFs, media files and `ai_data/` are out
+  of scope and are neither rewritten nor scanned. Hidden coders' rows
+  move with the text and are reported as counts; the override is needed
+  only where a coding decision would change
+- ✅ The AI coder name belongs to the project and you choose it
+  (`set_project_ai_coder_name`, stored in `qualcoder_mcp.json` beside
+  `data.qda`); the first write asks instead of guessing, and the host's
+  `QUALCODER_MCP_AI_CODER_NAME` is a declaration offered as a quick pick
+- ✅ Preview tokens on the six destructive tools, replacing `confirm`
+  (kept inert for one release), with a `collateral` block that says
+  whose work each cascade would remove
+- ✅ `compare_coders`: per-code agreement between two coders, with
+  QualCoder's own coefficient and Cohen's kappa side by side
+- ✅ The novelty filter (`exclude_code_ids`), keyset cursors and sampling
+  strategies with a character budget on the paged read tools
+- ✅ Colours snapped onto QualCoder's 120-colour palette; idempotent
+  creates with case-insensitive duplicate detection (QualCoder 4.0
+  parity, reversing the v0.10 rule); no-op writes answered, not backed up
+- ✅ Methodology vocabulary and grounding rules in the tool guidance, the
+  `qualcoder://guidance/methods` resource and the MCP `initialize` handshake
+- ✅ `--version`, a notice when the server is started by hand, the
+  `mcp>=1.17.0,<2` floor (the core toolset needs `FastMCP.remove_tool`),
+  the deprecated `session_id` duplicate removed, Dependabot on the
+  SHA-pinned actions
 
-**Planned for v0.12 and later:**
-- 🤝 Further QualCoder 4.0 interoperability (later phases)
+**Planned for v0.13 and later:**
+- 🎯 Quote-anchored writes with a fuzzy fallback, and a persistent change
+  journal with undo
+- 🕵️ The reverse pseudonymisation run over a manifest, a count of names
+  remaining in the file text itself beside the residue report, both
+  readings (wide and whole-word) in that report, and rewriting the public
+  part of memos under a separate switch
 - 🖼️ Media region coding (images, audio/video, PDF)
+- 🤝 Further QualCoder 4.0 interoperability (later phases)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))
 
 ## Disclaimer

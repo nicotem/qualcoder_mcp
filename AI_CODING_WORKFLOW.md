@@ -290,7 +290,7 @@ Applying 6 approved codings...
 3. Go to **Coding > Code Text**
 4. Select the files you analysed
 5. You should see the AI-generated codings with:
-   - Owner: the AI coder name (`AI Coding Assistant` by default)
+   - Owner: the project's AI coder name (`AI Coding Assistant` if you took the default quick pick)
    - Memo containing reasoning and confidence score
 
 ## Example Conversations
@@ -596,14 +596,20 @@ written. Applied suggestions are marked and never double-applied.
 - This is the expected protection; nothing to fix
 - To code more segments, record new suggestions or start a new session
 
-### "Coding already exists at this position"
+### "already_existing_count" in the apply result
 
-**Problem:** A coding with the same code/file/span/owner already exists
-in the database (e.g. created in QualCoder).
+**What it means:** an approved suggestion's identical coding (same
+code, file, span and coder) was already in the project, for example
+written in QualCoder or by an earlier apply. Since v0.12 this is not an
+error and does not roll the batch back: that suggestion is left as it
+is, marked applied in the session, and listed in the result with the
+existing coding's ctid; the rest are written as one batch. When every
+approved suggestion already exists nothing is written and no backup is
+made.
 
-**Solutions:**
-- Reject that suggestion and apply the others
-- Check the existing coding with get_coded_segments
+**What to do:**
+- Nothing, usually; the project already holds that coding
+- Check it with get_coded_segments if you want to compare the memo
 
 ### "File ID X does not exist"
 
@@ -679,7 +685,7 @@ this server until the project is closed and reopened there.
 
 Or manually in Qualcoder:
 - Open project
-- Find codings by the AI coder name (`AI Coding Assistant` by default)
+- Find codings by the project's AI coder name (`AI Coding Assistant` if you took the default quick pick)
 - Delete unwanted codings
 
 ### Session file corrupted or lost
@@ -757,7 +763,7 @@ Check your AI coding quality:
 ```
 In Qualcoder:
 1. Open Code Text view
-2. Filter by the AI coder name (`AI Coding Assistant` by default)
+2. Filter by the project's AI coder name (`AI Coding Assistant` if you took the default quick pick)
 3. Review random sample
 4. Compare with your manual coding
 5. Adjust approach as needed
@@ -781,7 +787,7 @@ After applying:
 - [ ] Backup was created (check path)
 - [ ] Open project in Qualcoder
 - [ ] Verify codings look correct
-- [ ] Owner shows the AI coder name (`AI Coding Assistant` by default)
+- [ ] Owner shows the project's AI coder name (`AI Coding Assistant` if you took the default quick pick)
 - [ ] Memos contain reasoning and confidence
 
 ---

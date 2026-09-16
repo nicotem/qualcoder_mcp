@@ -101,7 +101,7 @@ approval of each suggestion.
 | `apply_codings(coding_session_id, create_backup, owner: restricted, see attribution)` | **Write** approved suggestions (project-bound, validated, all-or-nothing). An approved suggestion whose identical coding already exists is left alone and reported by id; that check reads the base table, so on a project that hides the AI coder it discloses that one such row exists (PRIVACY.md) |
 | `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` | **Write**: remove one coded segment (on projects with the coder-visibility capability, QualCoder 3.8.2 and 4.0, schema v14 and later, a hidden coder's row, or a row whose memo carries a `#####` private note, is refused without the override) |
 | `list_backups()` / `restore_backup(backup_path, preview_token)` | List snapshots / guarded project restore (previews first, then the token the preview returns) |
-| `import_text_file(filename, content, memo, owner: restricted, see attribution, create_backup, case_name)` | **Write**: add a new transcript, optionally linked to a case |
+| `import_text_file(filename, content, memo, owner: restricted, see attribution, create_backup, case_name, apply_project_pseudonyms)` | **Write**: add a new transcript, optionally linked to a case; `apply_project_pseudonyms=true` applies the project's own `pseudonyms.json` on the way in, as QualCoder does |
 | `link_file_to_case(file_id, case_id, case_name, create_backup)` | **Write**: make a file visible to case-based analyses |
 | `export_refi_qda(output_path, coding_session_id, overwrite)` | Export codings as a REFI-QDA .qdpx for other QDA software |
 | `get_coding_session_info` / `list_coding_sessions` / `delete_coding_session` / `cleanup_old_sessions` | Session management |
@@ -122,7 +122,7 @@ approval of each suggestion.
 
 1. **Use Descriptive Instructions**: Tell Claude what patterns to look for,
    with examples of what each code covers
-2. **Set Appropriate Confidence**: Lower (0.5–0.6) for exploratory passes,
+2. **Set Appropriate Confidence**: Lower (0.5 to 0.6) for exploratory passes,
    higher (0.8+) for selective coding
 3. **Review Statistics First**: Check counts before diving into details
 4. **Iterate if Needed**: `record_suggestions(replace=true)` discards the
@@ -178,9 +178,24 @@ approved ones to the codebook. The codebook tools (`create_code`,
 `rename_code`, `recolor_code`, `move_code_to_category`,
 `create_category`, `merge_codes`, `delete_code`, ...) edit it directly.
 
-**Which coder name do AI codings carry?** The configured AI coder name,
-`AI Coding Assistant` by default (`QUALCODER_MCP_AI_CODER_NAME`; see
-INSTALL.md), so AI work stays distinguishable from yours in QualCoder.
+**Which coder name do AI codings carry?** The PROJECT's AI coder name,
+which you choose the first time a write needs it: the write stops and
+asks, and your answer is stored with the project
+(`set_project_ai_coder_name`; `AI Coding Assistant` is the built-in
+quick pick, and `QUALCODER_MCP_AI_CODER_NAME` in the host's
+configuration only declares a name to offer first). See "Choosing the
+AI coder name" in README.md. AI work stays distinguishable from yours in
+QualCoder, and rows written under an earlier name keep it.
+
+**Can I pseudonymise transcripts that are already coded?** Yes:
+`pseudonymise_source` replaces the names you list, as whole words, in
+the stored text of chosen text sources and moves every coding,
+annotation and case link with the text, after a preview you approve
+and a mandatory backup. Memos, journal entries, labels and attribute
+values are scanned and counted, never rewritten, and PDFs, media files
+and `ai_data/` are out of scope; the preview's residue report says
+where names remain. Pseudonymised data is still personal data: read
+PRIVACY.md before sending it anywhere.
 
 **What happens to my original project?** Nothing, if you follow the
 workspace workflow: copy first, work on the copy, and compare in

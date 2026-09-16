@@ -138,9 +138,14 @@ rather than fewer.
   routing-flavoured names (`request_id`, `conversation_id`, `user_id`,
   `context`, `metadata`) as well.
 - **Runtime dependencies stay minimal.** The package has one runtime
-  dependency (`mcp`). A new one needs a reason in the pull request;
-  anything optional must stay optional and import-guarded (the way
-  `psutil` is used).
+  dependency, `mcp>=1.17.0,<2`: the floor is the first release with
+  `FastMCP.remove_tool`, which the core toolset needs, and the cap keeps
+  out mcp 2.x, which removed `mcp.server.fastmcp`. A new dependency
+  needs a reason in the pull request; anything optional must stay
+  optional and import-guarded (the way `psutil` is used). If you change
+  a dependency in `pyproject.toml`, regenerate `uv.lock` with `uv lock`
+  in the same change, so that `uv lock --check` passes and the lock file
+  agrees with the package.
 - **Synthetic test data only.** Never commit a `.qda` project, a real
   transcript or any research text. Test fixtures are built in code.
 - **British English in all prose.** Documentation, docstrings, tool

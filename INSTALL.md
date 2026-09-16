@@ -298,8 +298,11 @@ variable is optional.
   server's work with the assistant's under one coder in QualCoder's
   per-coder visibility toggle, undo and reports. The value is trimmed
   and must be non-empty, at most 80 characters, single-line plain text
-  (no control characters, no line or paragraph separators, no
-  bidirectional formatting characters) and must not contain `#####`,
+  (no control characters, no line or paragraph separators, and no
+  invisible formatting character of Unicode category Cf, which covers
+  every bidirectional control and every zero-width character; ZWNJ and
+  ZWJ, which spell words in Persian and Indic scripts, are the two
+  exceptions) and must not contain `#####`,
   the QualCoder 4.0 private-memo marker. An invalid value stops the
   server at start-up with "Error: QUALCODER_MCP_AI_CODER_NAME ..." on
   stderr. Do not declare your own QualCoder coder name: AI rows would
@@ -440,8 +443,8 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 70 tools by
 default, and the serialised tool definitions alone measure about
-156,000 characters, roughly 39k tokens (measured for the 0.12
-development branch under Python 3.13.5 with mcp 1.30.0, in the
+156,000 characters, roughly 39k tokens (measured for 0.12.0 under
+Python 3.13.5 with mcp 1.30.0, in the
 repository's own `venv/`; `pseudonymise_source`, the 0.12 flagship,
 accounts for about 10,400 characters of that on its own, because a tool
 that rewrites the researcher's text has to say in its own definition
@@ -801,7 +804,9 @@ QualCoder projects and backups stay exactly where they are.
 **First, the reassurance: upgrading only replaces the SERVER code.**
 It never touches your QualCoder projects (the `.qda` folders) or your
 files under `~/.qualcoder_mcp/` (the AI-coding session files in
-`sessions/`, and the last-used project pointer `mru_project.json`); all
+`sessions/`, the last-used project pointer `mru_project.json`, the
+preview-token secret `preview_secret` and the run manifests
+`pseudonymise_source` writes under `pseudonymisation/`); all
 live outside the install, and the projects and session files were
 verified untouched across every install/upgrade path below. Jumping
 from 0.6, 0.7 or 0.8 straight to
@@ -962,8 +967,13 @@ If you want to remove the MCP server:
    ```
 
 3. **Optionally remove the server's own state**: `~/.qualcoder_mcp/`
-   holds the AI-coding session files (`sessions/`) and the last-used
-   project pointer (`mru_project.json`). Nothing else is stored there.
+   holds the AI-coding session files (`sessions/`), the last-used
+   project pointer (`mru_project.json`), the preview-token secret
+   (`preview_secret`, which signs the tokens that authorise a destructive
+   operation; deleting it only invalidates outstanding previews) and the
+   run manifests `pseudonymise_source` writes (`pseudonymisation/`, one
+   JSON file per run: pseudonyms, counts and row offsets, never an
+   original name). Nothing else is stored there.
 
 Uninstalling does not touch your QualCoder projects. Note that the
 server does write to projects when you use its coding tools (always

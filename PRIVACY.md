@@ -73,6 +73,17 @@ What stays local, always:
   result; treat the note like any other project text the model can read.
   QualCoder never reads or writes this file. Deleting it makes the next
   AI write ask for the name again.
+- the pseudonymisation run manifests (`~/.qualcoder_mcp/pseudonymisation/`,
+  one JSON file per `pseudonymise_source` run, created owner-only on
+  POSIX systems): the pseudonyms applied, the counts, the row ids and
+  the old and new offsets of every row the run moved, the case mode and
+  overlap policy, and two digests keyed with the preview-token secret
+  (`token_bind`, `mapping_hmac_sha256`). Never an original name: the
+  project path, the backup path and a file's name are withheld where a
+  reader would see one, and "Practical mitigations" below says how. No
+  tool reads these files back in this release; they exist so that a
+  later release can reverse a run over spans rather than by matching
+  text.
 
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
@@ -205,7 +216,13 @@ project has the coder-visibility capability:
   searches, the file view with its codings and annotations, code
   detail counts, frequencies, co-occurrence, matrices and the
   codes-by-case and cases-by-code listings reflect what the user sees
-  in QualCoder.
+  in QualCoder's coding screen. Its coding REPORT is another matter:
+  in both pinned builds it reads the base `code_text` table
+  (`report_codes.py:1712-1724` at 9bddf17, `:1504-1515` at the 3.8.2
+  tag) and lists a hidden coder's segments, so hiding a coder in
+  QualCoder hides their work from its coding screen and from this
+  server's default reads, not from its reports; this server's file
+  exports keep that same parity.
   Results disclose when hidden-coder filtering shaped them as a COUNT
   of hidden coders, never their names. An explicit `coder` argument
   reads that coder's rows from the full data instead, the same
