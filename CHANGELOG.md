@@ -872,8 +872,10 @@ withholds project data.
   was last resolved, which is why `uv lock --check` failed on it.
   Regenerated against 0.12.0-alpha:
   29 packages added, all from the dev extra's build and twine trees;
-  `packaging` 25.0 to 26.3; nothing removed; `mcp` unchanged at 1.19.0,
-  which already satisfies the floor.
+  `packaging` 25.0 to 26.3; nothing removed. Then `mcp` moved from
+  1.19.0 to 1.30.0, the version every documented toolset figure was
+  measured with (`pyjwt` 2.14.0 comes in as its dependency; 72
+  packages in all).
 - The deprecation note on `confirm` said the preview token "proves that
   the preview the user saw is the operation being executed". The token
   is a MAC over the tool, the effect-deciding arguments, the project and
