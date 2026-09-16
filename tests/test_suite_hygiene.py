@@ -508,21 +508,50 @@ class TestTheSuiteLeavesNoTemporaryDirectoryBehind:
     pre-existing rather than a defect of this batch, and it is also the
     import-time filesystem work that made the guard's baseline move to
     `pytest_sessionstart`.
+
+    `tests/test_transport.py` had the very same shape (`RUN_DIR`, 1.3 MB
+    a run, 938 of them by the v0.12 release review), and the two
+    subprocess checks here could not see it because they named one
+    module. So the shape is now pinned by syntax over every test module:
+    a `tempfile` factory called anywhere a function body does not
+    enclose it runs at import, and nothing that runs at import is undone
+    by a fixture. The subprocess checks stay, one per module that has
+    had the defect, because they prove what the sweep cannot: that the
+    replacement creates nothing at import and that what it does create
+    does not outlive the interpreter.
+
+    The honest limit of the sweep: it reads the call shape, so it sees
+    `tempfile.mkdtemp(...)` (or the name imported from `tempfile`, or
+    the module under an alias) outside every function body, decorators
+    and default argument values included, because those run at
+    definition time; the body of an `if __name__ == "__main__":` guard
+    is the one module-level block that does not run at import and is
+    the one it skips. It does not see a factory reached through a helper
+    of another name called at import, and it does not see a directory
+    made INSIDE a function and never removed; that second class belongs
+    to the session-wide guards in tests/conftest.py, not here.
     """
+
+    MODULES = {
+        "test_scale_media": ("_GEN_DIR", "_gen_dir", "qc_scale_"),
+        "test_transport": ("_RUN_DIR", "_run_dir", "qc_transport_"),
+    }
 
     SCRIPT = (
         "import sys\n"
         "sys.path.insert(0, {tests!r})\n"
         "sys.path.insert(0, {src!r})\n"
-        "import test_scale_media as module\n"
-        "print('AFTER_IMPORT', module._GEN_DIR)\n"
-        "print('IN_USE', module._gen_dir())\n"
+        "import {module} as module\n"
+        "print('AFTER_IMPORT', module.{holder})\n"
+        "print('IN_USE', module.{maker}())\n"
     )
 
-    def _run(self):
+    def _run(self, module):
+        holder, maker, _ = self.MODULES[module]
         root = pathlib.Path(__file__).resolve().parents[1]
         script = self.SCRIPT.format(tests=str(root / "tests"),
-                                    src=str(root / "src"))
+                                    src=str(root / "src"), module=module,
+                                    holder=holder, maker=maker)
         done = subprocess.run([sys.executable, "-c", script],
                               capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
@@ -530,14 +559,148 @@ class TestTheSuiteLeavesNoTemporaryDirectoryBehind:
                      done.stdout.strip().splitlines() if " " in line)
         return lines
 
-    def test_importing_the_module_creates_nothing(self):
-        assert self._run()["AFTER_IMPORT"] == "None"
+    @pytest.mark.parametrize("module", sorted(MODULES))
+    def test_importing_the_module_creates_nothing(self, module):
+        assert self._run(module)["AFTER_IMPORT"] == "None"
 
-    def test_what_it_does_create_does_not_outlive_the_interpreter(self):
-        created = pathlib.Path(self._run()["IN_USE"])
-        assert created.name.startswith("qc_scale_")
+    @pytest.mark.parametrize("module", sorted(MODULES))
+    def test_what_it_does_create_does_not_outlive_the_interpreter(
+            self, module):
+        created = pathlib.Path(self._run(module)["IN_USE"])
+        assert created.name.startswith(self.MODULES[module][2])
         assert not created.exists(), (
             f"{created} survived the interpreter that made it")
+
+    # The `tempfile` callables that make a file or a directory the moment
+    # they run. `mktemp` only names one and is not in the set.
+    FACTORIES = frozenset({"mkdtemp", "mkstemp", "TemporaryDirectory",
+                           "NamedTemporaryFile", "TemporaryFile",
+                           "SpooledTemporaryFile"})
+    TESTS = pathlib.Path(__file__).resolve().parent
+
+    @classmethod
+    def _names_bound_to_factories(cls, tree):
+        """How a module can spell a factory: `tempfile.X` under the
+        module's own name or an alias, and X itself when imported."""
+        modules, bare = {"tempfile"}, set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "tempfile":
+                        modules.add(alias.asname or "tempfile")
+            elif isinstance(node, ast.ImportFrom) \
+                    and node.module == "tempfile":
+                for alias in node.names:
+                    if alias.name in cls.FACTORIES:
+                        bare.add(alias.asname or alias.name)
+        return modules, bare
+
+    @staticmethod
+    def _is_main_guard(node):
+        """`if __name__ == "__main__":` and nothing looser."""
+        if not isinstance(node, ast.If) \
+                or not isinstance(node.test, ast.Compare):
+            return False
+        test = node.test
+        return (isinstance(test.left, ast.Name)
+                and test.left.id == "__name__"
+                and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+                and len(test.comparators) == 1
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == "__main__")
+
+    @classmethod
+    def _at_import(cls, source):
+        """Line numbers of `tempfile` factory calls the interpreter
+        evaluates when it imports the module: everything a function body
+        does not enclose, class bodies, module-level `if`, `try` and
+        `with`, decorators and default argument values included; the
+        body of a `__main__` guard excluded."""
+        tree = ast.parse(source)
+        modules, bare = cls._names_bound_to_factories(tree)
+
+        def is_factory(func):
+            if isinstance(func, ast.Attribute):
+                return (func.attr in cls.FACTORIES
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in modules)
+            return isinstance(func, ast.Name) and func.id in bare
+
+        hits = []
+
+        def visit(node, inside):
+            if isinstance(node, ast.Call) and not inside \
+                    and is_factory(node.func):
+                hits.append(node.lineno)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in node.decorator_list:
+                    visit(child, inside)
+                visit(node.args, inside)
+                if node.returns is not None:
+                    visit(node.returns, inside)
+                for child in node.body:
+                    visit(child, True)
+                return
+            if isinstance(node, ast.Lambda):
+                visit(node.args, inside)
+                visit(node.body, True)
+                return
+            if cls._is_main_guard(node):
+                visit(node.test, inside)
+                for child in node.orelse:
+                    visit(child, inside)
+                return
+            for child in ast.iter_child_nodes(node):
+                visit(child, inside)
+
+        visit(tree, False)
+        return sorted(set(hits))
+
+    def test_no_test_module_makes_a_temporary_path_at_import(self):
+        offenders = []
+        for path in sorted(self.TESTS.rglob("*.py")):
+            for line in self._at_import(path.read_text(encoding="utf-8")):
+                offenders.append(f"{path.relative_to(self.TESTS)}:{line}")
+        assert offenders == [], offenders
+
+    def test_there_are_test_modules_to_sweep(self):
+        assert len(list(self.TESTS.rglob("*.py"))) >= 20
+
+    def test_the_sweep_would_notice(self):
+        """Driven against known-bad and known-good samples, as the other
+        sweeps here are. The first bad sample is tests/test_transport.py:58
+        as it stood at e194c9f, verbatim."""
+        bad = ('RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))'
+               '  # generated artefacts\n')
+        assert self._at_import(bad) == [1]
+        assert self._at_import(
+            "class T:\n    D = tempfile.mkdtemp()\n") == [2]
+        assert self._at_import(
+            "from tempfile import mkdtemp as make\nX = make()\n") == [2]
+        assert self._at_import(
+            "import tempfile as tf\nif True:\n    X = tf.mkstemp()\n") == [3]
+        assert self._at_import(
+            "def f(where=tempfile.mkdtemp()):\n    return where\n") == [1]
+        assert self._at_import(
+            "F = tempfile.NamedTemporaryFile(delete=False)\n") == [1]
+        assert self._at_import(
+            "if __name__ == 'main':\n    X = tempfile.mkdtemp()\n") == [2]
+
+        good = ("_GEN_DIR = None\n\n"
+                "def _gen_dir():\n"
+                "    global _GEN_DIR\n"
+                "    if _GEN_DIR is None:\n"
+                "        _GEN_DIR = Path(tempfile.mkdtemp(prefix='x'))\n"
+                "        atexit.register(shutil.rmtree, _GEN_DIR, True)\n"
+                "    return _GEN_DIR\n")
+        assert self._at_import(good) == []
+        assert self._at_import(
+            "@pytest.fixture\ndef d():\n    t = tempfile.mkdtemp()\n"
+            "    yield t\n    shutil.rmtree(t)\n") == []
+        assert self._at_import("make = lambda: tempfile.mkdtemp()\n") == []
+        assert self._at_import(
+            "if __name__ == '__main__':\n    X = tempfile.mkdtemp()\n") == []
+        assert self._at_import("NAME = tempfile.mktemp()\n") == []
 
 
 class TestNoConnectionIsOpenedWithNothingToCloseIt:

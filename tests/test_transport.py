@@ -49,15 +49,44 @@ from mcp.client.stdio import stdio_client
 # Paths / environment
 # --------------------------------------------------------------------------- #
 
+import atexit
 import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent                      # repo root (tests/ -> repo)
 VENV_PY = Path(sys.executable)          # run the server with the suite's python
-RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))  # generated artefacts
-PROJECTS_DIR = RUN_DIR / "projects"
-HOME_DIR = RUN_DIR / "home"            # private HOME -> private sessions dir
+
+_RUN_DIR = None
+
+
+def _run_dir() -> Path:
+    """Where the generated projects and the private HOME go: made late,
+    removed after.
+
+    This was a `tempfile.mkdtemp` evaluated at module IMPORT with no
+    cleanup, the shape `test_scale_media.py` had, so every run of the
+    suite left one `qc_transport_*` directory (1.3 MB: two built
+    projects, a write copy and the private HOME's session folder) in
+    the system temporary directory whether or not a test in this module
+    ran; 938 of them had accumulated on the machine this was found on,
+    and on Windows `%TEMP%` sits inside the user profile. Created on
+    first use, removed at interpreter exit; the sweep in
+    `tests/test_suite_hygiene.py` pins the shape for every test module.
+    """
+    global _RUN_DIR
+    if _RUN_DIR is None:
+        _RUN_DIR = Path(tempfile.mkdtemp(prefix="qc_transport_"))
+        atexit.register(shutil.rmtree, _RUN_DIR, True)
+    return _RUN_DIR
+
+
+def _projects_dir() -> Path:
+    return _run_dir() / "projects"      # generated artefacts
+
+
+def _home_dir() -> Path:
+    return _run_dir() / "home"          # private HOME -> private sessions dir
 
 EXPECTED_TOOLS = 70
 EXPECTED_CONCRETE_RESOURCES = 7   # six data resources + qualcoder://guidance/methods (0.12)
@@ -231,8 +260,8 @@ def build_write_project(folder: Path) -> str:
 def server_params() -> StdioServerParameters:
     """Launch `python -m qualcoder_mcp.server` with a private HOME (dynamic mode)."""
     env = os.environ.copy()
-    env["HOME"] = str(HOME_DIR)          # POSIX: ~ -> HOME/.qualcoder_mcp/sessions
-    env["USERPROFILE"] = str(HOME_DIR)   # Windows: expanduser() uses USERPROFILE
+    env["HOME"] = str(_home_dir())        # POSIX: ~ -> HOME/.qualcoder_mcp/sessions
+    env["USERPROFILE"] = str(_home_dir()) # Windows: expanduser() uses USERPROFILE
     env.pop("QUALCODER_PROJECT_PATH", None)   # dynamic project-selection mode
     env["PYTHONPATH"] = str(REPO / "src")
     return StdioServerParameters(
@@ -292,25 +321,25 @@ class Client:
 def _prepare_run_dir():
     if not VENV_PY.exists():
         pytest.skip(f"python executable not found: {VENV_PY}")
-    for d in (PROJECTS_DIR, HOME_DIR):
+    for d in (_projects_dir(), _home_dir()):
         d.mkdir(parents=True, exist_ok=True)
     yield
 
 
 @pytest.fixture(scope="module")
 def standard_project():
-    return build_standard_project(PROJECTS_DIR / "standard.qda")
+    return build_standard_project(_projects_dir() / "standard.qda")
 
 
 @pytest.fixture(scope="module")
 def large_project():
-    return build_large_project(PROJECTS_DIR / "large.qda", n_codings=4000)
+    return build_large_project(_projects_dir() / "large.qda", n_codings=4000)
 
 
 @pytest.fixture()
 def write_project():
     # Fresh per test so apply_codings mutation is idempotent across re-runs.
-    folder = PROJECTS_DIR / f"write_{uuid.uuid4().hex[:8]}.qda"
+    folder = _projects_dir() / f"write_{uuid.uuid4().hex[:8]}.qda"
     path = build_write_project(folder)
     yield path
     shutil.rmtree(folder, ignore_errors=True)
