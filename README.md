@@ -477,7 +477,21 @@ builds (Reports > Coding reports in 3.8.2, Reports > Code retrieval in
 4.0) and lists a hidden coder's segments, because it reads the base
 `code_text` table (`report_codes.py:1712-1724` at `9bddf17`,
 `:1504-1515` at the 3.8.2 tag); only the coding screen reads through
-the visibility view. Writes that target an existing row
+the visibility view.
+
+> **QualCoder 3.8.2 and edit mode: an upstream caution, not this server's.**
+> On the 3.8.2 line, leaving the coding view's edit mode after any change to
+> the text deletes every coding whose end sits at the end of the file
+> (`ed_update_codings` deletes a row whose new end is `>= len(text)`), and the
+> undo cannot bring it back. Annotations and case links are unaffected, and
+> leaving edit mode without changing anything is harmless. This happens
+> whether or not a project has ever been through this server: the v0.12.1
+> acceptance run reproduced it on a project the server never touched, which is
+> how it is attributed. The QualCoder 4.0 line has fixed it, clamping such a
+> coding instead of deleting it. If you use edit mode on 3.8.2, know this
+> regardless of `pseudonymise_source`.
+
+Writes that target an existing row
 by id (`delete_coding`, `update_annotation`, `delete_annotation`,
 `set_memo` on a coding) refuse a hidden coder's row unless
 `allow_hidden_coder=true`; with the override the result carries ids
@@ -542,7 +556,7 @@ pip install -e .                # picks up any new dependencies
 
 Then **fully quit and reopen your Claude client** (Claude Desktop: Cmd/Ctrl+Q then reopen; Claude Code: restart the session) so it relaunches the server with the new code. **New tools only appear after the client restart**: the client starts the server once per session, so an update takes effect on the next launch, not mid-conversation.
 
-To check which version is installed, run the server with `--version` in the environment you installed into: `~/qualcoder-mcp-venv/bin/qualcoder-mcp --version` (PyPI venv), `qualcoder-mcp --version` after `pipx` or `uv tool` (both put the command on your PATH), or `venv/bin/python -m qualcoder_mcp.server --version` in a git clone. It prints `qualcoder-mcp` followed by the version and exits; version `0.12.0-alpha` shows as `0.12.0a0`, its normalised form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
+To check which version is installed, run the server with `--version` in the environment you installed into: `~/qualcoder-mcp-venv/bin/qualcoder-mcp --version` (PyPI venv), `qualcoder-mcp --version` after `pipx` or `uv tool` (both put the command on your PATH), or `venv/bin/python -m qualcoder_mcp.server --version` in a git clone. It prints `qualcoder-mcp` followed by the version and exits; version `0.12.1-alpha` shows as `0.12.1a0`, its normalised form. The server also reports its version to the host in the MCP handshake, but whether Claude can see and repeat it depends on the host, so asking Claude *"What version of the QualCoder server is running?"* is a convenience, not proof. You can also see the latest release and what changed on the [Releases page](https://github.com/nicotem/qualcoder_mcp/releases) and in [CHANGELOG.md](https://github.com/nicotem/qualcoder_mcp/blob/main/CHANGELOG.md).
 
 Updates never touch your data: the server is code-only, so your
 QualCoder projects and their backups stay exactly where they are.
@@ -1162,7 +1176,7 @@ Contributions are welcome! Some ideas for enhancements:
 - ✅ Backups and workspace copies include `ai_data/` minus QualCoder's own ignore set; symlinks pointing outside the project are not followed
 - ✅ Best-effort detection of an open QualCoder 4.0 window (`qualcoder_gui_signals`), and the last-used project named in "no project selected" errors
 
-**Completed in v0.12.0 (this release): the QualCoder 4.0 ground-truth study, two batches and a flagship**
+**Completed in v0.12.0: the QualCoder 4.0 ground-truth study, two batches and a flagship** (v0.12.1 adds no code; it records the in-QualCoder acceptance checks, see the CHANGELOG)
 - ✅ 🕵️ Pseudonymisation tooling, retroactive and position-preserving
   (`pseudonymise_source`): rewrites the stored text of chosen text
   sources and moves every coding, annotation and case link with it, in

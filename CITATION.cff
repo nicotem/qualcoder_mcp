@@ -10,8 +10,8 @@ authors:
     affiliation: "University of Exeter"
 repository-code: "https://github.com/nicotem/qualcoder_mcp"
 license: MIT
-version: "0.12.0-alpha"
-date-released: '2026-09-16'
+version: "0.12.1-alpha"
+date-released: '2026-09-17'
 keywords:
   - "qualitative research"
   - "QualCoder"

@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.12.1-alpha] - 2026-09-17
+
+Documentation only: no code, no tool behaviour and no dependency changed.
+This release records the six in-QualCoder acceptance checks that 0.12.0-alpha
+shipped as not run, and what running them found.
+
+### Verified
+
+- **The six acceptance checks for `pseudonymise_source` (D1 6.5) were run on
+  both pinned QualCoder builds**, 3.8.2 and master 9bddf17, and the tool
+  passed every one of them. They were run headlessly: QualCoder's own widget
+  code under `QT_QPA_PLATFORM=offscreen`, with the result read back from the
+  objects QualCoder itself populates (the character ranges and formats of the
+  text document, the report dialog's results, the case file manager's
+  underline ranges, the coding, annotation and case rows after edit mode, and
+  `ai_data/search.sqlite`). That reads exact character offsets rather than
+  pixels, which is stronger evidence than a screenshot, and it needed no
+  control of the researcher's screen.
+- Highlights sit exactly on the pseudonyms, and on nothing else: 39 assertions
+  per build, including that nothing is highlighted inside `Thomasin` and that
+  a hidden coder's rows appear only once that coder is made visible.
+- The coded-text report prints the refreshed quote for all eighteen codings,
+  including the hidden coder's, because QualCoder's report reads the base
+  table rather than the visibility view. A search for the real name returns
+  nothing; a search for the pseudonym returns seven segments.
+- The annotation report shows the pseudonym at the planted positions, and the
+  case links still span what they should: the whole-file link covers the whole
+  rewritten text, and the partial link ends exactly after the pseudonym.
+- On master, edit mode and its undo behave correctly after a rewrite: every
+  row moves by the inserted length and the undo restores the pre-edit
+  positions.
+- On master with AI enabled, the search index re-indexes the rewritten source
+  on reopen, with the stored text hashes changing as predicted, the real name
+  falling to zero full-text hits, and `Thomasin` surviving.
+- The control ran every check against the untouched original project as well.
+  Roughly half of each step's assertions are bound to the rewritten project
+  and fail there, which is what makes them discriminating; the rest are
+  project invariants that hold either way. The counts per step are in the
+  acceptance report rather than summarised as a single figure, because a score
+  of 39 out of 39 should not be read as meaning every assertion discriminates.
+
+### Known limitation, upstream and not in this server
+
+- **QualCoder 3.8.2 deletes a coding that ends at the end of a file whenever
+  edit mode is left after any change to the text.** `ed_update_codings`
+  deletes any row whose new end is `>= len(text)`, and the undo cannot restore
+  it. It affects every `code_text` row whose end equals the file length, in
+  any file; annotations and case links are unaffected. Leaving edit mode
+  without changing anything is harmless. This is upstream 3.8.2 behaviour,
+  present whether or not a project has ever been pseudonymised: the same loss
+  occurs on a project this server never touched, which is how the acceptance
+  control attributes it. The QualCoder 4.0 line has fixed it, clamping instead
+  of deleting, with the comment that a coding ending at the file length is
+  valid. Researchers on 3.8.2 who use edit mode should know this regardless of
+  this server.
+- One sub-step could not be run headlessly and is recorded as such: pressing
+  undo inside edit mode cannot be exercised, because QualCoder repopulates the
+  editor's undo stack with formatting commands on every undo, in both builds.
+  What that sub-step asserts is covered on master by two other routes; on
+  3.8.2 only partially, because one of those routes is itself affected by the
+  defect above.
+- Check 6 does not apply to 3.8.2. It has an AI subsystem, but a FAISS-based
+  one with no `search.sqlite` to re-index.
+
 ## [0.12.0-alpha] - 2026-09-16
 
 v0.12 in two batches, a flagship and two follow-ups, from the QualCoder
@@ -34,7 +98,7 @@ Security gate and re-verification until clean, then six-platform CI;
 the suite at the release commit: 3035 passed, 3 skipped, 0 failed. The
 six in-QualCoder acceptance checks for the flagship (D1 6.5) were
 prepared, fixture and script, and are recorded as not run in this
-release and planned for 0.12.1; the release notes say so under known
+release and planned for 0.12.1 (run and recorded there); the release notes say so under known
 limits.
 
 ### Upgrading from 0.11.x
