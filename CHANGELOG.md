@@ -17,9 +17,15 @@ shipped as not run, and what running them found.
 
 ### Verified
 
-- **The six acceptance checks for `pseudonymise_source` (D1 6.5) were run on
-  both pinned QualCoder builds**, 3.8.2 and master 9bddf17, and the tool
-  passed every one of them. They were run headlessly: QualCoder's own widget
+- **The six acceptance checks for `pseudonymise_source` (D1 6.5) were run:
+  all six on master 9bddf17, five of six on 3.8.2, and no failure anywhere is
+  attributable to this server.** On master the tool passed all six. On 3.8.2
+  check 6 does not apply (it has an AI subsystem, but a FAISS-based one with
+  no `search.sqlite` to re-index), and two of the remaining five record a
+  failure, both of them the upstream 3.8.2 edit-mode defect described under
+  "Known limitation" below, which the control reproduces on a project this
+  server never touched. Every check that tests what this server does passed on
+  both builds. They were run headlessly: QualCoder's own widget
   code under `QT_QPA_PLATFORM=offscreen`, with the result read back from the
   objects QualCoder itself populates (the character ranges and formats of the
   text document, the report dialog's results, the case file manager's
@@ -52,11 +58,16 @@ shipped as not run, and what running them found.
 
 ### Known limitation, upstream and not in this server
 
-- **QualCoder 3.8.2 deletes a coding that ends at the end of a file whenever
-  edit mode is left after any change to the text.** `ed_update_codings`
-  deletes any row whose new end is `>= len(text)`, and the undo cannot restore
-  it. It affects every `code_text` row whose end equals the file length, in
-  any file; annotations and case links are unaffected. Leaving edit mode
+- **QualCoder 3.8.2 deletes whichever coding the edit leaves touching the new
+  end of a file, whenever edit mode is left after any change to the text.**
+  `ed_update_codings` deletes any row whose new end is `>= len(text)`,
+  evaluated against the text AFTER the edit, and the undo cannot restore it.
+  That is wider than "a coding at the end of the file": trimming a
+  transcript's tail destroys whichever coding is left nearest the cut.
+  Measured in the acceptance run: deleting the last 193 characters of a
+  614-character file destroyed a coding at 400-421, which had been 193
+  characters clear of the end, while master kept it. It affects `code_text`
+  only, in any file; annotations and case links are unaffected. Leaving edit mode
   without changing anything is harmless. This is upstream 3.8.2 behaviour,
   present whether or not a project has ever been pseudonymised: the same loss
   occurs on a project this server never touched, which is how the acceptance

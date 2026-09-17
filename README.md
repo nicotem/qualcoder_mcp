@@ -481,15 +481,20 @@ the visibility view.
 
 > **QualCoder 3.8.2 and edit mode: an upstream caution, not this server's.**
 > On the 3.8.2 line, leaving the coding view's edit mode after any change to
-> the text deletes every coding whose end sits at the end of the file
-> (`ed_update_codings` deletes a row whose new end is `>= len(text)`), and the
-> undo cannot bring it back. Annotations and case links are unaffected, and
-> leaving edit mode without changing anything is harmless. This happens
-> whether or not a project has ever been through this server: the v0.12.1
-> acceptance run reproduced it on a project the server never touched, which is
-> how it is attributed. The QualCoder 4.0 line has fixed it, clamping such a
-> coding instead of deleting it. If you use edit mode on 3.8.2, know this
-> regardless of `pseudonymise_source`.
+> the text deletes every coding that the edit leaves touching the new end of
+> the file, and the undo cannot bring it back. `ed_update_codings` deletes any
+> row whose new end is `>= len(text)`, evaluated against the text AFTER the
+> edit, so this is wider than it sounds: **trimming the tail of a transcript
+> destroys whichever coding is left nearest the cut, even one that was
+> nowhere near the end before.** Deleting the last 193 characters of a
+> 614-character file in the v0.12.1 acceptance run destroyed a coding at
+> 400-421, which had sat 193 characters clear of the end; the 4.0 line kept it.
+> Annotations and case links are unaffected, and leaving edit mode without
+> changing anything is harmless. This happens whether or not a project has
+> ever been through this server: the acceptance run reproduced it on a project
+> the server never touched, which is how it is attributed. The QualCoder 4.0
+> line has fixed it, clamping such a coding instead of deleting it. If you use
+> edit mode on 3.8.2, know this regardless of `pseudonymise_source`.
 
 Writes that target an existing row
 by id (`delete_coding`, `update_annotation`, `delete_annotation`,
