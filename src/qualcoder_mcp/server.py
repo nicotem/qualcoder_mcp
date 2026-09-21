@@ -10478,7 +10478,8 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
 def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            compiled, bind: str, backup_path: Optional[str],
                            journal_entry: Optional[str],
-                           when: datetime, secret: str) -> Dict[str, Any]:
+                           when: datetime, secret: str,
+                           project_path_at_start: str) -> Dict[str, Any]:
     """The run record kept in the state home (D1 3.2).
 
     Spans in the NEW text plus row ids and old and new offsets: enough
@@ -10532,8 +10533,14 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     # whole; `token_bind` still identifies which run and which project
     # this manifest belongs to, since it is a digest over the tool, the
     # arguments and the project identity.
-    project_path = _pseudonymise_safe_name(
-        str(validate_qda_path(current_project_path)), compiled)
+    # Resolved before the write, not here. This runs AFTER the commit,
+    # and a project folder renamed in that window made the resolution
+    # raise: the run then returned "File or project not found" over a
+    # rewrite that had committed, and logged the full path on the way
+    # out. The value cannot have changed in a way that matters, because
+    # the token is bound to the project identity settled at the same
+    # moment (fix round 3, carry 5).
+    project_path = _pseudonymise_safe_name(project_path_at_start, compiled)
     safe_backup_path = _pseudonymise_safe_name(backup_path, compiled)
     manifest = {
         "format": 1,
@@ -10951,6 +10958,9 @@ def pseudonymise_source(
     bind = bind_id("pseudonymise_source", token_args, _token_project(),
                    secret)
     manifest_name = f"run_{when.strftime('%Y%m%dT%H%M%SZ')}_{bind}.json"
+    # The project path the manifest records, settled here with the rest
+    # and never re-resolved after the commit: see _pseudonymise_manifest.
+    project_path_at_start = str(validate_qda_path(current_project_path))
 
     def _state_on_write_connection(wdb):
         """The signed state, recomputed inside the write transaction.
@@ -11102,7 +11112,7 @@ def pseudonymise_source(
     backup_path = result.get("backup_path")
     manifest = _pseudonymise_manifest(
         captured["plan"], captured["written"], compiled, bind, backup_path,
-        captured.get("journal_entry"), when, secret)
+        captured.get("journal_entry"), when, secret, project_path_at_start)
     written_to = _write_run_manifest(manifest, manifest_name)
     if written_to is None:
         result["manifest_path"] = None

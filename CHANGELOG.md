@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measure 162,868 and 59,253, because 3.10 to 3.12 keep the docstring
   indentation 3.13 strips at compile time.
 
+### Fixed
+
+- **`pseudonymise_source` could answer "File or project not found." over a
+  rewrite that had committed.** The run manifest resolved the project path
+  when it was written, which is after the commit; a project folder renamed
+  in that window made the resolution fail, so the run returned that refusal
+  with no manifest, no notes and no stale-session list, and logged the full
+  project path on the way out. The path is settled before the gate runs and
+  the manifest is handed what was settled.
+
 ### Upgrading from 0.12.x
 
 - **Drop `confirm` from any call that still passes it.** It has been

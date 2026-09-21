@@ -2425,6 +2425,88 @@ class TestTheProjectFolderName:
             assert "Backup taken before the run: fieldwork_backup_" in body
 
 
+class TestTheManifestPathIsSettledBeforeTheWrite:
+    """Fix round 3, carry 5, taken in v0.13 A1's batch.
+
+    `_pseudonymise_manifest` resolved the project path itself, and it
+    runs AFTER the commit. A project folder renamed inside that window
+    made `validate_qda_path` raise, so a run whose rewrite had COMMITTED
+    answered "File or project not found." with no manifest, no notes and
+    no stale-session list, and `_tool_guard` logged the full path on the
+    way out. The value is now settled beside `bind` and `when`, before
+    the gate runs, and the manifest is handed what was settled.
+
+    The window is driven where it really is, between the gate returning
+    a committed success and the manifest being written, by wrapping the
+    gate itself. The connection is closed first, so the rename works on
+    Windows too: a directory holding an open file cannot be renamed
+    there (`test_suite_hygiene.py` pins both halves of that).
+    """
+
+    @staticmethod
+    def _rename_after_the_commit(monkeypatch, folder, moved):
+        original = server._guarded_destructive
+        renamed = []
+
+        def gate(**kwargs):
+            result = original(**kwargs)
+            if isinstance(result, dict) and result.get("success"):
+                try:
+                    server.db.close()
+                except Exception:
+                    pass
+                folder.rename(moved)
+                renamed.append(True)
+            return result
+
+        monkeypatch.setattr(server, "_guarded_destructive", gate)
+        return renamed
+
+    def test_a_rename_after_the_commit_still_gets_a_manifest(
+            self, project, monkeypatch, caplog):
+        import logging
+        moved = project.parent / "renamed_mid_run.qda"
+        renamed = self._rename_after_the_commit(monkeypatch, project, moved)
+        caplog.set_level(logging.ERROR)
+
+        result = execute_from(preview_of())
+
+        assert renamed, "the rename never happened; the test proves nothing"
+        assert result.get("success") is True, result
+        assert "error" not in result
+        assert result["manifest_path"]
+        manifest = json.loads(
+            Path(result["manifest_path"]).read_text(encoding="utf-8"))
+        # The path the run started under, recorded in full: this project
+        # is not named after anyone in the mapping.
+        assert manifest["project_path"] == str(project / "data.qda")
+        assert "paths_withheld" not in manifest
+        # And the failure route is not taken: no refusal text, and the
+        # path is not in the log either.
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "File or project not found" not in logged
+        assert str(project) not in logged
+
+    def test_the_rewrite_the_manifest_describes_really_committed(
+            self, project, monkeypatch):
+        """The half that makes the defect a defect: the run had written.
+
+        Read back through the moved folder, because the old path is
+        gone; the manifest's fingerprints must describe what is there.
+        """
+        moved = project.parent / "renamed_mid_run.qda"
+        self._rename_after_the_commit(monkeypatch, project, moved)
+        result = execute_from(preview_of())
+        assert result.get("success") is True, result
+        rows = query(moved, "SELECT fulltext FROM source WHERE id=1")
+        assert "Thomas" not in rows[0]["fulltext"]
+        assert "Alex" in rows[0]["fulltext"]
+        manifest = json.loads(
+            Path(result["manifest_path"]).read_text(encoding="utf-8"))
+        assert manifest["files"][0]["new_fingerprint"][0] == \
+            len(rows[0]["fulltext"])
+
+
 # =============================================================================
 # EVERY STRING IN EVERY SINK, ON A PROJECT NAMED AFTER THE PARTICIPANT
 # (fix round 3, B1: the final-verification judge's own method as a pin)
