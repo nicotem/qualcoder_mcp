@@ -9378,19 +9378,33 @@ TOKEN_ERROR_TEXTS = {
         "the token no longer applies. Call `{tool}` without preview_token "
         "for a fresh preview, show the user what changed, then execute; "
         "nothing was changed."),
-    # The pre-verify variant. The MAC covers the state, so a mismatch
-    # whose `bind` still matches means either the rows moved or the
-    # secret was rotated; the two cannot be told apart statelessly, and
-    # both mean "preview again", so the text names both rather than
-    # asserting the one it cannot know (D3 3.5 plus 4.3).
+    # The pre-verify variant, which is a MAC failure and says so.
+    #
+    # The MAC covers the tool, the arguments, the project, the state and
+    # the issue time; `bind` covers the first three. A token whose MAC
+    # does not match while its bind does is USUALLY a live token whose
+    # rows have moved, and that is what this text used to assert. It is
+    # not the only way to get here, and the others are not about the
+    # project at all: a token whose MAC is forged, or whose issue time
+    # has been edited, keeps the bind it was copied from and lands in
+    # exactly this branch. Nothing here can tell the cases apart, so the
+    # text names the one thing that is certain, which is that the token
+    # did not verify, lists what that is usually caused by, and gives
+    # the single remedy they share. Where `project_changed` IS true it
+    # is still said: the in-transaction re-check under `_state_guarded`
+    # fires on a token that DID verify, and keeps its own wording
+    # (D3 3.5 plus 4.3; fix round 4, carried to v0.13 A4).
     "project_changed_or_rotated": (
-        "The project changed since this preview was made: the rows this "
-        "operation would affect are no longer exactly those previewed, so "
-        "the token no longer applies. Call `{tool}` without preview_token "
-        "for a fresh preview, show the user what changed, then execute; "
-        "nothing was changed. If nothing in the project changed, this "
-        "server's preview secret was rotated since the preview, which has "
-        "the same remedy."),
+        "preview_token did not verify for this operation. The likeliest "
+        "reason is that the project changed since the preview: the rows "
+        "this operation would affect are no longer exactly those "
+        "previewed, so the token no longer applies. It also happens when "
+        "this server's preview secret has been rotated since the "
+        "preview, and when the token was not one this server issued for "
+        "this state. Nothing here can tell those apart and the remedy is "
+        "the same for all of them: call `{tool}` without preview_token "
+        "for a fresh preview, show the user what it says, then execute. "
+        "Nothing was changed."),
     "hidden_coder_override_required": (
         "This operation affects codings that belong to a coder currently "
         "hidden in QualCoder (see hidden_coder_codings_affected in the "

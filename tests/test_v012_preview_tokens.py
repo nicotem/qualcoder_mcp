@@ -1371,6 +1371,122 @@ class TestWindowsPathBinding:
                          "s") == pt.OTHER_OPERATION
 
 
+class TestWhatTheRefusalSaysWhenATokenDoesNotVerify:
+    """v0.13 A4, carried from fix round 4.
+
+    A MAC failure whose public `bind` still matches was refused with
+    "The project changed since this preview was made", an assertion
+    about the project that this branch cannot make. Three different
+    things land here and only one of them is about the project: a live
+    token whose rows moved, a secret rotated since the preview, and a
+    token whose MAC was forged or whose issue time was edited while the
+    bind it was copied from stayed as it was. `bind` is public for the
+    six codebook tools by design (D3 3.2), so keeping it while changing
+    anything else is a one-line edit, not an attack that needs the
+    secret. Nothing in the codec can tell the three apart, so the text
+    says the one certain thing, lists what causes it and gives the
+    single remedy they share.
+
+    Where `project_changed` IS true it is still said, in the words it
+    always used: the in-transaction re-check under `_state_guarded`
+    fires on a token that DID verify and then found the rows moved
+    inside the transaction, and that refusal is pinned in
+    test_v012_collateral.py.
+
+    The machine-readable `reason` is deliberately unchanged. It is the
+    codec's outcome name, callers and a dozen tests read it, and
+    renaming it is an interface change rather than a wording fix; it is
+    asserted here so that a future change to it is a deliberate one.
+    """
+
+    @staticmethod
+    def _forge_mac(token):
+        prefix, issued, bind, mac = token.split(".")
+        forged = "0" * 32 if mac != "0" * 32 else "1" * 32
+        return ".".join([prefix, issued, bind, forged])
+
+    @staticmethod
+    def _shift_issue_time(token, seconds=-60):
+        prefix, issued, bind, mac = token.split(".")
+        return ".".join([prefix, str(int(issued) + seconds), bind, mac])
+
+    def _still_there(self, qualcoder_db_path):
+        assert _backups(qualcoder_db_path) == []
+        assert H.query(qualcoder_db_path,
+                       "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
+                       )[0]["n"] == 1
+
+    @pytest.mark.parametrize("tamper", ["_forge_mac", "_shift_issue_time"])
+    def test_a_tampered_token_is_not_called_a_project_change(
+            self, setup_server, qualcoder_db_path, tamper):
+        token = _preview(server.delete_code, 1)["preview_token"]
+        tampered = getattr(self, tamper)(token)
+        # The branch the defect lived in: the bind is the real one, so
+        # verify() reaches PROJECT_CHANGED rather than OTHER_OPERATION.
+        assert tampered.split(".")[2] == token.split(".")[2]
+        assert tampered != token
+
+        out = _preview(server.delete_code, 1, preview_token=tampered)
+
+        assert out["reason"] == "project_changed"
+        assert out["nothing_changed"] is True
+        assert out["error"].startswith("preview_token did not verify")
+        assert "The project changed since this preview was made" \
+            not in out["error"]
+        self._still_there(qualcoder_db_path)
+
+    def test_the_text_names_all_three_and_one_remedy(self, setup_server):
+        token = _preview(server.delete_code, 1)["preview_token"]
+        out = _preview(server.delete_code, 1,
+                       preview_token=self._forge_mac(token))
+        error = out["error"]
+        assert "the project changed since the preview" in error
+        assert "preview secret has been rotated" in error
+        assert "not one this server issued for this state" in error
+        assert "the remedy is the same for all of them" in error
+        assert "without preview_token for a fresh preview" in error
+        # Count-free and name-free, as every refusal in this server is.
+        assert not re.search(r"\d", error.replace("{tool}", ""))
+
+    def test_a_project_that_really_changed_gets_the_same_text(
+            self, setup_server, qualcoder_db_path):
+        """The honest half: the likeliest cause is still named first,
+        and a live token whose rows moved still lands here."""
+        token = _preview(server.delete_code, 1)["preview_token"]
+        H.execute(qualcoder_db_path,
+                  "UPDATE code_name SET name = 'Stress (renamed)' "
+                  "WHERE cid = 1")
+        server.db.close()
+        server.db = QualcoderDatabase(qualcoder_db_path)
+        out = _preview(server.delete_code, 1, preview_token=token)
+        assert out["reason"] == "project_changed"
+        assert out["error"].startswith("preview_token did not verify")
+        assert "the rows this operation would affect are no longer " \
+               "exactly those previewed" in out["error"]
+
+    def test_the_in_transaction_refusal_keeps_the_claim_it_can_make(self):
+        """The distinction the fix preserves, as two different strings.
+
+        `_state_guarded` fires on a token that verified, so there the
+        project really did change and the text says so.
+        """
+        verified = server.TOKEN_ERROR_TEXTS["project_changed"]
+        pre_verify = server.TOKEN_ERROR_TEXTS["project_changed_or_rotated"]
+        assert verified.startswith(
+            "The project changed since this preview was made")
+        assert not pre_verify.startswith(
+            "The project changed since this preview was made")
+        assert verified != pre_verify
+        # And the one that can only guess does not claim the certainty
+        # of the one that knows.
+        assert "did not verify" in pre_verify
+        assert "did not verify" not in verified
+
+    def test_the_new_text_keeps_the_house_rules(self):
+        _house_rules([server.TOKEN_ERROR_TEXTS["project_changed_or_rotated"]],
+                     ["project_changed_or_rotated"])
+
+
 class TestHouseRulesOnTheNewTexts:
 
     def test_every_new_text_of_this_item(self):

@@ -39,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project path on the way out. The path is settled before the gate runs and
   the manifest is handed what was settled.
 
+- **A preview token that does not verify is no longer described as a
+  changed project.** The refusal said "The project changed since this
+  preview was made", which is an assertion the check cannot make: a token
+  whose MAC is forged, or whose issue time has been edited, keeps the
+  public `bind` it was copied from and lands in the same branch as a live
+  token whose rows have moved, and so does a token issued before the
+  preview secret was rotated. The three cannot be told apart, so the
+  refusal now says the token did not verify, names all three causes with
+  the likeliest first, and gives the one remedy they share. Where the
+  claim IS true it still stands: the re-check inside the write
+  transaction fires on a token that did verify, and keeps its own
+  wording. The machine-readable `reason` is unchanged.
+
 ### Upgrading from 0.12.x
 
 - **Drop `confirm` from any call that still passes it.** It has been
