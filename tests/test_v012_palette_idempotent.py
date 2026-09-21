@@ -928,6 +928,26 @@ class TestRecolourRacePath:
             calls["n"] += 1
             return real(self_, code_id) if calls["n"] == 1 else None
 
+        # Fix round 2, R14: discriminate the raise from a plain
+        # `return answer`. That used to be done with the ABSENCE of
+        # backup_path from the envelope, which stopped discriminating in
+        # v0.13 A5: a failure after the backup now names the backup, so
+        # both spellings carry the key. The commit path is watched
+        # instead, which is what the distinction is actually about and
+        # is stronger than the old proxy: the raise leaves
+        # _perform_write's try block BEFORE the pre-commit lock re-check,
+        # so that re-check never runs; `return answer` reaches it and
+        # commits. Without this assertion both spellings pass.
+        reached_the_commit = []
+        original_recheck = server._recheck_lock_before_commit
+
+        def watched_recheck(folder, held):
+            reached_the_commit.append(True)
+            return original_recheck(folder, held)
+
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            watched_recheck)
+
         before = _backups(qualcoder_db_path)
         monkeypatch.setattr(QualcoderDatabase, "get_code_details", vanishing)
         out = json.loads(server.recolor_code(1, "#00FF7F"))
@@ -935,15 +955,12 @@ class TestRecolourRacePath:
         assert calls["n"] >= 2
         assert _row(qualcoder_db_path,
                     "SELECT color FROM code_name WHERE cid=1")["color"] == "#FF0000"
-        # Fix round 2, R14: discriminate the raise from a plain
-        # `return answer`. The raise leaves _perform_write's try block
-        # before it commits and before it decorates the result, so the
-        # transaction is rolled back and the error envelope carries no
-        # backup_path; returning the answer instead would commit and add
-        # one. Without this assertion both spellings pass.
-        assert "backup_path" not in out
-        # The backup file itself was taken before the op ran, so it is on
-        # disk either way; only the disclosure tells the two arms apart.
+        assert reached_the_commit == [], (
+            "the op returned instead of raising: the transaction reached "
+            "the commit rather than being rolled back")
+        # The backup was taken before the op ran, so it is on disk, and
+        # since A5 the envelope says which one it is.
+        assert Path(out["backup_path"]) in _backups(qualcoder_db_path)
         assert len(_backups(qualcoder_db_path)) == len(before) + 1
 
 
