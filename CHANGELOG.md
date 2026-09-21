@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.12.1-alpha] - 2026-09-17
+## [0.12.1-alpha] - 2026-09-21
 
 Documentation only: no code, no tool behaviour and no dependency changed.
 This release records the six in-QualCoder acceptance checks that 0.12.0-alpha
