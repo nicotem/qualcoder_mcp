@@ -1276,6 +1276,186 @@ class TestPerformWriteUnconditionalCleanup:
         assert server.db.conn.in_transaction is False
 
 
+class TestAWriteThatFailsAfterItsBackupNamesIt:
+    """v0.13 A5, carried from fix round 3 (carry 6) and fix round 4.
+
+    A write that fails after its backup was taken answered with
+    `DB_UNAVAILABLE_ERROR`: "the project file may be locked or
+    corrupted ... consider restoring a backup", and nothing else. Two
+    things were wrong with that. SQLite either applies a transaction or
+    it does not, so a commit that faulted leaves the project database as
+    it was and restoring a backup over it would DESTROY work the
+    researcher still has. And the backup that had just been taken, which
+    after a `pseudonymise_source` attempt still holds the real names, was
+    sitting beside the project with nothing saying where.
+
+    Both cases the carry names are driven here: a commit that faults, and
+    a second connection holding SQLite's RESERVED lock past the wait.
+    """
+
+    @staticmethod
+    def _inject_commit_error(monkeypatch):
+        def boom(folder, held):
+            raise sqlite3.OperationalError("database or disk is full")
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", boom)
+
+    @staticmethod
+    def _assert_says_it_did_not_commit(out, detail):
+        assert out["error"].startswith(
+            "Database error: the write did not complete and was rolled "
+            "back"), out
+        assert f"and {detail}." in out["error"], out
+        assert "Nothing here needs restoring." in out["error"]
+        assert "consider restoring a backup" not in out["error"]
+        assert out["error"] != server.DB_UNAVAILABLE_ERROR
+
+    def test_a_commit_that_faults_says_so_and_names_the_backup(
+            self, fi_env, monkeypatch):
+        env = fi_env
+        pre_hash = env.hash()
+        self._inject_commit_error(monkeypatch)
+
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
+
+        self._assert_says_it_did_not_commit(out, "the code was not deleted")
+        # The backup exists, and the answer says which one it is.
+        assert "backup_path" in out, out
+        backup = Path(out["backup_path"])
+        assert backup.is_dir()
+        assert backup.name in env.backup_names()
+        # And the claim the text makes is true.
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+    def test_a_second_connection_holding_the_lock_gets_the_same_answer(
+            self, fi_env, monkeypatch):
+        """The other case, with a real RESERVED lock and a real timeout.
+
+        The wait is shortened to 50 ms rather than faked, so what the
+        write meets is SQLite's own "database is locked" from
+        BEGIN IMMEDIATE, which is what a second writer past the
+        five-second busy timeout produces.
+        """
+        env = fi_env
+        pre_hash = env.hash()
+        original = QualcoderDatabase.begin_immediate
+
+        def impatient(self):
+            self.conn.execute("PRAGMA busy_timeout = 50")
+            return original(self)
+
+        monkeypatch.setattr(QualcoderDatabase, "begin_immediate", impatient)
+        holder = sqlite3.connect(str(env.folder / "data.qda"))
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            out = json.loads(H.execute_destructive(server.delete_code, 1))
+        finally:
+            holder.rollback()
+            holder.close()
+
+        self._assert_says_it_did_not_commit(out, "the code was not deleted")
+        assert "close it or wait a moment, then retry" in out["error"]
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+
+    def test_the_import_path_answers_the_same_way(self, fi_env,
+                                                  monkeypatch):
+        """`import_text_file` keeps its own write body rather than
+        routing through `_perform_write`, so it had the same gap."""
+        env = fi_env
+        pre_hash = env.hash()
+        self._inject_commit_error(monkeypatch)
+
+        out = json.loads(server.import_text_file("new.txt", "some text"))
+
+        self._assert_says_it_did_not_commit(out, "the file was not imported")
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+
+    def test_a_refusal_after_the_backup_names_it_too(self, fi_env,
+                                                     monkeypatch):
+        """Not only the sqlite failures: every route out of a write that
+        had taken a backup returned without naming it. Driven on the
+        ValueError arm, which is the one a tool's own precondition
+        takes."""
+        env = fi_env
+
+        def refuse(self, *args, **kwargs):
+            raise ValueError("the code was gone by the time we looked")
+
+        monkeypatch.setattr(QualcoderDatabase, "delete_code", refuse)
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
+        assert out["error"] == "the code was gone by the time we looked"
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in env.backup_names()
+
+    def test_a_rollback_that_does_not_go_through_says_that_instead(
+            self, fi_env, monkeypatch):
+        """The half the first text cannot claim.
+
+        `_rollback_if_open` is answered False here, which is the one
+        state in which "the project database holds exactly what it held"
+        would be a guess; the helper's own answer is driven below.
+        """
+        self._inject_commit_error(monkeypatch)
+        monkeypatch.setattr(server, "_rollback_if_open", lambda db_: False)
+
+        out = json.loads(H.execute_destructive(server.delete_code, 1))
+
+        assert out["error"].startswith(
+            "Database error: the write did not complete, and the "
+            "transaction could not be rolled back cleanly")
+        assert "the project may be part-written" in out["error"]
+        assert "restore a backup (see list_backups)" in out["error"]
+        assert Path(out["backup_path"]).is_dir()
+
+    def test_the_rollback_helper_answers_for_what_it_did(self, fi_env):
+        """Three states, so the flag the texts turn on is not assumed.
+
+        Nothing in flight, a live transaction rolled back, and a
+        rollback that raises.
+        """
+        class Boom:
+            in_transaction = True
+
+            def rollback(self):
+                raise sqlite3.OperationalError("cannot rollback")
+
+        class Holder:
+            def __init__(self, conn):
+                self.conn = conn
+
+        conn = sqlite3.connect(str(fi_env.folder / "data.qda"))
+        try:
+            assert conn.in_transaction is False
+            assert server._rollback_if_open(Holder(conn)) is True
+
+            conn.execute("BEGIN")
+            conn.execute("UPDATE code_name SET name='x' WHERE cid=1")
+            assert conn.in_transaction is True
+            assert server._rollback_if_open(Holder(conn)) is True
+            assert conn.in_transaction is False
+            assert conn.execute(
+                "SELECT name FROM code_name WHERE cid=1"
+            ).fetchone()[0] != "x"
+        finally:
+            conn.close()
+
+        assert server._rollback_if_open(Holder(None)) is True
+        assert server._rollback_if_open(Holder(Boom())) is False
+
+    def test_the_two_texts_keep_the_house_rules(self):
+        for label, body in (("rolled back", server.WRITE_FAILED_ROLLED_BACK),
+                            ("uncertain", server.WRITE_FAILED_UNCERTAIN)):
+            assert "\u2014" not in body, label
+            assert body.startswith("Database error"), label
+            for spelling in ("behavior", "analyze", "color"):
+                assert spelling not in body.lower(), (label, spelling)
+
+
 _ORIG_RECHECK = server._recheck_lock_before_commit
 
 

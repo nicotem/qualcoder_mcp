@@ -52,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transaction fires on a token that did verify, and keeps its own
   wording. The machine-readable `reason` is unchanged.
 
+- **A write that fails after its backup was taken now says what happened
+  and names the backup.** The answer was the generic "Database error: the
+  project file may be locked or corrupted ... consider restoring a backup",
+  with no path. SQLite either applies a transaction or it does not, so a
+  commit that faulted (a full disk) or a second connection holding the
+  reserved lock past the wait leaves the project database exactly as it
+  was, and restoring a backup over it would have destroyed work the
+  researcher still had. The message now says the write did not complete
+  and was rolled back, so nothing needs restoring, and says the other
+  thing where it is true instead: if the rollback itself did not go
+  through, the project may be part-written and a backup is the answer.
+  Every failure route out of a write, including a tool's own refusal,
+  carries `backup_path` for the backup that is sitting beside the project,
+  which after a `pseudonymise_source` attempt still holds the real names.
+
 ### Upgrading from 0.12.x
 
 - **Drop `confirm` from any call that still passes it.** It has been

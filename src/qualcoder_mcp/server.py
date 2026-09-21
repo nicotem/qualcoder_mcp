@@ -1586,6 +1586,75 @@ def _skipped_symlinks_line(report: Optional[Dict[str, Any]]) -> str:
             f"Relay this to the user.\n")
 
 
+# What a write says when it fails AFTER its backup was taken.
+#
+# `DB_UNAVAILABLE_ERROR` used to answer this, and it says "the project
+# file may be locked or corrupted ... consider restoring a backup". Over
+# a write that did not commit that is wrong twice: a transaction SQLite
+# refused is a transaction SQLite did not apply, so the project database
+# is unchanged, and restoring anything over it would lose work the
+# researcher still has. The two cases the carry names are both this
+# shape: a commit that faulted on a full disk, and a second connection
+# holding the RESERVED lock past the busy timeout. So the text says
+# whether the change happened, and the envelope names the backup that
+# exists, which no failure route out of a write did (fix round 3 carry
+# 6, fix round 4 carry, v0.13 A5).
+WRITE_FAILED_ROLLED_BACK = (
+    "Database error: the write did not complete and was rolled back, so "
+    "the project database holds exactly what it held before this call "
+    "and {detail}. Nothing here needs restoring. If QualCoder has the "
+    "project open, or another process is writing to the project, close "
+    "it or wait a moment, then retry.")
+
+# The other half of the distinction, for the case the first text cannot
+# claim: the rollback itself did not go through, so what is on disk is
+# not known to be either state.
+WRITE_FAILED_UNCERTAIN = (
+    "Database error: the write did not complete, and the transaction "
+    "could not be rolled back cleanly, so the project may be "
+    "part-written. Close QualCoder, reopen the project, and if it will "
+    "not open, restore a backup (see list_backups).")
+
+
+def _rollback_if_open(write_db) -> bool:
+    """Roll back anything still in flight; say whether that succeeded.
+
+    True when there was nothing in flight or the rollback went through,
+    which is what lets the caller say the database is unchanged. False
+    only when the rollback itself raised, which is the one case where
+    that sentence would be a guess. Idempotent, so a caller may use it
+    and the `finally` block may run it again.
+    """
+    try:
+        if write_db.conn is not None and write_db.conn.in_transaction:
+            write_db.conn.rollback()
+        return True
+    except Exception as e:
+        logger.error(f"Rollback after a failed write did not go through: {e}")
+        return False
+
+
+def _write_failed_text(rolled_back: bool, backup_fail_detail: str) -> str:
+    """The failure text for a write that did not commit."""
+    if rolled_back:
+        return WRITE_FAILED_ROLLED_BACK.format(detail=backup_fail_detail)
+    return WRITE_FAILED_UNCERTAIN
+
+
+def _with_backup(answer: Dict[str, Any], backup_path) -> Dict[str, Any]:
+    """Name the backup in an answer that reports a failed write.
+
+    A write that fails after its backup was taken leaves that backup
+    beside the project, and after a `pseudonymise_source` attempt it
+    holds the real names. Every failure route returned before the line
+    that attaches `backup_path` to a success, so the folder existed and
+    nothing said where it was.
+    """
+    if backup_path:
+        answer["backup_path"] = str(backup_path)
+    return answer
+
+
 def _perform_write(op, create_backup: bool = True,
                    backup_fail_detail: str = "nothing was written"):
     """Run a mutation under the full write-safety discipline.
@@ -1646,9 +1715,20 @@ def _perform_write(op, create_backup: bool = True,
                 # envelope B2.5 gives every other token refusal; it is a
                 # ValueError too, so a caller that does not know about it
                 # still degrades to the exact prose (D3 3.5).
-                return dict(e.payload)
+                return _with_backup(dict(e.payload), backup_path)
             except (ValueError, RuntimeError) as e:
-                return {"error": str(e)}
+                return _with_backup({"error": str(e)}, backup_path)
+            except sqlite3.Error as e:
+                # Answered here rather than in `_tool_guard`, which
+                # cannot know that a backup was taken or that the
+                # transaction did not commit, and said "consider
+                # restoring a backup" over a database that did not
+                # change.
+                logger.error(f"SQLite error during a write: {e}")
+                return _with_backup(
+                    {"error": _write_failed_text(
+                        _rollback_if_open(write_db), backup_fail_detail)},
+                    backup_path)
     finally:
         # Unconditional cleanup on EVERY exit path (SEC M-1). The previous
         # shape only rolled back / downgraded for DatabaseLockedError,
@@ -1659,11 +1739,7 @@ def _perform_write(op, create_backup: bool = True,
         # block cannot be skipped: roll back anything still in flight, then
         # always return the connection to read-only.
         if not committed:
-            try:
-                if write_db.conn is not None and write_db.conn.in_transaction:
-                    write_db.conn.rollback()
-            except Exception:
-                pass
+            _rollback_if_open(write_db)
         _downgrade_to_readonly()
 
     if backup_path:
@@ -6546,19 +6622,26 @@ def import_text_file(
             except DatabaseLockedError:
                 raise
             except (ValueError, TypeError) as e:
-                return json.dumps({"error": str(e)})
+                return json.dumps(
+                    _with_backup({"error": str(e)}, backup_path))
             except RuntimeError as e:
-                return json.dumps({"error": f"Database error: {str(e)}"})
+                return json.dumps(_with_backup(
+                    {"error": f"Database error: {str(e)}"}, backup_path))
+            except sqlite3.Error as e:
+                # The same post-backup failure as `_perform_write`'s, in
+                # the one write path that is not routed through it.
+                logger.error(f"SQLite error during the import: {e}")
+                return json.dumps(_with_backup(
+                    {"error": _write_failed_text(
+                        _rollback_if_open(write_db),
+                        "the file was not imported")},
+                    backup_path))
     finally:
         # Unconditional cleanup on EVERY exit path (SEC M-1 / C-1): roll back
         # anything still in flight (skipped after a successful commit by the
         # committed guard), then always return the connection to read-only.
         if not committed:
-            try:
-                if write_db.conn is not None and write_db.conn.in_transaction:
-                    write_db.conn.rollback()
-            except Exception:
-                pass
+            _rollback_if_open(write_db)
         _downgrade_to_readonly()
 
     # Format success response
