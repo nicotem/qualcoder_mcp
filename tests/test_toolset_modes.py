@@ -308,9 +308,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 155_722          # 70 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 154_984          # 70 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_317           # 21 tools, same environment
-    FULL_MEASURED_310 = 163_630      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 162_868      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_253
 
     # Why two per cent, away from the reference environment.
@@ -338,9 +338,9 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "155,722"
+    FULL_CHARS = "154,984"
     CORE_CHARS = "56,317"
-    FULL_ROUNDED = "156,000"
+    FULL_ROUNDED = "155,000"
     CORE_ROUNDED = "56,000"
     FULL_TOKENS = "39k"
     CORE_TOKENS = "14k"
@@ -351,6 +351,25 @@ class TestThePublishedSchemaBudget:
         straddle line breaks, and a wrap must not hide a stale number."""
         text = (REPO / name).read_text(encoding="utf-8")
         return " ".join(text.replace("\n>", " ").split())
+
+    @classmethod
+    def _current_entry(cls):
+        """The entry that carries the figure this class pins.
+
+        The current measurement belongs to the release being written,
+        not to the last one that shipped: a reader sizing a context
+        window wants today's number, and an older entry's figure is
+        history the moment a tool surface moves. v0.13 removed an
+        argument from six tools, so the two live in different entries
+        for the first time and this class follows the current one.
+        """
+        return cls._read("CHANGELOG.md").split("## [0.12")[0]
+
+    @classmethod
+    def _v012_entries(cls):
+        """The 0.12 entries, whose figures are history and stay put."""
+        text = cls._read("CHANGELOG.md")
+        return text[text.index("## [0.12"):text.index("## [0.11")]
 
     @staticmethod
     def _measure(mode):
@@ -444,7 +463,7 @@ class TestThePublishedSchemaBudget:
         assert 2 * average_tool / self.FULL_MEASURED > self.TOLERANCE
 
     def test_the_changelog_entry_carries_the_measurement(self):
-        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
+        entry = self._current_entry()
         assert f"full = {self.FULL_CHARS} characters" in entry
         assert f"core = {self.CORE_CHARS}" in entry
         assert f"Python 3.13.5 with mcp {self.REFERENCE_MCP}" in entry
@@ -454,14 +473,27 @@ class TestThePublishedSchemaBudget:
         assert "repository's own `venv/`" in entry
         assert "Python 3.11.13" in entry and "`.venv/`" in entry
 
-    def test_the_release_entry_carries_one_current_measurement(self):
+    def test_each_entry_carries_one_measurement_of_its_own(self):
         """The 0.12 entry used to state two, a batch apart, both in the
         present tense; a reader sizing a context window met whichever
-        they read first."""
-        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
-        assert entry.count("Serialised tool") == 2
+        they read first. The caveat that separates them is pinned, and
+        so is the rule that the entry being written states exactly one
+        figure: its own."""
+        assert self._current_entry().count("Serialised tool") == 1
+        history = self._v012_entries()
+        assert history.count("Serialised tool") == 2
         assert "at the Batch A point, which is where this section stops " \
-               "and NOT the size of the release" in entry
+               "and NOT the size of the release" in history
+        # And the history was not quietly restated as today's figure.
+        assert self.FULL_CHARS not in history
+
+    def test_the_current_entry_carries_the_other_interpreter_too(self):
+        """The loose half of the comparison has a documented target;
+        until now no test read it, so the 3.10-to-3.12 figures could
+        rot in the document while the pin moved."""
+        entry = self._current_entry()
+        assert f"{self.FULL_MEASURED_310:,}" in entry
+        assert f"{self.CORE_MEASURED_310:,}" in entry
 
     def test_the_readme_quotes_the_same_measurement(self):
         readme = self._read("README.md")
@@ -487,7 +519,7 @@ class TestThePublishedSchemaBudget:
     def test_the_growth_is_arithmetically_possible(self):
         """The defect that gave this away: a full delta smaller than the
         core delta plus the tools outside core."""
-        entry = self._read("CHANGELOG.md").split("## [0.11")[0]
+        entry = self._v012_entries()
         # Anchored on the stable prefix: the entry names WHICH batch
         # the figure follows, and that wording moves with each one.
         block = entry[entry.index("Serialised tool JSON after"):]

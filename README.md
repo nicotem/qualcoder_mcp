@@ -820,11 +820,11 @@ carries the complete list.
 > set_project_ai_coder_name,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
-> loudly at startup. Measured for 0.12.0 (the
+> loudly at startup. Measured for 0.13 (the
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 156,000 characters for `full`, roughly 39k
+> definitions run to about 155,000 characters for `full`, roughly 39k
 > tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those
@@ -943,8 +943,9 @@ would change, then call again with the token the preview returned. The
 token is bound to that operation, those arguments, that project and the
 rows the preview covered, so a preview the user approved cannot
 authorise something else, and a project that changed in between is
-refused rather than acted on. `confirm=true` no longer executes; it
-returns the preview with a note and is removed in v0.13.
+refused rather than acted on. The `confirm` argument, accepted and
+ignored through 0.12, is gone in 0.13: drop it from any call that still
+passes it.
 
 Every preview says whose work is at stake: how many of the affected
 codings were made under this project's AI coder name(s), a per-owner

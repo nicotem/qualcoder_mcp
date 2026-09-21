@@ -749,39 +749,103 @@ class TestTwoStepFlow:
         assert refused["reason"] == "token_other_operation"
 
 
-class TestLegacyConfirm:
-    """B2.7: `confirm` stays accepted and inert for one release, so a
-    0.11 caller gets a preview and an explanation rather than silence."""
+class TestTheConfirmArgumentIsGone:
+    """v0.13 A1. 0.12.0 announced it: "`confirm` stays in the signatures
+    for this release and is removed in v0.13." It is removed here, from
+    the six token-gated tools, from the gate helpers they share and from
+    the preview note that explained it.
 
-    def test_confirm_true_returns_the_preview_and_writes_nothing(
+    What a caller that still passes it now meets is recorded rather than
+    assumed, because the two routes differ and neither is a schema
+    refusal. A direct Python call raises TypeError. An MCP `tools/call`
+    is not refused at all: the Python MCP server validates arguments
+    against a pydantic model whose extra-field policy is the default
+    "ignore" and whose published schema sets no `additionalProperties`,
+    so an argument no tool declares is dropped and the call runs as if
+    it had not been passed. For these tools that means the preview, with
+    the `hint` and `execute_with` recipe that already say what to call
+    next. Driven below so the sentence the CHANGELOG carries is measured
+    rather than believed.
+    """
+
+    TOKEN_GATED = ("merge_codes", "delete_code", "delete_category",
+                   "merge_category", "restore_backup", "prune_backups")
+
+    CALL_ARGS = {"merge_codes": (1, 2), "delete_code": (1,),
+                 "delete_category": (1,), "merge_category": (1,),
+                 "restore_backup": ("nowhere",), "prune_backups": ()}
+
+    def test_no_signature_still_takes_it(self):
+        import inspect
+        for name in self.TOKEN_GATED:
+            params = inspect.signature(getattr(server, name)).parameters
+            assert "confirm" not in params, name
+
+    def test_no_published_schema_still_declares_it(self):
+        import asyncio
+        tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+        for name in self.TOKEN_GATED:
+            properties = tools[name].inputSchema.get("properties", {})
+            assert "confirm" not in properties, name
+
+    def test_the_shared_gate_helpers_no_longer_carry_it(self):
+        import inspect
+        for helper in (server._issue_preview, server._guarded_destructive):
+            params = inspect.signature(helper).parameters
+            assert "confirm" not in params, helper.__name__
+        # `confirm_hint` is what the preview still needs to say and
+        # stays; it is the hint, not the argument.
+        assert "confirm_hint" in inspect.signature(
+            server._guarded_destructive).parameters
+
+    def test_the_preview_note_that_explained_it_is_gone(self):
+        assert not hasattr(server, "DEPRECATED_CONFIRM_NOTE")
+
+    @pytest.mark.parametrize("name", TOKEN_GATED)
+    def test_a_direct_python_call_that_passes_it_is_refused(self,
+                                                            setup_server,
+                                                            name):
+        """In-process, the TypeError never leaves the tool: `_tool_guard`
+        turns it into the ordinary error envelope, naming the argument.
+        """
+        out = json.loads(getattr(server, name)(*self.CALL_ARGS[name],
+                                               confirm=True))
+        assert "confirm" in out["error"], out
+        assert "unexpected keyword argument" in out["error"], out
+
+    def test_an_mcp_call_that_still_passes_it_is_ignored_not_refused(
             self, setup_server, qualcoder_db_path):
-        out = _preview(server.delete_code, 1, confirm=True)
-        assert out["requires_confirmation"] is True
-        assert "deprecated_argument" in out
-        assert "removed in v0.13" in out["deprecated_argument"]
+        """The measured answer, and the one the CHANGELOG states.
+
+        Not a schema error: the argument is dropped and the call
+        behaves exactly as the same call without it, which for a
+        token-gated tool with no token is the preview. Nothing is
+        written and no backup is taken, so a 0.11-era caller still
+        cannot execute by saying yes twice.
+        """
+        import asyncio
+        plain = asyncio.run(server.mcp.call_tool("delete_code",
+                                                 {"code_id": 1}))
+        stale = asyncio.run(server.mcp.call_tool(
+            "delete_code", {"code_id": 1, "confirm": True}))
+
+        def payload(answer):
+            blocks = answer[0] if isinstance(answer, tuple) else answer
+            return json.loads("".join(b.text for b in blocks))
+
+        one, two = payload(plain), payload(stale)
+        assert one["requires_confirmation"] is True
+        assert two["requires_confirmation"] is True
+        assert "deprecated_argument" not in two
+        # The same answer but for the token, which is minted per call.
+        for answer in (one, two):
+            answer.pop("preview_token")
+            answer["execute_with"]["arguments"].pop("preview_token")
+        assert one == two
         assert _backups(qualcoder_db_path) == []
         assert H.query(qualcoder_db_path,
                        "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
                        )[0]["n"] == 1
-
-    def test_confirm_with_a_token_is_ignored(self, setup_server,
-                                             qualcoder_db_path):
-        token = _preview(server.delete_code, 1)["preview_token"]
-        done = _preview(server.delete_code, 1, preview_token=token,
-                        confirm=True)
-        assert done["success"] is True
-
-    @pytest.mark.parametrize("tool,args", [
-        ("merge_codes", (1, 2)), ("delete_code", (1,)),
-        ("delete_category", (1,)), ("merge_category", (1,)),
-    ])
-    def test_every_codebook_tool_keeps_the_deprecation(self, setup_server,
-                                                       tool, args):
-        out = _preview(getattr(server, tool), *args, confirm=True)
-        assert "deprecated_argument" in out
-
-    TOKEN_GATED = ("merge_codes", "delete_code", "delete_category",
-                   "merge_category", "restore_backup", "prune_backups")
 
     def test_the_docstrings_carry_the_two_step_paragraph(self):
         for name in self.TOKEN_GATED:
@@ -808,15 +872,18 @@ class TestLegacyConfirm:
         assert "No backup is taken here" in prune
         assert "A backup is always created first." not in prune
 
-    def test_no_docstring_still_tells_the_model_to_pass_confirm(self):
-        """The flag is inert (B2.7), so a docstring that asks for it
-        sends the model down a path that writes nothing and explains
-        itself, twice, before it finds the token."""
+    def test_no_docstring_still_mentions_the_argument(self):
+        """A docstring that asks for the flag sends the model down a
+        path that writes nothing; a docstring that still documents it as
+        deprecated describes an argument that no longer exists. Neither
+        survives the removal. "preview then confirm" stays: that is the
+        two-step workflow, not the argument."""
         for name in self.TOKEN_GATED:
             doc = " ".join((getattr(server, name).__doc__ or "").split())
             assert "confirm=true" not in doc, name
             assert "without confirm" not in doc, name
-            assert "Deprecated, ignored; use preview_token" in doc, name
+            assert "Deprecated, ignored" not in doc, name
+            assert "confirm:" not in doc, name
 
     # Every document this project ships to a researcher who will paste
     # it at a model. The docstrings are swept above; these are the texts
@@ -1309,7 +1376,6 @@ class TestHouseRulesOnTheNewTexts:
     def test_every_new_text_of_this_item(self):
         texts = list(server.TOKEN_ERROR_TEXTS.values()) + [
             server.TWO_STEP_PARAGRAPH,
-            server.DEPRECATED_CONFIRM_NOTE,
             pt.SECRET_UNAVAILABLE_MESSAGE,
             server.merge_codes.__doc__ or "",
             server.delete_code.__doc__ or "",

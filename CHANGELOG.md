@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Removed: the inert `confirm` argument on the six token-gated tools
+
+- 0.12.0 announced this: "`confirm` stays in the six signatures for this
+  release and is removed in v0.13." It is removed. `merge_codes`,
+  `delete_code`, `delete_category`, `merge_category`, `restore_backup`
+  and `prune_backups` no longer declare it, the preview gate they share
+  no longer carries it, and a preview no longer returns the
+  `deprecated_argument` note that explained it. The two-step flow is
+  unchanged: call without `preview_token` for a preview, then again with
+  the token the preview returned.
+- Serialised tool JSON after the removal: full = 154,984 characters
+  (about 38.7k tokens at chars/4) over 70 tools, core = 56,317 (about
+  14.1k) over 21. `core` is unchanged to the character, because none of
+  the six tools is in it. Measured exactly as the 0.12 figures were, on
+  the final tree through the toolset gate, as the `tools/list` payload
+  carries them: the name, description and input schema of every
+  registered tool, serialised together with `json.dumps` defaults, under
+  Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`. On
+  Python 3.11.13, in the repository's `.venv/`, the same definitions
+  measure 162,868 and 59,253, because 3.10 to 3.12 keep the docstring
+  indentation 3.13 strips at compile time.
+
+### Upgrading from 0.12.x
+
+- **Drop `confirm` from any call that still passes it.** It has been
+  accepted and ignored since 0.12.0, so nothing that used to execute
+  stops executing; what changes is that the argument is gone from the
+  tools' published schemas and the preview no longer carries the note
+  that explained it. Measured, rather than assumed, over the real stdio
+  transport: an MCP `tools/call` that still passes `confirm` is NOT
+  refused. The Python MCP server validates a call against a model that
+  ignores fields the tool does not declare, and the published schema
+  sets no `additionalProperties`, so the argument is dropped and the
+  call behaves exactly as the same call without it. For these six tools
+  that means the preview, with the `hint` and `execute_with` recipe that
+  say what to call next; passing `confirm` executes nothing, as it
+  executed nothing in 0.12. A caller using the Python functions directly
+  gets an error naming the unexpected argument instead.
 
 ## [0.12.1-alpha] - 2026-09-21
 

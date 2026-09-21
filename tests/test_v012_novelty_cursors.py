@@ -1200,21 +1200,20 @@ class TestWhatTheCursorCarries:
         assert "CURSOR_MAX_RETURNED_SO_FAR" in doc
 
 
-class TestTheDeprecationNoteClaimsOnlyWhatTheMacCovers:
-    """The note said the token "proves that the preview the user saw is
-    the operation being executed". The MAC covers the tool, the
-    arguments, the project and a row fingerprint; nothing in it is about
-    a person, so it cannot prove that anyone saw anything."""
+class TestTheTwoStepParagraphClaimsOnlyWhatTheMacCovers:
+    """The deprecation note said the token "proves that the preview the
+    user saw is the operation being executed". The MAC covers the tool,
+    the arguments, the project and a row fingerprint; nothing in it is
+    about a person, so it cannot prove that anyone saw anything. The
+    note went with `confirm` in v0.13; the duty it restated is carried
+    by the paragraph every one of the six docstrings still holds, which
+    is where the claim has to stay true.
+    """
 
-    def test_it_no_longer_claims_the_user_saw_the_preview(self):
-        note = server.DEPRECATED_CONFIRM_NOTE
-        assert "the preview the user saw" not in note
-        assert "proof about the operation, not about the user" in note
-        assert "show the user this preview" in note
-        assert "removed in v0.13" in note
-
-    def test_it_still_reaches_a_caller_who_passes_confirm(self,
-                                                          setup_server):
-        out = json.loads(server.delete_code(1, confirm=True))
-        assert out["deprecated_argument"] == server.DEPRECATED_CONFIRM_NOTE
-        assert out.get("requires_confirmation") is True
+    def test_the_paragraph_asks_for_the_showing_and_claims_no_proof_of_it(
+            self):
+        paragraph = server.TWO_STEP_PARAGRAPH
+        assert "the preview the user saw" not in paragraph
+        assert "Show the user the preview" in paragraph
+        assert "ask whether to proceed" in paragraph
+        assert "Only if they agree" in paragraph

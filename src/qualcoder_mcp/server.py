@@ -6872,8 +6872,7 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
 @_tool_guard
 def prune_backups(keep_last: Optional[int] = None,
                   older_than_days: Optional[float] = None,
-                  preview_token: Optional[str] = None,
-                  confirm: bool = False) -> str:
+                  preview_token: Optional[str] = None) -> str:
     """Delete this project's own backup snapshots to reclaim disk space.
 
     DESTRUCTIVE to your recovery points: preview first, then execute with
@@ -6923,7 +6922,6 @@ def prune_backups(keep_last: Optional[int] = None,
         older_than_days: Remove MCP backups older than this many days
         preview_token: The token from this operation's preview; omit it to
                        get the preview
-        confirm: Deprecated, ignored; use preview_token
 
     Returns:
         JSON preview (requires_confirmation) or the removal result
@@ -7016,7 +7014,7 @@ def prune_backups(keep_last: Optional[int] = None,
             preview["notes"] = notes
         try:
             payload = _issue_preview(
-                "prune_backups", token_args, preview, fingerprint, confirm,
+                "prune_backups", token_args, preview, fingerprint,
                 preview["hint"],
                 {"keep_last": keep_last, "older_than_days": older_than_days},
                 state_preview={
@@ -7087,8 +7085,7 @@ def _project_is_write_locked(data_qda: Path) -> bool:
 @mcp.tool()
 @_tool_guard
 def restore_backup(backup_path: str,
-                   preview_token: Optional[str] = None,
-                   confirm: bool = False) -> str:
+                   preview_token: Optional[str] = None) -> str:
     """Restore the currently open project from one of its backups.
 
     THIS REPLACES THE CURRENT PROJECT STATE with the chosen backup snapshot.
@@ -7135,7 +7132,6 @@ def restore_backup(backup_path: str,
         backup_path: Path to the backup folder (from list_backups)
         preview_token: The token from this operation's preview; omit it to
                        get the preview
-        confirm: Deprecated, ignored; use preview_token
 
     Returns:
         JSON describing the restore (or the preview when no token is given)
@@ -7208,7 +7204,7 @@ def restore_backup(backup_path: str,
             )
         try:
             payload = _issue_preview(
-                "restore_backup", token_args, preview, fingerprint, confirm,
+                "restore_backup", token_args, preview, fingerprint,
                 preview["hint"],
                 {"backup_path": backup_path},
                 state_preview=_restore_state_core(project_folder,
@@ -9436,22 +9432,6 @@ TWO_STEP_PARAGRAPH = (
     "in between, the execute is refused and you must preview again. A "
     "backup is always created first.")
 
-# What the note may claim is exactly what the MAC covers: the tool, the
-# arguments that decide the effect, the project and a fingerprint of the
-# rows. It cannot establish that a PERSON saw anything, because nothing
-# in the token is about the user; saying it proved "the preview the user
-# saw" invited the reading that holding a token discharges the duty to
-# show the preview, which is the one rung the mechanism cannot enforce.
-# The second sentence restates that duty in the words the six docstrings
-# already use (fix round 4).
-DEPRECATED_CONFIRM_NOTE = (
-    "confirm is deprecated and was ignored: an execute now needs the "
-    "preview_token this preview returns, which proves that the execute "
-    "is the operation this preview describes, on rows that have not "
-    "changed since. The token is proof about the operation, not about "
-    "the user: show the user this preview and every warning it carries, "
-    "and call again only if they agree. confirm is removed in v0.13.")
-
 
 def _qda_file_stamp(path) -> List[Any]:
     """Size, mtime and two header words of a data.qda, for a fingerprint.
@@ -9575,7 +9555,7 @@ def _state_guarded(fingerprint_fn, expected: str, op_fn, tool: str):
 
 
 def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
-                   rows: Any, confirm: bool, hint: str,
+                   rows: Any, hint: str,
                    execute_arguments: Dict[str, Any],
                    warnings: Optional[List[str]] = None,
                    state_preview: Optional[Dict[str, Any]] = None,
@@ -9624,8 +9604,6 @@ def _issue_preview(tool: str, args: Dict[str, Any], preview: Dict[str, Any],
     payload["token_valid_for_minutes"] = TOKEN_VALID_FOR_MINUTES
     payload["execute_with"] = {"tool": tool, "arguments": arguments}
     payload["hint"] = hint
-    if confirm:
-        payload["deprecated_argument"] = DEPRECATED_CONFIRM_NOTE
     return payload
 
 
@@ -9674,7 +9652,7 @@ def _collateral_warnings(preview: Dict[str, Any]) -> List[str]:
 
 def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
                          token_args: Dict[str, Any],
-                         preview_token: Optional[str], confirm: bool,
+                         preview_token: Optional[str],
                          backup_fail_detail: str, confirm_hint: str,
                          execute_arguments: Dict[str, Any],
                          allow_hidden_coder: bool = False,
@@ -9751,7 +9729,7 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
     if preview_token is None:
         try:
             return _issue_preview(
-                tool, token_args, preview, rows, confirm, confirm_hint,
+                tool, token_args, preview, rows, confirm_hint,
                 execute_arguments,
                 (_collateral_warnings if warnings_fn is None
                  else warnings_fn)(preview),
@@ -9794,8 +9772,7 @@ def _guarded_destructive(preview_fn, op_fn, fingerprint_fn, tool: str,
 @_tool_guard
 def merge_codes(from_code_id: int, into_code_id: int,
                 preview_token: Optional[str] = None,
-                allow_hidden_coder: bool = False,
-                confirm: bool = False) -> str:
+                allow_hidden_coder: bool = False) -> str:
     """Merge one code into another. DESTRUCTIVE: preview first, then confirm.
 
     THIS WRITES TO THE DATABASE. All codings of `from_code_id` are reassigned
@@ -9826,7 +9803,6 @@ def merge_codes(from_code_id: int, into_code_id: int,
                        get the preview
         allow_hidden_coder: Required when the preview reports codings that
                        belong to a coder currently hidden in QualCoder
-        confirm: Deprecated, ignored; use preview_token
     """
     def _preview(ro):
         preview = ro.preview_merge_codes(from_code_id, into_code_id)
@@ -9849,7 +9825,6 @@ def merge_codes(from_code_id: int, into_code_id: int,
                                   from_code_id=from_code_id,
                                   into_code_id=into_code_id),
         preview_token=preview_token,
-        confirm=confirm,
         allow_hidden_coder=allow_hidden_coder,
         backup_fail_detail="no codes were merged",
         confirm_hint="Review the counts and the collateral breakdown, then "
@@ -9865,8 +9840,8 @@ def merge_codes(from_code_id: int, into_code_id: int,
 @mcp.tool()
 @_tool_guard
 def delete_code(code_id: int, preview_token: Optional[str] = None,
-                cascade: bool = False, allow_hidden_coder: bool = False,
-                confirm: bool = False) -> str:
+                cascade: bool = False,
+                allow_hidden_coder: bool = False) -> str:
     """Delete a code AND all its codings. DESTRUCTIVE: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a code removes the code itself and
@@ -9901,7 +9876,6 @@ def delete_code(code_id: int, preview_token: Optional[str] = None,
                  whole branch dies; default false refuses instead)
         allow_hidden_coder: Required when the preview reports codings that
                  belong to a coder currently hidden in QualCoder
-        confirm: Deprecated, ignored; use preview_token
     """
     def _preview(ro):
         preview = ro.preview_delete_code(code_id)
@@ -9923,7 +9897,6 @@ def delete_code(code_id: int, preview_token: Optional[str] = None,
         tool="delete_code",
         token_args=canonical_args("delete_code", code_id=code_id),
         preview_token=preview_token,
-        confirm=confirm,
         allow_hidden_coder=allow_hidden_coder,
         backup_fail_detail="the code was not deleted",
         confirm_hint="This will destroy the code and all its coded segments "
@@ -9939,8 +9912,7 @@ def delete_code(code_id: int, preview_token: Optional[str] = None,
 @mcp.tool()
 @_tool_guard
 def delete_category(category_id: int,
-                    preview_token: Optional[str] = None,
-                    confirm: bool = False) -> str:
+                    preview_token: Optional[str] = None) -> str:
     """Delete a category. DESTRUCTIVE to the category: preview then confirm.
 
     THIS WRITES TO THE DATABASE. Deleting a category is SHALLOW and safe for
@@ -9970,7 +9942,6 @@ def delete_category(category_id: int,
         category_id: The category's catid
         preview_token: The token from this operation's preview; omit it to
                        get the preview
-        confirm: Deprecated, ignored; use preview_token
     """
     def _preview(ro):
         preview = ro.preview_delete_category(category_id)
@@ -9993,7 +9964,6 @@ def delete_category(category_id: int,
         token_args=canonical_args("delete_category",
                                   category_id=category_id),
         preview_token=preview_token,
-        confirm=confirm,
         backup_fail_detail="the category was not deleted",
         confirm_hint="Codes and sub-categories will move to the top level "
                      "(coded data is untouched). Call delete_category again "
@@ -10007,8 +9977,7 @@ def delete_category(category_id: int,
 @_tool_guard
 def merge_category(from_category_id: int,
                    into_category: Optional[str] = None,
-                   preview_token: Optional[str] = None,
-                   confirm: bool = False) -> str:
+                   preview_token: Optional[str] = None) -> str:
     """Merge a category into another category (or into the top level).
 
     DESTRUCTIVE to the category: preview first, then confirm. The source
@@ -10050,7 +10019,6 @@ def merge_category(from_category_id: int,
                        null/omitted to move everything to the top level
         preview_token: The token from this operation's preview; omit it to
                        get the preview
-        confirm: Deprecated, ignored; use preview_token
     """
     into_category_id = None
     if into_category is not None:
@@ -10087,7 +10055,6 @@ def merge_category(from_category_id: int,
                                   from_category_id=from_category_id,
                                   into_category_id=into_category_id),
         preview_token=preview_token,
-        confirm=confirm,
         backup_fail_detail="no categories were merged",
         confirm_hint="Review the reparent counts, then call merge_category "
                      "again with preview_token. A backup is made first.",
@@ -11063,7 +11030,6 @@ def pseudonymise_source(
         tool="pseudonymise_source",
         token_args=token_args,
         preview_token=preview_token,
-        confirm=False,
         allow_hidden_coder=allow_hidden_coder,
         backup_fail_detail="no text was rewritten",
         confirm_hint=(
