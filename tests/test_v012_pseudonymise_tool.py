@@ -28,6 +28,7 @@ suite that builds one is testing its own invention.
 """
 
 import ast
+import collections
 import json
 import os
 import sqlite3
@@ -2527,13 +2528,28 @@ HIDDEN_COLLEAGUE = "Helga"
 # project path, each file's own name, and the backup folder (which is
 # derived from the project folder's name and named in the result so the
 # researcher can find it). Anything else is a route.
+#
+# A rule is a path pattern and, where the position alone is too wide, a
+# pattern the STRING at that position must match as well. `notes` is
+# such a position: exactly one of the four notes names the backup
+# folder, and the other three have no business carrying a name. An
+# allowance on `.notes[N]` alone would have passed a name that appeared
+# in any of them, which is the whole list (fix round 4 carry, v0.13 A3).
+Route = collections.namedtuple("Route", "path text")
+
+
+def route(path, text=None):
+    return Route(re.compile(path), None if text is None else re.compile(text))
+
+
 DECLARED_ROUTES = (
-    re.compile(r"^\.preview\.project$"),
-    re.compile(r"^\.preview\.files\[\d+\]\.name$"),
-    re.compile(r"^\.preview\.skipped_files\[\d+\]\.name$"),
-    re.compile(r"^\.files\[\d+\]\.name$"),
-    re.compile(r"^\.backup_path$"),
-    re.compile(r"^\.notes\[\d+\]$"),          # names the backup folder
+    route(r"^\.preview\.project$"),
+    route(r"^\.preview\.files\[\d+\]\.name$"),
+    route(r"^\.preview\.skipped_files\[\d+\]\.name$"),
+    route(r"^\.files\[\d+\]\.name$"),
+    route(r"^\.backup_path$"),
+    # The one note that names the backup folder, by its opening words.
+    route(r"^\.notes\[\d+\]$", r"^The backup taken before this run\b"),
 )
 
 
@@ -2550,10 +2566,80 @@ def walk_strings(value, path=""):
 
 
 def routes_carrying(value, name, allowed=()):
-    """The paths at which `name` appears, less the declared ones."""
+    """The paths at which `name` appears, less the declared ones.
+
+    A rule allows a string only when its path matches AND, where the
+    rule names one, the string itself matches too.
+    """
+    def declared(path, text):
+        return any(rule.path.match(path)
+                   and (rule.text is None or rule.text.match(text))
+                   for rule in allowed)
+
     return [(path, text[:80]) for path, text in walk_strings(value)
-            if name.lower() in text.lower()
-            and not any(rule.match(path) for rule in allowed)]
+            if name.lower() in text.lower() and not declared(path, text)]
+
+
+class TestTheDeclaredRoutesAreNarrowerThanAPosition:
+    """v0.13 A3. The walk's allow list admitted every `.notes[N]`
+    string, which is four notes, when exactly one of them legitimately
+    names the backup folder. A name that reached any other note (the
+    re-read advice, the QualCoder refresh note, the AI-index note) was
+    allowed through by position, so the walk could not have reported it.
+
+    The rule now carries the note's own opening words. Both directions
+    are driven here, on synthetic payloads rather than on a run, so the
+    allow list is tested as a rule rather than as whatever a fixture
+    happens to produce, and `routes_carrying`'s two-part match cannot
+    quietly become a one-part match again.
+    """
+
+    @staticmethod
+    def _notes(*texts):
+        return {"notes": list(texts)}
+
+    def test_the_backup_note_is_allowed(self):
+        allowed = self._notes(
+            f"The backup taken before this run ({PARTICIPANT}_backup_"
+            f"20260101_000000.qda) contains the pre-pseudonymisation text.")
+        assert routes_carrying(allowed, PARTICIPANT, DECLARED_ROUTES) == []
+
+    @pytest.mark.parametrize("note", [
+        "Positions after the first replacement in these files have changed: "
+        "re-read {name}'s file before any further coding.",
+        "An open QualCoder window will not refresh from this write on its "
+        "own; reopen {name} study to see it.",
+        "QualCoder 4.0's AI search index still holds the previous text for "
+        "{name}.",
+    ])
+    def test_any_other_note_is_a_route(self, note):
+        payload = self._notes(note.format(name=PARTICIPANT))
+        found = routes_carrying(payload, PARTICIPANT, DECLARED_ROUTES)
+        assert [path for path, _ in found] == [".notes[0]"]
+
+    def test_the_allowance_is_the_note_the_tool_really_writes(self):
+        """The rule is keyed to a real string, not to a hopeful one.
+
+        `_pseudonymise_notes` builds the backup note two ways, with the
+        folder name and without; both must satisfy the rule, and no
+        other note it writes may.
+        """
+        rule = next(r for r in DECLARED_ROUTES
+                    if r.path.pattern.startswith(r"^\.notes"))
+        for backup_name in ("study_backup_20260101_000000.qda", None):
+            notes = server._pseudonymise_notes(backup_name)
+            assert len(notes) == 4, notes
+            allowed = [text for text in notes if rule.text.match(text)]
+            assert len(allowed) == 1, notes
+            assert allowed[0].startswith("The backup taken before this run")
+
+    def test_a_position_only_rule_would_have_passed_it(self):
+        """What the narrowing costs if it is undone: the same payload,
+        under the rule as it used to be, is reported as nothing."""
+        wide = DECLARED_ROUTES[:-1] + (route(r"^\.notes\[\d+\]$"),)
+        payload = self._notes(f"re-read {PARTICIPANT}'s file")
+        assert routes_carrying(payload, PARTICIPANT, wide) == []
+        assert routes_carrying(payload, PARTICIPANT, DECLARED_ROUTES)
 
 
 class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
