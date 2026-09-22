@@ -1495,6 +1495,38 @@ def names_left_in_text(compiled: "Compiled", text: str,
             "normalisation_variants_seen": normalisation_variants}
 
 
+def pseudonyms_containing_a_name(compiled: "Compiled"
+                                 ) -> List[Dict[str, Any]]:
+    """Pseudonyms the rewriter's own rule finds a name in (v0.13, item 5).
+
+    A static check, before any text is read: the rewriter's compiled
+    pattern run over each pseudonym. `{"Smith": "Jones", "Thomas Smith":
+    "Alex Smith"}` puts the real surname back wherever the second entry
+    fires, and a pseudonym that contains its OWN original ("Thomas" to
+    "Thomas Jr") does the same. What it cannot see, and says so where
+    it is reported: a pseudonym that puts a name back inside a longer
+    word (`xThomasx`), which no whole-word rule matches, and a
+    pseudonym that forms a name with the words around it.
+
+    Each finding once per (entry, contained form): the entry whose
+    pseudonym it is, the pseudonym, the entry it contains and that
+    entry's form as the mapping spells it.
+    """
+    lookup = compiled.text_lookup()
+    found: List[Dict[str, Any]] = []
+    for entry in compiled.mapping.entries:
+        reported = set()
+        for match in compiled.pattern.finditer(entry.pseudonym):
+            index, form = _rewriter_form(compiled, lookup, match.group(0))
+            if (index, form) in reported:
+                continue
+            reported.add((index, form))
+            found.append({"entry": entry.index,
+                          "pseudonym": entry.pseudonym,
+                          "contains_entry": index, "form": form})
+    return found
+
+
 # --------------------------------------------------------------------------
 # The remap
 # --------------------------------------------------------------------------

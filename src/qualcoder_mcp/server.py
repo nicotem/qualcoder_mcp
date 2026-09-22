@@ -10589,6 +10589,39 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         text_warning = _pseudonymise_file_text_warning(file_text)
         if text_warning:
             warnings.append(text_warning)
+    # v0.13, ruling 8: a pseudonym that contains a name from the mapping
+    # puts that name back wherever it is written. Warned about and
+    # counted, never refused: a researcher may mean to run the contained
+    # name in a second pass. Upstream accepts such a mapping in silence
+    # (its dialog checks duplicates only, and its import chains).
+    containing = preview.get("pseudonyms_containing_a_name") or []
+    put_back = ((file_text or {}).get("totals", {}).get("by_reason", {})
+                .get("put_back_by_a_pseudonym", 0))
+    if containing:
+        entries = sorted({item["entry"] for item in containing})
+        warnings.append(
+            f"Warning: pseudonym(s) of entry {entries} contain a name from "
+            f"this mapping (see pseudonyms_containing_a_name), so the "
+            f"rewrite puts that name back wherever it writes them; "
+            f"residue.file_text counts those occurrences under "
+            f"put_back_by_a_pseudonym. A pseudonym that puts a name back "
+            f"inside a longer word (xThomasx) is not caught by this check "
+            f"and is counted under inside_a_longer_word instead. Choose a "
+            f"pseudonym that contains no name from the mapping, or run the "
+            f"contained name in a second pass and check the count.")
+    elif put_back:
+        # No pseudonym contains a name on its own, and yet the rewrite
+        # leaves a whole name the rewriter would match: a pseudonym has
+        # formed one with the words around it ("Mary" written before an
+        # "Ann" that was already there, for "Mary Ann").
+        warnings.append(
+            f"Warning: after this run, {put_back} occurrence(s) of a name "
+            f"from this mapping would be put back by the pseudonyms it "
+            f"writes, although no pseudonym contains a name on its own: a "
+            f"pseudonym can form a name with the words around it. "
+            f"residue.file_text counts them under put_back_by_a_pseudonym. "
+            f"Choose a different pseudonym, or run the name in a second "
+            f"pass and check the count.")
     short = preview.get("short_forms") or []
     if short:
         # Fix round 3, L3. QualCoder's own minimum for an original is two

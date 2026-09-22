@@ -8965,6 +8965,17 @@ class QualcoderDatabase:
             # Presentation, not effect: the warning it drives says how to
             # read the residue counts, and changes nothing the run does.
             preview["short_forms"] = short
+        containing = engine.pseudonyms_containing_a_name(compiled)
+        if containing:
+            # v0.13, ruling 8: warned about and counted, not refused.
+            # Presentation, not effect, like the two above. On the
+            # sidecar path the pseudonym is not quoted either: beside the
+            # entry it contains, it would quote the contained name.
+            preview["pseudonyms_containing_a_name"] = (
+                containing if may_echo_names else
+                [{"entry": item["entry"],
+                  "contains_entry": item["contains_entry"]}
+                 for item in containing])
         if scan_residue:
             # The plan's own `new_text` for the file this run rewrites,
             # and no second read of it; `may_echo_names` withholds the

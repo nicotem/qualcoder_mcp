@@ -2734,3 +2734,48 @@ class TestTheFileTextCountStaysCheap:
         assert elapsed < self.CEILING_SECONDS, (
             f"{elapsed:.2f} s for a quarter of a megabyte at 400 forms: "
             f"the file-text count has lost its ungrouped pass")
+
+
+class TestPseudonymsContainingAName:
+    """The static check of item 5 (ruling 8), at the engine."""
+
+    @staticmethod
+    def _check(mapping, mode="exact"):
+        return P.pseudonyms_containing_a_name(
+            P.Compiled(P.validate_mapping(mapping, mode)))
+
+    def test_the_four_mappings_of_the_counts_study(self):
+        assert self._check([{"original": "Thomas", "pseudonym": "Alex"},
+                            {"original": "Mary", "pseudonym": "a Thomas b"}]
+                           ) == [{"entry": 1, "pseudonym": "a Thomas b",
+                                  "contains_entry": 0, "form": "Thomas"}]
+        assert self._check([{"original": "Thomas",
+                             "pseudonym": "not Thomas"}]) == [
+            {"entry": 0, "pseudonym": "not Thomas", "contains_entry": 0,
+             "form": "Thomas"}]
+        assert self._check([{"original": "Thomas", "pseudonym": "Alex"},
+                            {"original": "Mary", "pseudonym": "xThomasx"}]
+                           ) == []
+        assert self._check([{"original": "Smith", "pseudonym": "Jones"},
+                            {"original": "Thomas Smith",
+                             "pseudonym": "Alex Smith"}]) == [
+            {"entry": 1, "pseudonym": "Alex Smith", "contains_entry": 0,
+             "form": "Smith"}]
+
+    def test_each_finding_once_and_the_form_as_the_mapping_spells_it(self):
+        found = self._check(
+            [{"original": "Smith", "pseudonym": "Jones",
+              "variants": ["Smyth"]},
+             {"original": "Thomas", "pseudonym": "Smith and SMITH and Smyth"}],
+            mode="insensitive")
+        assert found == [
+            {"entry": 1, "pseudonym": "Smith and SMITH and Smyth",
+             "contains_entry": 0, "form": "Smith"},
+            {"entry": 1, "pseudonym": "Smith and SMITH and Smyth",
+             "contains_entry": 0, "form": "Smyth"}]
+
+    def test_the_case_mode_is_the_rewriters(self):
+        mapping = [{"original": "Smith", "pseudonym": "Jones"},
+                   {"original": "Thomas", "pseudonym": "Alex SMITH"}]
+        assert self._check(mapping, "exact") == []
+        assert self._check(mapping, "insensitive")[0]["form"] == "Smith"

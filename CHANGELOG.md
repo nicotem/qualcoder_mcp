@@ -58,6 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the preview says so and says the one way to get the full counts, a
   smaller mapping. A second warning reads the file-text counts out, kept
   apart from the fields warning.
+- **A pseudonym that contains a name from the mapping is found and
+  warned about.** `{"Smith": "Jones", "Thomas Smith": "Alex Smith"}`
+  writes "Alex Smith" and so puts the real surname back into the text,
+  and nothing said so. The preview now runs the rewrite's own rule over
+  every pseudonym before any text is read and lists what it finds under
+  `pseudonyms_containing_a_name` (on the `use_project_pseudonyms` path
+  by entry index only), the file-text count charges what is put back to
+  `put_back_by_a_pseudonym`, and a warning reads both out. It is a
+  warning, not a refusal, because a researcher may mean to run the
+  contained name in a second pass. What the check cannot see is said in
+  the warning itself: a pseudonym that puts a name back inside a longer
+  word is counted under `inside_a_longer_word` instead, and one that
+  forms a name with the words around it is caught by the count alone,
+  with a warning of its own. QualCoder accepts such a mapping in
+  silence; this is a named departure.
 - The character sweep behind the wide reading, and behind the rule that
   withholds a file name from the run record and the journal entry, is
   much faster (pure ASCII costs nothing at all) and gives byte-identical
