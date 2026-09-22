@@ -110,6 +110,30 @@ MAX_OVERLAP_CONFLICTS = 200
 # (re-verification 6.2 measured the turn from zero false hits to one in
 # five at four). The rewrite is whole-word and is not affected.
 SHORT_FORM_CHARS = 4
+# Ours (v0.13, ruling 7). The file-text count's work budget, in
+# characters times surface forms, summed over the files in the order the
+# count reads them. Deterministic rather than a clock, so the same
+# preview always counts the same files. About two seconds at the rate
+# the counts study measured (4.7 ms per megabyte per surface form):
+# 1.8 MB at 200 forms, or 10 MB at 40, and a twenty-interview study at
+# seven forms uses three per cent of it. A file past the budget is still
+# read, with the one cheap question "does any name show here", and the
+# report says which files those are; it is never omitted and never
+# reported clean when it is not.
+MAX_RESIDUE_SCAN_WORK = 400_000_000
+# Ours (v0.13). Rows in the residue's file-text block. The totals are
+# always complete, and every further file that shows a name is listed by
+# id: the house shape of `max_spans_per_entry` and
+# `MAX_OVERLAP_CONFLICTS`.
+MAX_RESIDUE_FILE_ROWS = 200
+# Ours (v0.13, decision B). The longer words listed per entry per file
+# on the typed path, most frequent first; the list says when it stopped.
+MAX_LONGER_WORDS_PER_ENTRY = 20
+# Ours (v0.13). A run of word characters longer than this is not a word
+# anybody would add as an exact entry, and returning it would return a
+# slab of the file text; it is counted and not listed, and the list says
+# it is incomplete.
+MAX_LONGER_WORD_CHARS = 100
 
 CASE_MODES = ("exact", "insensitive", "insensitive_preserve")
 OVERLAP_POLICIES = ("snap_to_pseudonym", "qualcoder_edit_parity")
@@ -766,7 +790,8 @@ class Compiled:
 
     __slots__ = ("mapping", "case_mode", "flags", "pattern", "forms",
                  "_exact", "_folded", "_by_first", "max_form_len",
-                 "pseudonym_pattern", "_pseudonym_entries", "detector")
+                 "pseudonym_pattern", "_pseudonym_entries", "detector",
+                 "_text_lookup")
 
     def __init__(self, mapping: Mapping):
         self.mapping = mapping
@@ -809,6 +834,15 @@ class Compiled:
         for entry in mapping.entries:
             key = _fold(entry.pseudonym) if self.flags else entry.pseudonym
             self._pseudonym_entries.setdefault(key, []).append(entry.index)
+        # Built on first use by the file-text count, never here: nothing
+        # on the rewrite path needs it (v0.13).
+        self._text_lookup: Optional["_TextLookup"] = None
+
+    def text_lookup(self) -> "_TextLookup":
+        """What `names_left_in_text` needs from these forms, built once."""
+        if self._text_lookup is None:
+            self._text_lookup = _TextLookup(self)
+        return self._text_lookup
 
     def entry_for(self, matched: str) -> int:
         """Which entry produced `matched`.
@@ -1071,6 +1105,394 @@ def case_variants_seen(compiled: Compiled, text: str) -> List[Dict[str, Any]]:
             report.append({"entry": index, "form": form,
                            "other_case_count": other})
     return report
+
+
+# --------------------------------------------------------------------------
+# Names left in the file text (v0.13, Brief 1 item 4)
+# --------------------------------------------------------------------------
+
+# The kinds a wide occurrence in the file text is split into, in the
+# order the report lists them. `unattributed` is not a kind: it is the
+# occurrences no entry could be charged to, counted beside them.
+TEXT_RESIDUE_REASONS = (
+    "inside_a_longer_word", "case_only", "joined_differently",
+    "normalisation_variants", "put_back_by_a_pseudonym",
+    "whole_word_in_a_file_not_rewritten")
+
+# What `names_left_in_text` returns for one file, JSON-ready:
+# `occurrences` ({"wide": N, "whole_word": M}), `unattributed`,
+# `entries` (one row per entry with anything to report), and the two
+# spelling diagnostics `case_variants_seen` and
+# `normalisation_variants_seen`.
+TextResidue = Dict[str, Any]
+
+_UNPLACED = object()
+
+
+def _residue_key(value: str) -> Tuple[str, str]:
+    """The attribution key of `value`: its reader words, joined, casefolded.
+
+    `Mary Ann`, `MaryAnn`, `Mary_Ann` and `MARY ANN` all key to
+    `maryann`, which is exactly the equivalence the detector's
+    alternation encodes (`_detector_parts` splits on separators after
+    NFKC and strips the unseen characters inside each word). The key
+    JOINS the words: one that kept the word split disagreed with the
+    capture-group reference in 792 of 5,479 random runs in the counts
+    study, and this one in none, so the joined key is the right one. A
+    value with no letters or digits keys by its literal reading, in a
+    namespace of its own, so it never collides with a word key.
+    """
+    parts = _detector_parts(value)
+    if parts:
+        return ("words", _fold("".join(parts)))
+    return ("literal", _fold(_reader_sees(value)))
+
+
+class _TextLookup:
+    """What the file-text count needs from one compiled mapping.
+
+    Built once per `Compiled`, on first use, from the forms in the
+    pattern's own order (`_form_sort_key`: longest first). Each key maps
+    to every form that shares it, in that order; `_pick` breaks a tie
+    the way the combined pattern breaks it.
+    """
+
+    __slots__ = ("direct", "folded", "reader_form", "all_ascii",
+                 "folded_form", "entry_forms")
+
+    def __init__(self, compiled: "Compiled"):
+        self.direct: Dict[Tuple[str, str], List[Tuple[str, int, Any]]] = {}
+        self.folded: Dict[Tuple[str, str], List[Tuple[str, int, Any]]] = {}
+        self.reader_form: Dict[Tuple[int, str], str] = {}
+        self.folded_form: Dict[Tuple[int, str], str] = {}
+        self.entry_forms: Dict[int, List[str]] = {}
+        for form, index in compiled.forms:
+            self.entry_forms.setdefault(index, []).append(form)
+            self.folded_form.setdefault((index, _fold(form)), form)
+            if not _detector_alternative(form):
+                continue        # a form no reader can see matches nothing
+            key = _residue_key(form)
+            # Each pattern built from the escaping builder at the site
+            # that compiles it, as every pattern in this module is.
+            self.direct.setdefault(key, []).append(
+                (form, index,
+                 re.compile(_detector_alternative(form), re.IGNORECASE)))
+            self.folded.setdefault(key, []).append(
+                (form, index,
+                 re.compile(_detector_alternative(form, fold=True))))
+            self.reader_form[(index, form)] = _reader_sees(form)
+        self.all_ascii = all(form.isascii() for form, _ in compiled.forms)
+
+
+def _pick(candidates: Sequence[Tuple[str, int, Any]], matched: str
+          ) -> Tuple[str, int, Any]:
+    """The form the combined pattern chose for `matched`, among those
+    sharing its key.
+
+    The alternation takes the first branch that matches at a position,
+    so the first form, in the pattern's own order, whose alternative
+    matches the whole of `matched` is the one it chose. One candidate
+    is the common case and needs no regex at all.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    for candidate in candidates:
+        if candidate[2].fullmatch(matched):
+            return candidate
+    return candidates[0]
+
+
+def _attributed(matches, lookup_table, matched_of=None):
+    """Each match of a detector pattern, with the form it is charged to.
+
+    Yields `(match, (form, entry) or None)`. The entry is recovered
+    from the matched TEXT by key, never from the regex engine: one
+    capture group per alternative made the count cost 82 seconds per
+    1.27 MB at the documented ceiling of 2,000 forms, which is the shape
+    of the uncapped-form defect `MAX_FORM_CHARS` exists for. A match
+    the lookup cannot place (possible where `re.IGNORECASE` and
+    `str.casefold` disagree on a code point) is yielded with None: it is
+    still counted, and charged to no entry.
+    """
+    placed: Dict[str, Any] = {}
+    for match in matches:
+        matched = match.group(0)
+        candidate = placed.get(matched, _UNPLACED)
+        if candidate is _UNPLACED:
+            candidates = lookup_table.get(_residue_key(matched))
+            candidate = (_pick(candidates, matched)[:2] if candidates
+                         else None)
+            placed[matched] = candidate
+        yield match, candidate
+
+
+def direct_attribution(compiled: "Compiled", seen: str
+                       ) -> Tuple[Dict[Tuple[int, str], int], int]:
+    """The wide reading's direct pass over `seen`, charged by form.
+
+    One UNGROUPED `finditer` of the detector's direct pattern over the
+    reader's text, the entry recovered by key (`_attributed`). Returns
+    ({(entry, form): count}, unattributed). The counterpart the tests
+    compare it with, one capture group per alternative, lives in the
+    test file and never here.
+    """
+    lookup = compiled.text_lookup()
+    counts: Dict[Tuple[int, str], int] = {}
+    unattributed = 0
+    for _match, candidate in _attributed(
+            compiled.detector._direct.finditer(seen), lookup.direct):
+        if candidate is None:
+            unattributed += 1
+            continue
+        key = (candidate[1], candidate[0])
+        counts[key] = counts.get(key, 0) + 1
+    return counts, unattributed
+
+
+def _rewriter_form(compiled: "Compiled", lookup: _TextLookup, matched: str
+                   ) -> Tuple[int, str]:
+    """(entry, form) for one match of the REWRITER's pattern.
+
+    The entry is `Compiled.entry_for`'s, which is exact by construction;
+    the form is the mapping's own spelling the match stands for, looked
+    up exactly, then case-folded, then by the same full match
+    `entry_for` falls back to.
+    """
+    index = compiled.entry_for(matched)
+    if compiled._exact.get(matched) == index:
+        return index, matched
+    form = lookup.folded_form.get((index, _fold(matched)))
+    if form is not None:
+        return index, form
+    for candidate in lookup.entry_forms[index]:
+        if re.fullmatch(re.escape(candidate), matched, compiled.flags):
+            return index, candidate
+    return index, compiled.mapping.entries[index].original
+
+
+def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
+    """The run of word characters around a match, as the reader sees it.
+
+    `Thomas_P01` is one word and `Thomas_Smith.txt` gives
+    `Thomas_Smith`. None when the run is longer than
+    `MAX_LONGER_WORD_CHARS`: that is a slab of the text, not a word,
+    and the scan stops there rather than walking it.
+    """
+    budget = MAX_LONGER_WORD_CHARS - (end - start)
+    left = start
+    while left > 0 and _is_word_char(seen[left - 1]):
+        left -= 1
+        budget -= 1
+        if budget < 0:
+            return None
+    right = end
+    while right < len(seen) and _is_word_char(seen[right]):
+        right += 1
+        budget -= 1
+        if budget < 0:
+            return None
+    return seen[left:right]
+
+
+def names_left_in_text(compiled: "Compiled", text: str,
+                       list_longer_words: bool,
+                       rewritten_by_this_run: bool) -> TextResidue:
+    """Where this mapping's names are left in one file's text.
+
+    `text` is the file as it will be AFTER the run: the rewritten text
+    for the one file the run rewrites, the stored text for every other.
+    Counts, never spans and never surrounding text; with
+    `list_longer_words`, the longer words a name sits inside (the typed
+    path only, decided by the caller).
+
+    Two readings of every count, in one object `{"wide", "whole_word"}`:
+
+    - wide: the detector's reading of the reader's text. Every wide
+      occurrence is charged to exactly one kind (`TEXT_RESIDUE_REASONS`)
+      or to `unattributed`, so the kinds and `unattributed` add up to
+      the wide count on every row; the split is a heuristic and the
+      total is not.
+    - whole_word: the rewriter's own pattern over the RAW text, reported
+      as it stands. On the file this run rewrote it is normally zero,
+      and non-zero means a pseudonym put a name back.
+
+    The kinds, for each wide match in the reader's text: a word
+    character touches either end (inside_a_longer_word); otherwise the
+    match casefolds differently from the form as the reader sees it
+    (joined_differently); otherwise it differs from that form and the
+    case mode is exact (case_only); otherwise it IS the form, whole
+    word, and the rewriter left it. That last class has two causes,
+    split per form by the whole-word count of the raw text: on the row
+    of the file this run rewrote, `min(whole_word, class)` is charged to
+    put_back_by_a_pseudonym and the rest to normalisation_variants; on
+    every other row nothing was put back by this run, so the same share
+    is charged to whole_word_in_a_file_not_rewritten instead. The `min`
+    and `max` are a declared HEURISTIC about which cause an occurrence
+    is charged to when both are present; their sum is exact.
+    """
+    lookup = compiled.text_lookup()
+    seen = _reader_sees(text)
+    rows: Dict[Tuple[int, str], Dict[str, Any]] = {}
+
+    def row_for(key: Tuple[int, str]) -> Dict[str, Any]:
+        row = rows.get(key)
+        if row is None:
+            row = rows[key] = {"direct": 0, "inside_a_longer_word": 0,
+                               "case_only": 0, "joined_differently": 0,
+                               "left_whole": 0, "folded_excess": 0,
+                               "whole_word": 0, "words": {},
+                               "words_withheld": False}
+        return row
+
+    unattributed = 0
+    direct_total = 0
+    exact_mode = compiled.case_mode == "exact"
+    for match, candidate in _attributed(
+            compiled.detector._direct.finditer(seen), lookup.direct):
+        direct_total += 1
+        if candidate is None:
+            unattributed += 1
+            continue
+        form, index = candidate
+        row = row_for((index, form))
+        row["direct"] += 1
+        matched = match.group(0)
+        start, end = match.span()
+        if ((start > 0 and _is_word_char(seen[start - 1]))
+                or (end < len(seen) and _is_word_char(seen[end]))):
+            row["inside_a_longer_word"] += 1
+            if list_longer_words:
+                word = _longer_word(seen, start, end)
+                if word is None:
+                    row["words_withheld"] = True
+                else:
+                    row["words"][word] = row["words"].get(word, 0) + 1
+            continue
+        reader_form = lookup.reader_form[(index, form)]
+        if _fold(matched) != _fold(reader_form):
+            row["joined_differently"] += 1
+        elif matched != reader_form and exact_mode:
+            row["case_only"] += 1
+        else:
+            row["left_whole"] += 1
+
+    # The casefolded second reading, which `NameDetector.contains` makes
+    # too: `re.IGNORECASE` and `str.casefold` disagree on some code
+    # points (U+00DF casefolds to "ss" and does not match "SS" under
+    # IGNORECASE), so a spelling only case-folding reaches is missed by
+    # the direct pass above. Where the folded pass finds more for a form
+    # than the direct pass did, the excess is added to that form's wide
+    # count and charged to normalisation_variants. This is a HEURISTIC,
+    # declared as one: a spelling only case-folding reaches is one the
+    # rewriter cannot see under any case mode, so it is charged there,
+    # and it is what keeps `wide` from being zero on a file where
+    # `detector.contains` says a name shows. The excess is capped at the
+    # folded pass's net surplus over the direct one, so an occurrence the
+    # direct pass could not place (dotted capital I, which IGNORECASE
+    # matches and casefolding spells as two code points) and the folded
+    # pass could is not counted twice. On ASCII text with ASCII forms
+    # the two passes cannot disagree, so the second is skipped.
+    if not (seen.isascii() and lookup.all_ascii):
+        folded_counts: Dict[Tuple[int, str], int] = {}
+        folded_unattributed = 0
+        for _match, candidate in _attributed(
+                compiled.detector._folded.finditer(_fold(seen)),
+                lookup.folded):
+            if candidate is None:
+                folded_unattributed += 1
+                continue
+            key = (candidate[1], candidate[0])
+            folded_counts[key] = folded_counts.get(key, 0) + 1
+        surplus = (sum(folded_counts.values()) + folded_unattributed
+                   - direct_total)
+        for form, index in compiled.forms:
+            if surplus <= 0:
+                break
+            key = (index, form)
+            excess = folded_counts.get(key, 0) - (
+                rows[key]["direct"] if key in rows else 0)
+            if excess > 0:
+                excess = min(excess, surplus)
+                row_for(key)["folded_excess"] += excess
+                surplus -= excess
+        if surplus > 0:
+            unattributed += min(surplus, max(
+                0, folded_unattributed - unattributed))
+
+    whole_word_total = 0
+    for match in compiled.pattern.finditer(text):
+        whole_word_total += 1
+        row_for(_rewriter_form(compiled, lookup, match.group(0)))[
+            "whole_word"] += 1
+
+    entries: Dict[int, Dict[str, Any]] = {}
+    case_variants: List[Dict[str, Any]] = []
+    normalisation_variants: List[Dict[str, Any]] = []
+    wide_total = unattributed
+    for form, index in compiled.forms:
+        row = rows.get((index, form))
+        if row is None:
+            continue
+        # The heuristic split of the class the rewriter left whole, per
+        # form (see the docstring); the sum of the two is exact.
+        shared = min(row["whole_word"], row["left_whole"])
+        spelling = (max(0, row["left_whole"] - row["whole_word"])
+                    + row["folded_excess"])
+        wide = row["direct"] + row["folded_excess"]
+        wide_total += wide
+        entry = entries.get(index)
+        if entry is None:
+            entry = entries[index] = {
+                "entry": index,
+                "form": compiled.mapping.entries[index].original,
+                "occurrences": {"wide": 0, "whole_word": 0},
+                "inside_a_longer_word": 0, "case_only": 0,
+                "joined_differently": 0, "normalisation_variants": 0,
+                "put_back_by_a_pseudonym": 0,
+                "whole_word_in_a_file_not_rewritten": 0,
+                "_words": {}, "_withheld": False}
+        entry["occurrences"]["wide"] += wide
+        entry["occurrences"]["whole_word"] += row["whole_word"]
+        entry["inside_a_longer_word"] += row["inside_a_longer_word"]
+        entry["case_only"] += row["case_only"]
+        entry["joined_differently"] += row["joined_differently"]
+        entry["normalisation_variants"] += spelling
+        if rewritten_by_this_run:
+            entry["put_back_by_a_pseudonym"] += shared
+        else:
+            entry["whole_word_in_a_file_not_rewritten"] += shared
+        for word, count in row["words"].items():
+            entry["_words"][word] = entry["_words"].get(word, 0) + count
+        entry["_withheld"] = entry["_withheld"] or row["words_withheld"]
+        if row["case_only"]:
+            case_variants.append({"entry": index, "form": form,
+                                  "other_case_count": row["case_only"]})
+        if spelling:
+            normalisation_variants.append({"entry": index, "form": form,
+                                           "count": spelling})
+
+    listed: List[Dict[str, Any]] = []
+    for index in sorted(entries):
+        entry = entries[index]
+        words = entry.pop("_words")
+        withheld = entry.pop("_withheld")
+        if not (entry["occurrences"]["wide"]
+                or entry["occurrences"]["whole_word"]):
+            continue
+        if list_longer_words:
+            ranked = sorted(words.items(), key=lambda kv: (-kv[1], kv[0]))
+            entry["longer_words"] = [
+                {"word": word, "count": count}
+                for word, count in ranked[:MAX_LONGER_WORDS_PER_ENTRY]]
+            if withheld or len(ranked) > MAX_LONGER_WORDS_PER_ENTRY:
+                entry["longer_words_truncated"] = True
+        listed.append(entry)
+    return {"occurrences": {"wide": wide_total,
+                            "whole_word": whole_word_total},
+            "unattributed": unattributed,
+            "entries": listed,
+            "case_variants_seen": case_variants,
+            "normalisation_variants_seen": normalisation_variants}
 
 
 # --------------------------------------------------------------------------

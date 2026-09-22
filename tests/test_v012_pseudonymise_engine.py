@@ -2254,3 +2254,483 @@ class TestTheCharacterSweepIsTheGeneratorByteForByte:
         assert result.returncode == 0, result.stderr
         assert lines[:3] == ["True", "True", "True"], result.stdout
         assert Path(lines[3]).resolve() == Path(P.__file__).resolve()
+
+
+# =============================================================================
+# NAMES LEFT IN THE FILE TEXT (v0.13 Brief 1, item 4)
+# =============================================================================
+
+def capture_group_attribution(compiled, seen):
+    """The attribution the engine must NOT be built on, as the reference.
+
+    One capture group per alternative, in the pattern's own order, and
+    `lastindex` names the form: exact, and 82 seconds per 1.27 MB at the
+    documented ceiling of 2,000 forms, which is why it lives here, in the
+    test file, and never in the product (counts study, 5.3 and 5.4).
+    """
+    alternatives = [(form, index, P._detector_alternative(form))
+                    for form, index in compiled.forms]
+    alternatives = [item for item in alternatives if item[2]]
+    if not alternatives:
+        return {}
+    pattern = re.compile("|".join(f"({alternative})"
+                                  for _, _, alternative in alternatives),
+                         re.IGNORECASE)
+    counts = {}
+    for match in pattern.finditer(seen):
+        form, index, _ = alternatives[match.lastindex - 1]
+        counts[(index, form)] = counts.get((index, form), 0) + 1
+    return counts
+
+
+# The counts study's alphabet: letters, separators, soft hyphens,
+# zero-width spaces, fullwidth letters, U+00DF and mixed case.
+_RESIDUE_LETTERS = "abABßSａＢ"
+_RESIDUE_SEPARATORS = (" ", "_", "-", ".", "­", "​", "", ", ")
+_FULLWIDTH = {ord(c): chr(ord(c) + 0xFEE0) for c in
+              "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+
+
+@st.composite
+def _residue_form(draw, one_word=False):
+    """A surface form: one or two words of the alphabet's letters."""
+    words = draw(st.lists(
+        st.text(alphabet=_RESIDUE_LETTERS, min_size=1, max_size=3),
+        min_size=1, max_size=1 if one_word else 2))
+    joiner = draw(st.sampled_from((" ", "-", "_", "­", "​", "")))
+    return joiner.join(words)
+
+
+@st.composite
+def _residue_case(draw, max_entries=3, one_form=False):
+    """A mapping, a text built around its forms, and a case mode.
+
+    The text is made of the forms themselves and the spellings the
+    report has to classify (another case, the words joined another way,
+    a letter attached, a soft hyphen inside, fullwidth), with letters
+    and separators between, so every kind of occurrence is common
+    rather than lucky.
+    """
+    mode = draw(st.sampled_from(P.CASE_MODES))
+    count = 1 if one_form else draw(st.integers(1, max_entries))
+    forms = [draw(_residue_form(one_word=one_form)) for _ in range(count)]
+    # One pseudonym in three may carry the first form as a word of its
+    # own, the shape that puts a name back (item 5), so the rewritten
+    # row reaches put_back_by_a_pseudonym.
+    pseudonyms = ["Qqq", "Www", "Eee"]
+    if draw(st.integers(0, 2)) == 0:
+        pseudonyms[draw(st.integers(0, count - 1))] = "Qqq " + forms[0]
+    raw = [{"original": form, "pseudonym": pseudonym}
+           for form, pseudonym in zip(forms, pseudonyms)]
+    try:
+        compiled = P.Compiled(P.validate_mapping(raw, mode))
+    except P.MappingError:
+        from hypothesis import assume
+        assume(False)
+    tokens = []
+    for form in forms:
+        parts = [part for part in re.split("[ _\\-.­​]+", form)
+                 if part]
+        tokens += [form, form, form.upper(), form.lower(), form.swapcase(),
+                   "".join(parts), "_".join(parts), " ".join(parts),
+                   "x" + form, form + "b", form.translate(_FULLWIDTH),
+                   form[:1] + "­" + form[1:]]
+    tokens += ["a", "S", "ß", "ss", "B"]
+    pieces = []
+    for index in range(draw(st.integers(0, 8))):
+        if index:
+            pieces.append(draw(st.sampled_from(_RESIDUE_SEPARATORS)))
+        pieces.append(draw(st.sampled_from(tokens)))
+    text = "".join(pieces)
+    rewritten = draw(st.booleans())
+    if rewritten:
+        text = P.apply_replacements(text, P.find_replacements(compiled, text))
+    return compiled, text, rewritten
+
+
+_RESIDUE_SETTINGS = settings(max_examples=300, deadline=None,
+                             suppress_health_check=[HealthCheck.too_slow,
+                                                    HealthCheck.filter_too_much])
+
+
+def _left(mapping, text, mode="exact", rewritten=False, words=True):
+    compiled = P.Compiled(P.validate_mapping(mapping, mode))
+    return P.names_left_in_text(compiled, text, words, rewritten)
+
+
+class TestNamesLeftInText:
+    """The engine of the residue's file-text block: two readings, the
+    kinds a wide occurrence is split into, and the cheap attribution."""
+
+    FIXTURE_BEFORE = (
+        "Thomas said the file was ready. See Thomas_Smith.txt and "
+        "Thomas_P01. Thomasin arrived later. THOMAS shouted, and thomas "
+        "whispered. Tho­mas signed the form. "
+        "Ｔｈｏｍａｓ in fullwidth. Mary Ann and "
+        "MaryAnn and Mary_Ann.")
+    FIXTURE_MAPPING = [{"original": "Thomas", "pseudonym": "Alex"},
+                       {"original": "Mary Ann", "pseudonym": "Robin Lee"}]
+
+    # The counts study's fixture after a run, class by class (5.7).
+    @pytest.mark.parametrize("mode,thomas", [
+        ("exact", {"wide": 7, "inside_a_longer_word": 3, "case_only": 2,
+                   "joined_differently": 0, "normalisation_variants": 2}),
+        ("insensitive", {"wide": 5, "inside_a_longer_word": 3,
+                         "case_only": 0, "joined_differently": 0,
+                         "normalisation_variants": 2}),
+        ("insensitive_preserve", {"wide": 5, "inside_a_longer_word": 3,
+                                  "case_only": 0, "joined_differently": 0,
+                                  "normalisation_variants": 2}),
+    ])
+    def test_the_counts_study_fixture_class_by_class(self, mode, thomas):
+        compiled = P.Compiled(P.validate_mapping(self.FIXTURE_MAPPING, mode))
+        after = P.apply_replacements(
+            self.FIXTURE_BEFORE,
+            P.find_replacements(compiled, self.FIXTURE_BEFORE))
+        found = P.names_left_in_text(compiled, after, True, True)
+        rows = {entry["entry"]: entry for entry in found["entries"]}
+        assert rows[0]["occurrences"]["wide"] == thomas["wide"]
+        assert rows[0]["occurrences"]["whole_word"] == 0
+        for kind in ("inside_a_longer_word", "case_only",
+                     "joined_differently", "normalisation_variants"):
+            assert rows[0][kind] == thomas[kind], kind
+        assert rows[0]["put_back_by_a_pseudonym"] == 0
+        assert rows[1]["occurrences"]["wide"] == 2
+        assert rows[1]["joined_differently"] == 2
+        assert found["unattributed"] == 0
+        assert found["occurrences"]["whole_word"] == 0
+        if mode == "exact":
+            assert found["case_variants_seen"] == [
+                {"entry": 0, "form": "Thomas", "other_case_count": 2}]
+        else:
+            assert found["case_variants_seen"] == []
+        assert found["normalisation_variants_seen"] == [
+            {"entry": 0, "form": "Thomas", "count": 2}]
+        assert rows[0]["longer_words"] == [
+            {"word": "Thomas_P01", "count": 1},
+            {"word": "Thomas_Smith", "count": 1},
+            {"word": "Thomasin", "count": 1}]
+
+    def test_the_residue_copy_of_the_case_variants_agrees_with_the_preview(
+            self):
+        """The counts study measured the post-run reading and the pre-run
+        reading of `case_variants_seen` to agree; on this fixture they
+        do, key for key."""
+        compiled = P.Compiled(P.validate_mapping(self.FIXTURE_MAPPING))
+        after = P.apply_replacements(
+            self.FIXTURE_BEFORE,
+            P.find_replacements(compiled, self.FIXTURE_BEFORE))
+        assert P.names_left_in_text(compiled, after, True, True)[
+            "case_variants_seen"] == P.case_variants_seen(
+                compiled, self.FIXTURE_BEFORE)
+
+    def test_the_fixture_attribution_is_the_capture_group_one(self):
+        compiled = P.Compiled(P.validate_mapping(self.FIXTURE_MAPPING))
+        seen = P._reader_sees(self.FIXTURE_BEFORE)
+        counts, unattributed = P.direct_attribution(compiled, seen)
+        assert unattributed == 0
+        assert counts == capture_group_attribution(compiled, seen)
+
+    def test_no_word_is_listed_when_the_caller_asks_for_none(self):
+        found = _left(self.FIXTURE_MAPPING, "See Thomas_P01.", words=False)
+        assert found["entries"][0]["inside_a_longer_word"] == 1
+        assert "longer_words" not in found["entries"][0]
+        assert "longer_words_truncated" not in found["entries"][0]
+        assert "Thomas_P01" not in repr(found)
+
+    def test_the_longer_words_are_ranked_and_capped(self):
+        words = [f"Thomas_{n:02d}" for n in range(P.MAX_LONGER_WORDS_PER_ENTRY
+                                                  + 5)]
+        text = " ".join(words + ["Thomasin", "Thomasin", "Thomasin"])
+        entry = _left(self.FIXTURE_MAPPING, text)["entries"][0]
+        assert entry["inside_a_longer_word"] == len(words) + 3
+        listed = entry["longer_words"]
+        assert len(listed) == P.MAX_LONGER_WORDS_PER_ENTRY
+        assert listed[0] == {"word": "Thomasin", "count": 3}
+        assert listed[1] == {"word": "Thomas_00", "count": 1}
+        assert entry["longer_words_truncated"] is True
+
+    def test_a_run_too_long_to_be_a_word_is_counted_not_listed(self):
+        slab = "Thomas" + "x" * P.MAX_LONGER_WORD_CHARS
+        entry = _left(self.FIXTURE_MAPPING, f"{slab} and Thomasin")[
+            "entries"][0]
+        assert entry["inside_a_longer_word"] == 2
+        assert entry["longer_words"] == [{"word": "Thomasin", "count": 1}]
+        assert entry["longer_words_truncated"] is True
+        near = "Thomas" + "x" * (P.MAX_LONGER_WORD_CHARS - 6)
+        assert len(near) == P.MAX_LONGER_WORD_CHARS
+        assert _left(self.FIXTURE_MAPPING, near)["entries"][0][
+            "longer_words"] == [{"word": near, "count": 1}]
+
+    def test_the_tie_is_broken_the_way_the_pattern_breaks_it(self):
+        """Two forms whose words concatenate to one key, `Ann Marie` and
+        a single-word `AnnMarie` that sorts first because of an invisible
+        trailing character: the combined pattern charges `Ann Marie` to
+        the only alternative that can match it, and so does the lookup."""
+        mapping = [{"original": "AnnMarie​", "pseudonym": "Pat"},
+                   {"original": "Ann Marie", "pseudonym": "Sue"}]
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        seen = P._reader_sees("Ann Marie and AnnMarie and Ann_Marie")
+        counts, unattributed = P.direct_attribution(compiled, seen)
+        assert unattributed == 0
+        assert counts == capture_group_attribution(compiled, seen) == {
+            (0, "AnnMarie​"): 1, (1, "Ann Marie"): 2}
+
+    def test_a_spelling_only_casefolding_reaches_is_counted(self):
+        """U+00DF casefolds to "ss" and does not match "SS" under
+        IGNORECASE: the folded second reading counts those spellings,
+        charged to normalisation_variants as the declared heuristic."""
+        found = _left([{"original": "Straße", "pseudonym": "Weg"}],
+                      "STRASSE and strasse and Straße")
+        entry = found["entries"][0]
+        assert entry["occurrences"]["wide"] == 3
+        assert entry["normalisation_variants"] == 2
+        assert found["unattributed"] == 0
+
+    def test_an_occurrence_neither_pass_can_share_is_counted_once(self):
+        """Dotted capital I: IGNORECASE matches it to "i" and casefolding
+        spells it as two code points, so the direct pass cannot place it
+        and the folded pass can. It is ONE occurrence: counted once,
+        charged to no entry, and the total still adds up."""
+        found = _left([{"original": "Ali", "pseudonym": "Bob"}],
+                      "ALİ came")
+        assert found["occurrences"]["wide"] == 1
+        assert found["unattributed"] == 1
+        assert found["entries"] == []
+
+    # What the two readings are NOT, stated as pins so nobody builds on
+    # the stronger claims. The wide reading joins a name's words across
+    # any separators, and an invisible character splits words for the
+    # rewriter but not for a reader, so at FILE level a whole-word count
+    # can exceed the wide one; and a longer form can merge two shorter
+    # ones, so adding an entry can LOWER an occurrence count.
+    def test_one_wide_occurrence_can_be_two_whole_words(self):
+        mapping = [{"original": "Mary Ann", "pseudonym": "Pat"},
+                   {"original": "Mary", "pseudonym": "Sue"},
+                   {"original": "Ann", "pseudonym": "Joy"}]
+        found = _left(mapping, "Mary, Ann came.")
+        assert found["occurrences"] == {"wide": 1, "whole_word": 2}
+        rows = {entry["entry"]: entry for entry in found["entries"]}
+        assert rows[0]["joined_differently"] == 1
+        # The entries the rewriter would match are listed although no
+        # wide occurrence is charged to them.
+        assert rows[1]["occurrences"] == {"wide": 0, "whole_word": 1}
+        assert rows[2]["occurrences"] == {"wide": 0, "whole_word": 1}
+        joined = _left([{"original": "Mary", "pseudonym": "Sue"},
+                        {"original": "Ann", "pseudonym": "Joy"},
+                        {"original": "MaryAnn", "pseudonym": "Pat"}],
+                       "Mary­Ann came.")
+        assert joined["occurrences"] == {"wide": 1, "whole_word": 2}
+
+    def test_adding_an_entry_can_lower_an_occurrence_count(self):
+        two = [{"original": "Mary", "pseudonym": "Sue"},
+               {"original": "Ann", "pseudonym": "Joy"}]
+        three = two + [{"original": "Mary Ann", "pseudonym": "Pat"}]
+        assert _left(two, "Mary Ann came.")["occurrences"] == {
+            "wide": 2, "whole_word": 2}
+        assert _left(three, "Mary Ann came.")["occurrences"] == {
+            "wide": 1, "whole_word": 1}
+
+    # ---- properties over the counts study's alphabet ----------------
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case())
+    def test_the_key_attribution_agrees_with_the_capture_group_reference(
+            self, case):
+        compiled, text, _rewritten = case
+        seen = P._reader_sees(text)
+        counts, unattributed = P.direct_attribution(compiled, seen)
+        assert unattributed == 0
+        assert counts == capture_group_attribution(compiled, seen)
+        per_entry, reference = {}, {}
+        for (index, _form), count in counts.items():
+            per_entry[index] = per_entry.get(index, 0) + count
+        for (index, _form), count in capture_group_attribution(
+                compiled, seen).items():
+            reference[index] = reference.get(index, 0) + count
+        assert per_entry == reference
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case())
+    def test_every_occurrence_is_in_exactly_one_kind(self, case):
+        compiled, text, rewritten = case
+        found = P.names_left_in_text(compiled, text, True, rewritten)
+        total = found["unattributed"]
+        for entry in found["entries"]:
+            kinds = sum(entry[kind] for kind in P.TEXT_RESIDUE_REASONS)
+            assert kinds == entry["occurrences"]["wide"], entry
+            total += kinds
+            if rewritten:
+                assert entry["whole_word_in_a_file_not_rewritten"] == 0
+            else:
+                assert entry["put_back_by_a_pseudonym"] == 0
+            shared = (entry["put_back_by_a_pseudonym"]
+                      + entry["whole_word_in_a_file_not_rewritten"])
+            assert shared <= entry["occurrences"]["whole_word"]
+            assert set(entry["occurrences"]) >= {"wide", "whole_word"}
+        assert total == found["occurrences"]["wide"]
+        assert found["unattributed"] == 0
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case())
+    def test_wide_is_non_zero_exactly_where_the_detector_sees_a_name(
+            self, case):
+        """The folded second reading's purpose: `wide` is never zero on a
+        text `detector.contains` says a name shows in (and never
+        non-zero where it says none does)."""
+        compiled, text, rewritten = case
+        found = P.names_left_in_text(compiled, text, False, rewritten)
+        assert (found["occurrences"]["wide"] >= 1) == \
+            compiled.detector.contains(text)
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case())
+    def test_a_field_the_rewriter_matches_is_one_the_detector_sees(
+            self, case):
+        """`wide >= whole_word` for every FIELD: a field the rewriter's
+        own rule matches is always a field the wide reading counts."""
+        compiled, text, _rewritten = case
+        if compiled.pattern.search(text):
+            assert compiled.detector.contains(text)
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case(one_form=True))
+    def test_for_one_single_word_form_wide_is_at_least_whole_word(
+            self, case):
+        """`wide >= whole_word` for a FILE holds for a mapping of one
+        single-word form; `test_one_wide_occurrence_can_be_two_whole_
+        words` shows why it cannot hold in general."""
+        compiled, text, rewritten = case
+        found = P.names_left_in_text(compiled, text, False, rewritten)
+        assert found["occurrences"]["wide"] >= \
+            found["occurrences"]["whole_word"]
+
+    @_RESIDUE_SETTINGS
+    @given(case=_residue_case(max_entries=2),
+           extra=_residue_form())
+    def test_adding_an_entry_never_hides_a_name(self, case, extra):
+        """Adding an entry never turns a field that shows a name, or a
+        file that shows one, into one that does not, under either
+        reading; `test_adding_an_entry_can_lower_an_occurrence_count`
+        shows why the occurrence counts themselves are not monotone."""
+        from hypothesis import assume
+        compiled, text, rewritten = case
+        raw = [{"original": entry.original, "pseudonym": entry.pseudonym}
+               for entry in compiled.mapping.entries]
+        raw.append({"original": extra, "pseudonym": "Rrr"})
+        try:
+            wider = P.Compiled(P.validate_mapping(raw, compiled.case_mode))
+        except P.MappingError:
+            assume(False)
+        if compiled.detector.contains(text):
+            assert wider.detector.contains(text)
+        if compiled.pattern.search(text):
+            assert wider.pattern.search(text)
+        if P.names_left_in_text(compiled, text, False, rewritten)[
+                "occurrences"]["wide"]:
+            assert P.names_left_in_text(wider, text, False, rewritten)[
+                "occurrences"]["wide"]
+
+    def test_the_generator_reaches_every_kind(self):
+        """A property proves nothing about a branch its inputs never
+        reach: over the real distribution (derandomised), every kind is
+        reached, the whole-word count is non-zero somewhere, and so is a
+        folded excess."""
+        seen = {kind: 0 for kind in P.TEXT_RESIDUE_REASONS}
+        seen["whole_word"] = 0
+
+        @settings(max_examples=400, deadline=None, derandomize=True,
+                  phases=[Phase.generate],
+                  suppress_health_check=[HealthCheck.too_slow,
+                                         HealthCheck.filter_too_much])
+        @given(case=_residue_case())
+        def count(case):
+            compiled, text, rewritten = case
+            found = P.names_left_in_text(compiled, text, False, rewritten)
+            for entry in found["entries"]:
+                for kind in P.TEXT_RESIDUE_REASONS:
+                    seen[kind] += bool(entry[kind])
+            seen["whole_word"] += bool(found["occurrences"]["whole_word"])
+
+        count()
+        assert all(value > 0 for value in seen.values()), seen
+
+
+class TestTheFileTextCountStaysCheap:
+    """The performance guard (Brief 1, 6.4). One capture group per
+    alternative costs seconds per megabyte at a hundred forms and 82
+    seconds at the documented ceiling; the ungrouped pass with the key
+    lookup costs a fraction of a second. The ceiling is generous, so no
+    ordinary machine trips it, and the measured rate is recorded and
+    printed in the run's summary (tests/conftest.py) so the six CI logs
+    carry it for ruling 7's sanity check of the work budget."""
+
+    CEILING_SECONDS = 3.0
+
+    @staticmethod
+    def _corpus(forms=100, size=1_000_000):
+        import random
+        rng = random.Random(1300)
+        letters = "abcdefghijklmnopqrstuvwxyz"
+        names = set()
+        while len(names) < forms:
+            names.add(rng.choice(letters).upper() + "".join(
+                rng.choice(letters) for _ in range(rng.randint(4, 7))))
+        names = sorted(names)
+        mapping = [{"original": name, "pseudonym": f"Pseudonym{index:03d}"}
+                   for index, name in enumerate(names)]
+        vocabulary = ["the", "and", "said", "interview", "because", "then",
+                      "we", "it", "was", "a", "long", "day", "at", "work",
+                      "home", "they", "told", "me", "about", "it"] * 20
+        vocabulary += names + [name + "son" for name in names[:30]] + [
+            name.upper() for name in names[:30]] + [
+            name + "_P01" for name in names[:10]]
+        pieces, written = [], 0
+        while written < size:
+            word = rng.choice(vocabulary)
+            pieces.append(word)
+            written += len(word) + 1
+        return mapping, " ".join(pieces)
+
+    def test_a_megabyte_at_a_hundred_forms(self, record_property):
+        import time
+        mapping, text = self._corpus()
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        assert len(compiled.forms) == 100
+        compiled.text_lookup()
+        started = time.perf_counter()
+        found = P.names_left_in_text(compiled, text, True, False)
+        elapsed = time.perf_counter() - started
+        megabytes = len(text) / 1_000_000
+        rate = elapsed * 1000 / megabytes / len(compiled.forms)
+        record_property("file_text_ms_per_mb_per_form", round(rate, 3))
+        sys.stderr.write(
+            f"\nfile-text count: {rate:.3f} ms per MB per surface form "
+            f"({elapsed * 1000:.0f} ms over {megabytes:.2f} MB and "
+            f"{len(compiled.forms)} forms)\n")
+        assert found["occurrences"]["wide"] > 1000
+        assert found["unattributed"] == 0
+        assert elapsed < self.CEILING_SECONDS, (
+            f"{elapsed:.2f} s for 1 MB at 100 forms: the file-text count "
+            f"has lost its ungrouped pass")
+
+    def test_the_guard_that_tells_the_two_shapes_apart(self):
+        """The rate probe above does not discriminate on its own: at 100
+        forms a capture group per alternative measured 2.45 s for its
+        pass alone over this megabyte, under the ceiling. The curve is
+        steep in the number of forms, so the same ceiling is applied
+        where it separates the two shapes by more than twenty times: a
+        quarter of a megabyte at 400 forms, 0.26 s with the key lookup
+        and 5.6 s with capture groups on the machine that measured it."""
+        import time
+        mapping, text = self._corpus(forms=400, size=250_000)
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        assert len(compiled.forms) == 400
+        compiled.text_lookup()
+        started = time.perf_counter()
+        found = P.names_left_in_text(compiled, text, True, False)
+        elapsed = time.perf_counter() - started
+        assert found["occurrences"]["wide"] > 100
+        assert elapsed < self.CEILING_SECONDS, (
+            f"{elapsed:.2f} s for a quarter of a megabyte at 400 forms: "
+            f"the file-text count has lost its ungrouped pass")

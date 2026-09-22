@@ -103,6 +103,28 @@ def _isolate_home(tmp_path, _sandbox_patch):
         tmp_path.resolve())
 
 
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Print the file-text count's measured rate at the end of the run.
+
+    v0.13, ruling 7: the work budget of `pseudonymise_source`'s file-text
+    count is "about two seconds", sanity-checked on the slowest CI
+    platform before the constant is frozen. The performance guard
+    records its rate as a user property, and a passing test's own output
+    is captured and never shown (CI runs `-ra -q`), so the rate is
+    written here, into the summary every CI log carries, with the
+    platform and the interpreter it was measured on.
+    """
+    for key in ("passed", "failed"):
+        for report in terminalreporter.stats.get(key, []):
+            for name, value in getattr(report, "user_properties", []):
+                if name == "file_text_ms_per_mb_per_form":
+                    terminalreporter.write_line(
+                        f"file-text count rate: {value} ms per MB per "
+                        f"surface form ({sys.platform}, Python "
+                        f"{sys.version_info[0]}.{sys.version_info[1]}."
+                        f"{sys.version_info[2]}, test {key})")
+
+
 # The baseline for the guard below, and the proof that it was taken
 # before anything could write. Both are filled by `pytest_sessionstart`.
 WORKSPACE_BASELINE = {}

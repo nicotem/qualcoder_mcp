@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 155,457 characters (about 38.9k tokens at
+  below included: full = 156,003 characters (about 39.0k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 163,369 and
+  in the repository's `.venv/`, the same definitions measure 163,951 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -35,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit in a `counts` string, "fields, not occurrences", and the warning
   and the reading note say "notes" for the twelve memo-like fields (the
   key stays `memos`).
+- The residue block counts the names left in the file text, in a new
+  `file_text` part, on by default with `scan_residue`. Before, the file
+  text was not counted at all, and a file the rewrite never fired on was
+  absent from the whole preview. Every file with stored text is read as
+  it will be after the run: the one this call rewrites, every file it
+  does not touch, and the PDF sources, which are never rewritten. Each
+  file is named, on both mapping paths, with its counts as occurrences,
+  both readings, and each entry's wide count split by kind: inside a
+  longer word, case only, joined differently, an invisible character or
+  another Unicode normalisation (`normalisation_variants_seen` lists
+  them by form, beside `case_variants_seen`), put back by a pseudonym,
+  and whole words in a file this run did not rewrite. The split is a
+  heuristic and the total is not; an occurrence no entry can be charged
+  to is still counted, as `unattributed`. A name inside a longer word
+  is reported and never substituted, and on a typed mapping the longer
+  words themselves are listed (at most 20 per entry per file) so an
+  exact entry can be added; on the `use_project_pseudonyms` path no
+  longer word and no form is returned. The count has a fixed work
+  budget in characters times surface forms; past it a file is only
+  asked whether any name shows, is listed in `files_not_counted`, and
+  the preview says so and says the one way to get the full counts, a
+  smaller mapping. A second warning reads the file-text counts out, kept
+  apart from the fields warning.
 - The character sweep behind the wide reading, and behind the rule that
   withholds a file name from the run record and the journal entry, is
   much faster (pure ASCII costs nothing at all) and gives byte-identical
@@ -135,11 +158,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what the `use_project_pseudonyms` path returns as it stands.** It
   declared two kinds of value that can carry a name from the
   researcher's own `pseudonyms.json`: the project path and each file's
-  own name. There are three: the backup this run takes is named after
-  the project folder, and it is reported on success and, since the fix
-  above, on any failure after it was taken. The description now says
-  so. Nothing this path returns has changed; the sentence that
-  describes it has.
+  own name. There are four: the backup path and the note that names the
+  backup are both named after the project folder, and the backup path
+  is reported on success and, since the fix above, on any failure after
+  the backup was taken. Each file's own name now includes every file
+  the residue's new file-text part names. The description says so, and
+  so does PRIVACY.md. Nothing this path returns has changed but the
+  file-text part; the sentence that describes it has.
 
 ### Upgrading from 0.12.x
 

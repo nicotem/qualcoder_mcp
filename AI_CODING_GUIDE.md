@@ -193,9 +193,10 @@ the stored text of one text source per call, run file by file, and
 moves every coding, annotation and case link with the text, after a
 preview you approve
 and a mandatory backup. Memos, journal entries, labels and attribute
-values are scanned and counted, never rewritten, and PDFs, media files
-and `ai_data/` are out of scope; the preview's residue report says
-where names remain. Pseudonymised data is still personal data: read
+values are scanned and counted, never rewritten, PDFs are counted and
+never rewritten, and media files and `ai_data/` are out of scope; the preview's residue report says
+where names remain, in the notes, the labels, the attribute values and
+the text of every file, each count as two readings. Pseudonymised data is still personal data: read
 PRIVACY.md before sending it anywhere.
 
 **What happens to my original project?** Nothing, if you follow the

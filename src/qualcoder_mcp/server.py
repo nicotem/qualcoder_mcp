@@ -10396,6 +10396,84 @@ def _pseudonymise_safe_name(name: Any, compiled) -> Optional[str]:
     return None if compiled.detector.contains(name) else name
 
 
+# The kinds of the file-text warning, in the order it says them, each
+# dropped when its count is zero. `joined_differently` is here although
+# Brief 1's draft of the warning left it out: without it the kinds the
+# warning names would not add up to the total it gives.
+_FILE_TEXT_WARNING_KINDS = (
+    ("inside_a_longer_word",
+     "a name inside a longer word (usually a different word, left as it "
+     "is)", "are"),
+    ("case_only", "differ only in letter case", None),
+    ("joined_differently",
+     "a name of several words with its parts joined differently", "are"),
+    ("normalisation_variants",
+     "spelled with an invisible character or a different Unicode "
+     "normalisation", "are"),
+    ("put_back_by_a_pseudonym", "a name that one of your pseudonyms puts "
+     "back", "are"),
+    ("unattributed", "could not be charged to an entry", None),
+    ("whole_word_in_a_file_not_rewritten",
+     "whole words in files this run did not rewrite (a PDF source, or a "
+     "file to be run with its own mapping)", "are"),
+)
+
+
+def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
+                                    ) -> Optional[str]:
+    """The second residue warning: occurrences in the file text.
+
+    Kept apart from the fields warning, so that fields and occurrences
+    are never added together. It fires when any name is left in any
+    file's text, and ALSO when files past the work budget show a name
+    while none was counted: a budget must never be a way to get a quiet
+    preview, so a file that was only asked "does a name show here" and
+    answered yes is said out loud either way.
+    """
+    totals = file_text.get("totals") or {}
+    wide = (totals.get("occurrences") or {}).get("wide", 0)
+    reasons = totals.get("by_reason") or {}
+    not_counted = set(file_text.get("files_not_counted") or [])
+    uncounted_showing = sum(
+        1 for row in file_text.get("files") or []
+        if not row.get("counted") and row.get("shows_a_name"))
+    uncounted_showing += len(not_counted.intersection(
+        file_text.get("more_files_showing_a_name") or []))
+    counted_showing = totals.get("files_showing_a_name", 0) \
+        - uncounted_showing
+    sentences: List[str] = []
+    if wide:
+        clauses = []
+        for key, text, verb in _FILE_TEXT_WARNING_KINDS:
+            count = reasons.get(key, 0)
+            if not count:
+                continue
+            of_those = "" if clauses else " of those"
+            clauses.append(f"{count}{of_those} "
+                           f"{verb + ' ' if verb else ''}{text}")
+        if len(clauses) > 2:
+            listed = ", ".join(clauses[:-1]) + ", and " + clauses[-1]
+        else:
+            listed = " and ".join(clauses)
+        sentences.append(
+            f"Warning: after this run, {wide} occurrence(s) of these names "
+            f"would still be in the text of {counted_showing} file(s), "
+            f"because the rewrite replaces whole words only and in one "
+            f"file per call. {listed}. The split by kind is a heuristic; "
+            f"the total is not.")
+    if uncounted_showing:
+        sentences.append(
+            f"{'Warning: after this run, ' if not wide else ''}"
+            f"{uncounted_showing} {'further ' if wide else ''}file(s) "
+            f"would still show one of these names in their text, and "
+            f"were not counted in full because counting them passed this "
+            f"preview's work budget; see files_not_counted.")
+    if not sentences:
+        return None
+    sentences.append("See residue.file_text, which names the files.")
+    return " ".join(sentences)
+
+
 def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
     """What the researcher has to be told before approving a run.
 
@@ -10506,12 +10584,19 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"case, so it over-reports rather than under-reports; a "
             f"look-alike letter from another script is not caught. See "
             f"residue, and tell the user which fields to check.")
+    file_text = residue.get("file_text")
+    if file_text:
+        text_warning = _pseudonymise_file_text_warning(file_text)
+        if text_warning:
+            warnings.append(text_warning)
     short = preview.get("short_forms") or []
     if short:
         # Fix round 3, L3. QualCoder's own minimum for an original is two
         # characters, and at that length the wide reading above turns
         # from exact to generous (re-verification 6.2 measured the turn
-        # at four); the researcher hears that before approving.
+        # at four); the researcher hears that before approving. The file
+        # text is counted the same wide way since v0.13, and the
+        # whole-word count beside each wide one shows how far.
         entries = sorted({item["entry"] for item in short})
         noun, verb = (("entry", "has") if len(entries) == 1
                       else ("entries", "have"))
@@ -10521,7 +10606,9 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"counts are a heuristic that reads wider than the rewrite, so "
             f"a short form makes them generous: they will report fields "
             f"that merely contain those letters. The rewrite itself is "
-            f"unaffected and still replaces whole words only.")
+            f"unaffected and still replaces whole words only. A short form "
+            f"makes the file-text counts generous too; the whole-word "
+            f"number beside each wide one shows how far.")
     if not totals.get("replacements"):
         warnings.append(
             "None of the names in this mapping occurs in this file, so an "
@@ -10855,7 +10942,11 @@ def pseudonymise_source(
     of memos only and never reads a '#####' private note. Its counts use
     a WIDER reading than the rewrite: any occurrence a human would see,
     including inside a longer word and in any case, so a case named
-    Thomas_P01 is counted even under case_mode="exact".
+    Thomas_P01 is counted even under case_mode="exact". Every count is
+    two readings, wide and whole-word, and the residue's file_text block
+    counts the names left in the text of every file after the run, the
+    files this run does not touch included; a name inside a longer word
+    is reported and never substituted.
 
     The backup keeps the real names, and so does pseudonyms.json if the
     researcher keeps one; both are the reverse key and belong somewhere
@@ -10893,14 +10984,17 @@ def pseudonymise_source(
                  that file are the researcher's reverse key and you did not supply
                  them, so on this path no diagnostic and no refusal
                  quotes one, and include_context returns no context at
-                 all rather than the text around each match. Three
+                 all rather than the text around each match. Four
                  things are still returned exactly as they stand,
                  because a preview you cannot name the files in is not
                  a preview you can relay: the project path, each file's
-                 own name, and the backup this run takes, which is named
-                 after the project folder and is reported on success and
-                 on any failure after it was taken; any of the three can
-                 itself contain one of those names.
+                 own name (including every file the residue's file-text
+                 block names), the backup path and the note that names
+                 the backup, the last two being named after the project
+                 folder, and the backup path being reported on any
+                 failure after the backup was taken as well as on
+                 success; any of these can itself contain one of those
+                 names.
         case_mode: "exact" (default, QualCoder's own rule: TOM, Tom and
                  tom are three different names), "insensitive" (all three
                  get the pseudonym exactly as written), or
@@ -10949,8 +11043,10 @@ def pseudonymise_source(
                  use_project_pseudonyms, which says why.
         context_chars: Characters of context each side when
                  include_context is on (capped at 120).
-        scan_residue: Count where the names also occur in memos, labels
-                 and attribute values (default true).
+        scan_residue: Count where the names also occur in notes, labels
+                 and attribute values, and in the text of every file
+                 after the run (default true). Both readings, wide and
+                 whole-word, for every count.
         max_spans_per_entry: How many match positions to list per entry
                  per file before truncating (default 50, capped at 500).
                  With include_context on, the context windows also share

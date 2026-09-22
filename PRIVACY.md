@@ -583,7 +583,8 @@ will ask, and the summary above depends on them:
   genuinely anonymised data is the safe path for experimentation.
 - **Pseudonymising a project does not empty it of names.** The v0.12
   `pseudonymise_source` tool rewrites the stored text of the text
-  sources you choose and moves every coding with it. What it does NOT
+  sources you choose, one per call since v0.13, and moves every coding
+  with it. What it does NOT
   touch, and where the names therefore stay, is stated by the tool's own
   preview as counts, and repeated here because it decides what you may
   send afterwards:
@@ -618,7 +619,23 @@ will ask, and the summary above depends on them:
     job is to tell you where the names remain. What the count does not
     reach, and the preview says so: a look-alike letter from another
     script (a Cyrillic "о" for a Latin "o") is a different letter to
-    the comparison, and is out of scope.
+    the comparison, and is out of scope. Since v0.13 each of these
+    counts is two readings: the wide one described here, and beside it
+    the whole-word count, which is how many of the same fields this
+    run's own rule matches.
+  - **The text of every file, after the run.** Counted, as occurrences
+    rather than fields, in the `residue` block's `file_text` part, both
+    readings: the file this call rewrites (where the rewrite leaves a
+    name inside a longer word, in another letter case, joined another
+    way or spelled with an invisible character, or where a pseudonym
+    puts one back), every other file with stored text, which this call
+    does not touch, and the PDF sources, which are never rewritten. The
+    block names every file it counts in, including the files this run
+    does not touch, on both mapping paths, so name your files
+    accordingly. On a mapping you type, it also lists the longer words a
+    name sits inside (`Thomas_P01`, `Thomasson`), which are words of the
+    file text, so an exact entry can be added for one; on the
+    `use_project_pseudonyms` path it lists none and names no form.
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or
@@ -651,10 +668,14 @@ will ask, and the summary above depends on them:
   - **The preview's own reply.** On the `use_project_pseudonyms` path
     the mapping is the researcher's own reverse key and the model never
     supplied it, so no diagnostic and no refusal quotes a name from it
-    and `include_context` returns nothing at all. Two things are still
+    and `include_context` returns nothing at all. Four things are still
     returned as they stand, because a preview whose files cannot be
-    named cannot be relayed: the project path and each file's own name,
-    either of which can itself contain one of those names. The tool's
+    named cannot be relayed: the project path, each file's own name
+    (including every file the residue's file-text block names), the
+    backup path and the note that names the backup, the last two being
+    named after the project folder, and the backup path being reported
+    on any failure after the backup was taken as well as on success; any
+    of these can itself contain one of those names. The tool's
     description says so.
 - **Only open projects whose consent covers third-party processing.**
 - **Consider which files you let the AI read.** Tools read only what is

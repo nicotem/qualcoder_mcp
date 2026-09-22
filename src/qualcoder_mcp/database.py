@@ -8389,7 +8389,199 @@ class QualcoderDatabase:
                 pair["whole_word"] += 1
         return pair
 
-    def pseudonymise_residue(self, compiled) -> Dict[str, Any]:
+    # The file-text block's two fixed notes (v0.13, Brief 1, 3.3).
+    PSEUDONYMISE_FILE_TEXT_NOTE = (
+        "These are occurrences in the file text, not fields. The wide "
+        "count is a heuristic that reads the text the way a person would, "
+        "so it includes a name inside a longer word, in any letter case, "
+        "spelled with an invisible character or a different Unicode "
+        "normalisation, and a name of several words however its parts "
+        "are joined. The whole-word count beside it is what this run's "
+        "own rule matched, so on the file this run rewrote it is normally "
+        "zero and the difference between the two numbers is the whole of "
+        "what the rewrite deliberately does not touch. by_reason says "
+        "which kind each occurrence is; the split is a heuristic and the "
+        "total is not, and so is the charging of an occurrence to one "
+        "entry where two entries could claim it (the occurrence is "
+        "counted either way); a spelling that only case-folding reaches "
+        "is charged to normalisation_variants, which is part of that "
+        "heuristic. On a file this run did not rewrite, nothing was put "
+        "back by this run, so put_back_by_a_pseudonym is 0, the "
+        "whole-word count stands as it is beside the reason the file was "
+        "not rewritten, and those whole words are their own kind in "
+        "by_reason, whole_word_in_a_file_not_rewritten, so the kinds "
+        "still add up. A name inside a longer word is usually a "
+        "different word (Thomasson) and is normally left as it is; a "
+        "case label such as Thomas_P01 is the exception, renamed by hand. "
+        "This block reads every file that has stored text, including the "
+        "ones this run does not touch, as they will be after the run, so "
+        "a count in another file may be a different person with the same "
+        "name, to be run with its own mapping. The counts are of the "
+        "spellings you gave; a look-alike letter from another script is "
+        "not caught.")
+    PSEUDONYMISE_NOT_COUNTED_NOTE = (
+        "{count} file(s) were not counted in full because the work of "
+        "counting them (characters times surface forms) passed this "
+        "preview's budget; each still says whether any name shows in it "
+        "(shows_a_name) and is listed in files_not_counted. The budget is "
+        "fixed, so the one way to get the full counts is a smaller "
+        "mapping.")
+
+    def _pseudonymise_file_text(self, compiled, plan: Optional[Dict[str, Any]],
+                                may_echo_names: bool) -> Dict[str, Any]:
+        """The file-text block: the names left in every file's text.
+
+        Every source row with stored text is read, the one file this run
+        rewrites, the files it does not, and the PDF sources it refuses,
+        as the text will be AFTER the run: the rewritten file's text is
+        the plan's `new_text`, already computed, and every other file's
+        is its stored text, because the rewriter found nothing there or
+        was never asked. Counted here, in the read phase, and never in
+        `pseudonymise_plan`, which is built a second time inside the
+        write transaction, nor in the signed effect.
+
+        The work budget (`MAX_RESIDUE_SCAN_WORK`, characters times
+        surface forms) is spent in a fixed order, the file this call
+        names first and then every other file in `source.id` order.
+        Past it a file gets the cheap question only, "does any name
+        show here", and is listed in `files_not_counted`: no file is
+        omitted for want of budget and none is reported clean when it
+        is not. The totals are always complete; the rows are capped.
+
+        On the `use_project_pseudonyms` path (`may_echo_names=False`)
+        every `form` is taken out and no longer word is collected. The
+        file's own NAME is returned on both paths (ruling 12), as
+        `preview["files"][].name` always was.
+        """
+        from . import pseudonymise as engine
+
+        rows = self.conn.execute(
+            "SELECT id, name, fulltext, mediapath FROM source "
+            "ORDER BY id").fetchall()
+        rewritten = ({item["file_id"]: item["new_text"]
+                      for item in plan["files"]} if plan else {})
+        chosen = (plan["eligible"][0][0]
+                  if plan and plan.get("eligible") else None)
+        sources = []
+        for row in rows:
+            text = row["fulltext"]
+            if not isinstance(text, str) or text == "":
+                continue
+            fid = int(row["id"])
+            if fid in rewritten:
+                sources.append((fid, row["name"], rewritten[fid], None))
+                continue
+            if str(row["mediapath"] or "").lower().endswith(".pdf"):
+                reason = "pdf_source"
+            elif fid == chosen:
+                reason = "no_match"
+            else:
+                reason = "another_file"
+            sources.append((fid, row["name"], text, reason))
+        # The file this call names first, whatever its id, then the rest
+        # in `source.id` order: the budget is spent where the researcher
+        # is looking before anywhere else.
+        sources.sort(key=lambda source: (source[0] != chosen, source[0]))
+
+        forms = len(compiled.forms)
+        work_done = 0
+        past_budget = False
+        wide_total = 0
+        whole_word_total = 0
+        by_reason = {reason: 0 for reason in engine.TEXT_RESIDUE_REASONS}
+        by_reason["unattributed"] = 0
+        showing = 0
+        counted = 0
+        characters = 0
+        not_counted: List[int] = []
+        listed: List[Dict[str, Any]] = []
+        more: List[int] = []
+        truncated = False
+        for fid, name, text, reason in sources:
+            characters += len(text)
+            head: Dict[str, Any] = {"file_id": fid, "name": name,
+                                    "rewritten_by_this_run": reason is None}
+            if reason is not None:
+                head["file_not_rewritten_because"] = reason
+            work = len(text) * forms
+            if not past_budget and work_done + work <= \
+                    engine.MAX_RESIDUE_SCAN_WORK:
+                work_done += work
+                counted += 1
+                found = engine.names_left_in_text(
+                    compiled, text, list_longer_words=may_echo_names,
+                    rewritten_by_this_run=reason is None)
+                wide_total += found["occurrences"]["wide"]
+                whole_word_total += found["occurrences"]["whole_word"]
+                by_reason["unattributed"] += found["unattributed"]
+                for entry in found["entries"]:
+                    for kind in engine.TEXT_RESIDUE_REASONS:
+                        by_reason[kind] += entry[kind]
+                shows = bool(found["occurrences"]["wide"]
+                             or found["occurrences"]["whole_word"])
+                if not shows:
+                    continue
+                if may_echo_names:
+                    entries = found["entries"]
+                    case_variants = found["case_variants_seen"]
+                    spellings = found["normalisation_variants_seen"]
+                else:
+                    entries = self._pseudonymise_without_forms(
+                        found["entries"])
+                    case_variants = self._pseudonymise_without_forms(
+                        found["case_variants_seen"])
+                    spellings = self._pseudonymise_without_forms(
+                        found["normalisation_variants_seen"])
+                row_out = {**head, "counted": True,
+                           "occurrences": found["occurrences"],
+                           "unattributed": found["unattributed"],
+                           "entries": entries,
+                           "case_variants_seen": case_variants,
+                           "normalisation_variants_seen": spellings}
+            else:
+                # The boolean tier. Once the budget is passed it stays
+                # passed, so which files are counted depends on the
+                # order alone and is the same on every preview.
+                past_budget = True
+                not_counted.append(fid)
+                shows = bool(compiled.detector.contains(text)
+                             or compiled.pattern.search(text))
+                row_out = {**head, "counted": False, "shows_a_name": shows}
+            if shows:
+                showing += 1
+            if len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
+                listed.append(row_out)
+                continue
+            truncated = True
+            if shows:
+                more.append(fid)
+
+        block: Dict[str, Any] = {
+            "counts": "occurrences in the stored text, not fields",
+            "scanned": {"files": len(sources), "characters": characters,
+                        "not_rewritten_by_this_run":
+                            sum(1 for source in sources
+                                if source[3] is not None)},
+            "totals": {"occurrences": {"wide": wide_total,
+                                       "whole_word": whole_word_total},
+                       "files_showing_a_name": showing,
+                       "by_reason": by_reason},
+            "files": listed,
+            "files_counted": counted,
+            "files_not_counted": not_counted,
+            "files_truncated": truncated,
+            "more_files_showing_a_name": more,
+            "reading_note": self.PSEUDONYMISE_FILE_TEXT_NOTE,
+        }
+        if not_counted:
+            block["files_not_counted_note"] = \
+                self.PSEUDONYMISE_NOT_COUNTED_NOTE.format(
+                    count=len(not_counted))
+        return block
+
+    def pseudonymise_residue(self, compiled,
+                             plan: Optional[Dict[str, Any]] = None,
+                             may_echo_names: bool = True) -> Dict[str, Any]:
         """Where the names would still be after the run (D1 3.9).
 
         Counts, never content, and PUBLIC memo parts only: a private
@@ -8494,18 +8686,37 @@ class QualcoderDatabase:
             "fields; the gap between the two is what the wide reading "
             "adds, and a wide count that has run far ahead of its "
             "whole-word count is the sign of a short name.")
+        # One file per call (decision A), and the report is still the
+        # whole project: said here once, and once in the description.
+        # `search_memos` reaches three of the twelve note fields by its
+        # own three SELECTs (code notes, file notes, annotation notes),
+        # so the note names those three and promises nothing for the
+        # rest; `search_files` matches an escaped literal with no
+        # normalisation and no separator flexibility, so a researcher
+        # sent there gets a narrower answer than this block's and is
+        # told so (cross-check, both corrections).
         residue["scope_note"] = (
-            "This block covers memos, labels and attribute values. It does "
-            "NOT count what remains in the file text itself: the rewrite "
-            "replaces whole words in the case mode you chose, so a "
-            "spelling it did not match is still in the text and is not "
-            "reported here. Use include_context or read the file to check "
-            "that. To find the memos and journal entries a count points "
-            "at, call search_memos with the name.")
+            "file_id chooses which file is rewritten. The report always "
+            "covers the whole project. This block covers the notes, the "
+            "labels and the attribute values as fields, and the file text "
+            "of every file with stored text as occurrences, under "
+            "file_text. Each count is two readings, wide and whole-word. "
+            "To find the notes a count points at, search_memos can answer "
+            "for three of the twelve fields by name: the code notes, the "
+            "file notes and the annotation notes; the other nine have no "
+            "search tool in this server and are read in QualCoder. "
+            "search_files reads narrower than this block does (a plain "
+            "substring, no normalisation), so a name it does not find may "
+            "still be counted here.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
             "scanned; it may still hold the previous text.")
+        try:
+            residue["file_text"] = self._pseudonymise_file_text(
+                compiled, plan, may_echo_names)
+        except sqlite3.Error:
+            residue["unreadable"].append("source.fulltext")
         if not residue["unreadable"]:
             residue.pop("unreadable")
         return residue
@@ -8607,9 +8818,11 @@ class QualcoderDatabase:
         mapping source.
 
         What is still returned as it stands, on either path, is the
-        project path and each file's own name. The tool description says
-        so rather than promising otherwise: a model that cannot name the
-        file it is previewing cannot relay a preview.
+        project path and each file's own name, including every file the
+        residue's file-text block names (ruling 12). The tool
+        description says so rather than promising otherwise: a model
+        that cannot name the file it is previewing cannot relay a
+        preview.
         """
         from . import pseudonymise as engine
 
@@ -8753,7 +8966,11 @@ class QualcoderDatabase:
             # read the residue counts, and changes nothing the run does.
             preview["short_forms"] = short
         if scan_residue:
-            preview["residue"] = self.pseudonymise_residue(compiled)
+            # The plan's own `new_text` for the file this run rewrites,
+            # and no second read of it; `may_echo_names` withholds the
+            # forms and the longer words on the sidecar path.
+            preview["residue"] = self.pseudonymise_residue(
+                compiled, plan, may_echo_names=may_echo_names)
         return preview
 
     # ------------------------------------------------------------------

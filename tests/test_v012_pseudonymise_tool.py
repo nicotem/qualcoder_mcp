@@ -470,7 +470,10 @@ class TestResidue:
         assert residue["memos"]["source"]["wide"] == 0
         assert residue["memos"]["source"]["whole_word"] == 0
         assert residue["memos_with_private_zones_not_scanned"] == 1
-        assert "Thomas" not in json.dumps(residue)
+        # The name, and every other word of the private part, nowhere
+        # but in the server's own fixed prose (`without_fixed_prose`).
+        assert "Thomas" not in json.dumps(without_fixed_prose(residue))
+        assert "participant" not in json.dumps(residue)
 
     def test_the_public_half_of_a_memo_with_a_private_zone_is_scanned(
             self, project):
@@ -499,15 +502,42 @@ class TestResidue:
     def test_the_residue_can_be_turned_off(self, project):
         assert "residue" not in preview_of(scan_residue=False)["preview"]
 
-    def test_the_residue_scan_never_returns_content(self, project):
+    @pytest.mark.parametrize("source", ["typed", "sidecar"])
+    def test_the_residue_scan_never_returns_content(self, project, source):
+        """Restated for v0.13. On the typed path the block now carries the
+        mapping's own forms, which the caller supplied, and the longer
+        words a name sits inside, which the researcher will now go and
+        read; nothing else of a note or a file reaches it on either path.
+        On the sidecar path not even the name does, beyond the server's
+        own fixed prose."""
         con = sqlite3.connect(str(project / "data.qda"))
-        con.execute("UPDATE source SET memo='about Thomas' WHERE id=1")
+        con.execute("UPDATE source SET memo='about Thomas at Grimsby' "
+                    "WHERE id=1")
+        con.execute("UPDATE source SET fulltext='Thomas_P01 walked to "
+                    "Grimsby with THOMAS.' WHERE id=4")
         con.commit()
         con.close()
+        if source == "sidecar":
+            (project / "pseudonyms.json").write_text(json.dumps(
+                [{"original": "Thomas", "pseudonym": "Alex"},
+                 {"original": "Mary Ann", "pseudonym": "Sam"}]),
+                encoding="utf-8")
         server.db.close()
         server.db = QualcoderDatabase(str(project))
-        residue = preview_of()["preview"]["residue"]
-        assert "Thomas" not in json.dumps(residue)
+        out = (preview_of() if source == "typed"
+               else preview_of(mapping=None, use_project_pseudonyms=True))
+        residue = out["preview"]["residue"]
+        dumped = json.dumps(residue)
+        for word in ("Grimsby", "walked"):
+            assert word not in dumped, word
+        rows = {row["file_id"]: row for row in residue["file_text"]["files"]}
+        assert rows[4]["occurrences"]["wide"] == 2          # Thomas_P01, THOMAS
+        if source == "typed":
+            assert rows[4]["entries"][0]["form"] == "Thomas"
+            assert rows[4]["entries"][0]["longer_words"] == [
+                {"word": "Thomas_P01", "count": 1}]
+        else:
+            assert "Thomas" not in json.dumps(without_fixed_prose(residue))
 
 
 # =============================================================================
@@ -1883,6 +1913,32 @@ def assert_carries_no_name(text, label, extra=()):
         assert forbidden not in text, (label, forbidden)
 
 
+def without_fixed_prose(payload):
+    """`payload` with the server's own fixed prose taken out, by value.
+
+    The residue's file-text block carries a reading note whose worked
+    examples, the owner's wording of decision B, are "Thomasson" and
+    "Thomas_P01": the same letters as this suite's participant. A string
+    EQUAL to that constant is the server's text, the same on every
+    preview of every project, and not the project's; a sweep for a name
+    looks at everything else. Only the constant verbatim is taken out,
+    so a name that reached the note's position by any other route is
+    still caught (v0.13).
+    """
+    fixed = {QualcoderDatabase.PSEUDONYMISE_FILE_TEXT_NOTE}
+
+    def strip(value):
+        if isinstance(value, dict):
+            return {key: strip(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        if isinstance(value, str) and value in fixed:
+            return ""
+        return value
+
+    return strip(payload)
+
+
 def rename_file(project, name, fid=1):
     """Rename a source and reopen the server's connection on it."""
     con = sqlite3.connect(str(project / "data.qda"))
@@ -2282,19 +2338,34 @@ class TestTheLabelsAndMemosTheResidueCounts:
         assert ("Read a high count as a list of fields to check, not as a "
                 "count of names." in note)
 
-    def test_the_block_says_what_it_does_not_cover(self, project):
-        """`residue` is presented as the answer to "where do the names
-        remain", and it does not read the file text at all: a spelling
-        the rewrite did not match is still in the text and is counted
-        nowhere. A count for the fulltext is a v0.13 item; saying so is
-        not (re-verification, declined item (b))."""
+    def test_the_block_says_what_it_covers_and_where_to_look(self, project):
+        """Rewritten in v0.13, with both of the cross-check's
+        corrections. The block covers the file text now, so the two
+        sentences that said it did not are gone; `search_memos` reaches
+        three of the twelve note fields, so the note names those three
+        and promises nothing for the rest; and `search_files` reads
+        narrower than this block, so a researcher sent there is told."""
         note = preview_of()["preview"]["residue"]["scope_note"]
-        assert "covers memos, labels and attribute values" in note
-        assert "does NOT count what remains in the file text itself" in note
-        # Fix round 3, L2: a count is a list of fields to check, and the
-        # researcher needs a route to them.
-        assert ("To find the memos and journal entries a count points at, "
-                "call search_memos with the name." in note)
+        # Decision A, said once in the preview and once in the
+        # description.
+        assert note.startswith("file_id chooses which file is rewritten. "
+                               "The report always covers the whole "
+                               "project.")
+        assert ("This block covers the notes, the labels and the attribute "
+                "values as fields, and the file text of every file with "
+                "stored text as occurrences, under file_text." in note)
+        assert "Each count is two readings, wide and whole-word." in note
+        assert ("search_memos can answer for three of the twelve fields by "
+                "name: the code notes, the file notes and the annotation "
+                "notes; the other nine have no search tool in this server "
+                "and are read in QualCoder." in note)
+        assert ("search_files reads narrower than this block does (a plain "
+                "substring, no normalisation), so a name it does not find "
+                "may still be counted here." in note)
+        assert "does NOT count what remains in the file text itself" \
+            not in note
+        assert "call search_memos with the name" not in note
+        _house_rules([note], ["scope_note"])
 
     def test_a_short_form_is_warned_about_as_a_heuristic(self, project):
         """Fix round 3, L3 (re-verification 6.2). QualCoder's minimum for
@@ -2592,10 +2663,12 @@ PARTICIPANT = "Thomas"
 HIDDEN_COLLEAGUE = "Helga"
 
 # Where the participant's name MAY appear in the two ephemeral results,
-# on the sidecar path, exactly as the tool description declares: the
-# project path, each file's own name, and the backup folder (which is
-# derived from the project folder's name and named in the result so the
-# researcher can find it). Anything else is a route.
+# on the sidecar path, exactly as the tool description declares, four
+# things: the project path, each file's own name (including every file
+# the residue's file-text block names, v0.13), the backup path and the
+# note that names the backup (both derived from the project folder's
+# name and returned so the researcher can find the backup). Anything
+# else is a route.
 #
 # A rule is a path pattern and, where the position alone is too wide, a
 # pattern the STRING at that position must match as well. `notes` is
@@ -2613,6 +2686,15 @@ def route(path, text=None):
 DECLARED_ROUTES = (
     route(r"^\.preview\.project$"),
     route(r"^\.preview\.files\[\d+\]\.name$"),
+    # v0.13, ruling 12: the file-text block names every file with text,
+    # on both paths, as `preview.files[].name` always did.
+    route(r"^\.preview\.residue\.file_text\.files\[\d+\]\.name$"),
+    # Not a route for a name at all: the block's own fixed reading note,
+    # whose worked examples share this suite's participant's letters,
+    # admitted only when it IS that constant, verbatim.
+    route(r"^\.preview\.residue\.file_text\.reading_note$",
+          "^" + re.escape(QualcoderDatabase.PSEUDONYMISE_FILE_TEXT_NOTE)
+          + "$"),
     route(r"^\.files\[\d+\]\.name$"),
     route(r"^\.backup_path$"),
     # The one note that names the backup folder, by its opening words.
@@ -2700,6 +2782,30 @@ class TestTheDeclaredRoutesAreNarrowerThanAPosition:
             assert len(allowed) == 1, notes
             assert allowed[0].startswith("The backup taken before this run")
 
+    def test_the_file_text_route_admits_the_name_and_nothing_else(self):
+        """v0.13, ruling 12. The block's file name is declared; a form,
+        a longer word or anything else beside it is not, and the reading
+        note is admitted only as the server's constant, verbatim."""
+        payload = {"preview": {"residue": {"file_text": {
+            "files": [{"name": f"{PARTICIPANT}.txt",
+                       "entries": [{"form": PARTICIPANT,
+                                    "longer_words": [
+                                        {"word": f"{PARTICIPANT}son",
+                                         "count": 1}]}]}],
+            "reading_note": QualcoderDatabase.PSEUDONYMISE_FILE_TEXT_NOTE}}}}
+        found = [path for path, _ in
+                 routes_carrying(payload, PARTICIPANT, DECLARED_ROUTES)]
+        assert found == [
+            ".preview.residue.file_text.files[0].entries[0].form",
+            ".preview.residue.file_text.files[0].entries[0]"
+            ".longer_words[0].word"]
+        altered = {"preview": {"residue": {"file_text": {
+            "reading_note": QualcoderDatabase.PSEUDONYMISE_FILE_TEXT_NOTE
+            + f" {PARTICIPANT} again."}}}}
+        assert [path for path, _ in routes_carrying(
+            altered, PARTICIPANT, DECLARED_ROUTES)] == [
+            ".preview.residue.file_text.reading_note"]
+
     def test_a_position_only_rule_would_have_passed_it(self):
         """What the narrowing costs if it is undone: the same payload,
         under the rule as it used to be, is reported as nothing."""
@@ -2768,6 +2874,15 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
                     "memo,date,owner,important) VALUES (1,2,0,0,10,10,1,?,"
                     "'d',?,0)",
                     (f"{PARTICIPANT} in the photo", HIDDEN_COLLEAGUE))
+        # A second transcript, named after him too, that this run does
+        # not touch and that still spells him inside longer words: the
+        # file-text block names it on the sidecar path as well (v0.13,
+        # ruling 12), and nothing else of it may reach the preview.
+        con.execute("INSERT INTO source (id,name,fulltext,mediapath,memo,"
+                    "owner,date) VALUES (5,?,?,NULL,'',?,'d')",
+                    (f"{PARTICIPANT}_notes.txt",
+                     f"{PARTICIPANT.upper()}_P01 and {PARTICIPANT}in spoke.",
+                     HIDDEN_COLLEAGUE))
         con.commit()
         con.close()
         add_coding(folder, 1, 1, 0, 6)                          # TestCoder
@@ -2854,7 +2969,18 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             residue = out["preview"]["residue"]
             for key in ("file_names", "case_names", "code_names",
                         "attribute_values"):
-                assert residue[key]["wide"] == 1, key
+                assert residue[key]["wide"] >= 1, key
+            # The file-text block's route is really taken: the second
+            # transcript is named, and nothing of its text but counts.
+            rows = residue["file_text"]["files"]
+            named = {row["name"]: row for row in rows}
+            assert f"{PARTICIPANT}_notes.txt" in named
+            row = named[f"{PARTICIPANT}_notes.txt"]
+            assert row["file_not_rewritten_because"] == "another_file"
+            assert row["occurrences"]["wide"] == 2
+            for entry in row["entries"]:
+                assert "form" not in entry
+                assert "longer_words" not in entry
 
     def test_the_execute_result_manifest_journal_and_log_carry_neither_name(
             self, tmp_path, caplog):
@@ -3456,9 +3582,11 @@ class TestWhatTheRunRecomputes:
 
     @staticmethod
     def _instrument(monkeypatch):
-        calls = {"plans": [], "residue": []}
+        calls = {"plans": [], "residue": [], "residue_plans": [],
+                 "file_text": []}
         plan_original = QualcoderDatabase.pseudonymise_plan
         residue_original = QualcoderDatabase.pseudonymise_residue
+        file_text_original = QualcoderDatabase._pseudonymise_file_text
 
         def counting_plan(self, *args, **kwargs):
             calls["plans"].append(bool(self.conn.in_transaction))
@@ -3466,12 +3594,21 @@ class TestWhatTheRunRecomputes:
 
         def counting_residue(self, *args, **kwargs):
             calls["residue"].append(bool(self.conn.in_transaction))
+            # v0.13: the plan the file-text block reads `new_text` from.
+            calls["residue_plans"].append(
+                args[1] if len(args) > 1 else kwargs.get("plan"))
             return residue_original(self, *args, **kwargs)
+
+        def counting_file_text(self, *args, **kwargs):
+            calls["file_text"].append(bool(self.conn.in_transaction))
+            return file_text_original(self, *args, **kwargs)
 
         monkeypatch.setattr(QualcoderDatabase, "pseudonymise_plan",
                             counting_plan)
         monkeypatch.setattr(QualcoderDatabase, "pseudonymise_residue",
                             counting_residue)
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_file_text",
+                            counting_file_text)
         return calls
 
     def test_the_preview_builds_one_plan_and_scans_once(self, project,
@@ -3497,6 +3634,13 @@ class TestWhatTheRunRecomputes:
         calls = self._instrument(monkeypatch)
         execute_from(out)
         assert calls["residue"] == [False]
+        # v0.13: the file-text count runs once, outside the transaction,
+        # and is handed the read phase's plan, whose `new_text` it reads
+        # rather than rewriting the file a second time.
+        assert calls["file_text"] == [False]
+        plan = calls["residue_plans"][0]
+        assert plan is not None
+        assert [item["file_id"] for item in plan["files"]] == [1]
 
     def test_the_read_phase_plan_cache_is_keyed_on_the_connection(
             self, project, monkeypatch):
@@ -3866,7 +4010,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
         assert seen and seen[0]["entry"] == 0
         assert seen[0]["other_case_count"] == 2
         assert "form" not in seen[0]
-        assert_carries_no_name(json.dumps(out["preview"]), "preview")
+        assert_carries_no_name(json.dumps(without_fixed_prose(out["preview"])),
+                               "preview")
 
     def test_the_overlap_diagnostic_names_the_entry_not_the_name(
             self, project):
@@ -3936,7 +4081,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
             assert "context_truncated" not in block, block
         assert "include_context was asked for and is not returned" in \
             out["preview"]["context_withheld"]
-        assert_carries_no_name(json.dumps(out["preview"]), "preview")
+        assert_carries_no_name(json.dumps(without_fixed_prose(out["preview"])),
+                               "preview")
 
     def test_a_typed_mapping_still_gets_the_context_it_asked_for(
             self, project):
@@ -4050,7 +4196,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
         """
         self._sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
         out = preview_of(mapping=None, use_project_pseudonyms=True)
-        assert_carries_no_name(json.dumps(out), "preview")
+        assert_carries_no_name(json.dumps(without_fixed_prose(out)),
+                               "preview")
         bind = out["preview_token"].split(".")[2]
         ew = out["execute_with"]["arguments"]
         pseudonym = out["preview"]["files"][0]["replacements"][0]["pseudonym"]
@@ -4736,11 +4883,26 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "carries the ask in execute_with.before_executing; set one with "
          "set_project_ai_coder_name before executing, or execute with "
          "record_in_journal=false."),
-        ("the_sidecar_path_still_returns_names_it_has",  # R-2; v0.13 F4
-         "the project path, each file's own name, and the backup this run "
-         "takes, which is named after the project folder and is reported "
-         "on success and on any failure after it was taken; any of the "
-         "three can itself contain one of those names."),
+        ("the_sidecar_path_still_returns_names_it_has",  # R-2; F4; Brief 1
+         "Four things are still returned exactly as they stand, because a "
+         "preview you cannot name the files in is not a preview you can "
+         "relay: the project path, each file's own name (including every "
+         "file the residue's file-text block names), the backup path and "
+         "the note that names the backup, the last two being named after "
+         "the project folder, and the backup path being reported on any "
+         "failure after the backup was taken as well as on success; any "
+         "of these can itself contain one of those names."),
+        ("every_count_is_two_readings",                  # v0.13 Brief 1
+         "Every count is two readings, wide and whole-word, and the "
+         "residue's file_text block counts the names left in the text of "
+         "every file after the run, the files this run does not touch "
+         "included; a name inside a longer word is reported and never "
+         "substituted."),
+        ("the_scan_residue_argument",                    # v0.13 Brief 1
+         "scan_residue: Count where the names also occur in notes, labels "
+         "and attribute values, and in the text of every file after the "
+         "run (default true). Both readings, wide and whole-word, for "
+         "every count."),
         ("the_override_rule_in_plain_words",             # rulings 7.3(3), 7.4
          "a coding that covered a name, or contained one, and now covers "
          "or contains its pseudonym needs no override, whatever the two "
@@ -4861,8 +5023,12 @@ class TestTheDocumentsTellTheTruth:
         return " ".join(text.replace("\n>", " ").split())
 
     @pytest.mark.parametrize("sentence", [
-        "PDFs, media files and `ai_data/` are out of scope and are neither "
-        "rewritten nor scanned.",
+        # v0.13: a PDF's stored text is counted by the residue's
+        # file-text block, so "neither rewritten nor scanned" became
+        # false of PDFs and the sentence says what is true now.
+        "PDFs are never rewritten, and their stored text is counted with "
+        "every other file's; media files and `ai_data/` are out of scope "
+        "and are neither rewritten nor scanned.",
         "Memos, journal entries, case, file, code, category and "
         "attribute-type names and attribute values are scanned and "
         "counted, never rewritten",
@@ -4872,6 +5038,16 @@ class TestTheDocumentsTellTheTruth:
         "replacement and keep a coding this policy deletes)",
         "PRIVACY.md's \"Coder visibility\" section says what is and is not "
         "re-read",
+        # v0.13, Brief 1.
+        "Every `residue` count is two readings, `{\"wide\": N, "
+        "\"whole_word\": M}`",
+        "the `file_text` block counts, as occurrences, the names left in "
+        "the text of every file with stored text after the run",
+        "A name inside a longer word is reported and never substituted; on "
+        "a typed mapping the block lists the longer words themselves, so an "
+        "exact entry can be added.",
+        "file names, including every file the residue names, and the "
+        "project path are still returned as they stand.",
     ])
     def test_readme_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("README.md")
@@ -4880,6 +5056,11 @@ class TestTheDocumentsTellTheTruth:
         "PDFs, media and `ai_data/` are scanned and counted",
         "PDFs and media are scanned and counted",
         "reproduces QualCoder's own text editor",
+        # v0.13: the residue counts the file text now. (The v0.12
+        # sentence that PDFs are "neither rewritten nor scanned" stays
+        # in the roadmap's "Completed in v0.12.0" list, where it is
+        # history and was true.)
+        "rather than the file text",
     ])
     def test_readme_no_longer_claims_it(self, claim):
         assert claim not in self._flat("README.md")
@@ -4924,6 +5105,20 @@ class TestTheDocumentsTellTheTruth:
         "`qualcoder_edit_parity` policy does), or one that had to be "
         "clamped because its stored end lay past the end of the text "
         "requires the override.",
+        # v0.13, Brief 1: the file text, and the four things the sidecar
+        # path still returns, as the description declares them.
+        "The block names every file it counts in, including the files "
+        "this run does not touch, on both mapping paths, so name your "
+        "files accordingly.",
+        "On a mapping you type, it also lists the longer words a name sits "
+        "inside (`Thomas_P01`, `Thomasson`), which are words of the file "
+        "text, so an exact entry can be added for one; on the "
+        "`use_project_pseudonyms` path it lists none and names no form.",
+        "Four things are still returned as they stand, because a preview "
+        "whose files cannot be named cannot be relayed: the project path, "
+        "each file's own name (including every file the residue's "
+        "file-text block names), the backup path and the note that names "
+        "the backup",
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
