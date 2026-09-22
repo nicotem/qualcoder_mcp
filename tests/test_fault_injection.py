@@ -1731,6 +1731,32 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         assert server._write_failed_text(True, "x") \
             == server.WRITE_FAILED_ROLLED_BACK.format(detail="x")
 
+    def test_an_import_refused_inside_the_transaction_names_it_too(
+            self, fi_env, write_faults):
+        """The import body's ValueError arm (QA Q-2). The database layer
+        turns a UNIQUE race on the source insert into a ValueError, and
+        the arm names the backup that was taken before it; the older
+        test of this route passes `create_backup=False`."""
+        env = fi_env
+        pre_hash = env.hash()
+        before = env.backup_names()
+        write_faults(execute_faults=[
+            ExecFault("insert into source",
+                      sqlite3.IntegrityError(
+                          "UNIQUE constraint failed: source.name")),
+        ])
+
+        out = json.loads(server.import_text_file("raced.txt", "Some content."))
+
+        assert "already exists" in out["error"], out
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
     def test_the_three_texts_keep_the_house_rules(self):
         for label, body in (("rolled back", server.WRITE_FAILED_ROLLED_BACK),
                             ("uncertain", server.WRITE_FAILED_UNCERTAIN),

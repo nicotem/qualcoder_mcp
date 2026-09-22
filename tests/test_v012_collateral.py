@@ -361,6 +361,12 @@ class TestTheExecutePath:
                        "SELECT COUNT(*) AS n FROM code_name WHERE cid=1"
                        )[0]["n"] == 1
         assert len(_backups(qualcoder_db_path)) == 1
+        # v0.13 A5 (fix round 1, F5): the refusal names that backup. The
+        # arm shipped without this, and reverting it turned nothing red
+        # at full-suite scope (QA Q-2).
+        assert Path(refused["backup_path"]).is_dir()
+        assert Path(refused["backup_path"]).name \
+            == _backups(qualcoder_db_path)[0]
         assert server.db.read_only is True
 
     def test_a_row_added_between_preview_and_execute_stops_it(
