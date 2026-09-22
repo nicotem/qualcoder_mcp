@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every failure route out of a write, including a tool's own refusal,
   carries `backup_path` for the backup that is sitting beside the project,
   which after a `pseudonymise_source` attempt still holds the real names.
+  That includes the two lock routes, which the first cut of this fix
+  missed: a write that QualCoder interrupted by opening the project
+  mid-write, and one that met a second writer holding the database past
+  the wait inside a database method. Both answered the lock text alone
+  and left the backup unnamed; both now name it.
 
 ### Upgrading from 0.12.x
 

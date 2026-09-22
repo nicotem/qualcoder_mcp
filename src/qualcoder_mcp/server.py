@@ -1679,8 +1679,11 @@ def _perform_write(op, create_backup: bool = True,
         made), or an {"error": ...} dict. Callers json.dumps the result.
 
     Raises:
-        DatabaseLockedError: If QualCoder grabs the project mid-write (the
-            tool guard converts it to a friendly error).
+        DatabaseLockedError: Only from before the backup is taken, when
+            QualCoder grabs the project between the write gate and the
+            project lock (the tool guard converts it to a friendly
+            error). After the backup the same error is answered in the
+            returned dict, with `backup_path`, rather than raised.
     """
     gate = _write_gate_error()
     if gate is not None:
@@ -1708,8 +1711,17 @@ def _perform_write(op, create_backup: bool = True,
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
                 committed = True
-            except DatabaseLockedError:
-                raise
+            except DatabaseLockedError as e:
+                # Two routes reach here after the backup: the pre-commit
+                # lock re-check (QualCoder opened the project mid-write
+                # over a stale lock), and a database method converting
+                # SQLite's "database is locked" from a second writer
+                # that held the lock past the wait. Both re-raised past
+                # the arms below into `_tool_guard`, which answered this
+                # same text with no `backup_path` while the backup sat
+                # beside the project (v0.13 A5, QA Q-1). The `finally`
+                # below still rolls back and downgrades.
+                return _with_backup({"error": str(e)}, backup_path)
             except StateChangedError as e:
                 # The in-transaction refusal carries the machine-readable
                 # envelope B2.5 gives every other token refusal; it is a
@@ -6619,8 +6631,13 @@ def import_text_file(
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
                 committed = True
-            except DatabaseLockedError:
-                raise
+            except DatabaseLockedError as e:
+                # The same two post-backup routes as `_perform_write`'s,
+                # answered here so the backup is named (v0.13 A5, QA
+                # Q-1); the `finally` below still rolls back and
+                # downgrades.
+                return json.dumps(
+                    _with_backup({"error": str(e)}, backup_path))
             except (ValueError, TypeError) as e:
                 return json.dumps(
                     _with_backup({"error": str(e)}, backup_path))

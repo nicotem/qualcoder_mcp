@@ -56,6 +56,7 @@ import qualcoder_mcp.server as server
 import track5_helpers as H
 from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp.database import (
+    DB_LOCKED_MESSAGE,
     QualcoderDatabase,
     QUALCODER_LOCK_FILENAME,
 )
@@ -1446,6 +1447,92 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
 
         assert server._rollback_if_open(Holder(None)) is True
         assert server._rollback_if_open(Holder(Boom())) is False
+
+    def test_qualcoder_opening_the_project_mid_write_names_the_backup(
+            self, fi_env, lock_flip):
+        """QA Q-1, route 1. Over a stale foreign lock the write proceeds
+        unheld, and the pre-commit re-check raises `DatabaseLockedError`
+        after the backup was taken. That re-raised past every
+        `_with_backup` arm into `_tool_guard`, which answered the lock
+        text alone. The older lock-flip tests pass `create_backup=False`,
+        so nothing covered the backup-present case.
+        """
+        env = fi_env
+        pre_hash = env.hash()
+        before = env.backup_names()
+        lock_flip(env, "add_code")
+
+        out = json.loads(server.create_code("Named after the lock"))
+
+        assert "open in QualCoder" in out["error"], out
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+    def test_the_import_path_names_it_on_the_same_route(self, fi_env,
+                                                        lock_flip):
+        env = fi_env
+        pre_hash = env.hash()
+        before = env.backup_names()
+        lock_flip(env, "import_text_file")
+
+        out = json.loads(server.import_text_file("named.txt", "some text"))
+
+        assert "open in QualCoder" in out["error"], out
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+    def test_a_second_writer_met_inside_a_converting_method_names_it(
+            self, fi_env, monkeypatch):
+        """QA Q-1, route 2: the mandate's second case on a tool that is
+        not token-gated.
+
+        `delete_code` meets a second writer at BEGIN IMMEDIATE, where
+        SQLite's "database is locked" arrives as a bare OperationalError
+        and takes the sqlite arm. `set_memo` meets it inside a database
+        method, and seventy of those convert it to `DatabaseLockedError`
+        (`_raise_query_error`), which took the re-raise route instead.
+        A real second connection holds RESERVED and the write
+        connection's wait is shortened right after the backup, which is
+        the last thing that runs before the op.
+        """
+        env = fi_env
+        pre_hash = env.hash()
+        before = env.backup_names()
+        original = QualcoderDatabase.backup_before_write
+
+        def impatient(self, *args, **kwargs):
+            path = original(self, *args, **kwargs)
+            self.conn.execute("PRAGMA busy_timeout = 50")
+            return path
+
+        monkeypatch.setattr(QualcoderDatabase, "backup_before_write",
+                            impatient)
+        holder = sqlite3.connect(str(env.folder / "data.qda"))
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            out = json.loads(server.set_memo(
+                "code", 1, "written under a second writer"))
+        finally:
+            holder.rollback()
+            holder.close()
+
+        assert out["error"] == DB_LOCKED_MESSAGE, out
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
 
     def test_the_two_texts_keep_the_house_rules(self):
         for label, body in (("rolled back", server.WRITE_FAILED_ROLLED_BACK),
