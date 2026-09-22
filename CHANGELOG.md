@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
+### Added: `pseudonymise_source` reports every residue count as two readings
+
+- Every count in the preview's `residue` block is now one object,
+  `{"wide": N, "whole_word": M}`. `wide` is the count the block always
+  gave, the heuristic reading of what a person would see (inside a
+  longer word, in any letter case, a name of several words however it
+  is joined); `whole_word` is how many of the same fields this run's own
+  rule matches. A wide count far ahead of its whole-word count is the
+  sign of a short name, and the preview's warning now carries both
+  numbers. Both readings read a note's public part only: a name that
+  occurs only after `#####` is counted by neither. The block names its
+  unit in a `counts` string, "fields, not occurrences", and the warning
+  and the reading note say "notes" for the twelve memo-like fields (the
+  key stays `memos`).
+- The character sweep behind the wide reading, and behind the rule that
+  withholds a file name from the run record and the journal entry, is
+  much faster (pure ASCII costs nothing at all) and gives byte-identical
+  answers.
+
 ### Changed: `pseudonymise_source` rewrites one file per call
 
 - `file_ids` (an optional list; omit it for every eligible text source)
@@ -150,9 +169,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about the old one, and a caller that passes both gets the preview for
   `file_id` alone. `skipped_files` is gone from the preview and from the
   nothing-to-do answer: an ineligible `file_id` is a refusal carrying
-  `reason` instead. `preview.files`, the result's `files` and the run
-  record's `files` stay lists, so nothing that reads them changes shape
-  for this, and each now holds at most one entry.
+  `reason` instead. Every count in `residue` is now an object with
+  `wide` and `whole_word` in place of an integer, so a caller that reads
+  `residue["memos"]["source"]` as a number fails at once, which is
+  deliberate: a smaller number read silently in its place would be the
+  wrong failure for a report whose job is to say where names remain.
+  `wide` keeps exactly the meaning and the value the integer had.
+  `preview.files`, the result's `files` and the run record's `files`
+  stay lists, so nothing that reads them changes shape for this, and
+  each now holds at most one entry.
 
 ## [0.12.1-alpha] - 2026-09-21
 

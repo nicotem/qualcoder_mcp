@@ -442,11 +442,14 @@ class TestResidue:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         residue = preview_of()["preview"]["residue"]
-        assert residue["memos"]["source"] == 1
-        assert residue["memos"]["journal"] == 1
-        assert residue["case_names"] == 1
-        assert residue["attribute_values"] == 1
-        assert residue["memos"]["code_text"] == 0
+        # Every one of these spells the name as a whole word, so both
+        # readings count it (v0.13, ruling 5: every count is a pair).
+        for field in (residue["memos"]["source"], residue["memos"]["journal"],
+                      residue["case_names"], residue["attribute_values"]):
+            assert field["wide"] == 1 and field["whole_word"] == 1, field
+        assert residue["memos"]["code_text"]["wide"] == 0
+        assert residue["memos"]["code_text"]["whole_word"] == 0
+        assert residue["counts"] == "fields, not occurrences"
         assert "ai_data" in residue["ai_data_note"]
 
     def test_a_name_only_in_a_private_note_is_neither_counted_nor_mentioned(
@@ -461,7 +464,11 @@ class TestResidue:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         residue = preview_of()["preview"]["residue"]
-        assert residue["memos"]["source"] == 0
+        # Neither reading reads the private part: the whole-word half
+        # goes through `extract_ai_memo` exactly as the wide half does
+        # (v0.13; the dossier's first draft wrote `search(value)`).
+        assert residue["memos"]["source"]["wide"] == 0
+        assert residue["memos"]["source"]["whole_word"] == 0
         assert residue["memos_with_private_zones_not_scanned"] == 1
         assert "Thomas" not in json.dumps(residue)
 
@@ -475,7 +482,8 @@ class TestResidue:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         residue = preview_of()["preview"]["residue"]
-        assert residue["memos"]["source"] == 1
+        assert residue["memos"]["source"]["wide"] == 1
+        assert residue["memos"]["source"]["whole_word"] == 1
         assert residue["memos_with_private_zones_not_scanned"] == 1
 
     def test_the_sidecars_are_reported_by_presence_and_never_parsed(
@@ -1940,6 +1948,25 @@ class TestAFileNameThatCarriesAName:
         logged = "\n".join(record.getMessage() for record in caplog.records)
         assert_carries_no_name(logged, "log", (name,))
 
+    # What this run's own rule (whole words, `case_mode="exact"`) answers
+    # for each shape, pinned per shape rather than computed, so the two
+    # readings visibly differ on the underscore and fused shapes and
+    # agree on the space, hyphen and dot shapes (v0.13, ruling 5).
+    WHOLE_WORD_FOR_SHAPE = {
+        "Thomas interview.txt": 1, "Thomas_interview.txt": 0,
+        "Thomas-interview.txt": 1, "Thomas.interview.txt": 1,
+        "Thomas2.txt": 0, "2Thomas.txt": 0, "ThomasB.txt": 0,
+        "interview_Thomas.txt": 0, "int_Thomas_01.txt": 0,
+        "THOMAS_P01.txt": 0, "Tom_2.docx": 0, "Mary_Ann.txt": 0,
+        "MaryAnn_notes.txt": 0, "Tho\u00admas_interview.txt": 0,
+        "Tho\u200bmas_interview.txt": 0,
+        "\uff34\uff48\uff4f\uff4d\uff41\uff53.txt": 0,
+        "Tho\u180fmas_interview.txt": 0, "Tho\u2065mas_interview.txt": 0,
+    }
+
+    def test_every_shape_has_its_whole_word_answer(self):
+        assert set(self.WHOLE_WORD_FOR_SHAPE) == set(NAME_SHAPES)
+
     @pytest.mark.parametrize("name", NAME_SHAPES)
     def test_the_residue_counts_the_file_name(self, project, name):
         """The field D1 6.3 names explicitly, and the one field where
@@ -1947,7 +1974,9 @@ class TestAFileNameThatCarriesAName:
         reported zero (QA F-5)."""
         rename_file(project, name)
         residue = preview_of()["preview"]["residue"]
-        assert residue["file_names"] == 1
+        assert residue["file_names"]["wide"] == 1
+        assert residue["file_names"]["whole_word"] == \
+            self.WHOLE_WORD_FOR_SHAPE[name]
 
     def test_an_nfd_mapping_still_withholds_an_nfc_file_name(self, project):
         """Fix round 3, B2. The detector normalises the mapping's forms as
@@ -1966,7 +1995,11 @@ class TestAFileNameThatCarriesAName:
             rename_file(folder, rename)
             mapping = [{"original": nfd, "pseudonym": "Alex"}]
             out = preview_of(mapping=mapping)
-            assert out["preview"]["residue"]["file_names"] == 1
+            assert out["preview"]["residue"]["file_names"]["wide"] == 1
+            # The whole-word rule matches the spelling as given, and an
+            # NFD mapping does not match an NFC name: the wide reading is
+            # the one that normalises.
+            assert out["preview"]["residue"]["file_names"]["whole_word"] == 0
             result = execute_from(out, mapping=mapping)
             assert result.get("success") is True, result
             row = query(folder, "SELECT name,jentry FROM journal")[0]
@@ -1987,7 +2020,8 @@ class TestAFileNameThatCarriesAName:
         assert "name withheld" not in row["jentry"]
         body = Path(result["manifest_path"]).read_text(encoding="utf-8")
         assert json.loads(body)["files"][0]["name"] == "interview_01.txt"
-        assert preview_of()["preview"]["residue"]["file_names"] == 0
+        names = preview_of()["preview"]["residue"]["file_names"]
+        assert names["wide"] == 0 and names["whole_word"] == 0
 
     def test_a_marker_run_in_a_file_name_cannot_truncate_the_audit(
             self, project):
@@ -2035,9 +2069,16 @@ class TestATwoWordFormCarryingAnInvisibleCharacter:
         out = preview_of(mapping=[{"original": f"Mary{char}Ann",
                                    "pseudonym": "Sam"}])
         residue = out["preview"]["residue"]
-        assert residue["file_names"] == 1, label
-        assert residue["case_names"] == 1, label
-        assert residue["memos"]["source"] == 1, label
+        assert residue["file_names"]["wide"] == 1, label
+        assert residue["case_names"]["wide"] == 1, label
+        assert residue["memos"]["source"]["wide"] == 1, label
+        # The whole-word rule matches only the spelling it was given:
+        # `about Mary Ann` for the plain space, and nothing for a form
+        # carrying an invisible character.
+        assert residue["file_names"]["whole_word"] == 0, label
+        assert residue["case_names"]["whole_word"] == 0, label
+        assert residue["memos"]["source"]["whole_word"] == (
+            1 if char == " " else 0), label
 
 
 class TestTheLabelsAndMemosTheResidueCounts:
@@ -2072,11 +2113,17 @@ class TestTheLabelsAndMemosTheResidueCounts:
     def test_every_label_field_counts_the_name(self, project, value):
         self._plant(project, value)
         residue = preview_of()["preview"]["residue"]
-        assert residue["file_names"] == 1
-        assert residue["case_names"] == 1
-        assert residue["code_names"] == 1
-        assert residue["attribute_values"] == 1
-        assert residue["memos"]["source"] == 1
+        for field in (residue["file_names"], residue["case_names"],
+                      residue["code_names"], residue["attribute_values"],
+                      residue["memos"]["source"]):
+            assert field["wide"] == 1, field
+            # A space or a hyphen after the name leaves it a whole word
+            # (the hyphen is not a word character); every other shape
+            # here fuses it. The file's memo reads "Interviewed <value>
+            # at home.", the same shape either way.
+            assert field["whole_word"] == (
+                1 if value in ("Thomas P01", "Thomas-P01") else 0), (
+                value, field)
 
     # Every field the residue block reads, with a way to plant a name in
     # that field ALONE. One case per field, because the pins lens showed
@@ -2135,17 +2182,28 @@ class TestTheLabelsAndMemosTheResidueCounts:
 
     @staticmethod
     def _every_count(residue):
-        """Every count in the block, keyed the way RESIDUE_FIELDS is."""
+        """Every field count in the block, keyed the way RESIDUE_FIELDS
+        is: the twelve notes and every label key, each the pair of
+        ruling 5 (v0.13)."""
         counts = {f"memos.{k}": v for k, v in residue["memos"].items()}
-        for key, value in residue.items():
-            if isinstance(value, int) and not isinstance(value, bool):
-                counts[key] = value
+        for key in QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS:
+            counts[key] = residue[key]
         return counts
 
+    # Each field driven twice, once with the name inside a longer word
+    # and once as a whole word, so the whole-word half is pinned to the
+    # spelling field by field. (One field, `project.memo`, lives in a
+    # one-row table, so the two spellings are two runs rather than two
+    # rows of one run.)
+    SPELLINGS = [("Interviewed Thomas_Smith at home.", 0),
+                 ("Interviewed Thomas at home.", 1)]
+
+    @pytest.mark.parametrize("value,whole_word", SPELLINGS,
+                             ids=["inside-a-word", "whole-word"])
     @pytest.mark.parametrize("field,sql", RESIDUE_FIELDS,
                              ids=[f for f, _ in RESIDUE_FIELDS])
-    def test_each_field_is_counted_on_its_own(self, project, field, sql):
-        value = "Interviewed Thomas_Smith at home."
+    def test_each_field_is_counted_on_its_own(self, project, field, sql,
+                                              value, whole_word):
         con = sqlite3.connect(str(project / "data.qda"))
         for statement in ([sql] if isinstance(sql, str) else sql):
             con.execute(statement, (value,) if "?" in statement else ())
@@ -2155,12 +2213,17 @@ class TestTheLabelsAndMemosTheResidueCounts:
         server.db = QualcoderDatabase(str(project))
         out = preview_of()
         residue = out["preview"]["residue"]
-        assert self._count_at(residue, field) == 1, field
+        count = self._count_at(residue, field)
+        assert count["wide"] == 1, field
+        assert count["whole_word"] == whole_word, field
         # The field ALONE: every other count is zero, so the one above
         # is this field's and not a neighbour's.
         others = {k: v for k, v in self._every_count(residue).items()
-                  if k != field and k != "memos_with_private_zones_not_scanned"}
-        assert all(v == 0 for v in others.values()), others
+                  if k != field}
+        # By name, never as the whole object: Brief 2 adds a third key to
+        # the twelve note objects, and these pins must not notice.
+        assert all(v["wide"] == 0 and v["whole_word"] == 0
+                   for v in others.values()), others
         assert "unreadable" not in residue
         # And it reaches the warning the researcher is read, as one.
         warning = [w for w in out["warnings"]
@@ -2181,10 +2244,12 @@ class TestTheLabelsAndMemosTheResidueCounts:
     def test_a_project_with_no_residue_counts_none_of_it(self, project):
         residue = preview_of()["preview"]["residue"]
         for key in QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS:
-            assert residue[key] == 0, key
+            assert residue[key]["wide"] == 0, key
+            assert residue[key]["whole_word"] == 0, key
         assert set(residue["memos"]) == {
             table for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
-        assert all(count == 0 for count in residue["memos"].values())
+        assert all(count["wide"] == 0 and count["whole_word"] == 0
+                   for count in residue["memos"].values())
         assert not any("attribute value(s) may still show" in w
                        for w in preview_of().get("warnings", []))
 
@@ -2205,7 +2270,15 @@ class TestTheLabelsAndMemosTheResidueCounts:
         # 'Lee' inside 'Leeds' reads as bad luck, 'Ed' inside 'edited'
         # reads as what it is (re-verification 6.1).
         assert ("It does mean a short name is generous: an entry for 'Ed' "
-                "counts every memo that says 'edited' or 'provided'." in note)
+                "counts every note that says 'edited' or 'provided'." in note)
+        # v0.13, ruling 5: the second reading, said in the note that
+        # says what the first one is.
+        assert ("Beside each wide count is the whole-word count, which is "
+                "what this run's own rule matches in the same fields; the "
+                "gap between the two is what the wide reading adds, and a "
+                "wide count that has run far ahead of its whole-word count "
+                "is the sign of a short name." in note)
+        assert "every memo that says" not in note
         assert ("Read a high count as a list of fields to check, not as a "
                 "count of names." in note)
 
@@ -2268,8 +2341,10 @@ class TestTheLabelsAndMemosTheResidueCounts:
             self, project):
         self._plant(project, "Thomas_P01")
         out = preview_of()
-        assert any("memo(s), label(s) or attribute value(s)" in warning
+        assert any("note(s), label(s) or attribute value(s)" in warning
                    for warning in out["warnings"])
+        assert not any("memo(s), label(s)" in warning
+                       for warning in out["warnings"])
 
     def test_the_warning_says_what_the_count_measures(self, project):
         """Re-verification 6.1. The warning is the one string the
@@ -2291,21 +2366,24 @@ class TestTheLabelsAndMemosTheResidueCounts:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         out = preview_of(mapping=[{"original": "Ed", "pseudonym": "Kim"}])
-        assert out["preview"]["residue"]["memos"]["source"] == 1
+        source = out["preview"]["residue"]["memos"]["source"]
+        assert source["wide"] == 1 and source["whole_word"] == 0
         warning = [text for text in out["warnings"]
                    if "attribute value(s)" in text]
         assert len(warning) == 1, out["warnings"]
         warning = warning[0]
+        # v0.13, ruling 5: "note(s)" under the fixed vocabulary, and the
+        # whole-word count beside the wide one, in one sentence.
         assert warning.startswith(
-            "Warning: 1 memo(s), label(s) or attribute value(s) may still "
+            "Warning: 1 note(s), label(s) or attribute value(s) may still "
             "show one of these names, and this tool does not rewrite any "
-            "of them.")
-        assert ("The count is a heuristic and deliberately wide: it "
-                "reports anything a reader might see in the spelling you "
-                "gave, including inside a longer word and in any letter "
-                "case, so it over-reports rather than under-reports; a "
-                "look-alike letter from another script is not caught."
-                in warning)
+            "of them; 0 of those match this run's own whole-word rule.")
+        assert ("The rest are the wide reading, which is a heuristic and "
+                "deliberately wide: it reports anything a reader might see "
+                "in the spelling you gave, including inside a longer word "
+                "and in any letter case, so it over-reports rather than "
+                "under-reports; a look-alike letter from another script is "
+                "not caught." in warning)
         assert "tell the user which fields to check" in warning
         # The claim that is now false, in the exact words it used.
         assert "the names in this mapping also occur in" not in warning
@@ -2774,10 +2852,9 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             assert PARTICIPANT in out["preview"]["project"]
             # And the residue reports the fields, as counts.
             residue = out["preview"]["residue"]
-            assert residue["file_names"] == 1
-            assert residue["case_names"] == 1
-            assert residue["code_names"] == 1
-            assert residue["attribute_values"] == 1
+            for key in ("file_names", "case_names", "code_names",
+                        "attribute_values"):
+                assert residue[key]["wide"] == 1, key
 
     def test_the_execute_result_manifest_journal_and_log_carry_neither_name(
             self, tmp_path, caplog):
@@ -3890,7 +3967,7 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
         out = preview_of(mapping=None, use_project_pseudonyms=True)
         assert out["preview"]["files"][0]["name"] == "Thomas_interview.txt"
         assert out["preview"]["project"] == str(project / "data.qda")
-        assert out["preview"]["residue"]["file_names"] == 1
+        assert out["preview"]["residue"]["file_names"]["wide"] == 1
 
     def test_the_two_mapping_sources_still_bind_the_same_token(
             self, project):

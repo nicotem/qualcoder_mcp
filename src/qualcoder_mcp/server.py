@@ -10475,30 +10475,37 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"documented emoji bug). This run does not make that worse and "
             f"does not fix it.")
     residue = preview.get("residue") or {}
-    # Every label key the residue block carries, from the one table that
-    # defines them, so a field added to the scan reaches this sum.
-    residue_total = sum(v for v in residue.get("memos", {}).values()) + sum(
-        residue.get(key, 0)
-        for key in QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS)
+    # Every field count the residue block carries, the twelve notes and
+    # every label key from the one table that defines them, so a field
+    # added to the scan reaches these sums. Each count is the pair of
+    # ruling 5, and both halves are summed by name.
+    field_counts = list(residue.get("memos", {}).values()) + [
+        residue[key] for key in
+        QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS if key in residue]
+    residue_total = sum(count["wide"] for count in field_counts)
+    whole_word_total = sum(count["whole_word"] for count in field_counts)
     if residue_total:
         # What this count MEASURES, rather than what it would be nice to
         # say it measures (re-verification 6.1). The detector reads
         # wider than the rewrite on purpose, so "the names occur in N
-        # memos" is false wherever the wide reading fired: with an entry
-        # for 'Ed' the names do not occur in eleven memos, the letters
+        # notes" is false wherever the wide reading fired: with an entry
+        # for 'Ed' the names do not occur in eleven notes, the letters
         # do. Shipped prose does not claim more than the code does, and
         # the reading is named as the heuristic it is (fix round 3, L1),
         # with the one class it does not reach said in the same breath.
+        # Since v0.13 the whole-word count stands beside it, so the
+        # researcher can see how much of the count is the wide reading.
         warnings.append(
-            f"Warning: {residue_total} memo(s), label(s) or attribute "
+            f"Warning: {residue_total} note(s), label(s) or attribute "
             f"value(s) may still show one of these names, and this tool "
-            f"does not rewrite any of them. The count is a heuristic and "
-            f"deliberately wide: it reports anything a reader might see "
-            f"in the spelling you gave, including inside a longer word "
-            f"and in any letter case, so it over-reports rather than "
-            f"under-reports; a look-alike letter from another script is "
-            f"not caught. See residue, and tell the user which fields to "
-            f"check.")
+            f"does not rewrite any of them; {whole_word_total} of those "
+            f"match this run's own whole-word rule. The rest are the "
+            f"wide reading, which is a heuristic and deliberately wide: "
+            f"it reports anything a reader might see in the spelling you "
+            f"gave, including inside a longer word and in any letter "
+            f"case, so it over-reports rather than under-reports; a "
+            f"look-alike letter from another script is not caught. See "
+            f"residue, and tell the user which fields to check.")
     short = preview.get("short_forms") or []
     if short:
         # Fix round 3, L3. QualCoder's own minimum for an original is two

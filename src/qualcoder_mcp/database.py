@@ -8371,6 +8371,24 @@ class QualcoderDatabase:
     PSEUDONYMISE_SIDECARS = ("pseudonyms.json", "speakers.json",
                              "speaker_regex.json")
 
+    @staticmethod
+    def _pseudonymise_field_pair(compiled, values) -> Dict[str, int]:
+        """Both readings of a set of labels or attribute values.
+
+        None of these fields has a private part, so each is read as it
+        stands. A value that is not a string (SQLite stores what it is
+        given) carries no name under either reading.
+        """
+        pair = {"wide": 0, "whole_word": 0}
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            if compiled.detector.contains(value):
+                pair["wide"] += 1
+            if compiled.pattern.search(value):
+                pair["whole_word"] += 1
+        return pair
+
     def pseudonymise_residue(self, compiled) -> Dict[str, Any]:
         """Where the names would still be after the run (D1 3.9).
 
@@ -8390,8 +8408,17 @@ class QualcoderDatabase:
         the rewrite: a memo reading "Thomas_Smith" is counted here and
         is not rewritten, which is the point, since nothing in this
         block is rewritten at all.
+
+        Since v0.13 (ruling 5) every count is two readings in one
+        object, `{"wide": N, "whole_word": M}`: `wide` is the detector's
+        reading above, exactly as before, and `whole_word` is how many of
+        the same fields this run's own rule matches (`compiled.pattern`,
+        under the run's case mode). A note is read through
+        `extract_ai_memo` for BOTH readings, so the whole-word half never
+        reads a private part either.
         """
-        residue: Dict[str, Any] = {"memos": {}, "unreadable": []}
+        residue: Dict[str, Any] = {"counts": "fields, not occurrences",
+                                   "memos": {}, "unreadable": []}
         private_zones = 0
         for table, column in self.PSEUDONYMISE_MEMO_FIELDS:
             key = table
@@ -8405,15 +8432,18 @@ class QualcoderDatabase:
                 # is better than a zero that reads as "no names here".
                 residue["unreadable"].append(f"{table}.{column}")
                 continue
-            hits = 0
+            hits = {"wide": 0, "whole_word": 0}
             for row in rows:
                 value = row[0]
                 if not isinstance(value, str):
                     continue
                 if memo_has_private_zone(value):
                     private_zones += 1
-                if compiled.detector.contains(extract_ai_memo(value)):
-                    hits += 1
+                public = extract_ai_memo(value)
+                if compiled.detector.contains(public):
+                    hits["wide"] += 1
+                if compiled.pattern.search(public):
+                    hits["whole_word"] += 1
             residue["memos"][key] = hits
         residue["memos_with_private_zones_not_scanned"] = private_zones
 
@@ -8425,16 +8455,16 @@ class QualcoderDatabase:
             except sqlite3.Error:
                 residue["unreadable"].append(f"{table}.{column}")
                 continue
-            residue[key] = sum(
-                1 for row in rows if compiled.detector.contains(row[0]))
+            residue[key] = self._pseudonymise_field_pair(
+                compiled, (row[0] for row in rows))
 
         try:
             rows = self.conn.execute(
                 "SELECT a.value FROM attribute a JOIN attribute_type t "
                 "ON t.name = a.name WHERE t.valuetype != 'numeric' "
                 "AND a.value IS NOT NULL AND a.value != ''").fetchall()
-            residue["attribute_values"] = sum(
-                1 for row in rows if compiled.detector.contains(row[0]))
+            residue["attribute_values"] = self._pseudonymise_field_pair(
+                compiled, (row[0] for row in rows))
         except sqlite3.Error:
             residue["unreadable"].append("attribute.value")
 
@@ -8454,12 +8484,16 @@ class QualcoderDatabase:
             "however its parts are joined. That is deliberate, because a "
             "report that says where names remain should not under-report. "
             "It does mean a short name is generous: an entry for 'Ed' "
-            "counts every memo that says 'edited' or 'provided'. Read a "
+            "counts every note that says 'edited' or 'provided'. Read a "
             "high count as a list of fields to check, not as a count of "
             "names. The reading is of the spelling you gave, compared "
             "after Unicode normalisation with invisible characters "
             "removed; a look-alike letter from another script is not "
-            "caught.")
+            "caught. Beside each wide count is the whole-word count, "
+            "which is what this run's own rule matches in the same "
+            "fields; the gap between the two is what the wide reading "
+            "adds, and a wide count that has run far ahead of its "
+            "whole-word count is the sign of a short name.")
         residue["scope_note"] = (
             "This block covers memos, labels and attribute values. It does "
             "NOT count what remains in the file text itself: the rewrite "
