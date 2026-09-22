@@ -70,7 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missed: a write that QualCoder interrupted by opening the project
   mid-write, and one that met a second writer holding the database past
   the wait inside a database method. Both answered the lock text alone
-  and left the backup unnamed; both now name it.
+  and left the backup unnamed; both now name it. `apply_codings`, which
+  keeps its own write body, answered a commit-time fault with the raw
+  exception text and no path; it now answers with the same fixed text
+  and names the backup, keeping its `applied_before_failure` and
+  `total_approved` counts, and its other failure routes after the backup
+  name it too.
 
 ### Upgrading from 0.12.x
 

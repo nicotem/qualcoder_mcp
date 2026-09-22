@@ -6337,6 +6337,22 @@ def apply_codings(
                 _recheck_lock_before_commit(project_folder, lock_held)
                 write_db.conn.commit()
 
+            except sqlite3.Error as e:
+                # The post-backup failure `_perform_write` and
+                # `import_text_file` answer with the fixed text and the
+                # backup's name (v0.13 A5); this tool keeps its own
+                # write body and carried the same gap (Security S-1).
+                # Its bespoke counts stay. The sqlite text goes to the
+                # log, never into the answer.
+                logger.error(f"SQLite error while applying codings: {e}")
+                rolled_back = _rollback_if_open(write_db)
+                _downgrade_to_readonly()
+                return json.dumps(_with_backup({
+                    "error": _write_failed_text(
+                        rolled_back, "no codings were applied"),
+                    "applied_before_failure": len(results),
+                    "total_approved": len(approved),
+                }, backup_path))
             except Exception as e:
                 # Roll back all changes on any failure
                 try:
@@ -6345,11 +6361,15 @@ def apply_codings(
                     pass
                 logger.error(f"Failed to apply codings, rolled back: {e}")
                 _downgrade_to_readonly()
-                return json.dumps({
+                # A failure after the backup names it here too (the
+                # pre-commit lock re-check lands on this arm), so the
+                # CHANGELOG's "every failure route out of a write" holds
+                # for this body as well.
+                return json.dumps(_with_backup({
                     "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
                     "applied_before_failure": len(results),
                     "total_approved": len(approved)
-                })
+                }, backup_path))
     except DatabaseLockedError:
         # QualCoder grabbed the project between our check and the write
         _downgrade_to_readonly()

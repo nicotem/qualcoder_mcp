@@ -438,8 +438,13 @@ class TestApplyCodingsFaults:
 
         result = server.apply_codings(sess.session_id, create_backup=False)
 
-        data = assert_structured_error(result, "Failed to apply codings",
-                                       "rolled back")
+        # v0.13 A5, fix round 1 (F2): a commit-time sqlite fault takes the
+        # fixed-text arm now, and a rollback that did not go through is
+        # the one case where that text cannot say the database is as it
+        # was; the bespoke counts stay.
+        data = assert_structured_error(
+            result, "could not be rolled back cleanly")
+        assert data["error"] == server.WRITE_FAILED_UNCERTAIN
         assert data["applied_before_failure"] == 2
         proxy = installed["conn"]
         assert proxy.commit_calls == 1 and proxy.rollback_calls == 1
@@ -1533,6 +1538,53 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         assert Path(out["backup_path"]).name in taken
         assert env.hash() == pre_hash
         assert server.db.read_only is True
+
+    def test_apply_codings_answers_the_same_way(self, fi_env, monkeypatch):
+        """The third write body. `apply_codings` holds the project lock
+        and takes its backup without `_perform_write`, and its own except
+        arm answered a raw exception string with no `backup_path`
+        (Security S-1). Driven as the import case is, with the bespoke
+        counts kept."""
+        env = fi_env
+        sess = make_approved_session(env)
+        pre_hash = env.hash()
+        self._inject_commit_error(monkeypatch)
+
+        out = json.loads(server.apply_codings(sess.session_id))
+
+        self._assert_says_it_did_not_commit(out, "no codings were applied")
+        assert out["applied_before_failure"] == 2
+        assert out["total_approved"] == 2
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in env.backup_names()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+        reloaded = server.session_manager.load_session(sess.session_id)
+        assert len(reloaded.filter_by_status("applied")) == 0
+
+    def test_apply_codings_names_it_when_qualcoder_opens_the_project_mid_write(
+            self, fi_env, lock_flip):
+        """The lock route through this body lands on its generic arm,
+        which keeps its own text and now names the backup as well."""
+        env = fi_env
+        sess = make_approved_session(env)
+        pre_hash = env.hash()
+        before = env.backup_names()
+        lock_flip(env, "add_coding")
+
+        out = json.loads(server.apply_codings(sess.session_id))
+
+        assert "open in QualCoder" in out["error"], out
+        assert out["applied_before_failure"] == 2
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        reloaded = server.session_manager.load_session(sess.session_id)
+        assert len(reloaded.filter_by_status("applied")) == 0
 
     def test_the_two_texts_keep_the_house_rules(self):
         for label, body in (("rolled back", server.WRITE_FAILED_ROLLED_BACK),
