@@ -1586,9 +1586,155 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         reloaded = server.session_manager.load_session(sess.session_id)
         assert len(reloaded.filter_by_status("applied")) == 0
 
-    def test_the_two_texts_keep_the_house_rules(self):
+    @staticmethod
+    def _assert_keeps_the_retry_advice(out):
+        assert "close it or wait a moment, then retry" in out["error"], out
+        assert "refused the write" not in out["error"], out
+        assert "sqlite3." not in out["error"], out
+
+    @staticmethod
+    def _assert_says_the_database_refused_it(out, detail, kind):
+        assert out["error"].startswith(
+            "Database error: the write did not complete and was rolled "
+            "back"), out
+        assert f"and {detail}." in out["error"], out
+        assert f"The database refused the write (sqlite3.{kind})" \
+            in out["error"], out
+        assert "Nothing here needs restoring." in out["error"]
+        assert "only if it will not open" in out["error"]
+        assert "then retry" not in out["error"], out
+        assert out["error"] != server.DB_UNAVAILABLE_ERROR
+
+    NOT_CURED_BY_RETRYING = [
+        sqlite3.IntegrityError("UNIQUE constraint failed: code_name.name"),
+        sqlite3.DatabaseError("database disk image is malformed"),
+        sqlite3.OperationalError("no such table: code_name"),
+    ]
+    CURED_BY_RETRYING = [
+        sqlite3.OperationalError("database or disk is full"),
+        sqlite3.OperationalError("disk I/O error"),
+        sqlite3.OperationalError("database is locked"),
+        sqlite3.OperationalError("database is busy"),
+    ]
+
+    @pytest.mark.parametrize("fault", NOT_CURED_BY_RETRYING,
+                             ids=[f"{type(f).__name__}: {f}"
+                                  for f in NOT_CURED_BY_RETRYING])
+    def test_a_fault_that_retrying_cannot_cure_is_not_told_to_retry(
+            self, fi_env, monkeypatch, fault):
+        """Security S-2. The widened sqlite arm told a researcher whose
+        database was malformed, or whose write failed a UNIQUE
+        constraint, to wait and retry. Those get told the database
+        refused the write, with the class named and the message kept
+        for the log."""
+        env = fi_env
+        pre_hash = env.hash()
+
+        def refuse(self, *args, **kwargs):
+            raise fault
+
+        monkeypatch.setattr(QualcoderDatabase, "add_code", refuse)
+        out = json.loads(server.create_code("Refused by the database"))
+
+        self._assert_says_the_database_refused_it(
+            out, "the code was not created", type(fault).__name__)
+        assert str(fault) not in out["error"]
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
+    @pytest.mark.parametrize("fault", CURED_BY_RETRYING,
+                             ids=[str(f) for f in CURED_BY_RETRYING])
+    def test_a_fault_that_waiting_may_cure_keeps_the_retry_advice(
+            self, fi_env, monkeypatch, fault):
+        env = fi_env
+        pre_hash = env.hash()
+
+        def refuse(self, *args, **kwargs):
+            raise fault
+
+        monkeypatch.setattr(QualcoderDatabase, "add_code", refuse)
+        out = json.loads(server.create_code("Retry later"))
+
+        self._assert_says_it_did_not_commit(out, "the code was not created")
+        self._assert_keeps_the_retry_advice(out)
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+
+    def test_the_import_path_branches_the_same_way(self, fi_env,
+                                                   monkeypatch):
+        env = fi_env
+        pre_hash = env.hash()
+
+        def boom(folder, held):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", boom)
+        out = json.loads(server.import_text_file("new.txt", "some text"))
+
+        self._assert_says_the_database_refused_it(
+            out, "the file was not imported", "DatabaseError")
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+
+    def test_apply_codings_branches_the_same_way(self, fi_env,
+                                                 monkeypatch):
+        env = fi_env
+        sess = make_approved_session(env)
+        pre_hash = env.hash()
+
+        def boom(folder, held):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(server, "_recheck_lock_before_commit", boom)
+        out = json.loads(server.apply_codings(sess.session_id))
+
+        self._assert_says_the_database_refused_it(
+            out, "no codings were applied", "DatabaseError")
+        assert out["applied_before_failure"] == 2
+        assert Path(out["backup_path"]).is_dir()
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+
+    def test_the_transient_heuristic_is_by_class_and_then_by_text(self):
+        """Named a heuristic in the source; its edges pinned here so a
+        change to them is deliberate."""
+        transient = server._is_transient_sqlite_error
+        for text in ("database is locked", "database is busy",
+                     "database or disk is full", "disk I/O error"):
+            assert transient(sqlite3.OperationalError(text)), text
+        assert not transient(
+            sqlite3.OperationalError("database disk image is malformed"))
+        assert not transient(sqlite3.OperationalError("no such table: x"))
+        # The class is checked first: a constraint failure is never
+        # transient, whatever its text says, and neither is the base
+        # class or something that is not an sqlite3 error at all.
+        assert not transient(sqlite3.IntegrityError("database is locked"))
+        assert not transient(sqlite3.DatabaseError("disk I/O error"))
+        assert not transient(sqlite3.Error("database is locked"))
+        assert not transient(RuntimeError("database is locked"))
+        assert not transient(None)
+        # The chooser: uncertain first, then the branch.
+        assert server._write_failed_text(
+            False, "x", sqlite3.IntegrityError("u")) \
+            == server.WRITE_FAILED_UNCERTAIN
+        assert server._write_failed_text(
+            True, "x", sqlite3.OperationalError("database is locked")) \
+            == server.WRITE_FAILED_ROLLED_BACK.format(detail="x")
+        assert server._write_failed_text(
+            True, "x", sqlite3.IntegrityError("u")) \
+            == server.WRITE_FAILED_REFUSED.format(detail="x",
+                                                  kind="IntegrityError")
+        assert server._write_failed_text(True, "x") \
+            == server.WRITE_FAILED_ROLLED_BACK.format(detail="x")
+
+    def test_the_three_texts_keep_the_house_rules(self):
         for label, body in (("rolled back", server.WRITE_FAILED_ROLLED_BACK),
-                            ("uncertain", server.WRITE_FAILED_UNCERTAIN)):
+                            ("uncertain", server.WRITE_FAILED_UNCERTAIN),
+                            ("refused", server.WRITE_FAILED_REFUSED)):
             assert "\u2014" not in body, label
             assert body.startswith("Database error"), label
             for spelling in ("behavior", "analyze", "color"):

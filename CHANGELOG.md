@@ -76,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and names the backup, keeping its `applied_before_failure` and
   `total_approved` counts, and its other failure routes after the backup
   name it too.
+- **The retry advice is given only where waiting can help.** The arm
+  above catches every sqlite3 error, and the first cut gave the same
+  "close it or wait a moment, then retry" to a malformed database image
+  and to a constraint the write violated, neither of which retrying
+  cures. A database that was locked or busy, a full disk and an I/O
+  error keep the retry sentence. Any other fault is told that the
+  database refused the write, with the exception class named (never its
+  message, which goes to the log as before), that nothing changed, and
+  that if it happens again the project should be opened in QualCoder to
+  check it, with a backup restored only if it will not open. Which of
+  the two a fault gets is decided from the exception class and then its
+  message text, which is a heuristic and is called one in the source.
 
 ### Upgrading from 0.12.x
 

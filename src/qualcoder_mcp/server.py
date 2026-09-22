@@ -1615,6 +1615,38 @@ WRITE_FAILED_UNCERTAIN = (
     "part-written. Close QualCoder, reopen the project, and if it will "
     "not open, restore a backup (see list_backups).")
 
+# The retry advice above is for a fault that waiting can cure: the
+# database was locked or busy, the disk was full, an I/O error. The
+# same arm also catches faults that retrying repeats, such as a
+# malformed database image or a UNIQUE constraint the tool should have
+# caught, and gave them the same advice (Security S-2, v0.13 fix round
+# 1). This text is for those. It names the exception class and never
+# its message, which goes to the log as before.
+WRITE_FAILED_REFUSED = (
+    "Database error: the write did not complete and was rolled back, so "
+    "the project database holds exactly what it held before this call "
+    "and {detail}. The database refused the write (sqlite3.{kind}); this "
+    "is not a lock or a full disk, so waiting and retrying will not cure "
+    "it. Nothing here needs restoring. If it happens again, open the "
+    "project in QualCoder to check it, and restore a backup (see "
+    "list_backups) only if it will not open.")
+
+# Which of the two texts a fault gets is decided on the exception class
+# and then on its message text. That is a HEURISTIC: SQLite's messages
+# are stable but not a contract, so a transient fault worded in a way
+# this list does not know would get the refused text, whose advice is
+# the safe one either way (check the project, restore nothing that
+# opens).
+TRANSIENT_SQLITE_MARKERS = ("locked", "busy", "full", "i/o")
+
+
+def _is_transient_sqlite_error(error) -> bool:
+    """Heuristic: an OperationalError whose text says waiting may cure it."""
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    text = str(error).lower()
+    return any(marker in text for marker in TRANSIENT_SQLITE_MARKERS)
+
 
 def _rollback_if_open(write_db) -> bool:
     """Roll back anything still in flight; say whether that succeeded.
@@ -1634,11 +1666,22 @@ def _rollback_if_open(write_db) -> bool:
         return False
 
 
-def _write_failed_text(rolled_back: bool, backup_fail_detail: str) -> str:
-    """The failure text for a write that did not commit."""
-    if rolled_back:
+def _write_failed_text(rolled_back: bool, backup_fail_detail: str,
+                       error: Optional[BaseException] = None) -> str:
+    """The failure text for a write that did not commit.
+
+    The uncertain text when the rollback did not go through; otherwise
+    the retry text for a transient fault and the refused text for any
+    other. Every shipped caller passes the exception; `error` is
+    optional so the two-argument form still answers, with the retry
+    text, as it did before the branch.
+    """
+    if not rolled_back:
+        return WRITE_FAILED_UNCERTAIN
+    if error is None or _is_transient_sqlite_error(error):
         return WRITE_FAILED_ROLLED_BACK.format(detail=backup_fail_detail)
-    return WRITE_FAILED_UNCERTAIN
+    return WRITE_FAILED_REFUSED.format(detail=backup_fail_detail,
+                                       kind=type(error).__name__)
 
 
 def _with_backup(answer: Dict[str, Any], backup_path) -> Dict[str, Any]:
@@ -1739,7 +1782,8 @@ def _perform_write(op, create_backup: bool = True,
                 logger.error(f"SQLite error during a write: {e}")
                 return _with_backup(
                     {"error": _write_failed_text(
-                        _rollback_if_open(write_db), backup_fail_detail)},
+                        _rollback_if_open(write_db), backup_fail_detail,
+                        e)},
                     backup_path)
     finally:
         # Unconditional cleanup on EVERY exit path (SEC M-1). The previous
@@ -6349,7 +6393,7 @@ def apply_codings(
                 _downgrade_to_readonly()
                 return json.dumps(_with_backup({
                     "error": _write_failed_text(
-                        rolled_back, "no codings were applied"),
+                        rolled_back, "no codings were applied", e),
                     "applied_before_failure": len(results),
                     "total_approved": len(approved),
                 }, backup_path))
@@ -6666,12 +6710,13 @@ def import_text_file(
                     {"error": f"Database error: {str(e)}"}, backup_path))
             except sqlite3.Error as e:
                 # The same post-backup failure as `_perform_write`'s, in
-                # the one write path that is not routed through it.
+                # one of the two write bodies not routed through it
+                # (`apply_codings` is the other).
                 logger.error(f"SQLite error during the import: {e}")
                 return json.dumps(_with_backup(
                     {"error": _write_failed_text(
                         _rollback_if_open(write_db),
-                        "the file was not imported")},
+                        "the file was not imported", e)},
                     backup_path))
     finally:
         # Unconditional cleanup on EVERY exit path (SEC M-1 / C-1): roll back
