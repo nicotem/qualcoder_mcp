@@ -10851,12 +10851,14 @@ def pseudonymise_source(
                  that file are the researcher's reverse key and you did not supply
                  them, so on this path no diagnostic and no refusal
                  quotes one, and include_context returns no context at
-                 all rather than the text around each match. Two things
-                 are still returned exactly as they stand, because a
-                 preview you cannot name the files in is not a preview
-                 you can relay: the project path and each file's own
-                 name, either of which can itself contain one of those
-                 names.
+                 all rather than the text around each match. Three
+                 things are still returned exactly as they stand,
+                 because a preview you cannot name the files in is not
+                 a preview you can relay: the project path, each file's
+                 own name, and the backup this run takes, which is named
+                 after the project folder and is reported on success and
+                 on any failure after it was taken; any of the three can
+                 itself contain one of those names.
         case_mode: "exact" (default, QualCoder's own rule: TOM, Tom and
                  tom are three different names), "insensitive" (all three
                  get the pseudonym exactly as written), or

@@ -4663,9 +4663,11 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "carries the ask in execute_with.before_executing; set one with "
          "set_project_ai_coder_name before executing, or execute with "
          "record_in_journal=false."),
-        ("the_sidecar_path_still_returns_names_it_has",  # R-2
-         "the project path and each file's own name, either of which can "
-         "itself contain one of those names."),
+        ("the_sidecar_path_still_returns_names_it_has",  # R-2; v0.13 F4
+         "the project path, each file's own name, and the backup this run "
+         "takes, which is named after the project folder and is reported "
+         "on success and on any failure after it was taken; any of the "
+         "three can itself contain one of those names."),
         ("the_override_rule_in_plain_words",             # rulings 7.3(3), 7.4
          "a coding that covered a name, or contained one, and now covers "
          "or contains its pseudonym needs no override, whatever the two "

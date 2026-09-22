@@ -17,16 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecated_argument` note that explained it. The two-step flow is
   unchanged: call without `preview_token` for a preview, then again with
   the token the preview returned.
-- Serialised tool JSON after the removal: full = 154,984 characters
-  (about 38.7k tokens at chars/4) over 70 tools, core = 56,317 (about
-  14.1k) over 21. `core` is unchanged to the character, because none of
-  the six tools is in it. Measured exactly as the 0.12 figures were, on
+- Serialised tool JSON after the removal, and after the one-clause
+  correction to `pseudonymise_source`'s description under Fixed below:
+  full = 155,149 characters (about 38.8k tokens at chars/4)
+  over 70 tools, core = 56,317 (about 14.1k) over 21. `core` is
+  unchanged to the character, because neither the six tools nor
+  `pseudonymise_source` is in it. Measured exactly as the 0.12 figures were, on
   the final tree through the toolset gate, as the `tools/list` payload
   carries them: the name, description and input schema of every
   registered tool, serialised together with `json.dumps` defaults, under
   Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`. On
   Python 3.11.13, in the repository's `.venv/`, the same definitions
-  measure 162,868 and 59,253, because 3.10 to 3.12 keep the docstring
+  measure 163,041 and 59,253, because 3.10 to 3.12 keep the docstring
   indentation 3.13 strips at compile time.
 
 ### Fixed
@@ -88,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check it, with a backup restored only if it will not open. Which of
   the two a fault gets is decided from the exception class and then its
   message text, which is a heuristic and is called one in the source.
+
+- **`pseudonymise_source`'s description tells the whole truth about
+  what the `use_project_pseudonyms` path returns as it stands.** It
+  declared two kinds of value that can carry a name from the
+  researcher's own `pseudonyms.json`: the project path and each file's
+  own name. There are three: the backup this run takes is named after
+  the project folder, and it is reported on success and, since the fix
+  above, on any failure after it was taken. The description now says
+  so. Nothing this path returns has changed; the sentence that
+  describes it has.
 
 ### Upgrading from 0.12.x
 
