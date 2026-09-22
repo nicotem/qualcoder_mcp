@@ -1722,11 +1722,11 @@ def _perform_write(op, create_backup: bool = True,
         made), or an {"error": ...} dict. Callers json.dumps the result.
 
     Raises:
-        DatabaseLockedError: Only from before the backup is taken, when
-            QualCoder grabs the project between the write gate and the
-            project lock (the tool guard converts it to a friendly
-            error). After the backup the same error is answered in the
-            returned dict, with `backup_path`, rather than raised.
+        DatabaseLockedError: Only from before the backup is taken: QualCoder
+            grabbing the project between the write gate and the project
+            lock, or the database locked at the read-write upgrade (the
+            tool guard converts either to a friendly error). After the
+            backup it is answered in the returned dict with `backup_path`.
     """
     gate = _write_gate_error()
     if gate is not None:

@@ -1769,6 +1769,46 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
             for spelling in ("behavior", "analyze", "color"):
                 assert spelling not in body.lower(), (label, spelling)
 
+    def test_a_second_writer_met_by_the_import_method_names_it(
+            self, fi_env, monkeypatch):
+        """The import body's RuntimeError arm (re-verification R1-1 and
+        R3 F-1). The import method, like `add_code`, re-raises a locked
+        database as RuntimeError, so the mandate's second named case
+        lands on this arm for this body; it named the backup and no test
+        noticed when it stopped. Driven as the `set_memo` case is, on
+        `import_text_file`."""
+        env = fi_env
+        pre_hash = env.hash()
+        before = env.backup_names()
+        original = QualcoderDatabase.backup_before_write
+
+        def impatient(self, *args, **kwargs):
+            path = original(self, *args, **kwargs)
+            self.conn.execute("PRAGMA busy_timeout = 50")
+            return path
+
+        monkeypatch.setattr(QualcoderDatabase, "backup_before_write",
+                            impatient)
+        holder = sqlite3.connect(str(env.folder / "data.qda"))
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            out = json.loads(server.import_text_file(
+                "under_a_second_writer.txt", "some text"))
+        finally:
+            holder.rollback()
+            holder.close()
+
+        assert out["error"].startswith(
+            "Database error: Failed to import text file"), out
+        assert "database is locked" in out["error"]
+        taken = env.backup_names() - before
+        assert len(taken) == 1
+        assert Path(out["backup_path"]).is_dir()
+        assert Path(out["backup_path"]).name in taken
+        assert env.hash() == pre_hash
+        assert server.db.read_only is True
+        assert server.db.conn.in_transaction is False
+
 
 _ORIG_RECHECK = server._recheck_lock_before_commit
 
