@@ -2143,3 +2143,114 @@ class TestNameDetector:
         detector = self._detector()
         assert detector.contains("tomorrow.txt") is True
         assert detector.contains("thomasina notes") is True
+
+
+# =============================================================================
+# THE CHARACTER SWEEP, MADE FAST (v0.13 Brief 1, item 2)
+# =============================================================================
+
+def reference_strip_unseen(text):
+    """The sweep as shipped in v0.12, verbatim: the per-character
+    generator `_strip_unseen` was, kept HERE and not in the product, so
+    the fast path is pinned against the reading it replaced rather than
+    against itself."""
+    import unicodedata
+    return "".join(ch for ch in text
+                   if ord(ch) not in P._DEFAULT_IGNORABLE
+                   and unicodedata.category(ch) != "Cf")
+
+
+def _live_cf():
+    """Every code point in category Cf on the RUNNING interpreter."""
+    import unicodedata
+    return {code_point for code_point in range(0x110000)
+            if unicodedata.category(chr(code_point)) == "Cf"}
+
+
+class TestTheCharacterSweepIsTheGeneratorByteForByte:
+    """`_strip_unseen` decides what the residue counts AND whether a file
+    name or a path is withheld from the run record and the journal entry
+    (`_pseudonymise_safe_name`), so the speed-up is pinned identical to
+    the generator it replaced, over every code point the reading turns
+    on. These pins are not to be softened (cross-check, section 9)."""
+
+    @staticmethod
+    def _everything():
+        """One string that carries every code point the sweep decides
+        on, each between two letters so nothing is at an edge: the
+        4,174 default-ignorable code points, every Cf code point on this
+        interpreter, the fullwidth block U+FF01 to U+FF5E, U+00DF, an
+        astral-plane sample and a pure-ASCII sample."""
+        special = sorted(P._DEFAULT_IGNORABLE | _live_cf())
+        assert len(special) >= P.DEFAULT_IGNORABLE_COUNT
+        fullwidth = range(0xFF01, 0xFF5F)
+        astral = (0x1F600, 0x1D400, 0x20000, 0x10000, 0x1D173, 0xE0001,
+                  0x10FFFD)
+        pieces = ["Tho" + chr(code_point) + "mas "
+                  for code_point in (*special, *fullwidth, 0x00DF, *astral)]
+        pieces.append("plain ASCII: Thomas, Mary_Ann & Co. 0123456789 ~")
+        return "".join(pieces)
+
+    def test_the_fast_sweep_is_the_generator_byte_for_byte(self):
+        text = self._everything()
+        assert not text.isascii()
+        assert P._strip_unseen(text) == reference_strip_unseen(text)
+
+    def test_the_reader_sees_the_same_after_nfkc_too(self):
+        import unicodedata
+        text = self._everything()
+        assert P._reader_sees(text) == reference_strip_unseen(
+            unicodedata.normalize("NFKC", text))
+
+    @pytest.mark.parametrize("text", [
+        "", "Thomas", "plain ascii with a tab\tand a newline\n",
+        "".join(chr(code_point) for code_point in range(128))],
+        ids=["empty", "word", "controls", "every-ascii"])
+    def test_ascii_comes_back_as_it_went_in(self, text):
+        assert P._strip_unseen(text) == reference_strip_unseen(text) == text
+
+    def test_the_table_is_the_property_and_the_live_cf_sweep(self):
+        """Membership, not a count: an interpreter upgrade that moves the
+        Cf set fails here loudly rather than narrowing the reading."""
+        table = P._unseen_table()
+        assert set(table) == P._DEFAULT_IGNORABLE | _live_cf()
+        assert set(table.values()) == {None}
+
+    def test_the_ascii_guard_is_exact_on_this_interpreter(self):
+        """The guard returns ASCII untouched; three facts make that exact,
+        read from the running interpreter rather than asserted in prose:
+        no code point below 128 is default-ignorable, none is in category
+        Cf, and NFKC moves none of them."""
+        import unicodedata
+        ascii_range = range(128)
+        assert not any(P.is_default_ignorable(cp) for cp in ascii_range)
+        assert not any(unicodedata.category(chr(cp)) == "Cf"
+                       for cp in ascii_range)
+        every = "".join(chr(cp) for cp in ascii_range)
+        assert unicodedata.normalize("NFKC", every) == every
+        assert all(unicodedata.normalize("NFKC", chr(cp)) == chr(cp)
+                   for cp in ascii_range)
+
+    def test_the_table_is_built_lazily_and_only_for_non_ascii(self):
+        """Importing the module does not build it, an ASCII call does not
+        build it, and the first non-ASCII call does. In a fresh
+        interpreter, because this one has long since built it."""
+        import subprocess
+        src = Path(P.__file__).resolve().parents[1]
+        probe = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(src)!r})\n"
+            "import qualcoder_mcp.pseudonymise as P\n"
+            "print(P._UNSEEN_TABLE is None)\n"
+            "P._reader_sees('Thomas_interview.txt, plain ASCII')\n"
+            "P._strip_unseen('Mary Ann')\n"
+            "print(P._UNSEEN_TABLE is None)\n"
+            "P._reader_sees('Tho\\u00admas')\n"
+            "print(P._UNSEEN_TABLE is not None)\n"
+            "print(P.__file__)\n")
+        result = subprocess.run([sys.executable, "-u", "-B", "-c", probe],
+                                capture_output=True, text=True, timeout=60)
+        lines = result.stdout.splitlines()
+        assert result.returncode == 0, result.stderr
+        assert lines[:3] == ["True", "True", "True"], result.stdout
+        assert Path(lines[3]).resolve() == Path(P.__file__).resolve()

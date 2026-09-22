@@ -574,6 +574,30 @@ def is_default_ignorable(code_point: int) -> bool:
     return code_point in _DEFAULT_IGNORABLE
 
 
+# The sweep below, as one `str.translate` table: every code point in
+# `_DEFAULT_IGNORABLE` and every code point the RUNNING interpreter puts
+# in category Cf, each mapped to None. Built on the first non-ASCII call
+# and held here, never at import: enumerating Cf over the whole code
+# point space costs tens of milliseconds once, which a server that only
+# ever sees ASCII should not pay (v0.13). Two threads that race to build
+# it build the same table and the second assignment replaces the first
+# with an equal one, so no lock is needed.
+_UNSEEN_TABLE: Optional[Dict[int, None]] = None
+
+
+def _unseen_table() -> Dict[int, None]:
+    """The translation table `_strip_unseen` applies, built once."""
+    global _UNSEEN_TABLE
+    table = _UNSEEN_TABLE
+    if table is None:
+        table = dict.fromkeys(_DEFAULT_IGNORABLE)
+        table.update(dict.fromkeys(
+            code_point for code_point in range(0x110000)
+            if unicodedata.category(chr(code_point)) == "Cf"))
+        _UNSEEN_TABLE = table
+    return table
+
+
 def _strip_unseen(text: str) -> str:
     """`text` less every character a reader does not see, unnormalised.
 
@@ -588,10 +612,18 @@ def _strip_unseen(text: str) -> str:
     visible format marks it removes beyond the property varies with
     the interpreter, in the over-detect direction only (fix round 5,
     D-1 note); the table does not move.
+
+    How the sweep is applied, since v0.13, and nothing about what it
+    removes: pure ASCII is returned as it stands, because no ASCII code
+    point is default-ignorable or in category Cf; anything else goes
+    through `_unseen_table()`, the property and the interpreter's own Cf
+    sweep united in one `str.translate` table. The output is the
+    per-character generator's, byte for byte (pinned against a copy of
+    that generator kept in the tests), at a fraction of its cost.
     """
-    return "".join(ch for ch in text
-                   if ord(ch) not in _DEFAULT_IGNORABLE
-                   and unicodedata.category(ch) != "Cf")
+    if text.isascii():
+        return text
+    return text.translate(_unseen_table())
 
 
 def _reader_sees(value: str) -> str:
