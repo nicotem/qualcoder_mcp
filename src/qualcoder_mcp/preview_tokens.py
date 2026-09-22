@@ -386,9 +386,14 @@ def _args_pseudonymise_source(kwargs):
     the preview SHOWS, and `record_in_journal` changes only whether the
     run records itself, so none of them changes what happens to the text
     or to a single row.
+
+    `file_id` is one id since v0.13 (one file per call), bound as the
+    integer the server validated. `TOKEN_VERSION` is not bumped for it:
+    a token lives sixty minutes, and one issued by 0.12 for `file_ids`
+    that did reach this binding would fail as `token_other_operation`,
+    which is what it is.
     """
-    ids = kwargs.get("file_ids")
-    return {"file_ids": None if ids is None else sorted(int(i) for i in ids),
+    return {"file_id": int(kwargs["file_id"]),
             "mapping": kwargs["mapping"],
             "case_mode": str(kwargs["case_mode"]),
             "overlap_policy": str(kwargs["overlap_policy"])}

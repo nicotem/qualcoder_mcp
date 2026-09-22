@@ -189,8 +189,9 @@ QualCoder, and rows written under an earlier name keep it.
 
 **Can I pseudonymise transcripts that are already coded?** Yes:
 `pseudonymise_source` replaces the names you list, as whole words, in
-the stored text of chosen text sources and moves every coding,
-annotation and case link with the text, after a preview you approve
+the stored text of one text source per call, run file by file, and
+moves every coding, annotation and case link with the text, after a
+preview you approve
 and a mandatory backup. Memos, journal entries, labels and attribute
 values are scanned and counted, never rewritten, and PDFs, media files
 and `ai_data/` are out of scope; the preview's residue report says

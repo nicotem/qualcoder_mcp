@@ -244,6 +244,13 @@ def project(tmp_path):
 
 
 def call(**kwargs):
+    """The tool, on file 1 unless the test names another.
+
+    One file per call since v0.13 (decision A), and file 1 is the one
+    text source in this fixture a mapping fires on; a test about another
+    file, or about a missing or invalid `file_id`, says so explicitly.
+    """
+    kwargs.setdefault("file_id", 1)
     return json.loads(server.pseudonymise_source(**kwargs))
 
 
@@ -317,26 +324,17 @@ class TestPreview:
         assert item["case_links"]["whole_file"] == 1
 
     def test_a_file_with_no_match_is_not_listed_as_touched(self, project):
-        body = preview_of()["preview"]
-        assert [item["file_id"] for item in body["files"]] == [1]
+        """File 4 is eligible and the mapping fires nowhere in it: the
+        preview lists no file as touched and says an execute would
+        rewrite nothing. (Where the names are left in it is the
+        residue's file-text block's business, v0.13.)"""
+        out = preview_of(file_id=4)
+        assert out["preview"]["files"] == []
+        assert out["preview"]["totals"]["replacements"] == 0
+        assert any("rewrite nothing" in w for w in out["warnings"])
 
-    def test_a_pdf_and_a_media_file_are_skipped_with_a_reason(self, project):
-        body = preview_of()["preview"]
-        assert {item["file_id"]: item["reason"]
-                for item in body["skipped_files"]} == {2: "pdf_source",
-                                                       3: "no_fulltext"}
-
-    def test_an_unknown_file_id_is_a_reason_not_a_failure(self, project):
-        body = preview_of(file_ids=[1, 999])["preview"]
-        assert {"file_id": 999, "reason": "unknown_file_id"} in \
-            body["skipped_files"]
-        assert body["totals"]["replacements"] == 5
-
-    def test_a_selection_with_nothing_eligible_is_an_error_with_the_reasons(
-            self, project):
-        out = preview_of(file_ids=[2, 3])
-        assert "No eligible text source" in out["error"]
-        assert {item["file_id"] for item in out["skipped_files"]} == {2, 3}
+    # The refusals that replace `skipped_files` (a PDF, a media file, an
+    # unknown id) are pinned in test_v013_one_file_per_call.py.
 
     def test_context_is_off_by_default_and_capped_when_on(self, project):
         plain = preview_of()["preview"]["files"][0]["replacements"][0]
@@ -354,10 +352,11 @@ class TestPreview:
         assert first["spans_truncated"] is True
 
     def test_the_execute_recipe_repeats_the_bound_arguments(self, project):
-        out = preview_of(file_ids=[1], case_mode="insensitive")
+        out = preview_of(file_id=1, case_mode="insensitive")
         assert out["execute_with"]["tool"] == "pseudonymise_source"
         arguments = out["execute_with"]["arguments"]
-        assert arguments["file_ids"] == [1]
+        assert arguments["file_id"] == 1
+        assert "file_ids" not in arguments
         assert arguments["case_mode"] == "insensitive"
         assert arguments["overlap_policy"] == "snap_to_pseudonym"
         assert arguments["preview_token"] == out["preview_token"]
@@ -521,8 +520,10 @@ class TestToken:
         {"mapping": [{"original": "Thomas", "pseudonym": "Zed"}]},
         {"case_mode": "insensitive"},
         {"overlap_policy": "qualcoder_edit_parity"},
-        {"file_ids": [1]},
-    ], ids=["mapping", "case_mode", "overlap_policy", "file_ids"])
+        # File 4 is eligible, so the refusal is the token's and not the
+        # file check's: a token for file 1 does not execute on file 4.
+        {"file_id": 4},
+    ], ids=["mapping", "case_mode", "overlap_policy", "file_id"])
     def test_a_bound_argument_that_differs_is_another_operation(
             self, project, changed):
         out = preview_of()
@@ -738,26 +739,15 @@ class TestToken:
         assert refused["nothing_changed"] is True
         assert backups(project) == []
 
-    def test_an_import_invalidates_a_token_issued_for_every_file(
-            self, project):
-        """With file_ids=None the eligible set is part of the state, so a
-        new text source changes what the run would cover."""
-        out = preview_of()
-        con = sqlite3.connect(str(project / "data.qda"))
-        con.execute("INSERT INTO source (id,name,fulltext,mediapath,memo,"
-                    "owner,date) VALUES (5,'new.txt','Thomas again',NULL,'',"
-                    "'TestCoder','d')")
-        con.commit()
-        con.close()
-        server.db.close()
-        server.db = QualcoderDatabase(str(project))
-        refused = execute_from(out)
-        assert refused["reason"] == "project_changed"
+    # `test_an_import_invalidates_a_token_issued_for_every_file` pinned a
+    # mode that no longer exists: since v0.13 every call names one file
+    # (decision A), so no token is issued "for every file". The rule it
+    # was one half of is the test below, which is now the whole rule.
 
     def test_an_import_leaves_an_explicit_selection_valid(self, project):
-        """The other half of the same rule: a token for file_ids=[1] says
-        nothing about a file that did not exist, so it still applies."""
-        out = preview_of(file_ids=[1])
+        """A token for file_id=1 says nothing about a file that did not
+        exist, so it still applies after an import."""
+        out = preview_of(file_id=1)
         con = sqlite3.connect(str(project / "data.qda"))
         con.execute("INSERT INTO source (id,name,fulltext,mediapath,memo,"
                     "owner,date) VALUES (5,'new.txt','Thomas again',NULL,'',"
@@ -2545,7 +2535,6 @@ def route(path, text=None):
 DECLARED_ROUTES = (
     route(r"^\.preview\.project$"),
     route(r"^\.preview\.files\[\d+\]\.name$"),
-    route(r"^\.preview\.skipped_files\[\d+\]\.name$"),
     route(r"^\.files\[\d+\]\.name$"),
     route(r"^\.backup_path$"),
     # The one note that names the backup folder, by its opening words.
@@ -2981,8 +2970,14 @@ class TestConcurrencyAndFaults:
         assert execute_from(out)["success"] is True
         assert blocked == [True]
 
-    def test_a_fault_on_the_second_file_leaves_the_first_untouched(
+    def test_a_fault_after_the_text_is_written_leaves_it_untouched(
             self, project, monkeypatch):
+        """The write updates the file's text and then moves its rows, in
+        one transaction. A fault moving the rows, after the text UPDATE
+        has run, rolls the text back with them. (Before v0.13 this was
+        driven across two files; one file per call leaves the same
+        transaction around one file's text and its rows, and a second
+        text file holding the name stays exactly as it was.)"""
         con = sqlite3.connect(str(project / "data.qda"))
         con.execute("INSERT INTO source (id,name,fulltext,mediapath,memo,"
                     "owner,date) VALUES (5,'second.txt','Thomas twice: "
@@ -2992,20 +2987,17 @@ class TestConcurrencyAndFaults:
         server.db.close()
         server.db = QualcoderDatabase(str(project))
         out = preview_of()
-        original = QualcoderDatabase._pseudonymise_move_rows
         seen = []
 
         def failing(self, item, new_text, fid):
             seen.append(fid)
-            if len(seen) == 2:
-                raise sqlite3.OperationalError("disk I/O error")
-            return original(self, item, new_text, fid)
+            raise sqlite3.OperationalError("disk I/O error")
 
         monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_move_rows",
                             failing)
         result = execute_from(out)
         assert "error" in result
-        assert len(seen) == 2
+        assert seen == [1]
         texts = {row["id"]: row["fulltext"] for row in
                  query(project, "SELECT id,fulltext FROM source")}
         assert texts[1] == TEXT
@@ -3657,14 +3649,20 @@ class TestTheParkingFloor:
 
 class TestWhatTheTokenSigns:
 
-    def test_renaming_a_file_this_run_skips_keeps_the_token_valid(
-            self, project):
-        """QA F-13. `skipped_files` carried NAMES into the signed effect,
-        so renaming an untouched PDF invalidated a live token as
-        `project_changed`, with an explanation that was false."""
+    @pytest.mark.parametrize("fid,renamed", [(2, "renamed.pdf"),
+                                             (4, "renamed.txt")],
+                             ids=["pdf", "eligible-text"])
+    def test_renaming_a_file_this_call_does_not_touch_keeps_the_token_valid(
+            self, project, fid, renamed):
+        """QA F-13, restated for one file per call. `skipped_files` once
+        carried NAMES into the signed effect, so renaming an untouched
+        PDF invalidated a live token as `project_changed`. A file this
+        call does not name is not in the signed state at all now, a PDF
+        or an eligible text file alike, so renaming it changes nothing
+        the token covers."""
         out = preview_of()
         con = sqlite3.connect(str(project / "data.qda"))
-        con.execute("UPDATE source SET name='renamed.pdf' WHERE id=2")
+        con.execute("UPDATE source SET name=? WHERE id=?", (renamed, fid))
         con.commit()
         con.close()
         server.db.close()
@@ -3672,12 +3670,9 @@ class TestWhatTheTokenSigns:
         result = execute_from(out)
         assert result.get("success") is True, result
 
-    def test_the_readable_preview_still_names_the_skipped_files(
-            self, project):
-        skipped = preview_of()["preview"]["skipped_files"]
-        assert {item["file_id"]: item["reason"] for item in skipped} == {
-            2: "pdf_source", 3: "no_fulltext"}
-        assert any(item.get("name") == "paper.pdf" for item in skipped)
+    # `test_the_readable_preview_still_names_the_skipped_files` is
+    # restated in test_v013_names_left_in_text.py: the files this call
+    # does not touch are named by the residue's file-text block now.
 
     def test_a_changed_text_still_invalidates_the_token(self, project):
         """The other direction, so the narrowing did not narrow too far."""
@@ -3989,7 +3984,7 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
                 [{"original": candidate, "pseudonym": pseudonym}]))
             args = pt.canonical_args(
                 "pseudonymise_source", mapping=mapping,
-                file_ids=ew.get("file_ids"), case_mode=ew["case_mode"],
+                file_id=ew["file_id"], case_mode=ew["case_mode"],
                 overlap_policy=ew["overlap_policy"])
             return pt.hashlib.sha256(pt.canonical(pt._binding(
                 "pseudonymise_source", args, project_id)).encode("utf-8")
@@ -4004,7 +3999,7 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
             [{"original": "Thomas", "pseudonym": "Alex"}]))
         true_args = pt.canonical_args(
             "pseudonymise_source", mapping=true_mapping,
-            file_ids=ew.get("file_ids"), case_mode=ew["case_mode"],
+            file_id=ew["file_id"], case_mode=ew["case_mode"],
             overlap_policy=ew["overlap_policy"])
         assert pt.bind_id("pseudonymise_source", true_args, project_id,
                           pt.load_secret()) == bind
@@ -4265,9 +4260,11 @@ class TestResultShape:
     def test_the_result_carries_the_four_notes(self, project):
         result = execute_from(preview_of())
         joined = " ".join(result["notes"])
-        assert ("Positions after the first replacement in these files have "
-                "changed" in joined)
+        assert ("Positions after the first replacement in this file have "
+                "changed: re-read it before any further coding, and treat "
+                "any pending coding suggestion for it as stale." in joined)
         assert "Positions in these files have changed" not in joined
+        assert "in these files" not in joined
         assert "backup" in joined
         assert "open QualCoder window" in joined
         assert "search index" in joined
@@ -4546,8 +4543,7 @@ class TestArgumentValidation:
         ({"mapping": []}, "mapping is empty"),
         ({"mapping": [{"original": "T", "pseudonym": "Alex"}]},
          "at least 2 characters"),
-        ({"file_ids": [0]}, "positive integers"),
-        ({"file_ids": list(range(1, 500))}, "at most 200 file ids"),
+        ({"file_id": 0}, "file_id must be a positive integer."),
     ], ids=lambda v: str(v)[:40])
     def test_the_refusals(self, project, kwargs, fragment):
         payload = {"mapping": MAPPING}
@@ -4676,6 +4672,26 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "swallow a pseudonym, one that would be deleted, or one that had "
          "to be clamped because its stored end lay past the end of the "
          "text, does."),
+        ("one_file_per_call",                            # v0.13 decision A
+         "One file per call: file_id names the file, and a mapping that is "
+         "right for one participant is applied to that participant's file. "
+         "To pseudonymise a project, run it file by file; with "
+         "use_project_pseudonyms the mapping is read from the project's "
+         "own pseudonyms.json each time, and with a typed mapping the "
+         "mapping is repeated on each call."),
+        ("the_report_covers_the_whole_project",          # v0.13 decision A
+         "The report always covers the whole project."),
+        ("the_file_id_argument",                         # v0.13 decision A
+         "file_id: The one text source this call rewrites. A PDF, a media "
+         "file or a source with no stored text is refused with the reason "
+         "(pdf_source, no_fulltext, unknown_file_id)."),
+        ("repeat_the_same_bound_arguments",              # v0.13 decision A
+         "call again with the SAME mapping, file_id, case_mode and "
+         "overlap_policy, plus preview_token=<the token>."),
+        ("the_four_bound_arguments",                     # v0.13 decision A
+         "The four that ARE bound are mapping, file_id, case_mode and "
+         "overlap_policy, and they must be repeated identically on the "
+         "execute call."),
     ]
 
     @staticmethod
@@ -4723,6 +4739,15 @@ class TestTheDescriptionCarriesWhatD1Requires:
         assert "one that contained a name and changed length with it" \
             not in published
         assert "resize, snap or delete" not in published
+
+    def test_the_list_of_files_is_gone_from_the_description(self):
+        """v0.13 decision A: nothing a model reads still offers a list of
+        files, a run over every file, or the list of skipped ones."""
+        published = self.published()
+        assert "file_ids" not in published
+        assert "skipped_files" not in published
+        assert "omit for every eligible" not in published
+        assert "chosen text sources" not in published
 
     def test_the_wide_parity_claim_is_gone(self):
         """Fix round 3, S5: "exactly what QualCoder's own text editor

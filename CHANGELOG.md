@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Serialised tool JSON for this release as it stands, every change
+  below included: full = 155,457 characters (about 38.9k tokens at
+  chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
+  is unchanged to the character by every change in this release,
+  because neither the six token-gated tools nor `pseudonymise_source`
+  is in it. Measured exactly as the 0.12 figures were, on the final tree
+  through the toolset gate, as the `tools/list` payload carries them:
+  the name, description and input schema of every registered tool,
+  serialised together with `json.dumps` defaults, under Python 3.13.5
+  with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
+  in the repository's `.venv/`, the same definitions measure 163,369 and
+  59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
+  strips at compile time.
+
+### Changed: `pseudonymise_source` rewrites one file per call
+
+- `file_ids` (an optional list; omit it for every eligible text source)
+  is now `file_id`, one required id. A mapping that is right for one
+  participant is applied to that participant's file, so two people who
+  share a name get two pseudonyms by running their two files with two
+  mappings. This is also the shape QualCoder itself has: its
+  `pseudonyms.json` is applied per file at import. To pseudonymise a
+  project, run it file by file; with `use_project_pseudonyms` the
+  mapping is read from the project's own `pseudonyms.json` each time,
+  and with a typed mapping it is repeated on each call.
+- A file this tool cannot rewrite is refused, with the reason the old
+  `skipped_files` list gave (`pdf_source`, `no_fulltext`,
+  `unknown_file_id`) under `reason`, before any token check. The refusal
+  names the file by its id only, never by its name.
+- The approval token binds the one file id. A token issued for one file
+  does not execute on another.
+
 ### Removed: the inert `confirm` argument on the six token-gated tools
 
 - 0.12.0 announced this: "`confirm` stays in the six signatures for this
@@ -17,19 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deprecated_argument` note that explained it. The two-step flow is
   unchanged: call without `preview_token` for a preview, then again with
   the token the preview returned.
-- Serialised tool JSON after the removal, and after the one-clause
-  correction to `pseudonymise_source`'s description under Fixed below:
-  full = 155,149 characters (about 38.8k tokens at chars/4)
-  over 70 tools, core = 56,317 (about 14.1k) over 21. `core` is
-  unchanged to the character, because neither the six tools nor
-  `pseudonymise_source` is in it. Measured exactly as the 0.12 figures were, on
-  the final tree through the toolset gate, as the `tools/list` payload
-  carries them: the name, description and input schema of every
-  registered tool, serialised together with `json.dumps` defaults, under
-  Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`. On
-  Python 3.11.13, in the repository's `.venv/`, the same definitions
-  measure 163,041 and 59,253, because 3.10 to 3.12 keep the docstring
-  indentation 3.13 strips at compile time.
+- The removal shortens the tool definitions; the size this release
+  ships at is the one measurement at the top of this entry.
 
 ### Fixed
 
@@ -117,6 +138,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   say what to call next; passing `confirm` executes nothing, as it
   executed nothing in 0.12. A caller using the Python functions directly
   gets an error naming the unexpected argument instead.
+- **`pseudonymise_source`: pass one `file_id`, and read what comes back
+  in its new shape.** `file_ids` (an optional list) is now `file_id`
+  (one required id). Measured over the real stdio transport, rather
+  than assumed: a call that still passes `file_ids` has it dropped
+  without a word, on every host, because the server validates a call
+  against a model whose extra-field policy ignores an argument the tool
+  does not declare and no published schema sets `additionalProperties`.
+  So a caller that has not moved to `file_id` is refused for the missing
+  required argument (`file_id`, "Field required"), not by a schema error
+  about the old one, and a caller that passes both gets the preview for
+  `file_id` alone. `skipped_files` is gone from the preview and from the
+  nothing-to-do answer: an ineligible `file_id` is a refusal carrying
+  `reason` instead. `preview.files`, the result's `files` and the run
+  record's `files` stay lists, so nothing that reads them changes shape
+  for this, and each now holds at most one entry.
 
 ## [0.12.1-alpha] - 2026-09-21
 

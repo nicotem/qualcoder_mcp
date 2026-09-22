@@ -3053,6 +3053,21 @@ def _validate_id_list(value: Any, name: str, cap: int,
     return unique
 
 
+def _validate_positive_id(value: Any, name: str) -> int:
+    """One positive integer id, in the words `_validate_id_list` uses.
+
+    `validate_id` alone is not enough for an id that names a row: it
+    passes a boolean (an `int` subclass) and zero, and says "must be an
+    integer" and "must be non-negative". So the boolean, the type and
+    the sign are checked here first, with one sentence for all three,
+    and `validate_id` still runs after it for SQLite's upper bound, as
+    `_validate_id_list` calls it.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return validate_id(value, name)
+
+
 def _resolve_exclude_code_ids(db_, value: Any) -> List[int]:
     """Validate exclude_code_ids and refuse unknown ids (D4 3.1.4).
 
@@ -10260,10 +10275,21 @@ PSEUDONYMISATION_DIRNAME = "pseudonymisation"
 # Upstream gives up after fifty tries at a unique journal name
 # (code_pdf.py:6047); so does this.
 JOURNAL_NAME_ATTEMPTS = 50
-# A run names the files it touches, or it names none of them and covers
-# every eligible text source. Two hundred explicit ids is far past any
-# real selection and keeps the token's bound arguments bounded.
-MAX_PSEUDONYMISE_FILE_IDS = 200
+# One file per call (v0.13, decision A). A file_id this tool cannot
+# rewrite is refused with the reason `pseudonymise_sources` gives, which
+# is the vocabulary the old `skipped_files` list used, so nothing a
+# caller keyed on changes its name. Each names the file by id only.
+_PSEUDONYMISE_INELIGIBLE = {
+    "unknown_file_id": (
+        "file_id {file_id} is not a file in this project. Use search_files "
+        "or the qualcoder://files/list resource to list files."),
+    "pdf_source": (
+        "file {file_id} is a PDF source; this tool rewrites text sources "
+        "only, as QualCoder's own editor does."),
+    "no_fulltext": (
+        "file {file_id} has no stored text (a media file, or an empty "
+        "source), so there is nothing to rewrite."),
+}
 
 
 def _pseudonymisation_dir() -> Path:
@@ -10491,8 +10517,8 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"unaffected and still replaces whole words only.")
     if not totals.get("replacements"):
         warnings.append(
-            "None of the names in this mapping occurs in the selected "
-            "files, so an execute would rewrite nothing.")
+            "None of the names in this mapping occurs in this file, so an "
+            "execute would rewrite nothing.")
     return warnings
 
 
@@ -10507,9 +10533,9 @@ def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
               if backup_name else "The backup taken before this run "
                                    "contains")
     return [
-        "Positions after the first replacement in these files have "
-        "changed: re-read them before any further coding, and treat any "
-        "pending coding suggestion for them as stale.",
+        "Positions after the first replacement in this file have "
+        "changed: re-read it before any further coding, and treat any "
+        "pending coding suggestion for it as stale.",
         f"{backup} the pre-pseudonymisation text and, if the researcher "
         f"keeps one, pseudonyms.json; both hold the real names. Secure or "
         f"prune it with prune_backups once the run is verified.",
@@ -10577,14 +10603,15 @@ def _pseudonymise_journal_name(files: Sequence[Dict[str, Any]],
 
     A file name that the mapping matches is withheld, so a journal entry
     inside the project never carries a real name in its title.
+
+    One file per call (v0.13, decision A), so the entry is named after
+    that one file; the label for a run over several files went with the
+    list that made one possible.
     """
     stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
-    if len(files) == 1:
-        label = _pseudonymise_safe_name(files[0].get("name"), compiled)
-        if label is None:
-            label = f"file {files[0]['file_id']}"
-    else:
-        label = f"{len(files)} files"
+    label = _pseudonymise_safe_name(files[0].get("name"), compiled)
+    if label is None:
+        label = f"file {files[0]['file_id']}"
     return re.sub(r"[^ \w-]", "_", f"Pseudonymisation {label} {stamp}",
                   flags=re.ASCII)
 
@@ -10760,7 +10787,8 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
 @_tool_guard
 def pseudonymise_source(
     mapping: Optional[List[Dict[str, Any]]] = None,
-    file_ids: Optional[List[int]] = None,
+    *,
+    file_id: int,
     use_project_pseudonyms: bool = False,
     case_mode: str = "exact",
     overlap_policy: str = "snap_to_pseudonym",
@@ -10776,15 +10804,23 @@ def pseudonymise_source(
 
     THIS REWRITES SOURCE TEXT and moves every coding, annotation and case
     link in the files it touches. It is the only tool in this server that
-    changes the text those positions are measured against. Preview first,
-    relay the counts, the collisions and the residue to the user, get an
-    explicit yes, then execute with the token.
+    changes the text those positions are measured against.
+
+    One file per call: file_id names the file, and a mapping that is
+    right for one participant is applied to that participant's file. To
+    pseudonymise a project, run it file by file; with
+    use_project_pseudonyms the mapping is read from the project's own
+    pseudonyms.json each time, and with a typed mapping the mapping is
+    repeated on each call. The report always covers the whole project.
+
+    Preview first, relay the counts, the collisions and the residue to
+    the user, get an explicit yes, then execute with the token.
 
     Two-step by design. Call without preview_token: nothing is written
     and the result is a preview of exactly what would change, with a
     preview_token. Show the user the preview and every warning it
     carries, and ask whether to proceed. Only if they agree, call again
-    with the SAME mapping, file_ids, case_mode and overlap_policy, plus
+    with the SAME mapping, file_id, case_mode and overlap_policy, plus
     preview_token=<the token>. The token is valid for 60 minutes and only
     while the text and the rows it covers are unchanged; if the project
     changed in between, the execute is refused and you must preview
@@ -10841,10 +10877,9 @@ def pseudonymise_source(
                  pseudonym that is also a name in the same mapping is
                  refused, because QualCoder's import would chain the two
                  replacements and this tool will not.
-        file_ids: Which text sources to rewrite; omit for every eligible
-                 one. PDFs, media files and files with no stored text are
-                 listed under skipped_files with a reason and never fail
-                 the call.
+        file_id: The one text source this call rewrites. A PDF, a media
+                 file or a source with no stored text is refused with the
+                 reason (pdf_source, no_fulltext, unknown_file_id).
         use_project_pseudonyms: Read the mapping from the project's own
                  pseudonyms.json instead (QualCoder's import-time list).
                  Give this or `mapping`, not both. The original names in
@@ -10919,7 +10954,7 @@ def pseudonymise_source(
     token: passing a different value for one of them on the execute call
     is not "a different operation", it simply changes what is shown or
     whether the run is recorded. The four that ARE bound are mapping,
-    file_ids, case_mode and overlap_policy, and they must be repeated
+    file_id, case_mode and overlap_policy, and they must be repeated
     identically on the execute call.
 
     Refused while QualCoder has the project open (heartbeat lock): ask
@@ -10978,33 +11013,31 @@ def pseudonymise_source(
         return json.dumps({"error": str(e)}, indent=2)
     compiled = pseudo.Compiled(validated)
 
-    if file_ids is not None:
-        try:
-            file_ids = _validate_id_list(
-                file_ids, "file_ids", MAX_PSEUDONYMISE_FILE_IDS,
-                f"file_ids accepts at most {MAX_PSEUDONYMISE_FILE_IDS} "
-                f"file ids; omit it to cover every eligible text source.")
-        except ValueError as e:
-            return json.dumps({"error": str(e)}, indent=2)
-
-    # Resolved before anything else so "nothing here to rewrite" is an
-    # answer with the reasons attached rather than a bare error.
     try:
-        eligible, skipped = get_db().pseudonymise_sources(file_ids)
+        file_id = _validate_positive_id(file_id, "file_id")
+    except (ValueError, TypeError) as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+    # Resolved before anything else, and before any token check, so a
+    # file this tool cannot rewrite is a plain refusal with the reason
+    # the old `skipped_files` list carried, in the same vocabulary. The
+    # file is named by id only: a refusal is not the report, and a
+    # file's own name can carry a name from the mapping.
+    try:
+        eligible, skipped = get_db().pseudonymise_sources([file_id])
     except (ValueError, RuntimeError) as e:
         return json.dumps({"error": str(e)}, indent=2)
     if not eligible:
-        return json.dumps({
-            "error": ("No eligible text source: every selected file is a "
-                      "PDF, a media file or has no text. See skipped_files."),
-            "skipped_files": skipped,
-        }, indent=2)
+        reason = skipped[0]["reason"] if skipped else "unknown_file_id"
+        return json.dumps({"error": _PSEUDONYMISE_INELIGIBLE[reason].format(
+            file_id=file_id), "reason": reason}, indent=2)
+    file_ids = [file_id]
 
     ai_names = _ai_names_for_project()
     token_args = canonical_args(
         "pseudonymise_source",
         mapping=pseudo.canonical_mapping(validated),
-        file_ids=file_ids, case_mode=case_mode,
+        file_id=file_id, case_mode=case_mode,
         overlap_policy=overlap_policy)
 
     # The plan is the expensive part of everything below it: it reads
@@ -11084,10 +11117,9 @@ def pseudonymise_source(
                 "success": True,
                 "nothing_changed": True,
                 "message": (
-                    "None of the names in this mapping occurs in the "
-                    "selected files, so nothing was rewritten and no "
-                    "backup was taken."),
-                "skipped_files": preview.get("skipped_files", []),
+                    "None of the names in this mapping occurs in this "
+                    "file, so nothing was rewritten and no backup was "
+                    "taken."),
             }
         if owner_error is not None:
             # The last check before the write, where `_resolve_write_owner`
@@ -11226,13 +11258,13 @@ def pseudonymise_source(
         confirm_hint=(
             "Read the user the per-file replacement counts, every "
             "collision and the residue summary, and say plainly that this "
-            "rewrites the stored text and moves every coding in those "
-            "files. Only with an explicit yes, call pseudonymise_source "
+            "rewrites the stored text and moves every coding in that "
+            "file. Only with an explicit yes, call pseudonymise_source "
             "again exactly as execute_with says, with the SAME mapping."),
         execute_arguments={
             "case_mode": case_mode,
             "overlap_policy": overlap_policy,
-            "file_ids": file_ids,
+            "file_id": file_id,
             "use_project_pseudonyms": use_project_pseudonyms,
         },
         state_preview_fn=_signed,

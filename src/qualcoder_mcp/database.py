@@ -8694,8 +8694,12 @@ class QualcoderDatabase:
             # coding, and because "which names does this server treat as
             # its own" is one answer for the whole run (D7).
             "ai_coder_names": list(ai_coder_names),
+            # One file per call (v0.13, decision A): a file this tool
+            # cannot rewrite is refused before a preview is built, so the
+            # old `skipped_files` list could only ever be empty here, and
+            # it is gone rather than kept as a key a reader must learn to
+            # ignore.
             "files": files,
-            "skipped_files": plan["skipped"],
             "totals": totals,
             "hidden_coder_rows": hidden_totals,
         }

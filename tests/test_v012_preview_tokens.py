@@ -203,7 +203,7 @@ class TestCanonicalJson:
             "pseudonymise_source",
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
-            file_ids=None, case_mode="exact", overlap_policy="snap_to_pseudonym")
+            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym")
         token = pt.issue("pseudonymise_source", args, "/p/data.qda", "s1")
         bind = token.split(".")[2]
         plain = pt.hashlib.sha256(pt.canonical(
@@ -253,7 +253,7 @@ class TestCanonicalJson:
             "pseudonymise_source",
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
-            file_ids=None, case_mode="exact", overlap_policy="snap_to_pseudonym")
+            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym")
         with pytest.raises(TypeError, match="needs the secret"):
             pt.bind_id("pseudonymise_source", args, "/p/data.qda")
         assert not (tmp_path / "state").exists(), "nothing was loaded"
@@ -278,28 +278,37 @@ class TestCanonicalJson:
             "pseudonymise_source",
             mapping=[{"original": "Tom", "pseudonym": "Alex",
                       "variants": []}],
-            file_ids=[3, 1], case_mode="exact",
+            file_id=3, case_mode="exact",
             overlap_policy="snap_to_pseudonym",
             use_project_pseudonyms=True, include_context=True,
             context_chars=99, scan_residue=False, max_spans_per_entry=1,
             record_in_journal=False, allow_hidden_coder=True,
             preview_token="qcp1.1.aaaaaaaa." + "a" * 32, confirm=True)
         assert bound == {
-            "file_ids": [1, 3],
+            "file_id": 3,
             "mapping": [{"original": "Tom", "pseudonym": "Alex",
                          "variants": []}],
             "case_mode": "exact",
             "overlap_policy": "snap_to_pseudonym"}
 
-    def test_the_flagship_file_selection_binds_as_a_sorted_set(self):
-        """The same files asked for in another order is the same run."""
-        def call(ids):
+    def test_the_flagship_binds_its_one_file_as_an_integer(self):
+        """One file per call since v0.13 (decision A): the bind carries
+        the one id the server validated, as an integer, and no longer a
+        sorted list or None. Two files are two operations, and the old
+        list key is gone, so a 0.12 token for `file_ids` that reached
+        this binding would verify as another operation."""
+        def call(fid):
             return pt.canonical_args(
-                "pseudonymise_source", mapping=[], file_ids=ids,
+                "pseudonymise_source", mapping=[], file_id=fid,
                 case_mode="exact", overlap_policy="snap_to_pseudonym")
-        assert call([3, 1, 2]) == call([1, 2, 3])
-        assert call(None)["file_ids"] is None
-        assert call([1])["file_ids"] == [1]
+        assert call(1)["file_id"] == 1
+        assert isinstance(call(1)["file_id"], int)
+        assert call(1) != call(4)
+        assert "file_ids" not in call(1)
+        with pytest.raises(KeyError):
+            pt.canonical_args("pseudonymise_source", mapping=[],
+                              file_ids=[1], case_mode="exact",
+                              overlap_policy="snap_to_pseudonym")
 
     def test_confirm_and_the_token_are_never_bound(self):
         """They describe the call, not the effect, so they cannot be part
