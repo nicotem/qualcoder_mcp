@@ -1202,7 +1202,7 @@ def _pick(candidates: Sequence[Tuple[str, int, Any]], matched: str
     return candidates[0]
 
 
-def _attributed(matches, lookup_table, matched_of=None):
+def _attributed(matches, lookup_table):
     """Each match of a detector pattern, with the form it is charged to.
 
     Yields `(match, (form, entry) or None)`. The entry is recovered

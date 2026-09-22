@@ -14,7 +14,6 @@ The engine is pinned in `test_v012_pseudonymise_engine.py`
 file drives the block through the tool, on the flagship's own fixture.
 """
 
-import asyncio
 import json
 import sqlite3
 import sys
