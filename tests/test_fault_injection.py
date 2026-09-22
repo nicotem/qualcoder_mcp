@@ -1324,6 +1324,7 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         out = json.loads(H.execute_destructive(server.delete_code, 1))
 
         self._assert_says_it_did_not_commit(out, "the code was not deleted")
+        self._assert_keeps_the_retry_advice(out)
         # The backup exists, and the answer says which one it is.
         assert "backup_path" in out, out
         backup = Path(out["backup_path"])
@@ -1377,6 +1378,7 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         out = json.loads(server.import_text_file("new.txt", "some text"))
 
         self._assert_says_it_did_not_commit(out, "the file was not imported")
+        self._assert_keeps_the_retry_advice(out)
         assert Path(out["backup_path"]).is_dir()
         assert env.hash() == pre_hash
         assert server.db.read_only is True
@@ -1553,6 +1555,7 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
         out = json.loads(server.apply_codings(sess.session_id))
 
         self._assert_says_it_did_not_commit(out, "no codings were applied")
+        self._assert_keeps_the_retry_advice(out)
         assert out["applied_before_failure"] == 2
         assert out["total_approved"] == 2
         assert Path(out["backup_path"]).is_dir()
