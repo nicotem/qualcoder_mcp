@@ -2668,6 +2668,27 @@ class TestTheFileTextCountStaysCheap:
     CEILING_SECONDS = 3.0
 
     @staticmethod
+    def _timed(compiled, text):
+        """One count, timed with the collector paused after a collection.
+
+        The count allocates small objects per occurrence, and inside a
+        full suite run the interpreter's heap is thousands of tests deep,
+        so a cyclic collection landing in the timed section measured 10.3
+        ms per MB per form against 4.2 standalone on the same machine. A
+        server process has no such heap, and the guard is about the
+        algorithm's shape, so the collector is kept out of the timing."""
+        import gc
+        import time
+        gc.collect()
+        gc.disable()
+        try:
+            started = time.perf_counter()
+            found = P.names_left_in_text(compiled, text, True, False)
+            return found, time.perf_counter() - started
+        finally:
+            gc.enable()
+
+    @staticmethod
     def _corpus(forms=100, size=1_000_000):
         import random
         rng = random.Random(1300)
@@ -2693,14 +2714,11 @@ class TestTheFileTextCountStaysCheap:
         return mapping, " ".join(pieces)
 
     def test_a_megabyte_at_a_hundred_forms(self, record_property):
-        import time
         mapping, text = self._corpus()
         compiled = P.Compiled(P.validate_mapping(mapping))
         assert len(compiled.forms) == 100
         compiled.text_lookup()
-        started = time.perf_counter()
-        found = P.names_left_in_text(compiled, text, True, False)
-        elapsed = time.perf_counter() - started
+        found, elapsed = self._timed(compiled, text)
         megabytes = len(text) / 1_000_000
         rate = elapsed * 1000 / megabytes / len(compiled.forms)
         record_property("file_text_ms_per_mb_per_form", round(rate, 3))
@@ -2722,18 +2740,37 @@ class TestTheFileTextCountStaysCheap:
         where it separates the two shapes by more than twenty times: a
         quarter of a megabyte at 400 forms, 0.26 s with the key lookup
         and 5.6 s with capture groups on the machine that measured it."""
-        import time
         mapping, text = self._corpus(forms=400, size=250_000)
         compiled = P.Compiled(P.validate_mapping(mapping))
         assert len(compiled.forms) == 400
         compiled.text_lookup()
-        started = time.perf_counter()
-        found = P.names_left_in_text(compiled, text, True, False)
-        elapsed = time.perf_counter() - started
+        found, elapsed = self._timed(compiled, text)
         assert found["occurrences"]["wide"] > 100
         assert elapsed < self.CEILING_SECONDS, (
             f"{elapsed:.2f} s for a quarter of a megabyte at 400 forms: "
             f"the file-text count has lost its ungrouped pass")
+
+    def test_the_rate_reaches_the_summary_ci_prints(self):
+        """Ruling 7's check reads the rate from the six CI logs, and CI
+        runs `pytest -ra -q`, which prints nothing of a passing test's
+        own output. The rate is written into the run's summary by
+        `pytest_terminal_summary` in tests/conftest.py; driven here, the
+        way CI runs, in a separate interpreter."""
+        import subprocess
+        here = Path(__file__).resolve()
+        target = (f"{here}::TestTheFileTextCountStaysCheap::"
+                  f"test_a_megabyte_at_a_hundred_forms")
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "pytest", "-ra", "-q",
+             "-p", "no:cacheprovider", target],
+            cwd=str(here.parents[1]), capture_output=True, text=True,
+            timeout=300)
+        assert result.returncode == 0, result.stdout[-2000:]
+        lines = [line for line in result.stdout.splitlines()
+                 if line.startswith("file-text count rate: ")]
+        assert len(lines) == 1, result.stdout[-2000:]
+        assert " ms per MB per surface form (" in lines[0]
+        assert "test passed)" in lines[0]
 
 
 class TestPseudonymsContainingAName:
