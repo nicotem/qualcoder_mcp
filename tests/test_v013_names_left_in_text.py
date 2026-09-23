@@ -1010,6 +1010,14 @@ CARRYING = {
                 {"original": "Thomas Smith", "pseudonym": "Alex Smith"},
                 {"original": "Tom Smith", "pseudonym": "Alex Smith"}],
                "Thomas Smith met Tom Smith and Smith.", {1, 2}),
+    # Fix round 2, the re-verification's DR-1: a pseudonym only the
+    # rewriter reads as carrying a mapped name ("Rene" before a combining
+    # acute, the decomposed spelling of Rene with its accent). The union's
+    # rewriter half withholds it.
+    "rewriter_only": ([{"original": "Rene", "pseudonym": "Paul"},
+                       {"original": "Thomas",
+                        "pseudonym": "Rene\u0301 Martin"}],
+                      "Thomas met Rene. Later Thomas left.", {1}),
 }
 
 
@@ -1599,6 +1607,386 @@ class TestTheLongerWordsThroughTheTool:
 # FIX ROUND 2 (BRIEF1_FIX2_MANDATE.md): THE THIRD TIER, AND THE PINS THE
 # RE-VERIFICATION SHOWED MISSING
 # =============================================================================
+
+def _work_of(text, mapping=MAPPING):
+    """`residue_work` of `text` under `mapping`, in the budgets' units."""
+    return P.residue_work(P.Compiled(P.validate_mapping(mapping)), text)
+
+
+def _after(project, fid=1, mapping=MAPPING):
+    """File `fid`'s text as this run leaves it."""
+    compiled = P.Compiled(P.validate_mapping(mapping))
+    text = query(project, "SELECT fulltext FROM source WHERE id=?",
+                 (fid,))[0]["fulltext"]
+    return P.apply_replacements(text, P.find_replacements(compiled, text))
+
+
+class TestTheCheckBudget:
+    """B-2 and the lead's ruling on it: past the count's budgets a file is
+    asked the cheap question, which costs a count on a file where no name
+    shows, so the question has a budget of its own; past that a file is
+    not checked, named in `files_not_checked` and in the warning with how
+    to get it checked, and never reported clean."""
+
+    def _several(self, project):
+        TestTheWorkBudget()._several(project)
+
+    def test_past_the_check_budget_a_file_is_not_checked(self, project,
+                                                         monkeypatch):
+        self._several(project)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 0)
+        # Room to check the file this call names and nothing more.
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK",
+                            _work_of(_after(project)))
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        assert block["files_counted"] == 0
+        assert block["files_not_counted"] == [1]
+        assert block["files_not_checked"] == [2, 4, 5, 6, 7]
+        assert block["totals"]["files_not_checked"] == 5
+        rows = _rows(out)
+        for fid in (2, 4, 5, 6, 7):
+            # Never reported clean: the row says it was not checked, and
+            # it has no answer to "does a name show".
+            assert rows[fid] == {"file_id": fid, "name": rows[fid]["name"],
+                                 "rewritten_by_this_run": False,
+                                 "file_not_rewritten_because":
+                                     rows[fid]["file_not_rewritten_because"],
+                                 "counted": False, "checked": False}
+        assert block["files_not_checked_note"] == (
+            "5 file(s) were not checked at all: asking whether a name "
+            "shows in them passed this preview's budget for that question, "
+            "which costs as much as a count on a file where no name shows. "
+            "They are listed in files_not_checked and are not reported "
+            "clean: preview them one at a time, or use fewer names, to "
+            "check them.")
+        _house_rules([block["files_not_checked_note"]],
+                     ["files_not_checked_note"])
+        assert _file_text_warning(out) == (
+            "Warning: 5 file(s) were not checked; preview them one at a "
+            "time, or use fewer names, to check them (see "
+            "files_not_checked). See residue.file_text, which names the "
+            "files.")
+
+    def test_the_default_detail_names_them_by_id_only(self, project,
+                                                      monkeypatch):
+        self._several(project)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 0)
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", 0)
+        out = preview_of()
+        block = _block(out)
+        assert block["files_not_checked"] == [1, 2, 4, 5, 6, 7]
+        # The named file keeps its full row; the others have none.
+        assert [row["file_id"] for row in block["files"]] == [1]
+        assert block["files"][0]["checked"] is False
+        assert block["totals"]["files_showing_a_name"] == 0
+        assert "6 file(s) were not checked" in _file_text_warning(out)
+
+    def test_a_checked_file_after_a_counted_one_and_the_warning_joins(
+            self, project, monkeypatch):
+        """All three tiers in one preview: counted, checked, not checked;
+        the warning's sentences in that order."""
+        self._several(project)
+        after = _after(project)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", _work_of(after))
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK",
+                            _work_of("extracted page text")
+                            + _work_of("THOMAS in four."))
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        assert block["files_counted"] == 1
+        assert block["files_not_counted"] == [2, 4]
+        assert block["files_not_checked"] == [5, 6, 7]
+        assert _rows(out)[4]["shows_a_name"] is True
+        assert _file_text_warning(out) == (
+            "Warning: after this run, 1 file(s) would still show one of "
+            "these names in their text, and were not counted in full "
+            "because counting them passed this preview's budget; see "
+            "files_not_counted. 3 file(s) were not checked; preview them "
+            "one at a time, or use fewer names, to check them (see "
+            "files_not_checked). See residue.file_text, which names the "
+            "files.")
+
+
+class TestTheUnionAtTheCheapQuestion:
+    """The re-verification's lane 4, finding 2 (O4): the cheap question
+    past a budget asks the union too, so a file whose only name is
+    written before a combining mark is said to show one and the preview
+    is never quiet. Past the work budget and past the match budget,
+    separately."""
+
+    MAPPING = [{"original": "Rene", "pseudonym": "Alex"}]
+
+    def _project(self, project):
+        _set_text(project, 1, "Rene met the team.")
+        _set_text(project, 4, "Later Rene\u0301 arrived.")
+
+    @pytest.mark.parametrize("budget", ["MAX_RESIDUE_SCAN_WORK",
+                                        "MAX_RESIDUE_SCAN_MATCHES"])
+    def test_a_file_past_a_budget_shows_its_nfd_name(self, project,
+                                                     monkeypatch, budget):
+        self._project(project)
+        monkeypatch.setattr(P, budget, 0)
+        out = preview_of(residue_detail="project", mapping=self.MAPPING)
+        block = _block(out)
+        assert 4 in block["files_not_counted"]
+        assert _rows(out)[4]["shows_a_name"] is True
+        assert block["totals"]["files_showing_a_name_not_counted"] == 1
+        assert _file_text_warning(out) == (
+            "Warning: after this run, 1 file(s) would still show one of "
+            "these names in their text, and were not counted in full "
+            "because counting them passed this preview's budget; see "
+            "files_not_counted. See residue.file_text, which names the "
+            "files.")
+
+
+class TestTheWarningReadsTheTotalsPastTheCaps:
+    """The re-verification's CORR-3: with more files showing a name than
+    the rows have room for, the warning's count is the totals', not the
+    listed rows' sum."""
+
+    def test_the_occurrence_count_is_the_totals(self, project, monkeypatch):
+        for fid in range(5, 10):
+            _set_text(project, fid, f"THOMAS and THOMAS in {fid}.",
+                      name=f"f{fid}.txt")
+        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 1)
+        monkeypatch.setattr(P, "MAX_RESIDUE_COMPACT_ROWS", 2)
+        out = preview_of()
+        block = _block(out)
+        wide = block["totals"]["occurrences"]["wide"]
+        listed = sum(row["occurrences"]["wide"] for row in block["files"]
+                     if "occurrences" in row)
+        assert block["more_files_showing_a_name"] == [7, 8, 9]
+        assert wide == 10 and listed == 4
+        assert _file_text_warning(out).startswith(
+            f"Warning: after this run, {wide} occurrence(s) of these names "
+            f"would still be in the text of 5 file(s), ")
+
+
+class TestTheMatchBudgetAcrossFiles:
+    """The re-verification's B-5 (MB1): each file alone is under the
+    match budget and the two together are over it, so the second is not
+    counted. Proposed by lane 3."""
+
+    def test_the_match_budget_is_spent_across_files(self, project,
+                                                    monkeypatch):
+        _set_text(project, 5, "Thomas " * 10, name="five.txt")
+        _set_text(project, 6, "Thomas " * 10, name="six.txt")
+        alone = _block(preview_of(residue_detail="project"))
+        assert alone["files_not_counted"] == []
+        # File 5 spends 22 (ten matches in each of two passes, and one
+        # more in each for the first sight of the spelling); file 6 would
+        # spend 21 on its own.
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", 30)
+        block = _block(preview_of(residue_detail="project"))
+        assert 5 not in block["files_not_counted"]
+        assert 6 in block["files_not_counted"]
+
+    def test_the_entry_cap_holds_on_every_row_in_project_detail(
+            self, project):
+        """B-5 (MC2): every full row is capped, not only the named file's."""
+        people = _people(P.MAX_RESIDUE_ENTRY_ROWS + 10)
+        mapping = [{"original": name, "pseudonym": f"P{name}"}
+                   for name in people]
+        for fid in (5, 6):
+            _set_text(project, fid, " ".join(people) + ".",
+                      name=f"f{fid}.txt")
+        _set_text(project, 1, people[0] + " said so.")
+        rows = _rows(preview_of(mapping=mapping, residue_detail="project"))
+        for fid in (5, 6):
+            assert len(rows[fid]["entries"]) == P.MAX_RESIDUE_ENTRY_ROWS
+            assert rows[fid]["entries_truncated"] is True
+            assert rows[fid]["occurrences"]["wide"] == len(people)
+
+
+class TestTheUnionForLabelsAndAttributeValues:
+    """The re-verification's lane 4, finding 3 (O5): a label and an
+    attribute value written before a combining mark count in the wide
+    reading too, as a note does, and the fields warning says so."""
+
+    MAPPING = [{"original": "Rene", "pseudonym": "Alex"}]
+
+    def test_a_label_and_an_attribute_value(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE code_name SET name=? WHERE cid=1",
+                    ("Rene\u0301",))
+        con.execute("INSERT INTO attribute_type (name, date, owner, memo, "
+                    "caseOrFile, valuetype) VALUES ('Group', 'd', "
+                    "'TestCoder', '', 'case', 'character')")
+        con.execute("INSERT INTO attribute (attrid, name, attr_type, value, "
+                    "id, date, owner) VALUES (1, 'Group', 'case', ?, 1, "
+                    "'d', 'TestCoder')", ("Rene\u0301 group",))
+        con.commit()
+        con.close()
+        _reconnect(project)
+        out = preview_of(mapping=self.MAPPING)
+        residue = out["preview"]["residue"]
+        assert residue["code_names"] == {"wide": 1, "whole_word": 1}
+        attribute = residue["attribute_values"]
+        assert attribute == {"wide": 1, "whole_word": 1}
+        fields = [w for w in out["warnings"] if "note(s), label(s)" in w]
+        assert fields[0].startswith(
+            "Warning: 2 note(s), label(s) or attribute value(s) may still "
+            "show one of these names, and this tool does not rewrite any of "
+            "them; 2 of those match this run's own whole-word rule.")
+
+
+class TestTwoUnreadablePartsAreNamed:
+    """The re-verification's lane 4, finding 4 (O1): with two parts
+    unreadable the warning names both, in the order of the list."""
+
+    def test_both_in_order(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("DROP TABLE code_av")
+        con.execute("DROP TABLE code_image")
+        con.commit()
+        con.close()
+        _reconnect(project)
+        out = preview_of()
+        unreadable = out["preview"]["residue"]["unreadable"]
+        assert unreadable == ["code_av.memo", "code_image.memo"]
+        found = [w for w in out["warnings"]
+                 if w.startswith("Warning: this report could not read ")]
+        assert found == [
+            "Warning: this report could not read code_av.memo, "
+            "code_image.memo, so it does not cover them, and a name there is "
+            "counted nowhere in residue. Preview again; if the same parts "
+            "still cannot be read, check them in QualCoder before sharing "
+            "the project."]
+
+
+class TestTheMatchBudgetCountsTheFoldedPass:
+    """The re-verification's lane 4, finding 5 (O2): FD-9's "the match
+    budget counts all three passes", for the folded pass, which runs only
+    on text that is not ASCII. "Straße" ten times: ten matches in each of
+    the direct, folded and whole-word passes, and one more in each for
+    the first sight of the spelling, 33; without the folded pass's share
+    it would be 22."""
+
+    def test_straße_ten_times(self):
+        def compiled():
+            return P.Compiled(P.validate_mapping(
+                [{"original": "Straße", "pseudonym": "Alex"}]))
+        text = "Straße " * 10
+        found = P.names_left_in_text(compiled(), text, True, False)
+        assert found["matches"] == 33
+        assert found["occurrences"] == {"wide": 10, "whole_word": 10}
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=32) is None
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=33) is not None
+
+
+class TestTheLongerWordsAreAPrefix:
+    """The re-verification's lane 4, finding 6 (O3): the listing stops at
+    the first word that does not fit the shared budget, so what is listed
+    is a prefix of the rows' order; a shorter word after it is never
+    listed. Words of 14, 14 and 14 characters, then one of 8, under a
+    budget of 40: the first two fit, the third does not, and the fourth,
+    which would fit, is not listed."""
+
+    def test_a_shorter_word_after_the_first_that_does_not_fit(
+            self, project, monkeypatch):
+        _set_text(project, 5, "Thomas_P05_abc and Thomas_P05_abd.",
+                  name="f5.txt")
+        _set_text(project, 6, "Thomas_P06_abc here.", name="f6.txt")
+        _set_text(project, 7, "Thomasin here.", name="f7.txt")
+        monkeypatch.setattr(P, "MAX_LONGER_WORDS_TOTAL_CHARS", 40)
+        block = _block(preview_of(residue_detail="project"))
+        rows = {row["file_id"]: row for row in block["files"]}
+        listed = [item["word"] for row in block["files"]
+                  for entry in row.get("entries", [])
+                  for item in entry.get("longer_words", [])]
+        assert listed == ["Thomas_P05_abc", "Thomas_P05_abd"]
+        for fid in (6, 7):
+            entry = rows[fid]["entries"][0]
+            assert entry["longer_words"] == []
+            assert entry["longer_words_truncated"] is True
+
+
+class TestTheImportCountsTheAppliedWithheldOnly:
+    """The re-verification's lane 4, finding 7 (O7): FD-14's rule, the
+    import report counts the withheld entries among those it APPLIED. An
+    import whose content applies only the entry that is not withheld
+    carries no `pseudonyms_withheld`."""
+
+    def test_a_withheld_entry_not_applied_is_not_counted(self, project):
+        mapping, _, _ = CARRYING["contains_other"]
+        (project / "pseudonyms.json").write_text(json.dumps(mapping),
+                                                 encoding="utf-8")
+        out = json.loads(server.import_text_file(
+            filename="alone.txt", content="Smith came alone.",
+            create_backup=False, apply_project_pseudonyms=True))
+        report = out["project_pseudonyms"]
+        assert report["per_pseudonym"] == [
+            {"entry": 0, "pseudonym": "Jones", "count": 1}]
+        assert "pseudonyms_withheld" not in report
+        assert "pseudonyms_withheld_note" not in report
+
+
+def _plain(value):
+    """`value` with its combining marks taken off and casefolded, so a
+    decomposed, a composed and an ASCII-sanitised "Rene" all read "rene"."""
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", value)
+                   if not unicodedata.combining(ch)).casefold()
+
+
+class TestAnNfdFolderAndFileNameLeaveNoTrace:
+    """The re-verification's DR-2: the union at every call site of the
+    file-name and path rule, end to end. A project folder `René study.qda`
+    and file 1 named `René_interview.txt`, both with the accent
+    decomposed, under a mapping of "Rene": the detector does not see
+    either name, the rewriter does. On both mapping paths, preview and
+    execute: the run record's project path, backup path and file name are
+    withheld, the journal's name and body carry neither, and no log
+    record does (the journal's name reaches the host log at INFO). The
+    preview and the execute result name the folder and the file, which
+    ruling 12 declares; they are not what this pins."""
+
+    MAPPING = [{"original": "Rene", "pseudonym": "Alex"}]
+    NFD = "Rene\u0301"
+
+    @pytest.mark.parametrize("path", ["typed", "sidecar"])
+    def test_every_record_and_log(self, tmp_path, caplog, path):
+        import logging
+        folder = build_project(tmp_path / f"{self.NFD} study.qda",
+                               "Rene met the team. Rene left.")
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("UPDATE source SET name=? WHERE id=1",
+                    (f"{self.NFD}_interview.txt",))
+        con.commit()
+        con.close()
+        write_fixture_sidecar(str(folder))
+        compiled = P.Compiled(P.validate_mapping(self.MAPPING))
+        assert not compiled.detector.contains(f"{self.NFD}_interview.txt")
+        assert compiled.pattern.search(f"{self.NFD}_interview.txt")
+        if path == "sidecar":
+            (folder / "pseudonyms.json").write_text(
+                json.dumps(self.MAPPING), encoding="utf-8")
+        caplog.set_level(logging.DEBUG)
+        with wired(folder):
+            if path == "sidecar":
+                out = call(mapping=None, use_project_pseudonyms=True)
+                result = flagship.execute_as_recipe(out)
+            else:
+                out = call(mapping=self.MAPPING)
+                result = execute_from(out, mapping=self.MAPPING)
+            assert result.get("success") is True, result
+            journal = query(folder, "SELECT name, jentry FROM journal")
+        manifest = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        record = json.loads(manifest)
+        assert record["project_path"] is None
+        assert record["backup_path"] is None
+        assert record.get("paths_withheld")
+        assert [item["name"] for item in record["files"]] == [None]
+        assert "rene" not in _plain(manifest)
+        assert journal, "the run wrote no journal entry"
+        for row in journal:
+            assert "rene" not in _plain(row["name"]), row["name"]
+            assert "rene" not in _plain(row["jentry"])
+        logged = [item.getMessage() for item in caplog.records]
+        assert [line for line in logged if "rene" in _plain(line)] == []
 
 
 class TestCompactRowsHaveACapOfTheirOwn:
