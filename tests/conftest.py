@@ -23,6 +23,7 @@ from track5_helpers import (write_fixture_sidecar, REAL_WORKSPACE,
                             GUARDED_REAL_FOLDERS, SHARING_VIOLATION,
                             open_paths_under)
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
+from hypothesis import HealthCheck as _HealthCheck
 from hypothesis import settings as _hypothesis_settings
 
 
@@ -31,8 +32,14 @@ from hypothesis import settings as _hypothesis_settings
 # never red by the luck of a seed; locally the seed stays random, and a
 # chosen one is `--hypothesis-seed=N`. GitHub Actions sets CI=true on
 # every runner. HYPOTHESIS_PROFILE picks a profile by name either way.
-_hypothesis_settings.register_profile("ci", derandomize=True,
-                                      database=None, print_blob=True)
+# Hypothesis itself (6.156.6 as installed here) registers a "ci" profile
+# with these settings and loads it when it sees CI; this one replaces it
+# with the same settings, so the suite's CI behaviour does not rest on
+# the installed version (pyproject allows 6.100 and later), and it can
+# be chosen by name on a machine that is not CI.
+_hypothesis_settings.register_profile(
+    "ci", derandomize=True, deadline=None, database=None, print_blob=True,
+    suppress_health_check=[_HealthCheck.too_slow])
 
 
 def hypothesis_profile_for(environ) -> str:

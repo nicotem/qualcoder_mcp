@@ -2897,24 +2897,46 @@ class TestThePropertiesAreDerandomisedInCI:
         profile = settings.get_profile("ci")
         assert profile.derandomize is True
         assert profile.database is None
+        assert profile.deadline is None
 
-    def test_a_settings_object_made_at_import_inherits_it_in_ci(self):
-        """The mechanism itself, in a fresh interpreter with CI set: a
-        module-level `settings(...)` such as `_RESIDUE_SETTINGS`, made
-        after conftest has loaded the profile, is derandomised."""
+    # The variables Hypothesis reads to decide for itself that it is on a
+    # CI machine (it then loads a "ci" profile of its own), and CI.
+    CI_VARIABLES = ("CI", "__TOX_ENVIRONMENT_VARIABLE_ORIGINAL_CI",
+                    "TF_BUILD", "bamboo.buildKey", "BUILDKITE", "CIRCLECI",
+                    "CIRRUS_CI", "CODEBUILD_BUILD_ID", "GITHUB_ACTIONS",
+                    "GITLAB_CI", "HEROKU_TEST_RUN_ID", "TEAMCITY_VERSION")
+
+    def _derandomised_in_a_fresh_interpreter(self, **extra):
         import os
         import subprocess
         here = Path(__file__).resolve()
         probe = ("import sys; sys.path.insert(0, 'tests'); import conftest; "
                  "from hypothesis import settings; "
                  "print(settings(max_examples=3).derandomize)")
-        environ = {**os.environ, "CI": "true"}
-        environ.pop("HYPOTHESIS_PROFILE", None)
+        environ = {key: value for key, value in os.environ.items()
+                   if key not in self.CI_VARIABLES
+                   and key != "HYPOTHESIS_PROFILE"}
+        environ.update(extra)
         result = subprocess.run([sys.executable, "-B", "-c", probe],
                                 cwd=str(here.parents[1]), env=environ,
                                 capture_output=True, text=True, timeout=120)
-        assert result.stdout.strip().splitlines()[-1:] == ["True"], \
-            result.stderr[-2000:]
+        lines = result.stdout.strip().splitlines()
+        assert lines[-1:] in (["True"], ["False"]), result.stderr[-2000:]
+        return lines[-1] == "True"
+
+    def test_a_settings_object_made_at_import_inherits_the_profile(self):
+        """The mechanism itself, in a fresh interpreter: a module-level
+        `settings(...)` such as `_RESIDUE_SETTINGS`, made after conftest
+        has loaded the profile, is derandomised when the profile is
+        asked for by name on a machine Hypothesis does not take for CI
+        (so it is this suite's profile doing it, not Hypothesis's own),
+        and random when nothing asks for it."""
+        assert self._derandomised_in_a_fresh_interpreter(
+            HYPOTHESIS_PROFILE="ci") is True
+        assert self._derandomised_in_a_fresh_interpreter() is False
+
+    def test_ci_is_derandomised(self):
+        assert self._derandomised_in_a_fresh_interpreter(CI="true") is True
 
 
 class TestTheFileTextCountStaysCheap:
