@@ -3351,20 +3351,24 @@ class TestAMatchIsPlacedOncePerSpelling:
     def test_distinct_spellings_are_placed_quickly(self):
         """Every label a NEW spelling, so no memo helps: the forms a
         spelling can belong to are found through `ignorecase_key`, one
-        dictionary lookup, rather than by a full match against every form
-        (which, at 12 ms a spelling, is 18 s for these 1,500 labels)."""
+        dictionary lookup, rather than by a scan of the forms with a full
+        match each through `re`'s cache of 512, which the 1,996 forms
+        here miss on almost every step (the re-verification's B-3, 12 ms
+        a spelling at this size; the scan, mutation B3c, took 22 to 24 s
+        for these labels in process, against under 1 s)."""
         import time
         compiled = _two_thousand_forms(stem="i")
         labels = []
-        for form, _ in compiled.forms[:500]:
+        for form, _ in compiled.forms:
+            if form == "Ali":
+                continue
             rest = form[1:]
-            labels += ["\u0130" + rest.upper(), "\u0130" + rest,
-                       "\u0130" + rest.capitalize()]
+            labels += ["\u0130" + rest.upper(), "\u0130" + rest.capitalize()]
         text = "".join(f"{label}: evet.\n" for label in labels)
         started = time.perf_counter()
         found = P.names_left_in_text(compiled, text, True, False)
         elapsed = time.perf_counter() - started
-        assert found["occurrences"]["whole_word"] == len(labels) == 1500
+        assert found["occurrences"]["whole_word"] == len(labels) == 3992
         assert elapsed < self.CEILING_SECONDS, elapsed
 
     def test_the_count_is_quick_at_two_thousand_forms(self):
