@@ -64,9 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project is 14,979 characters (53,966 with every file's detail, which
   is what the first build gave by default) and of a 250-file project
   32,820 (162,233); at the 1,000-row cap the block alone is about 97,000
-  characters. The split by
-  kind is a heuristic and the total is not; an occurrence no entry can
-  be charged to is still counted, as `unattributed`. A name inside a
+  characters. The split by kind is a heuristic and the total is not; an
+  occurrence no entry can be charged to is still counted, as
+  `unattributed`. A name inside a
   longer word is reported and never substituted, and on a typed mapping
   the longer words themselves are listed so an exact entry can be
   added: only a word that extends the name by at most eight characters
@@ -83,8 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not checked at all, is listed in `files_not_checked`, the warning
   names it and says how to get it checked, and it is never reported
   clean. The three are measured to stay near two seconds together on any
-  text and at any mapping size up to the 2,000-name maximum (about 2.0 s
-  at worst on Python 3.11.13 here, on curly-quoted text with a
+  text and at any mapping size up to the maximum of 500 entries (about
+  2.0 s at worst on Python 3.11.13 here, on curly-quoted text with a
   case-insensitive mapping). A row lists at most 50 entries, the most
   frequent first, with its own totals complete. A second warning reads
   the file-text counts out, kept apart from the fields warning, and it
