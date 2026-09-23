@@ -81,14 +81,22 @@ def _header_line(lines):
     return index
 
 
+def _headed(lines):
+    """The header is where _header_line puts it, and no shebang follows
+    it: a shebang works only on line 1, so a header put above one would
+    disable it."""
+    index = _header_line(lines)
+    return (index < len(lines) and lines[index] == HEADER
+            and not any(line.startswith("#!") for line in lines[1:3]))
+
+
 class TestTheSpdxHeader:
 
     def test_every_python_file_carries_it(self):
         missing = []
         for path in _python_files():
             lines = path.read_text(encoding="utf-8").splitlines()
-            index = _header_line(lines)
-            if index >= len(lines) or lines[index] != HEADER:
+            if not _headed(lines):
                 missing.append(str(path.relative_to(REPO)))
         assert not missing, (
             f"{len(missing)} file(s) lack the line {HEADER!r} at the top "
@@ -115,6 +123,9 @@ class TestTheSpdxHeader:
         assert _header_line(["# -*- coding: utf-8 -*-", HEADER]) == 1
         assert _header_line(["#!/usr/bin/env python3",
                              "# -*- coding: utf-8 -*-", HEADER]) == 2
+        assert _headed(["#!/usr/bin/env python3", HEADER, '"""Doc."""'])
+        assert not _headed([HEADER, "#!/usr/bin/env python3", '"""Doc."""'])
+        assert not _headed(["#!/usr/bin/env python3", '"""Doc."""'])
 
 
 class TestThePackageDeclaresIt:
