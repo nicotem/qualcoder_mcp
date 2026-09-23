@@ -1557,6 +1557,32 @@ def names_left_in_text(compiled: "Compiled", text: str,
             "normalisation_variants_seen": normalisation_variants}
 
 
+# The owner's ruling of 2026-09-23 on Brief 1's finding F-1: a pseudonym
+# that contains a name from the mapping is withheld, by the rule that
+# withholds a file name carrying one, from the run record and the journal
+# entry on both mapping paths and from the preview on the
+# `use_project_pseudonyms` path. The one sentence every such place says.
+PSEUDONYMS_WITHHELD_NOTE = (
+    "A pseudonym that contains a name from this mapping is withheld here, "
+    "by the rule that withholds a file name that carries one; its entry "
+    "number identifies it. The run still writes it into the text.")
+
+
+def pseudonyms_withheld(compiled: "Compiled") -> Tuple[int, ...]:
+    """The entries whose pseudonym carries a name from the mapping.
+
+    `Compiled.carries_a_name` over each pseudonym: the union of the two
+    matchers, so "Alex Smith" (a whole word of `Smith`), "Thomas Jr" (its
+    own original) and "Thomasina" (inside a longer word, which the static
+    check of `pseudonyms_containing_a_name` cannot see) are all withheld.
+    The price is the wide reading's: a short name withholds a pseudonym
+    that merely contains its letters ("Ed" in "Fred"), and the entry
+    number still identifies it.
+    """
+    return tuple(entry.index for entry in compiled.mapping.entries
+                 if compiled.carries_a_name(entry.pseudonym))
+
+
 def pseudonyms_containing_a_name(compiled: "Compiled"
                                  ) -> List[Dict[str, Any]]:
     """Pseudonyms the rewriter's own rule finds a name in (v0.13, item 5).

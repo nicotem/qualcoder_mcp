@@ -2881,3 +2881,33 @@ class TestPseudonymsContainingAName:
                    {"original": "Thomas", "pseudonym": "Alex SMITH"}]
         assert self._check(mapping, "exact") == []
         assert self._check(mapping, "insensitive")[0]["form"] == "Smith"
+
+
+class TestPseudonymsWithheld:
+    """The predicate of the owner's F-1 ruling, at the engine."""
+
+    @staticmethod
+    def _withheld(mapping):
+        return P.pseudonyms_withheld(
+            P.Compiled(P.validate_mapping(mapping)))
+
+    def test_a_whole_word_its_own_original_and_a_longer_word(self):
+        assert self._withheld([{"original": "Smith", "pseudonym": "Jones"},
+                               {"original": "Thomas Smith",
+                                "pseudonym": "Alex Smith"}]) == (1,)
+        assert self._withheld([{"original": "Thomas",
+                                "pseudonym": "Thomas Jr"}]) == (0,)
+        # The static check of item 5 cannot see this one; the union can.
+        assert self._withheld([{"original": "Thomas",
+                                "pseudonym": "Thomasina"}]) == (0,)
+        assert P.pseudonyms_containing_a_name(P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Thomasina"}]))) == []
+
+    def test_a_clean_mapping_and_the_declared_price(self):
+        assert self._withheld([{"original": "Thomas", "pseudonym": "Alex"},
+                               {"original": "Mary Ann",
+                                "pseudonym": "Sam"}]) == ()
+        # The wide reading's price, declared: a short name withholds a
+        # pseudonym that merely contains its letters.
+        assert self._withheld([{"original": "Ed", "pseudonym": "Fred"}]) \
+            == (0,)

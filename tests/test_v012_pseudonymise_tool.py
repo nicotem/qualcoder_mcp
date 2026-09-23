@@ -4399,8 +4399,11 @@ class TestImportRider:
                      (out["file_id"],))[0]["fulltext"] == \
             "Alex arrived. Alex left."
         assert out["project_pseudonyms"]["applied"] == 2
+        # Each row names its entry since v0.13, so a pseudonym withheld
+        # under the owner's F-1 ruling is still identified.
         assert out["project_pseudonyms"]["per_pseudonym"] == [
-            {"pseudonym": "Alex", "count": 2}]
+            {"entry": 0, "pseudonym": "Alex", "count": 2}]
+        assert "pseudonyms_withheld" not in out["project_pseudonyms"]
 
     def test_the_import_is_unchanged_by_default(self, project):
         (project / "pseudonyms.json").write_text(

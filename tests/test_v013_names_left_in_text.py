@@ -945,3 +945,174 @@ class TestTheWideReadingIsAtLeastTheRewrite:
         assert server._pseudonymise_safe_name(name, compiled) is None
         assert server._pseudonymise_safe_name(
             "interview_07.txt", compiled) == "interview_07.txt"
+
+
+# =============================================================================
+# FIX ROUND 1, F1: A PSEUDONYM THAT CONTAINS A MAPPED NAME IS WITHHELD
+# =============================================================================
+
+# The Security gate's five shapes (S-2), each a mapping and a text.
+CARRYING = {
+    "contains_other": ([{"original": "Smith", "pseudonym": "Jones"},
+                        {"original": "Thomas Smith",
+                         "pseudonym": "Alex Smith"}],
+                       "Thomas Smith met Smith. Later Thomas Smith left.",
+                       {1}),
+    "contains_own": ([{"original": "Thomas", "pseudonym": "Thomas Jr"}],
+                     "Thomas said hello. Thomas left.", {0}),
+    "wide_only": ([{"original": "Thomas", "pseudonym": "Thomasina"}],
+                  "Thomas said hello. Thomas left.", {0}),
+    "pre_existing": ([{"original": "Smith", "pseudonym": "Jones"},
+                      {"original": "Thomas Smith",
+                       "pseudonym": "Alex Smith"}],
+                     "Thomas Smith met Alex Smith and Smith.", {1}),
+    "shared": ([{"original": "Smith", "pseudonym": "Jones"},
+                {"original": "Thomas Smith", "pseudonym": "Alex Smith"},
+                {"original": "Tom Smith", "pseudonym": "Alex Smith"}],
+               "Thomas Smith met Tom Smith and Smith.", {1, 2}),
+}
+
+
+def _originals(mapping):
+    names = set()
+    for item in mapping:
+        names.add(item["original"])
+        names.update(item["original"].split())
+    return sorted(names)
+
+
+def _outside_fixed_prose(payload, name):
+    """Where `name` reaches `payload` beyond the declared routes and the
+    item 5 warning's fixed example ("xThomasx")."""
+    found = flagship.routes_carrying(payload, name, flagship.DECLARED_ROUTES)
+    return [(path, text) for path, text in found
+            if not (path.startswith(".warnings[")
+                    and name.lower() not in text.replace(
+                        "xThomasx", "").lower())]
+
+
+class TestAPseudonymCarryingANameIsWithheld:
+    """The owner's F-1 ruling and the lead's ruling on S-2. A pseudonym
+    that contains a name from the mapping is withheld from the run record
+    and the journal entry on both mapping paths, and from every route of
+    the preview that quotes a pseudonym on the `use_project_pseudonyms`
+    path; the entry index stays and one fixed sentence says why. The run
+    itself goes ahead, with its warning (ruling 8)."""
+
+    @staticmethod
+    def _project(tmp_path, text, mapping, sidecar):
+        folder = build_project(tmp_path / "study.qda", text)
+        write_fixture_sidecar(str(folder))
+        if sidecar:
+            (folder / "pseudonyms.json").write_text(json.dumps(mapping),
+                                                    encoding="utf-8")
+        return folder
+
+    @staticmethod
+    def _records(folder, result):
+        manifest = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        journal = query(folder, "SELECT name, jentry FROM journal")
+        return manifest, journal
+
+    @pytest.mark.parametrize("shape", sorted(CARRYING))
+    def test_the_sidecar_path_withholds_it_everywhere(self, tmp_path, shape):
+        mapping, text, withheld = CARRYING[shape]
+        folder = self._project(tmp_path, text, mapping, sidecar=True)
+        with wired(folder):
+            out = call(mapping=None, use_project_pseudonyms=True)
+            preview = out["preview"]
+            for name in _originals(mapping):
+                assert _outside_fixed_prose(out, name) == [], (shape, name)
+            for block in preview["files"][0]["replacements"]:
+                if block["entry"] in withheld:
+                    assert block["pseudonym"] is None, block
+                else:
+                    assert block["pseudonym"] is not None, block
+            for item in preview["files"][0][
+                    "pre_existing_pseudonym_occurrences"]:
+                assert (item["pseudonym"] is None) == (
+                    item["entry"] in withheld), item
+            for item in preview.get("shared_pseudonyms", []):
+                assert item["pseudonym"] is None, item
+            assert preview["pseudonyms_withheld"] == len(withheld)
+            assert preview["pseudonyms_withheld_note"] == \
+                P.PSEUDONYMS_WITHHELD_NOTE
+            result = flagship.execute_as_recipe(out)
+            assert result.get("success") is True, result
+            manifest, journal = self._records(folder, result)
+        record = json.loads(manifest)
+        for entry in record["entries"]:
+            assert (entry["pseudonym"] is None) == (
+                entry["index"] in withheld), entry
+        assert record["pseudonyms_withheld"] == len(withheld)
+        for name in _originals(mapping):
+            assert name.lower() not in manifest.lower(), (shape, name)
+            for row in journal:
+                assert name.lower() not in row["jentry"].lower(), name
+                assert name.lower() not in row["name"].lower(), name
+            assert name.lower() not in json.dumps(result).lower(), name
+        body = [row["jentry"] for row in journal
+                if "Pseudonyms applied" in row["jentry"]][0]
+        assert P.PSEUDONYMS_WITHHELD_NOTE in body
+        for index in withheld:
+            assert f"entry {index}, withheld (" in body
+
+    def test_the_typed_path_quotes_it_and_the_records_withhold_it(
+            self, tmp_path):
+        mapping, text, _ = CARRYING["contains_other"]
+        folder = self._project(tmp_path, text, mapping, sidecar=False)
+        with wired(folder):
+            out = preview_of(mapping=mapping)
+            # The caller typed it: the preview quotes it back.
+            assert [block["pseudonym"] for block in
+                    out["preview"]["files"][0]["replacements"]] == [
+                "Jones", "Alex Smith"]
+            assert "pseudonyms_withheld" not in out["preview"]
+            result = execute_from(out, mapping=mapping)
+            assert result.get("success") is True, result
+            manifest, journal = self._records(folder, result)
+        record = json.loads(manifest)
+        assert record["entries"] == [{"index": 0, "pseudonym": "Jones"},
+                                     {"index": 1, "pseudonym": None}]
+        assert record["pseudonyms_withheld"] == 1
+        assert record["pseudonyms_withheld_note"] == \
+            P.PSEUDONYMS_WITHHELD_NOTE
+        assert "smith" not in manifest.lower()
+        body = journal[0]["jentry"]
+        assert "Pseudonyms applied: Jones (1), entry 1, withheld (2)." in body
+        assert "smith" not in body.lower()
+
+    def test_a_clean_mapping_withholds_nothing(self, project):
+        (project / "pseudonyms.json").write_text(json.dumps(
+            [{"original": "Thomas", "pseudonym": "Alex"},
+             {"original": "Mary Ann", "pseudonym": "Sam"}]),
+            encoding="utf-8")
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        assert "pseudonyms_withheld" not in out["preview"]
+        result = flagship.execute_as_recipe(out)
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert [entry["pseudonym"] for entry in record["entries"]] == [
+            "Alex", "Sam"]
+        assert "pseudonyms_withheld" not in record
+
+    def test_the_import_withholds_it_too(self, project):
+        """`import_text_file(apply_project_pseudonyms=True)` reads the
+        researcher's own `pseudonyms.json`: the same rule."""
+        mapping, _, _ = CARRYING["contains_other"]
+        (project / "pseudonyms.json").write_text(json.dumps(mapping),
+                                                 encoding="utf-8")
+        out = json.loads(server.import_text_file(
+            filename="new.txt", content="Thomas Smith met Smith.",
+            create_backup=False, apply_project_pseudonyms=True))
+        report = out["project_pseudonyms"]
+        assert report["per_pseudonym"] == [
+            {"entry": 0, "pseudonym": "Jones", "count": 1},
+            {"entry": 1, "pseudonym": None, "count": 1}]
+        assert report["pseudonyms_withheld"] == 1
+        assert report["pseudonyms_withheld_note"] == \
+            P.PSEUDONYMS_WITHHELD_NOTE
+        assert "smith" not in json.dumps(out).lower()
+
+    def test_the_sentence_keeps_the_house_rules(self):
+        _house_rules([P.PSEUDONYMS_WITHHELD_NOTE], ["withheld note"])

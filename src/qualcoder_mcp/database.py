@@ -8829,6 +8829,16 @@ class QualcoderDatabase:
 
         compiled = plan["compiled"]
         entries = compiled.mapping.entries
+        # On the `use_project_pseudonyms` path a pseudonym that carries a
+        # name from the mapping is withheld by every route that quotes
+        # one (the owner's F-1 ruling, the lead's ruling on S-2): each is
+        # null, the entry index stays, and one sentence says why.
+        withheld = (set() if may_echo_names
+                    else set(engine.pseudonyms_withheld(compiled)))
+
+        def pseudonym_of(index: int) -> Optional[str]:
+            return None if index in withheld else entries[index].pseudonym
+
         context_withheld = include_context and not may_echo_names
         include_context = include_context and may_echo_names
         files = []
@@ -8852,7 +8862,7 @@ class QualcoderDatabase:
                 shown = spans[:max_spans_per_entry]
                 block: Dict[str, Any] = {
                     "entry": index,
-                    "pseudonym": entries[index].pseudonym,
+                    "pseudonym": pseudonym_of(index),
                     "count": len(spans),
                     "spans": [[s.start, s.end] for s in shown],
                 }
@@ -8908,9 +8918,10 @@ class QualcoderDatabase:
                 "new_text_length": len(item["new_text"]),
                 "position_safe": item["position_safe"],
                 "replacements": replacements,
-                "pre_existing_pseudonym_occurrences":
-                    engine.pre_existing_pseudonym_occurrences(
-                        compiled, text, max_spans_per_entry),
+                "pre_existing_pseudonym_occurrences": [
+                    {**item, "pseudonym": pseudonym_of(item["entry"])}
+                    for item in engine.pre_existing_pseudonym_occurrences(
+                        compiled, text, max_spans_per_entry)],
                 "overlap_conflicts": (
                     item["overlap_conflicts"] if may_echo_names else
                     self._pseudonymise_without_forms(
@@ -8960,7 +8971,14 @@ class QualcoderDatabase:
                 "other part of this preview are unaffected.")
         if compiled.mapping.shared_pseudonyms:
             preview["shared_pseudonyms"] = [
-                dict(item) for item in compiled.mapping.shared_pseudonyms]
+                {**item, "pseudonym": (
+                    None if withheld.intersection(item["entries"])
+                    else item["pseudonym"])}
+                for item in compiled.mapping.shared_pseudonyms]
+        if withheld:
+            preview["pseudonyms_withheld"] = len(withheld)
+            preview["pseudonyms_withheld_note"] = \
+                engine.PSEUDONYMS_WITHHELD_NOTE
         short = engine.short_forms(compiled.mapping)
         if short:
             # Presentation, not effect: the warning it drives says how to

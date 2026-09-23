@@ -6593,12 +6593,19 @@ def import_text_file(
         counts: Dict[int, int] = {}
         for replacement in replacements:
             counts[replacement.entry] = counts.get(replacement.entry, 0) + 1
+        # The mapping is the researcher's own `pseudonyms.json`, so a
+        # pseudonym that carries one of its names is withheld here, as on
+        # the flagship's `use_project_pseudonyms` path (the owner's F-1
+        # ruling, the lead's ruling on S-2): null, with its entry index.
+        withheld = set(pseudo.pseudonyms_withheld(compiled))
         pseudonym_report = {
             "applied": len(replacements),
             "entries": len(validated),
             "pseudonyms_json_encoding": sidecar_encoding,
             "per_pseudonym": [
-                {"pseudonym": validated.entries[index].pseudonym,
+                {"entry": index,
+                 "pseudonym": (None if index in withheld
+                               else validated.entries[index].pseudonym),
                  "count": count}
                 for index, count in sorted(counts.items())],
             "note": ("Only the names in this project's pseudonyms.json "
@@ -6610,6 +6617,11 @@ def import_text_file(
                      "after another, so nothing this import wrote was "
                      "replaced again."),
         }
+        if withheld.intersection(counts):
+            pseudonym_report["pseudonyms_withheld"] = len(
+                withheld.intersection(counts))
+            pseudonym_report["pseudonyms_withheld_note"] = \
+                pseudo.PSEUDONYMS_WITHHELD_NOTE
         if not content.strip():
             return json.dumps({
                 "error": ("After applying this project's pseudonyms the "
@@ -10773,6 +10785,9 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     the project's own audit record at that point (Security S6).
     """
     entries = compiled.mapping.entries
+    # The owner's F-1 ruling: a pseudonym carrying a name from the mapping
+    # is withheld from this record on both mapping paths.
+    withheld = set(pseudo.pseudonyms_withheld(compiled))
     per_entry: Dict[int, int] = {}
     for item in plan["files"]:
         for replacement in item["replacements"]:
@@ -10799,9 +10814,12 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
             f"{report['codings_deleted']} coding(s) deleted.")
     if per_entry:
         applied = ", ".join(
-            f"{entries[index].pseudonym} ({count})"
+            (f"entry {index}, withheld ({count})" if index in withheld
+             else f"{entries[index].pseudonym} ({count})")
             for index, count in sorted(per_entry.items()))
         lines.append(f"Pseudonyms applied: {applied}.")
+        if withheld.intersection(per_entry):
+            lines.append(pseudo.PSEUDONYMS_WITHHELD_NOTE)
     if backup_name:
         safe_backup = _pseudonymise_safe_name(backup_name, compiled)
         lines.append(
@@ -10834,6 +10852,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     belongs to the researcher, not to this server's state folder.
     """
     entries = compiled.mapping.entries
+    withheld = set(pseudo.pseudonyms_withheld(compiled))
     by_id = {item["file_id"]: item for item in written["files"]}
     files = []
     for item in plan["files"]:
@@ -10907,10 +10926,17 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
             json.dumps(canonical_map, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=False).encode("utf-8"),
             hashlib.sha256).hexdigest(),
-        "entries": [{"index": entry.index, "pseudonym": entry.pseudonym}
+        # A pseudonym carrying a name from the mapping is null here, on
+        # both mapping paths (the owner's F-1 ruling).
+        "entries": [{"index": entry.index,
+                     "pseudonym": (None if entry.index in withheld
+                                   else entry.pseudonym)}
                     for entry in entries],
         "files": files,
     }
+    if withheld:
+        manifest["pseudonyms_withheld"] = len(withheld)
+        manifest["pseudonyms_withheld_note"] = pseudo.PSEUDONYMS_WITHHELD_NOTE
     if project_path is None or (backup_path and safe_backup_path is None):
         manifest["paths_withheld"] = (
             "The project path and the backup path are not recorded here: "
