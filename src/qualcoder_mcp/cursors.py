@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Deterministic keyset cursors for paged reads (v0.12, D4 3.2).
 
 A cursor is a POSITION, not a permission and not a stored result set. It

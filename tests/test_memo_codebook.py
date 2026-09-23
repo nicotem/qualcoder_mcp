@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Tests for memo writing and codebook editing (feature/memo-codebook).
 
 Reconciled against the QualCoder 3.8.2 ground-truth dossiers

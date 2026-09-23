@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v17 WS5: concurrency posture vs lockless QualCoder master (T17/T18, C7).
 
 Master removed the project_in_use.lock protocol entirely, so the lock

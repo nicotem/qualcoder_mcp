@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Guards on the suite itself: where it may write, and what it compiles.
 
 Fix round 1 (QA round 1, F1 and F19). Two defects that a green suite

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-5: best-effort QC 4.0 GUI-open detection.
 
 QualCoder 4.0 deleted project_in_use.lock (no matches in the pinned

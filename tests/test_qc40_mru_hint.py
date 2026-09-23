@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-6: MRU hint on "no project selected" errors (approved 2026-08-28).
 
 Every no-project error path appends the machine's most-recently-used

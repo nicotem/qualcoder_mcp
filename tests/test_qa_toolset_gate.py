@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA gate additions for QUALCODER_MCP_TOOLSET (feat/local-hosts).
 
 Independent verification beyond test_toolset_modes.py: case-insensitivity

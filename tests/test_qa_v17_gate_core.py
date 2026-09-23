@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA v17 gate — surfaces 1-3: probe gate, sub-code write fidelity, C7.
 
 Independent verification: mis-stamped version strings both directions, the

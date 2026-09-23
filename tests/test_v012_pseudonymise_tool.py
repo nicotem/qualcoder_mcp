@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The v0.12 flagship as a TOOL: preview, token, guards, writes (D1 6.3, 6.4).
 
 The engine's own tests are in `test_v012_pseudonymise_engine.py` and need

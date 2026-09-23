@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA v0.8 gate — surfaces 1-2: inductive coding + edit_suggestion/span
 alternatives. Independent adversarial verification of the contract (A.1-A.6),
 the 16 panel deltas and the 10 demanded fixtures. Driven through registered

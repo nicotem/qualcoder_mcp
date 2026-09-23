@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA v17 gate — surfaces 4-5: sub-code reads/exports (WS3) and parity
 hardening (WS4), independently verified against master's recipes.
 """

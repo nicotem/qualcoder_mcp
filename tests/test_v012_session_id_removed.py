@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.12 Batch A, item A4: the deprecated `session_id` duplicate is gone.
 
 Announced in 0.10.1 and 0.11.0 as "a later release": every session-tool

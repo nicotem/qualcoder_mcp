@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Targeted coverage for database.search_files (track5 R7 coverage hole).
 
 The search_files body was the largest untested read-side region: this file

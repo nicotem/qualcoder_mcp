@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Folded into the main suite from the v0.6.0-alpha parallel test campaign
 # (track 5, property-based/Hypothesis); adapted paths/fixtures only — test logic unchanged.
 """Track #5 - property-based tests (Hypothesis) for qualcoder_mcp.

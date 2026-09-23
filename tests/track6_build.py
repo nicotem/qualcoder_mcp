@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Folded into the main suite from the v0.6.0-alpha parallel test campaign
 # (track 6, scale & media); adapted paths/fixtures only — test logic unchanged.
 """Track 6 project builders: large-scale and media-heavy valid v14 projects.

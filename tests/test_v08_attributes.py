@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 Phase D2 — attributes & case-link fixes (cases-attributes.md).
 
 Covers the two existing-code fixes the dossier exposed (§6.4 numeric

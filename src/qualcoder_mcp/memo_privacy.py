@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Memo privacy: QualCoder's '#####' personal-note convention.
 
 QualCoder 4.0 lets researchers keep the tail of any memo private from

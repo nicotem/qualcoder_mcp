@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 Additional test coverage identified by QA and security reviews.
 

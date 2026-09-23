@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 Phase A — inductive / open coding (contract A.1-A.6).
 
 The six-tool loop: propose_codes records brand-new code proposals on the

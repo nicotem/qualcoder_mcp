@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """B2 (v0.12, D3 3.7): a preview says whose work is at stake.
 
 "20 codings will be deleted" does not tell the researcher whether those

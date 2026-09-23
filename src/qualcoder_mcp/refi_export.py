@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """REFI-QDA XML export functionality for AI coding suggestions.
 
 Generates REFI-QDA compliant XML files (.qdpx) that can be imported into

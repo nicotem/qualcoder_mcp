@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA round-2: end-to-end AI-coding loop through the REGISTERED tools only.
 
 The round-1 campaign found the loop could never be driven end-to-end through

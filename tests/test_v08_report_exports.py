@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 Phase B — report exports (reporting.md E1-E4 + conventions §7).
 
 Four file-artefact exporters with QualCoder-parity shapes: codebook

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA round-3: adversarial verification of the session-start QualCoder check.
 
 Feature under test: e9cc67a — analyze_for_coding asks (session still created,

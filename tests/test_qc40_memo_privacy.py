@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-1: QualCoder 4.0 '#####' memo privacy convention.
 
 Pins the upstream semantics (ai_memo.py:28-59 at pin 9bddf17) edge case

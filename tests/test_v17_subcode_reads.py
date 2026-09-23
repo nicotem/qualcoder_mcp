@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v17 WS3: sub-code-aware reads and exports (T7-T11 / S5-S9).
 
 Fixture: v16 project with Category A > Stress > Sub stress > Deep sub,

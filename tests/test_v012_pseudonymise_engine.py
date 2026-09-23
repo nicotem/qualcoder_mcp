@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The v0.12 flagship engine: parity oracles, properties, edge cases (D1 6.1, 6.2, 6.3).
 
 Two oracles drive this file, both literal transcriptions of QualCoder

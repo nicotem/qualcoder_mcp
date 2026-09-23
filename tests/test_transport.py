@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Folded into the main suite from the v0.6.0-alpha parallel test campaign
 # (track 3, protocol-level stdio transport); adapted paths/fixtures only — test logic unchanged.
 """Track #3 — PROTOCOL-LEVEL validation of the QualCoder MCP server.
