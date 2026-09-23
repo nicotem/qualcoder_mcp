@@ -10,8 +10,8 @@ honours the same convention on every memo it returns to the client and
 on every memo it writes, so a project touched by both tools keeps the
 same promise to the researcher.
 
-Behaviour is matched to upstream ai_memo.py exactly (independent MIT
-implementation of the same contract; upstream is LGPL):
+Behaviour is matched to upstream ai_memo.py exactly (an independent
+implementation of the same contract):
 
 - Split: the FIRST marker wins; the private suffix starts AT the
   marker, marker included. Text with no marker is entirely public.

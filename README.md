@@ -1232,9 +1232,15 @@ Contributions are welcome! Some ideas for enhancements:
 
 This software is provided "as is", without warranty of any kind, express or implied. The authors accept no responsibility or liability for any damage, data loss, or other issues arising from the use of this software. Users are solely responsible for ensuring the integrity and backup of their QualCoder projects. Always work on copies of your data, not originals.
 
-## License
+## Licence
 
-This project is licensed under the MIT License. See [LICENSE](https://github.com/nicotem/qualcoder_mcp/blob/main/LICENSE) file for details.
+From v0.13, qualcoder-mcp is licensed under the GNU Lesser General Public License, version 3 or (at your option) any later version (`LGPL-3.0-or-later`), which is QualCoder's own licence. The licence texts are [COPYING.LESSER](https://github.com/nicotem/qualcoder_mcp/blob/main/COPYING.LESSER) and [COPYING](https://github.com/nicotem/qualcoder_mcp/blob/main/COPYING), the GNU General Public License, version 3, which the Lesser licence incorporates.
+
+Releases up to and including 0.12.1 were published under the MIT License, and remain available under those terms.
+
+The project contains code derived from QualCoder: a few routines copied or transcribed from QualCoder's source so that results here match QualCoder's exactly. Each is listed in [NOTICE](https://github.com/nicotem/qualcoder_mcp/blob/main/NOTICE), with the QualCoder file and lines it comes from.
+
+Nothing changes for anyone who installs and runs the server. The licence's conditions apply only to someone who distributes it, and in practice they matter for a modified version: whoever distributes one must make its source available under the same licence.
 
 ## Acknowledgements
 

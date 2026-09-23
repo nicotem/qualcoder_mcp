@@ -9,7 +9,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-5100-5376"
     affiliation: "University of Exeter"
 repository-code: "https://github.com/nicotem/qualcoder_mcp"
-license: MIT
+license: LGPL-3.0-or-later
 version: "0.12.1-alpha"
 date-released: '2026-09-21'
 keywords:

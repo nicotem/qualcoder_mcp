@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed: the licence is now LGPL-3.0-or-later
+
+- **From this release, qualcoder-mcp is licensed under the GNU Lesser
+  General Public License, version 3 or (at your option) any later
+  version** (`LGPL-3.0-or-later`), which is QualCoder's own licence. It
+  replaces the MIT License. `COPYING.LESSER` is the licence text and
+  `COPYING` the GNU General Public License, version 3, which the Lesser
+  licence incorporates; the MIT `LICENSE` file is removed.
+  `pyproject.toml` declares `license = "LGPL-3.0-or-later"` and names
+  `COPYING`, `COPYING.LESSER` and `NOTICE` in `license-files`, so the
+  wheel and the sdist carry all three.
+- **Why.** A few routines are copied or transcribed from QualCoder so
+  that results here match QualCoder's exactly: its "Kappa" value and
+  its coder comparison counting (`compare_coders`), its coding editor's
+  span walk and its whole-word replacement pattern
+  (`pseudonymise_source`), and its colour palette. QualCoder's licence
+  applies to them. The new `NOTICE` file names each one, with the
+  QualCoder file and lines it comes from and why it was copied, and
+  states QualCoder's copyright and licence.
+- **What it means for you.** Nothing changes for anyone who installs
+  and runs the server, or connects an assistant to it. The licence's
+  conditions apply only to someone who distributes the software, and in
+  practice they matter for a modified version: whoever distributes one
+  must make its source available under the same licence.
+- **Earlier releases stay MIT.** Every release up to and including
+  0.12.1 was published under the MIT License and remains available under
+  those terms.
+- Every `.py` file under `src/` and `tests/` now opens with the line
+  `# SPDX-License-Identifier: LGPL-3.0-or-later`, and
+  `tests/test_licence.py` pins the header, the declared expression and
+  the three files. No code changed: the header is a comment, and no tool
+  description, argument or result moved.
+
 ### Removed: the inert `confirm` argument on the six token-gated tools
 
 - 0.12.0 announced this: "`confirm` stays in the six signatures for this
