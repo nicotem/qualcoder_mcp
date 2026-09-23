@@ -183,9 +183,19 @@ Every `.py` file under `src/` and `tests/` opens with the line
 encoding line, where the file has one), and `tests/test_licence.py`
 fails without it, so a new module needs it from its first commit.
 
-QualCoder is licensed under LGPL-3.0-or-later as well. Where exact
-parity with QualCoder needs its own code, a routine may be copied or
-transcribed, and it is then listed in [NOTICE](NOTICE): its file and
-function here, the QualCoder file and lines it comes from, and why it
-was copied. Otherwise re-implement the behaviour and cite the upstream
-file and line you matched in the docstring.
+QualCoder is licensed under LGPL-3.0-or-later as well, and the rule for
+its code is the owner's (2026-09-23):
+
+- **Write our own implementation by default,** and prove parity with
+  tests against QualCoder's source. Cite the upstream file and line you
+  matched in the docstring.
+- **Copy QualCoder's code only where identical results cannot be had
+  otherwise,** as with the kappa expression, whose floating-point
+  result depends on the order of its operations, and the coding
+  editor's span walk.
+- **List every copy in [NOTICE](NOTICE) with its reason:** its file and
+  function here, the QualCoder file and lines it comes from, and why it
+  had to be copied. A test that carries QualCoder's code as its oracle
+  is listed there too, and `tests/test_licence.py` fails if a file or
+  name NOTICE gives no longer exists, so a rename or a rewrite updates
+  NOTICE in the same change.
