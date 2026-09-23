@@ -15,8 +15,14 @@ that nothing else in the suite would notice:
   sdist;
 - `COPYING`, `COPYING.LESSER` and `NOTICE` exist, the two licence texts
   are the FSF's own, byte for byte, and the MIT `LICENSE` is gone.
+
+A fourth pin keeps NOTICE true as the code moves: every entry in its
+"Code derived from QualCoder" section says where the item is, and every
+file and name it gives exists. A routine renamed, moved or rewritten
+away therefore fails here until NOTICE is updated in the same change.
 """
 
+import ast
 import hashlib
 import pathlib
 import re
@@ -150,3 +156,109 @@ class TestTheFilesShip:
         """MIT stays in git history and in every release up to 0.12.1;
         a LICENSE file in the tree would say it still applies."""
         assert not (REPO / "LICENSE").exists()
+
+
+# NOTICE's entries: a numbered line ("12. ...") opens one, and its
+# "Here:" lines say where the item is, as "<path>, <name>, ... and
+# <name>." or "<path>." for a whole file. A Here line may wrap; it ends
+# at the next label, blank line or entry.
+_ENTRY = re.compile(r"^(\d+)\. ")
+_LABELS = ("Here:", "From:", "Author:", "Why:")
+
+
+def _notice_entries():
+    """{entry number: [(path, [names])]} from NOTICE's Here lines."""
+    lines = (REPO / "NOTICE").read_text(encoding="utf-8").splitlines()
+    entries, current, i = {}, None, 0
+    while i < len(lines):
+        opened = _ENTRY.match(lines[i])
+        if opened:
+            current = int(opened.group(1))
+            entries[current] = []
+        text = lines[i].strip()
+        i += 1
+        if not text.startswith("Here: "):
+            continue
+        text = text[len("Here: "):]
+        while i < len(lines):
+            follow = lines[i].strip()
+            if (not follow or follow.startswith(_LABELS)
+                    or _ENTRY.match(lines[i])):
+                break
+            text += " " + follow
+            i += 1
+        assert current is not None and text.endswith("."), text
+        path, _, rest = text[:-1].partition(", ")
+        names = [name.strip() for part in rest.split(", ")
+                 for name in part.split(" and ") if name.strip()]
+        entries[current].append((path, names))
+    return entries
+
+
+def _defined_names(path):
+    """Every function, class and module or class level name in a .py
+    file, by qualified name ("Class.method", "Class.NAME")."""
+    names = set()
+
+    def walk(node, prefix, in_function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                names.add(prefix + child.name)
+                walk(child, prefix + child.name + ".",
+                     not isinstance(child, ast.ClassDef))
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                if not in_function:
+                    targets = (child.targets if isinstance(child, ast.Assign)
+                               else [child.target])
+                    names.update(prefix + t.id for t in targets
+                                 if isinstance(t, ast.Name))
+            elif isinstance(child, ast.stmt):
+                walk(child, prefix, in_function)
+
+    walk(ast.parse(path.read_text(encoding="utf-8")), "", False)
+    return names
+
+
+class TestNoticeStaysTrue:
+
+    def test_every_entry_says_where_the_item_is(self):
+        entries = _notice_entries()
+        assert sorted(entries) == list(range(1, len(entries) + 1)), \
+            sorted(entries)
+        assert not [n for n, where in entries.items() if not where]
+
+    def test_every_file_and_name_it_gives_exists(self):
+        stale = []
+        for number, where in sorted(_notice_entries().items()):
+            for path, names in where:
+                target = REPO / path
+                if not target.is_file():
+                    stale.append(f"{number}: {path} (no such file)")
+                    continue
+                if names:
+                    defined = _defined_names(target)
+                    stale += [f"{number}: {path}, {name}" for name in names
+                              if name not in defined]
+        assert not stale, (
+            "NOTICE names what is no longer there; update the entry in the "
+            f"same change that moved, renamed or rewrote it: {stale}")
+
+    def test_the_reader_sees_what_it_checks(self):
+        """A reader that parsed nothing would pass both tests above, so
+        it is checked against entries whose shape is known."""
+        entries = _notice_entries()
+        assert len(entries) >= 25, len(entries)
+        assert entries[2] == [("src/qualcoder_mcp/coder_comparison.py",
+                               ["kappa_qualcoder"])]
+        assert ("src/qualcoder_mcp/database.py",
+                ["QualcoderDatabase.merge_codes",
+                 "QualcoderDatabase.merge_category",
+                 "_append_provenance_block"]) in entries[10]
+        assert sum(len(where) for where in entries.values()) > \
+            len(entries)
+        names = _defined_names(REPO / "src" / "qualcoder_mcp" / "database.py")
+        for name in ("QUALCODER_COLORS", "snap_to_palette",
+                     "QualcoderDatabase.code_path",
+                     "QualcoderDatabase.RESERVED_ATTRIBUTE_NAMES"):
+            assert name in names, name

@@ -18,14 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyproject.toml` declares `license = "LGPL-3.0-or-later"` and names
   `COPYING`, `COPYING.LESSER` and `NOTICE` in `license-files`, so the
   wheel and the sdist carry all three.
-- **Why.** A few routines are copied or transcribed from QualCoder so
-  that results here match QualCoder's exactly: its "Kappa" value and
-  its coder comparison counting (`compare_coders`), its coding editor's
-  span walk and its whole-word replacement pattern
-  (`pseudonymise_source`), and its colour palette. QualCoder's licence
-  applies to them. The new `NOTICE` file names each one, with the
+- **Why.** qualcoder-mcp is a separate program that reads and writes
+  QualCoder project files, but it contains a small number of routines
+  and values taken from QualCoder so that its results match QualCoder's
+  exactly: twelve routines, among them its "Kappa" value and coder
+  comparison percentages (`compare_coders`), its palette matcher and
+  its coding editor's span walk (`pseudonymise_source`), and thirteen
+  sets of values, among them its colour palette. QualCoder's licence
+  applies to them. The new `NOTICE` file lists every one, with the
   QualCoder file and lines it comes from and why it was copied, and
-  states QualCoder's copyright and licence.
+  also the facts of QualCoder's file format the code restates so
+  projects stay compatible, and the tests and fixtures that carry
+  QualCoder's code or schema. It states QualCoder's copyright and
+  licence.
 - **What it means for you.** Nothing changes for anyone who installs
   and runs the server, or connects an assistant to it. The licence's
   conditions apply only to someone who distributes the software, and in
@@ -36,9 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those terms.
 - Every `.py` file under `src/` and `tests/` now opens with the line
   `# SPDX-License-Identifier: LGPL-3.0-or-later`, and
-  `tests/test_licence.py` pins the header, the declared expression and
-  the three files. No code changed: the header is a comment, and no tool
-  description, argument or result moved.
+  `tests/test_licence.py` pins the header, the declared expression, the
+  three files, and that every file and name NOTICE lists still exists.
+  No code changed: the header is a comment, two docstrings now say
+  which code is QualCoder's, and no tool description, argument or
+  result moved.
 
 ### Removed: the inert `confirm` argument on the six token-gated tools
 

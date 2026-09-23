@@ -1238,7 +1238,7 @@ From v0.13, qualcoder-mcp is licensed under the GNU Lesser General Public Licens
 
 Releases up to and including 0.12.1 were published under the MIT License, and remain available under those terms.
 
-The project contains code derived from QualCoder: a few routines copied or transcribed from QualCoder's source so that results here match QualCoder's exactly. Each is listed in [NOTICE](https://github.com/nicotem/qualcoder_mcp/blob/main/NOTICE), with the QualCoder file and lines it comes from.
+qualcoder-mcp is a separate program that reads and writes QualCoder project files. It does not include QualCoder, but it contains code derived from QualCoder: a small number of routines and values taken from QualCoder so that its results match QualCoder's exactly. [NOTICE](https://github.com/nicotem/qualcoder_mcp/blob/main/NOTICE) lists them, with the QualCoder file and lines each comes from.
 
 Nothing changes for anyone who installs and runs the server. The licence's conditions apply only to someone who distributes it, and in practice they matter for a modified version: whoever distributes one must make its source available under the same licence.
 
