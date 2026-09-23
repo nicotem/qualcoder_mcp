@@ -2982,7 +2982,9 @@ class TestTheFileTextCountStaysCheap:
         The same megabyte at a hundred forms and at one, as it stands
         (ASCII) and with curly quotes and apostrophes (fix round 2, B-1: a
         rate taken on ASCII alone cannot see what a transcript from a word
-        processor costs); the cheap question past the budgets on half a
+        processor costs), and at one form with its common words in
+        Cyrillic, Japanese and decomposed accents; the cheap question
+        past the budgets on half a
         megabyte where no name shows (B-2); and a dense text, the name
         repeated as one run on the typed path, the dearest ordinary match
         there is."""
@@ -2997,6 +2999,30 @@ class TestTheFileTextCountStaysCheap:
         _, one_elapsed = cls._timed(one, text)
         curly_found, curly_elapsed = cls._timed(many, curly)
         _, curly_one = cls._timed(one, curly)
+        # The other classes the constants probe measured, at one form,
+        # where the per-character term is what the count spends: the same
+        # megabyte with its common words in Cyrillic, in Japanese and in
+        # decomposed accented Latin (the names stay as they are).
+        import re
+        import unicodedata
+        common = ["the", "and", "said", "interview", "because", "then",
+                  "we", "it", "was", "a", "long", "day", "at", "work",
+                  "home", "they", "told", "me", "about"]
+        scripts = {
+            "Cyrillic": "и и сказал интервью потому потом мы это был а "
+                        "долгий день на работе дома они рассказали мне об",
+            "Japanese": "そして と 言った 面接 なぜなら その後 私たち それ だった ある "
+                        "長い 日 で 仕事 家 彼ら 話した 私に について",
+            "decomposed accents": unicodedata.normalize(
+                "NFD", "thé ànd séid întérviéw bécàusé thén wé ït wàs à "
+                       "lóng dày àt wörk hómé théy töld mé àbóut")}
+        pattern = re.compile(r"\b(" + "|".join(common) + r")\b")
+        other_one = {}
+        for label, words in scripts.items():
+            table = dict(zip(common, words.split()))
+            converted = pattern.sub(lambda m: table[m.group(1)], text)
+            _, seconds = cls._timed(one, converted)
+            other_one[label] = seconds * 1000 / (len(converted) / 1e6)
         import random
         rng = random.Random(1301)
         words = ["the", "and", "“said”", "interview", "it’s",
@@ -3022,6 +3048,7 @@ class TestTheFileTextCountStaysCheap:
             "megabytes": len(text) / 1e6, "curly_megabytes": len(curly) / 1e6,
             "elapsed": elapsed, "one_elapsed": one_elapsed,
             "curly_elapsed": curly_elapsed, "curly_one": curly_one,
+            "other_one": other_one,
             "check_elapsed": check_elapsed,
             "check_work": P.residue_work(many, clean),
             "check_megabytes": len(clean) / 1e6,
@@ -3043,6 +3070,10 @@ class TestTheFileTextCountStaysCheap:
         curly_1 = m["curly_one"] * 1000 / m["curly_megabytes"]
         curly_unit = max((curly_100 - curly_1) / 99, 1e-6)
         curly_term = curly_1 / curly_unit - 1
+        others = ", ".join(f"{label} {ms:.1f}"
+                           for label, ms in m["other_one"].items())
+        worst_term = max([curly_term] + [ms / curly_unit - 1 for ms in
+                                         m["other_one"].values()])
         check_unit = m["check_elapsed"] * 1000 / (m["check_work"] / 1e6)
         check_100 = m["check_elapsed"] * 1000 / m["check_megabytes"]
         per_match = max(m["dense_elapsed"] * 1000 - m["dense_chars"] / 1e6 * (
@@ -3054,7 +3085,8 @@ class TestTheFileTextCountStaysCheap:
                 f"forms, {at_1:.1f} ms per MB at one form (per-character "
                 f"term {term:.2f}, model {P.RESIDUE_WORK_PER_CHARACTER}); "
                 f"with curly quotes {curly_100 / 100:.3f} and "
-                f"{curly_1:.1f} (per-character term {curly_term:.2f}, model "
+                f"{curly_1:.1f}; at one form {others} ms per MB (the worst "
+                f"per-character term not ASCII {worst_term:.2f}, model "
                 f"{P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII}); the question "
                 f"past the budgets {check_100 / 100:.3f} ms per MB per "
                 f"surface form at 100 forms; worst case at the full budgets "
@@ -3189,6 +3221,10 @@ class TestTheFileTextCountStaysCheap:
         # Fix round 2: text that is not ASCII (B-1), the question past the
         # budgets (B-2), and the third budget in the worst case.
         assert "; with curly quotes " in lines[0]
+        assert "; at one form Cyrillic " in lines[0]
+        assert ", Japanese " in lines[0]
+        assert ", decomposed accents " in lines[0]
+        assert "(the worst per-character term not ASCII " in lines[0]
         assert "; the question past the budgets " in lines[0]
         assert "; worst case at the full budgets about " in lines[0]
         assert ", check " in lines[0]
