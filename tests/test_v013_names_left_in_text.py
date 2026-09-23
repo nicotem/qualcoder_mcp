@@ -1188,7 +1188,7 @@ class TestTheReportIsCompactByDefault:
             "past that is listed by id only in more_files_showing_a_name. "
             "The totals and the warnings cover every file either way. Call "
             "again with residue_detail=\"project\" for the full detail of "
-            "up to 200 files, with one such row for the rest.")
+            "up to 200 files and one such row for up to 1,000 more.")
         rows = _rows(out)
         assert sorted(rows) == [4, 5]          # six shows nothing, one is clean
         for fid in (4, 5):
@@ -1594,3 +1594,67 @@ class TestTheLongerWordsThroughTheTool:
             "The longer words this preview lists share one budget of 40 "
             "characters")
 
+
+# =============================================================================
+# FIX ROUND 2 (BRIEF1_FIX2_MANDATE.md): THE THIRD TIER, AND THE PINS THE
+# RE-VERIFICATION SHOWED MISSING
+# =============================================================================
+
+
+class TestCompactRowsHaveACapOfTheirOwn:
+    """The re-verification's CORR-4 and the lead's ruling on it: the
+    owner's "compact by default" promises every file still showing a name
+    a row (id, name, counts). Compact rows have their own cap of 1,000,
+    full rows keep 200; past both a file is listed by id, and every
+    document that describes the report says so."""
+
+    @staticmethod
+    def _many(project, count, first=10):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.executemany(
+            "INSERT INTO source (id,name,fulltext,mediapath,memo,owner,date)"
+            " VALUES (?,?,?,NULL,'','TestCoder','d')",
+            [(fid, f"interview_{fid:04d}.txt", "THOMAS was here.")
+             for fid in range(first, first + count)])
+        con.commit()
+        con.close()
+        _reconnect(project)
+
+    def test_the_two_caps(self):
+        assert P.MAX_RESIDUE_FILE_ROWS == 200
+        assert P.MAX_RESIDUE_COMPACT_ROWS == 1000
+
+    def test_past_two_hundred_every_file_keeps_its_row(self, project):
+        """The QA gate's 250-file shape, at the real caps: 250 compact
+        rows by default (fix round 1 gave 200 and 50 ids); in project
+        detail 200 full rows and 50 compact ones."""
+        self._many(project, 250)
+        block = _block(preview_of())
+        assert len(block["files"]) == 250
+        assert all(set(row) == {"file_id", "name", "occurrences"}
+                   for row in block["files"])
+        assert block["more_files_showing_a_name"] == []
+        assert block["files_truncated"] is False
+        project_block = _block(preview_of(residue_detail="project"))
+        full = [row for row in project_block["files"] if "entries" in row]
+        assert len(full) == 200
+        assert len(project_block["files"]) == 250
+        assert project_block["totals"] == block["totals"]
+
+    def test_past_a_thousand_the_rest_are_ids(self, project):
+        self._many(project, 1005)
+        out = preview_of()
+        block = _block(out)
+        assert len(block["files"]) == 1000
+        assert block["more_files_showing_a_name"] == list(
+            range(1010, 1015))
+        assert block["files_truncated"] is True
+        assert block["totals"]["files_showing_a_name"] == 1005
+        assert "in the text of 1005 file(s)" in _file_text_warning(out)
+
+    @pytest.mark.parametrize("document", ["CHANGELOG.md", "PRIVACY.md"])
+    def test_the_documents_state_both_caps(self, document):
+        text = " ".join((Path(__file__).resolve().parents[1] / document)
+                        .read_text(encoding="utf-8").split())
+        assert "up to 1,000 files" in text, document
+        assert "more_files_showing_a_name" in text, document

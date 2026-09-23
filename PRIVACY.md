@@ -633,8 +633,16 @@ will ask, and the summary above depends on them:
     block names every file in which a name still shows, including the
     files this run does not touch, on both mapping paths, so name your
     files accordingly. By default it gives full detail for the file this
-    call names and, for every other file, only its id, its name and the
-    two counts; `residue_detail="project"` gives every file's detail.
+    call names and, for every other file that still shows a name, only
+    its id, its name and the two counts, for up to 1,000 files; past
+    that a file is named by its id alone, in
+    `more_files_showing_a_name`, and the totals and the warnings still
+    count it. `residue_detail="project"` gives full detail for up to 200
+    files and the short row for up to 1,000 more. Past the count's
+    budgets a file is only asked whether a name shows, and past a budget
+    for that question it is not checked at all: it is listed by id in
+    `files_not_checked`, the warning says how to get it checked, and it
+    is never reported clean.
     On a mapping you type, it also lists the longer words a name sits
     inside (`Thomas_P01`, `Thomasson`), which are words of the file
     text, so an exact entry can be added for one; on the

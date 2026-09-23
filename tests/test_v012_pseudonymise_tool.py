@@ -4969,7 +4969,7 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "call names and, for up to 1,000 other files that still show a "
          "name, one row with its id, name and two counts; past that, their "
          "ids. \"project\": full detail for up to 200 files and one such row "
-         "for the rest; on a large mapping over many files that is "
+         "for up to 1,000 more; on a large mapping over many files that is "
          "megabytes. The totals and the warnings are the same either way."),
         ("the_file_text_budgets",                        # fix round 2, B-2
          "The file-text count has fixed budgets: past them a file is only "
@@ -5107,8 +5107,12 @@ class TestTheDocumentsTellTheTruth:
         # Fix round 1.
         "A longer word is listed only when it extends the name by at most "
         "eight characters and is not in a script written without spaces",
-        "`residue_detail=\"project\"` gives every file's detail, and the "
-        "totals and the warnings are the same either way.",
+        # Fix round 2 (CORR-4 and B-2).
+        "`residue_detail=\"project\"` gives full detail for up to 200 "
+        "files and the short row for up to 1,000 more, and the totals and "
+        "the warnings are the same either way.",
+        "past a budget for that question it is not checked, is listed in "
+        "`files_not_checked` and is never reported clean.",
         "a pseudonym that carries one of its names is withheld by entry "
         "number",
     ])

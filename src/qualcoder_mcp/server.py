@@ -11181,9 +11181,9 @@ def pseudonymise_source(
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;
                  past that, their ids. "project": full detail for up to
-                 200 files and one such row for the rest; on a large
-                 mapping over many files that is megabytes. The totals
-                 and the warnings are the same either way.
+                 200 files and one such row for up to 1,000 more; on a
+                 large mapping over many files that is megabytes. The
+                 totals and the warnings are the same either way.
         max_spans_per_entry: How many match positions to list per entry
                  per file before truncating (default 50, capped at 500).
                  With include_context on, the context windows also share

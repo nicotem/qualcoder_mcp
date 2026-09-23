@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,175 characters (about 39.3k tokens at
+  below included: full = 157,183 characters (about 39.3k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,187 and
+  in the repository's `.venv/`, the same definitions measure 165,195 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -53,14 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another Unicode normalisation, put back by a pseudonym, and whole
   words in a file this run did not rewrite), and
   `normalisation_variants_seen` beside `case_variants_seen`. Every other
-  file gets one short row, its id, its name and the two counts, so the
-  loop of one preview per file does not repeat the whole project's
-  detail on every call: `residue_detail="project"` gives every file's
-  detail. The totals and the warnings are the same either way. Measured
-  on the QA gate's shapes (the name twenty times in five spellings per
-  file), a default preview of a 60-file project is 14,808 characters
-  (53,832 with every file's detail, as the first build gave it by
-  default) and of a 250-file project 28,196 (159,200). The split by
+  file that still shows a name gets one short row, its id, its name and
+  the two counts, for up to 1,000 files, so the loop of one preview per
+  file does not repeat the whole project's detail on every call; past
+  that a file is named by id in `more_files_showing_a_name`.
+  `residue_detail="project"` gives full detail for up to 200 files and
+  the short row for up to 1,000 more. The totals and the warnings are
+  the same either way. Measured on the QA gate's shapes (the name twenty
+  times in five spellings per file), a default preview of a 60-file
+  project is 14,973 characters (53,966 with every file's detail, which
+  is what the first build gave by default) and of a 250-file project
+  32,814 (162,233); at the 1,000-row cap the block alone is about 97,000
+  characters. The split by
   kind is a heuristic and the total is not; an occurrence no entry can
   be charged to is still counted, as `unattributed`. A name inside a
   longer word is reported and never substituted, and on a typed mapping

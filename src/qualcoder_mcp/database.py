@@ -8431,7 +8431,7 @@ class QualcoderDatabase:
         "that is listed by id only in more_files_showing_a_name. The "
         "totals and the warnings cover every file either way. Call again "
         "with residue_detail=\"project\" for the full detail of up to "
-        "{full} files, with one such row for the rest.")
+        "{full} files and one such row for up to {compact} more.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full, because counting them "
         "passed one of this preview's two budgets: the work (characters "
