@@ -8424,13 +8424,21 @@ class QualcoderDatabase:
         "characters, spent in the order of the files above; it ran out, so "
         "the rest are counted under inside_a_longer_word and not listed, "
         "and each list it cut says longer_words_truncated.")
+    PSEUDONYMISE_DETAIL_NOTE = (
+        "Full detail is given for the file this call names; every other "
+        "file that still shows a name has one row, its id, its name and "
+        "the two readings' counts. The totals and the warnings cover every "
+        "file either way. Call again with residue_detail=\"project\" for "
+        "the full detail of every file.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
-        "{count} file(s) were not counted in full because the work of "
-        "counting them (characters times surface forms) passed this "
-        "preview's budget; each still says whether any name shows in it "
-        "(shows_a_name) and is listed in files_not_counted. The budget is "
-        "fixed, so the one way to get the full counts is a smaller "
-        "mapping.")
+        "{count} file(s) were not counted in full, because counting them "
+        "passed one of this preview's two budgets: the work (characters "
+        "times surface forms, and a little for every character) or the "
+        "number of matches. Each is listed in files_not_counted and was "
+        "still asked whether any name shows in it, and every one that does "
+        "is in the totals and the warnings. The budgets are fixed: a "
+        "smaller mapping lowers the work, and a file past the match budget "
+        "is one to read directly.")
 
     @staticmethod
     def _pseudonymise_spend_words(entries: Sequence[Dict[str, Any]],
@@ -8463,8 +8471,25 @@ class QualcoderDatabase:
                 cut = True
         return left, cut
 
+    # The two values `residue_detail` takes (fix round 1, the owner's
+    # "compact by default" ruling).
+    RESIDUE_DETAIL = ("file", "project")
+
+    @staticmethod
+    def _pseudonymise_capped(items: List[Dict[str, Any]], key: str,
+                             row: Dict[str, Any], flag: str) -> None:
+        """At most `MAX_RESIDUE_ENTRY_ROWS` of one of a row's lists."""
+        from . import pseudonymise as engine
+
+        if len(items) > engine.MAX_RESIDUE_ENTRY_ROWS:
+            row[key] = items[:engine.MAX_RESIDUE_ENTRY_ROWS]
+            row[flag] = True
+        else:
+            row[key] = items
+
     def _pseudonymise_file_text(self, compiled, plan: Optional[Dict[str, Any]],
-                                may_echo_names: bool) -> Dict[str, Any]:
+                                may_echo_names: bool,
+                                detail: str = "file") -> Dict[str, Any]:
         """The file-text block: the names left in every file's text.
 
         Every source row with stored text is read, the one file this run
@@ -8476,13 +8501,21 @@ class QualcoderDatabase:
         `pseudonymise_plan`, which is built a second time inside the
         write transaction, nor in the signed effect.
 
-        The work budget (`MAX_RESIDUE_SCAN_WORK`, characters times
-        surface forms) is spent in a fixed order, the file this call
-        names first and then every other file in `source.id` order.
-        Past it a file gets the cheap question only, "does any name
-        show here", and is listed in `files_not_counted`: no file is
-        omitted for want of budget and none is reported clean when it
-        is not. The totals are always complete; the rows are capped.
+        Two budgets are spent in a fixed order, the file this call names
+        first and then every other file in `source.id` order: the work,
+        characters times (surface forms plus a per-character term), and
+        the matches. Past either, a file gets the cheap question only,
+        "does any name show here", and is listed in `files_not_counted`,
+        and so does every file after it: no file is omitted for want of
+        budget and none is reported clean when it is not.
+
+        Compact by default (the owner's ruling of 2026-09-23): full detail
+        for the file this call names; for every other file one row per
+        file that still shows a name, its id, its name and the two
+        readings' counts, nothing else. `detail="project"` gives every
+        file its full row. The totals are always complete, whatever the
+        detail and whatever the caps, and the warnings read the totals
+        alone, so folding the detail can never silence one.
 
         On the `use_project_pseudonyms` path (`may_echo_names=False`)
         every `form` is taken out and no longer word is collected. The
@@ -8519,14 +8552,18 @@ class QualcoderDatabase:
         # is looking before anywhere else.
         sources.sort(key=lambda source: (source[0] != chosen, source[0]))
 
-        forms = len(compiled.forms)
+        per_character = len(compiled.forms) + \
+            engine.RESIDUE_WORK_PER_CHARACTER
         work_done = 0
+        matches_left = engine.MAX_RESIDUE_SCAN_MATCHES
         past_budget = False
         wide_total = 0
         whole_word_total = 0
         by_reason = {reason: 0 for reason in engine.TEXT_RESIDUE_REASONS}
         by_reason["unattributed"] = 0
         showing = 0
+        showing_not_counted = 0
+        whole_word_above_wide = 0
         counted = 0
         characters = 0
         not_counted: List[int] = []
@@ -8537,57 +8574,81 @@ class QualcoderDatabase:
         words_cut = False
         for fid, name, text, reason in sources:
             characters += len(text)
-            head: Dict[str, Any] = {"file_id": fid, "name": name,
-                                    "rewritten_by_this_run": reason is None}
-            if reason is not None:
-                head["file_not_rewritten_because"] = reason
-            work = len(text) * forms
+            full = detail == "project" or fid == chosen
+            head: Dict[str, Any] = {"file_id": fid, "name": name}
+            if full:
+                head["rewritten_by_this_run"] = reason is None
+                if reason is not None:
+                    head["file_not_rewritten_because"] = reason
+            work = len(text) * per_character
+            found = None
             if not past_budget and work_done + work <= \
                     engine.MAX_RESIDUE_SCAN_WORK:
-                work_done += work
-                counted += 1
                 found = engine.names_left_in_text(
-                    compiled, text, list_longer_words=may_echo_names,
-                    rewritten_by_this_run=reason is None)
-                wide_total += found["occurrences"]["wide"]
-                whole_word_total += found["occurrences"]["whole_word"]
+                    compiled, text,
+                    list_longer_words=may_echo_names and full,
+                    rewritten_by_this_run=reason is None,
+                    max_matches=matches_left)
+            if found is not None:
+                work_done += work
+                matches_left -= found["matches"]
+                counted += 1
+                occurrences = found["occurrences"]
+                wide_total += occurrences["wide"]
+                whole_word_total += occurrences["whole_word"]
                 by_reason["unattributed"] += found["unattributed"]
                 for entry in found["entries"]:
                     for kind in engine.TEXT_RESIDUE_REASONS:
                         by_reason[kind] += entry[kind]
-                shows = bool(found["occurrences"]["wide"]
-                             or found["occurrences"]["whole_word"])
+                shows = bool(occurrences["wide"] or occurrences["whole_word"])
                 if not shows:
                     continue
-                if may_echo_names:
-                    entries = found["entries"]
-                    case_variants = found["case_variants_seen"]
-                    spellings = found["normalisation_variants_seen"]
-                    if len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
-                        words_left, cut = self._pseudonymise_spend_words(
-                            entries, words_left)
-                        words_cut = words_cut or cut
+                if occurrences["whole_word"] > occurrences["wide"]:
+                    whole_word_above_wide += 1
+                if not full:
+                    row_out = {**head, "occurrences": occurrences}
                 else:
-                    entries = self._pseudonymise_without_forms(
-                        found["entries"])
-                    case_variants = self._pseudonymise_without_forms(
-                        found["case_variants_seen"])
-                    spellings = self._pseudonymise_without_forms(
-                        found["normalisation_variants_seen"])
-                row_out = {**head, "counted": True,
-                           "occurrences": found["occurrences"],
-                           "unattributed": found["unattributed"],
-                           "entries": entries,
-                           "case_variants_seen": case_variants,
-                           "normalisation_variants_seen": spellings}
+                    row_out = {**head, "counted": True,
+                               "occurrences": occurrences,
+                               "unattributed": found["unattributed"]}
+                    if may_echo_names:
+                        entries = found["entries"]
+                        case_variants = found["case_variants_seen"]
+                        spellings = found["normalisation_variants_seen"]
+                    else:
+                        entries = self._pseudonymise_without_forms(
+                            found["entries"])
+                        case_variants = self._pseudonymise_without_forms(
+                            found["case_variants_seen"])
+                        spellings = self._pseudonymise_without_forms(
+                            found["normalisation_variants_seen"])
+                    self._pseudonymise_capped(entries, "entries", row_out,
+                                              "entries_truncated")
+                    self._pseudonymise_capped(
+                        case_variants, "case_variants_seen", row_out,
+                        "case_variants_seen_truncated")
+                    self._pseudonymise_capped(
+                        spellings, "normalisation_variants_seen", row_out,
+                        "normalisation_variants_seen_truncated")
+                    if may_echo_names and \
+                            len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
+                        words_left, cut = self._pseudonymise_spend_words(
+                            row_out["entries"], words_left)
+                        words_cut = words_cut or cut
             else:
-                # The boolean tier. Once the budget is passed it stays
+                # The cheap question. Once a budget is passed it stays
                 # passed, so which files are counted depends on the
                 # order alone and is the same on every preview.
                 past_budget = True
                 not_counted.append(fid)
                 shows = compiled.carries_a_name(text)
-                row_out = {**head, "counted": False, "shows_a_name": shows}
+                if shows:
+                    showing_not_counted += 1
+                elif not full:
+                    continue
+                row_out = {**head, "counted": False}
+                if full:
+                    row_out["shows_a_name"] = shows
             if shows:
                 showing += 1
             if len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
@@ -8599,6 +8660,7 @@ class QualcoderDatabase:
 
         block: Dict[str, Any] = {
             "counts": "occurrences in the stored text, not fields",
+            "detail": detail,
             "scanned": {"files": len(sources), "characters": characters,
                         "not_rewritten_by_this_run":
                             sum(1 for source in sources
@@ -8606,6 +8668,9 @@ class QualcoderDatabase:
             "totals": {"occurrences": {"wide": wide_total,
                                        "whole_word": whole_word_total},
                        "files_showing_a_name": showing,
+                       "files_showing_a_name_not_counted":
+                           showing_not_counted,
+                       "files_whole_word_above_wide": whole_word_above_wide,
                        "by_reason": by_reason},
             "files": listed,
             "files_counted": counted,
@@ -8614,6 +8679,8 @@ class QualcoderDatabase:
             "more_files_showing_a_name": more,
             "reading_note": self.PSEUDONYMISE_FILE_TEXT_NOTE,
         }
+        if detail == "file":
+            block["detail_note"] = self.PSEUDONYMISE_DETAIL_NOTE
         if words_cut:
             block["longer_words_note"] = \
                 self.PSEUDONYMISE_LONGER_WORDS_NOTE.format(
@@ -8626,7 +8693,8 @@ class QualcoderDatabase:
 
     def pseudonymise_residue(self, compiled,
                              plan: Optional[Dict[str, Any]] = None,
-                             may_echo_names: bool = True) -> Dict[str, Any]:
+                             may_echo_names: bool = True,
+                             detail: str = "file") -> Dict[str, Any]:
         """Where the names would still be after the run (D1 3.9).
 
         Counts, never content, and PUBLIC memo parts only: a private
@@ -8761,7 +8829,7 @@ class QualcoderDatabase:
             "scanned; it may still hold the previous text.")
         try:
             residue["file_text"] = self._pseudonymise_file_text(
-                compiled, plan, may_echo_names)
+                compiled, plan, may_echo_names, detail)
         except sqlite3.Error:
             residue["unreadable"].append("source.fulltext")
         if not residue["unreadable"]:
@@ -8842,7 +8910,8 @@ class QualcoderDatabase:
                              context_chars: int = 30,
                              scan_residue: bool = True,
                              max_spans_per_entry: int = 50,
-                             may_echo_names: bool = True
+                             may_echo_names: bool = True,
+                             residue_detail: str = "file"
                              ) -> Dict[str, Any]:
         """What the researcher is shown before approving a run (D1 3.5).
 
@@ -9046,7 +9115,8 @@ class QualcoderDatabase:
             # and no second read of it; `may_echo_names` withholds the
             # forms and the longer words on the sidecar path.
             preview["residue"] = self.pseudonymise_residue(
-                compiled, plan, may_echo_names=may_echo_names)
+                compiled, plan, may_echo_names=may_echo_names,
+                detail=residue_detail)
         return preview
 
     # ------------------------------------------------------------------

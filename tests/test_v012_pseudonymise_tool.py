@@ -524,8 +524,11 @@ class TestResidue:
                 encoding="utf-8")
         server.db.close()
         server.db = QualcoderDatabase(str(project))
-        out = (preview_of() if source == "typed"
-               else preview_of(mapping=None, use_project_pseudonyms=True))
+        # At the most detail the block gives (every file's full row), so
+        # the pin covers what `residue_detail="project"` returns too.
+        out = (preview_of(residue_detail="project") if source == "typed"
+               else preview_of(mapping=None, use_project_pseudonyms=True,
+                               residue_detail="project"))
         residue = out["preview"]["residue"]
         dumped = json.dumps(residue)
         for word in ("Grimsby", "walked"):
@@ -577,8 +580,9 @@ class TestToken:
         {"scan_residue": False},
         {"max_spans_per_entry": 1},
         {"record_in_journal": False},
+        {"residue_detail": "project"},
     ], ids=["include_context", "context_chars", "scan_residue",
-            "max_spans", "record_in_journal"])
+            "max_spans", "record_in_journal", "residue_detail"])
     def test_an_unbound_argument_that_differs_changes_nothing(
             self, project, unbound):
         """The ruling of 2026-09-14, in its most testable form.
@@ -2875,13 +2879,17 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
                     "'d',?,0)",
                     (f"{PARTICIPANT} in the photo", HIDDEN_COLLEAGUE))
         # A second transcript, named after him too, that this run does
-        # not touch and that still spells him inside longer words: the
-        # file-text block names it on the sidecar path as well (v0.13,
-        # ruling 12), and nothing else of it may reach the preview.
+        # not touch and that still spells him inside longer words and
+        # with a soft hyphen inside the name: the file-text block names it
+        # on the sidecar path as well (v0.13, ruling 12), the spelling
+        # lists of its row are not empty, and nothing else of it may reach
+        # the preview (fix round 1, QA-5).
         con.execute("INSERT INTO source (id,name,fulltext,mediapath,memo,"
                     "owner,date) VALUES (5,?,?,NULL,'',?,'d')",
                     (f"{PARTICIPANT}_notes.txt",
-                     f"{PARTICIPANT.upper()}_P01 and {PARTICIPANT}in spoke.",
+                     f"{PARTICIPANT.upper()}_P01 and {PARTICIPANT}in spoke, "
+                     f"and {PARTICIPANT[:3]}\u00ad{PARTICIPANT[3:]} "
+                     f"listened.",
                      HIDDEN_COLLEAGUE))
         con.commit()
         con.close()
@@ -2928,8 +2936,9 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
         return folder
 
     @staticmethod
-    def _sidecar_preview():
-        return preview_of(mapping=None, use_project_pseudonyms=True)
+    def _sidecar_preview(detail="file"):
+        return preview_of(mapping=None, use_project_pseudonyms=True,
+                          residue_detail=detail)
 
     @pytest.mark.parametrize("source", ["typed", "sidecar"])
     def test_the_preview_and_the_refusal_name_the_hidden_coder_nowhere(
@@ -2955,10 +2964,11 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             assert refused["reason"] == "unique_constraint_collision"
             assert routes_carrying(refused, HIDDEN_COLLEAGUE) == []
 
+    @pytest.mark.parametrize("detail", ["file", "project"])
     def test_the_participant_reaches_the_preview_by_the_declared_routes_only(
-            self, tmp_path):
+            self, tmp_path, detail):
         with wired(self._build(tmp_path, collide=True)):
-            out = self._sidecar_preview()
+            out = self._sidecar_preview(detail)
             assert routes_carrying(out, PARTICIPANT, DECLARED_ROUTES) == []
             # The declared routes are really taken, so the allow list is
             # not passing an empty walk.
@@ -2976,8 +2986,16 @@ class TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant:
             named = {row["name"]: row for row in rows}
             assert f"{PARTICIPANT}_notes.txt" in named
             row = named[f"{PARTICIPANT}_notes.txt"]
+            assert row["occurrences"]["wide"] == 3
+            if detail == "file":
+                # Compact: id, name and the two counts, nothing else.
+                assert set(row) == {"file_id", "name", "occurrences"}
+                return
             assert row["file_not_rewritten_because"] == "another_file"
-            assert row["occurrences"]["wide"] == 2
+            assert row["normalisation_variants_seen"] == [
+                {"entry": 0, "count": 1}]
+            # THOMAS_P01 is inside a longer word, not a case variant.
+            assert row["case_variants_seen"] == []
             for entry in row["entries"]:
                 assert "form" not in entry
                 assert "longer_words" not in entry
@@ -4528,6 +4546,10 @@ class TestResultShape:
             result = execute_from(out)
             assert result["success"] is True
             assert "position_safety_warning" in result
+            # One file per call: said in the singular (fix round 1, QA-9).
+            assert "GUI-created codings in that file may not align" in \
+                result["position_safety_warning"]
+            assert "those files" not in result["position_safety_warning"]
         finally:
             server.db.close()
             server.db, server.current_project_path = original_db, original_path
@@ -4821,7 +4843,7 @@ class TestTheDescriptionCarriesWhatD1Requires:
     REQUIRED = [
         ("rewrites_source_text",
          "THIS REWRITES SOURCE TEXT and moves every coding, annotation "
-         "and case link in the files it touches."),
+         "and case link in the file it touches."),
         ("preview_first",
          "Preview first, relay the counts, the collisions and the residue "
          "to the user, get an explicit yes, then execute with the token."),
@@ -4860,9 +4882,9 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "The run manifest this tool writes and the journal entry it can "
          "add never contain an original name"),
         ("re_read_every_touched_file",                   # QA F-6
-         "After the run, re-read every touched file before any further "
-         "coding: every position after the first replacement in it has "
-         "changed, and any pending coding suggestion for them is stale."),
+         "After the run, re-read the file before any further coding: "
+         "every position after the first replacement in it has changed, "
+         "and any pending coding suggestion for it is stale."),
         ("qualcoder_does_not_refresh",
          "an open QualCoder window does not refresh from this write on its "
          "own"),
@@ -4930,6 +4952,22 @@ class TestTheDescriptionCarriesWhatD1Requires:
         ("repeat_the_same_bound_arguments",              # v0.13 decision A
          "call again with the SAME mapping, file_id, case_mode and "
          "overlap_policy, plus preview_token=<the token>."),
+        ("a_carrying_pseudonym_is_withheld",             # fix round 1, F1
+         "A pseudonym that carries one of those names is withheld (null) "
+         "wherever the preview would quote it, and its entry number stands "
+         "in."),
+        ("the_records_withhold_a_carrying_pseudonym",    # fix round 1, F1
+         "a file name, folder name, path or pseudonym that carries one is "
+         "withheld from both and the file id or the entry number is used "
+         "instead."),
+        ("the_transport_coerces_file_id",                # fix round 1, QA-3
+         "A host that sends \"1\", 1.0 or true gets file 1: the transport "
+         "turns each into the integer before this tool runs."),
+        ("the_residue_detail_argument",                  # fix round 1, F4
+         "residue_detail: \"file\" (default): full detail for the file this "
+         "call names and, for every other file that still shows a name, one "
+         "row with its id, name and two counts. \"project\": full detail for "
+         "every file. The totals and the warnings are the same either way."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "
@@ -4981,6 +5019,14 @@ class TestTheDescriptionCarriesWhatD1Requires:
         assert "one that contained a name and changed length with it" \
             not in published
         assert "resize, snap or delete" not in published
+
+    def test_no_plural_is_left_from_the_many_files_tool(self):
+        """Fix round 1, QA-9: one file per call, said in the singular
+        everywhere a model reads it."""
+        published = self.published()
+        assert "in the files it touches" not in published
+        assert "re-read every touched file" not in published
+        assert "suggestion for them is stale" not in published
 
     def test_the_list_of_files_is_gone_from_the_description(self):
         """v0.13 decision A: nothing a model reads still offers a list of

@@ -110,7 +110,8 @@ class TestAFileTheRewriteNeverFiresOnIsNamed:
     MAPPING = [{"original": "Thomas", "pseudonym": "Alex"}]
 
     def test_the_quiet_file_is_named_with_its_counts(self, two_files):
-        out = preview_of(mapping=self.MAPPING, file_id=1)
+        out = preview_of(residue_detail="project", mapping=self.MAPPING,
+                         file_id=1)
         assert [item["file_id"] for item in out["preview"]["files"]] == [1]
         row = _rows(out)[99]
         assert row["name"] == "quiet.txt"
@@ -129,7 +130,8 @@ class TestAFileTheRewriteNeverFiresOnIsNamed:
         assert _block(out)["totals"]["files_showing_a_name"] == 1
 
     def test_previewing_the_quiet_file_itself_says_no_match(self, two_files):
-        out = preview_of(mapping=self.MAPPING, file_id=99)
+        out = preview_of(residue_detail="project", mapping=self.MAPPING,
+                         file_id=99)
         assert out["preview"]["files"] == []
         rows = _block(out)["files"]
         # The file this call names comes first, whatever its id.
@@ -148,7 +150,7 @@ class TestTheBlockHasOneShape:
     @pytest.fixture
     def residue(self, project):
         _set_text(project, 4, "Thomas_P01 met thomas and MaryAnn. Tom!")
-        return preview_of()["preview"]["residue"]
+        return preview_of(residue_detail="project")["preview"]["residue"]
 
     def test_the_units_are_named_by_value(self, residue):
         assert residue["counts"] == "fields, not occurrences"
@@ -260,7 +262,7 @@ class TestAFileThisRunDoesNotRewrite:
     def test_a_pdf_source_is_counted_and_never_rewritten(self, project):
         text = "Thomas wrote to Thomas and Tom."
         _set_text(project, 2, text)
-        out = preview_of()
+        out = preview_of(residue_detail="project")
         row = _rows(out)[2]
         assert row["name"] == "paper.pdf"
         assert row["rewritten_by_this_run"] is False
@@ -287,7 +289,7 @@ class TestAFileThisRunDoesNotRewrite:
         _set_text(project, 1, "Thomas Smith met Smith.")
         _set_text(project, 2, "Thomas Smith wrote.")            # the PDF
         _set_text(project, 4, "Smith was there.")               # another file
-        out = preview_of(mapping=mapping)
+        out = preview_of(residue_detail="project", mapping=mapping)
         rows = _rows(out)
         rewritten = rows[1]
         assert rewritten["rewritten_by_this_run"] is True
@@ -317,7 +319,7 @@ class TestAFileThisRunDoesNotRewrite:
         file-text block when a name shows in it, a PDF among them."""
         _set_text(project, 2, "Thomas on page one.")
         _set_text(project, 4, "and THOMAS on the quiet one")
-        rows = _rows(preview_of())
+        rows = _rows(preview_of(residue_detail="project"))
         assert rows[2]["name"] == "paper.pdf"
         assert rows[4]["name"] == "quiet.txt"
 
@@ -328,11 +330,13 @@ class TestAFileThisRunDoesNotRewrite:
 
 class TestTheTwoPaths:
 
-    TEXT = "Thomas_P01 and Thomasin and Thomas_Smith.txt, THOMAS too."
+    TEXT = ("Thomas_P01 and Thomasin and Thomas_Smith.txt, THOMAS too, "
+            "and Tho\u00admas.")
 
     def test_the_typed_path_lists_the_longer_words(self, project):
         _set_text(project, 4, self.TEXT)
-        entry = _rows(preview_of())[4]["entries"][0]
+        entry = _rows(preview_of(residue_detail="project"))[4][
+            "entries"][0]
         assert entry["form"] == "Thomas"
         assert entry["longer_words"] == [
             {"word": "Thomas_P01", "count": 1},
@@ -344,7 +348,8 @@ class TestTheTwoPaths:
         words = " ".join(f"Thomas_{n:02d}" for n in
                          range(P.MAX_LONGER_WORDS_PER_ENTRY + 3))
         _set_text(project, 4, words)
-        entry = _rows(preview_of())[4]["entries"][0]
+        entry = _rows(preview_of(residue_detail="project"))[4][
+            "entries"][0]
         assert len(entry["longer_words"]) == P.MAX_LONGER_WORDS_PER_ENTRY
         assert entry["longer_words_truncated"] is True
         assert entry["inside_a_longer_word"] == \
@@ -355,7 +360,8 @@ class TestTheTwoPaths:
         _set_text(project, 4, self.TEXT, name="Thomas_notes.txt")
         _sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"},
                            {"original": "Mary Ann", "pseudonym": "Sam"}])
-        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        out = preview_of(residue_detail="project", mapping=None,
+                         use_project_pseudonyms=True)
         row = _rows(out)[4]
         # Ruling 12: the file is named on this path too.
         assert row["name"] == "Thomas_notes.txt"
@@ -370,6 +376,11 @@ class TestTheTwoPaths:
                 assert "form" not in item
         assert row["case_variants_seen"] == [{"entry": 0,
                                               "other_case_count": 1}]
+        # Fix round 1, QA-5: a spelling with a soft hyphen inside the name
+        # is in the text, so this list is not empty and its withholding
+        # is really exercised.
+        assert row["normalisation_variants_seen"] == [{"entry": 0,
+                                                       "count": 1}]
         # No word of the file text, and no name, anywhere in the block
         # but the file's own name and the server's fixed prose.
         residue = without_fixed_prose(out["preview"]["residue"])
@@ -382,7 +393,7 @@ class TestTheTwoPaths:
     def test_the_typed_path_still_shows_the_caller_their_own_forms(
             self, project):
         _set_text(project, 4, self.TEXT)
-        row = _rows(preview_of())[4]
+        row = _rows(preview_of(residue_detail="project"))[4]
         assert row["case_variants_seen"] == [
             {"entry": 0, "form": "Thomas", "other_case_count": 1}]
 
@@ -443,9 +454,11 @@ class TestTheWorkBudget:
                           )[0]["fulltext"]
         after = P.apply_replacements(
             rewritten, P.find_replacements(compiled, rewritten))
-        # Room for the file this call rewrites and nothing more.
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", len(after) * forms)
-        out = preview_of()
+        # Room for the file this call rewrites and nothing more, in the
+        # work model of fix round 1 (forms plus a per-character term).
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", len(after) * (
+            forms + P.RESIDUE_WORK_PER_CHARACTER))
+        out = preview_of(residue_detail="project")
         block = _block(out)
         assert block["files_counted"] == 1
         # In the order of the budget: the file this call names first,
@@ -461,12 +474,16 @@ class TestTheWorkBudget:
         assert block["totals"]["files_showing_a_name"] == 3
         note = block["files_not_counted_note"]
         assert note.startswith("5 file(s) were not counted in full")
-        assert "the one way to get the full counts is a smaller mapping" \
-            in note
+        # Two budgets since fix round 1 (S-4): the work and the matches,
+        # and a smaller mapping is the remedy for the first only.
+        assert ("The budgets are fixed: a smaller mapping lowers the work, "
+                "and a file past the match budget is one to read directly."
+                in note)
         assert "file_ids" not in note
         _house_rules([note], ["files_not_counted_note"])
         # Deterministic: the same preview twice is the same block.
-        assert json.dumps(_block(preview_of())) == json.dumps(block)
+        assert json.dumps(_block(preview_of(
+            residue_detail="project"))) == json.dumps(block)
 
     def test_a_budget_cannot_make_a_quiet_preview(self, project,
                                                   monkeypatch):
@@ -483,7 +500,7 @@ class TestTheWorkBudget:
         assert warning == (
             "Warning: after this run, 3 file(s) would still show one of "
             "these names in their text, and were not counted in full "
-            "because counting them passed this preview's work budget; see "
+            "because counting them passed this preview's budget; see "
             "files_not_counted. See residue.file_text, which names the "
             "files.")
 
@@ -532,7 +549,7 @@ class TestACountIsNeverLost:
             return lookup
 
         monkeypatch.setattr(P.Compiled, "text_lookup", emptied)
-        out = preview_of()
+        out = preview_of(residue_detail="project")
         row = _rows(out)[4]
         assert row["unattributed"] == 3
         assert row["occurrences"]["wide"] == 3
@@ -557,11 +574,11 @@ class TestNothingOfThisRunsUnderTheLock:
         original = P.names_left_in_text
 
         def counting(compiled, text, list_longer_words,
-                     rewritten_by_this_run):
+                     rewritten_by_this_run, **kwargs):
             calls.append(bool(server.db.conn.in_transaction)
                          if server.db is not None else None)
             return original(compiled, text, list_longer_words,
-                            rewritten_by_this_run)
+                            rewritten_by_this_run, **kwargs)
 
         out = preview_of()
         monkeypatch.setattr(P, "names_left_in_text", counting)
@@ -908,7 +925,7 @@ class TestTheWideReadingIsAtLeastTheRewrite:
         con.close()
         _set_text(project, 1, "Rene met the team.")
         _set_text(project, 4, f"Later {self.NFD} arrived.")
-        return preview_of(mapping=self.MAPPING)
+        return preview_of(residue_detail="project", mapping=self.MAPPING)
 
     def test_a_note_is_counted_in_both_readings(self, project):
         out = self._nfd_project(project)
@@ -1116,3 +1133,412 @@ class TestAPseudonymCarryingANameIsWithheld:
 
     def test_the_sentence_keeps_the_house_rules(self):
         _house_rules([P.PSEUDONYMS_WITHHELD_NOTE], ["withheld note"])
+
+
+# =============================================================================
+# FIX ROUND 1, F4: COMPACT BY DEFAULT
+# =============================================================================
+
+class TestTheReportIsCompactByDefault:
+    """The owner's ruling of 2026-09-23. Full detail for the file this
+    call names; for every other file that still shows a name, one row with
+    its id, its name and the two counts, nothing else. `residue_detail=
+    "project"` gives every file its full row. The totals are complete and
+    the warnings read them, so folding the detail never silences one."""
+
+    COMPACT_KEYS = {"file_id", "name", "occurrences"}
+
+    def _three_files(self, project):
+        _set_text(project, 4, "THOMAS in four, and Thomas_P01.")
+        _set_text(project, 5, "Thomasin in five.", name="five.txt")
+        _set_text(project, 6, "nothing here at all.", name="six.txt")
+
+    def test_other_files_get_one_compact_row_each(self, project):
+        self._three_files(project)
+        out = preview_of()
+        block = _block(out)
+        assert block["detail"] == "file"
+        assert block["detail_note"] == \
+            QualcoderDatabase.PSEUDONYMISE_DETAIL_NOTE
+        rows = _rows(out)
+        assert sorted(rows) == [4, 5]          # six shows nothing, one is clean
+        for fid in (4, 5):
+            assert set(rows[fid]) == self.COMPACT_KEYS, rows[fid]
+        assert rows[4]["occurrences"]["wide"] == 2
+        assert rows[4]["occurrences"]["whole_word"] == 0
+        # No word of another file's text, not even a longer word (beyond
+        # the server's own fixed prose, whose example is Thomas_P01).
+        assert "Thomas_P01" not in json.dumps(without_fixed_prose(block))
+
+    def test_the_named_file_keeps_its_full_row(self, project):
+        self._three_files(project)
+        out = preview_of(file_id=4)
+        rows = _rows(out)
+        assert rows[4]["file_not_rewritten_because"] == "no_match"
+        assert rows[4]["entries"][0]["longer_words"] == [
+            {"word": "Thomas_P01", "count": 1}]
+        assert set(rows[5]) == self.COMPACT_KEYS
+
+    def test_project_detail_gives_every_file_its_full_row(self, project):
+        self._three_files(project)
+        block = _block(preview_of(residue_detail="project"))
+        assert block["detail"] == "project"
+        assert "detail_note" not in block
+        rows = {row["file_id"]: row for row in block["files"]}
+        assert rows[4]["entries"] and rows[5]["entries"]
+        assert rows[4]["file_not_rewritten_because"] == "another_file"
+
+    def test_the_totals_and_the_warnings_are_the_same_either_way(
+            self, project):
+        self._three_files(project)
+        compact = preview_of()
+        full = preview_of(residue_detail="project")
+        assert _block(compact)["totals"] == _block(full)["totals"]
+        assert compact["warnings"] == full["warnings"]
+        assert _file_text_warning(compact) is not None
+
+    def test_a_file_past_the_budget_that_shows_a_name_gets_a_compact_row(
+            self, project, monkeypatch):
+        self._three_files(project)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 0)
+        block = _block(preview_of())
+        rows = {row["file_id"]: row for row in block["files"]}
+        assert rows[4] == {"file_id": 4, "name": "quiet.txt",
+                           "counted": False}
+        assert rows[5] == {"file_id": 5, "name": "five.txt",
+                           "counted": False}
+        assert 6 not in rows and 6 in block["files_not_counted"]
+        assert block["totals"]["files_showing_a_name_not_counted"] == 2
+
+    def test_the_argument_is_checked_and_not_bound(self, project):
+        refused = preview_of(residue_detail="everything")
+        assert refused == {
+            "error": "residue_detail must be one of file, project."}
+        a = preview_of()
+        b = preview_of(residue_detail="project")
+        assert a["preview_token"].split(".")[2] == \
+            b["preview_token"].split(".")[2]
+        assert execute_from(b).get("success") is True
+
+    def test_the_sidecar_compact_rows_carry_no_form(self, project):
+        self._three_files(project)
+        _sidecar(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = preview_of(mapping=None, use_project_pseudonyms=True)
+        for row in _block(out)["files"]:
+            assert set(row) <= self.COMPACT_KEYS | {"counted"}
+        residue = without_fixed_prose(out["preview"]["residue"])
+        for row in residue["file_text"]["files"]:
+            row.pop("name")
+        assert "Thomas" not in json.dumps(residue)
+
+
+# =============================================================================
+# FIX ROUND 1, F5: SIZE AND WORK BOUNDS
+# =============================================================================
+
+def _people(count):
+    """Distinct, valid, name-like forms that share no letters' run."""
+    names = []
+    for index in range(count):
+        a, b = divmod(index, 26)
+        names.append("Q" + chr(97 + a) + chr(97 + b) + "x")
+    return names
+
+
+class TestTheBlockIsBounded:
+
+    def test_the_entry_rows_are_capped_and_the_row_stays_complete(
+            self, project):
+        people = _people(P.MAX_RESIDUE_ENTRY_ROWS + 10)
+        mapping = [{"original": name, "pseudonym": f"P{name}"}
+                   for name in people]
+        # Each name once, and the last one three times, so wide-count
+        # order is visible: the most frequent entry comes first.
+        text = " ".join(people) + " " + " ".join([people[-1]] * 2) + "."
+        _set_text(project, 4, text)
+        out = preview_of(mapping=mapping, file_id=4)
+        row = _rows(out)[4]
+        assert len(row["entries"]) == P.MAX_RESIDUE_ENTRY_ROWS
+        assert row["entries_truncated"] is True
+        assert row["entries"][0]["entry"] == len(people) - 1
+        assert row["entries"][0]["occurrences"]["wide"] == 3
+        assert [e["entry"] for e in row["entries"][1:4]] == [0, 1, 2]
+        # The row's own count, and the block's, are complete.
+        assert row["occurrences"]["wide"] == len(people) + 2
+        assert _block(out)["totals"]["occurrences"]["wide"] == \
+            len(people) + 2
+
+    def test_the_spelling_lists_are_capped_too(self, project):
+        people = _people(P.MAX_RESIDUE_ENTRY_ROWS + 5)
+        mapping = [{"original": name, "pseudonym": f"P{name}"}
+                   for name in people]
+        text = " ".join(name.upper() for name in people) + ". " + " ".join(
+            name[:2] + "­" + name[2:] for name in people) + "."
+        _set_text(project, 4, text)
+        row = _rows(preview_of(mapping=mapping, file_id=4))[4]
+        assert len(row["case_variants_seen"]) == P.MAX_RESIDUE_ENTRY_ROWS
+        assert row["case_variants_seen_truncated"] is True
+        assert len(row["normalisation_variants_seen"]) == \
+            P.MAX_RESIDUE_ENTRY_ROWS
+        assert row["normalisation_variants_seen_truncated"] is True
+
+    def test_the_match_budget_drops_a_dense_file_to_the_cheap_question(
+            self, project, monkeypatch):
+        _set_text(project, 4, "Thomas " * 40)
+        _set_text(project, 5, "Thomas once.", name="five.txt")
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", 30)
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        # The PDF (file 2) has no match and is counted; file 4 passes the
+        # budget halfway through its count.
+        assert block["files_not_counted"] == [4, 5]
+        rows = _rows(out)
+        assert rows[4]["counted"] is False and rows[4]["shows_a_name"] is True
+        # Once passed, a budget stays passed: file 5 is small but after it.
+        assert rows[5]["counted"] is False
+        assert block["totals"]["files_showing_a_name_not_counted"] == 2
+        assert "2 file(s) would still show one of these names" in \
+            _file_text_warning(out)
+
+    def test_the_engine_stops_at_the_match_budget(self):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        text = "Thomas " * 10
+        assert P.names_left_in_text(compiled, text, True, False,
+                                    max_matches=19) is None
+        found = P.names_left_in_text(compiled, text, True, False,
+                                     max_matches=20)
+        assert found["matches"] == 20          # ten each, both passes
+        assert found["occurrences"] == {"wide": 10, "whole_word": 10}
+
+    def test_the_work_has_a_per_character_term(self, project, monkeypatch):
+        """The work of a file is its length times the surface forms PLUS
+        `RESIDUE_WORK_PER_CHARACTER`: the model of S-4, in which a
+        one-form mapping no longer gets four hundred megabytes."""
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        text1 = query(project, "SELECT fulltext FROM source WHERE id=1"
+                      )[0]["fulltext"]
+        after = P.apply_replacements(text1,
+                                     P.find_replacements(compiled, text1))
+        forms = len(compiled.forms)
+        exact = len(after) * (forms + P.RESIDUE_WORK_PER_CHARACTER)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", exact)
+        assert _block(preview_of())["files_counted"] == 1
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", len(after) * forms)
+        assert _block(preview_of())["files_counted"] == 0
+        assert P.RESIDUE_WORK_PER_CHARACTER == 3
+
+
+# =============================================================================
+# FIX ROUND 1, F6: A READ THE REPORT COULD NOT MAKE IS SAID
+# =============================================================================
+
+class TestAnUnreadablePartIsSaid:
+
+    @staticmethod
+    def _unreadable_warning(out):
+        found = [w for w in out["warnings"]
+                 if w.startswith("Warning: this report could not read ")]
+        assert len(found) <= 1
+        return found[0] if found else None
+
+    def test_a_file_text_read_that_fails_is_warned_about(self, project,
+                                                         monkeypatch):
+        """The Security gate's fault injection (S-5)."""
+        _set_text(project, 4, "Thomas again, and Thomas.")
+
+        def boom(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_file_text",
+                            boom)
+        out = preview_of()
+        assert out["preview"]["residue"]["unreadable"] == ["source.fulltext"]
+        assert self._unreadable_warning(out) == (
+            "Warning: this report could not read source.fulltext, so it "
+            "does not cover them, and a name there is counted nowhere in "
+            "residue. Preview again; if the same parts still cannot be "
+            "read, check them in QualCoder before sharing the project.")
+
+    def test_a_missing_note_table_is_warned_about(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("DROP TABLE code_image")
+        con.commit()
+        con.close()
+        _reconnect(project)
+        out = preview_of()
+        assert "code_image.memo" in out["preview"]["residue"]["unreadable"]
+        assert "code_image.memo" in self._unreadable_warning(out)
+
+    def test_a_readable_project_says_nothing_of_the_kind(self, project):
+        assert self._unreadable_warning(preview_of()) is None
+
+
+# =============================================================================
+# FIX ROUND 1, F7 AND F8: THE PINS THE GATES SHOWED MISSING
+# =============================================================================
+
+class TestTheFileTextWarningsArithmetic:
+    """QA-2: the warning under the budget and the row cap together, and
+    QA-7's clause. The warning reads the totals alone (F4)."""
+
+    def test_the_budget_and_the_cap_together(self, project, monkeypatch):
+        """The QA gate's `test_h` shape: rows past the budget that show
+        nothing fill the cap in project detail, and the files that show a
+        name fall past it; the warning still counts them."""
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        _set_text(project, 2, "nothing on this page.")
+        _set_text(project, 4, "nothing here either.")
+        for fid in (5, 6, 7):
+            _set_text(project, fid, "plain words only.", name=f"f{fid}.txt")
+        for fid in (8, 9):
+            _set_text(project, fid, "THOMAS was here.", name=f"f{fid}.txt")
+        text1 = query(project, "SELECT fulltext FROM source WHERE id=1"
+                      )[0]["fulltext"]
+        after = P.apply_replacements(text1,
+                                     P.find_replacements(compiled, text1))
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", len(after) * (
+            len(compiled.forms) + P.RESIDUE_WORK_PER_CHARACTER))
+        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 3)
+        for detail in ("file", "project"):
+            out = preview_of(residue_detail=detail)
+            assert _file_text_warning(out) == (
+                "Warning: after this run, 2 file(s) would still show one of "
+                "these names in their text, and were not counted in full "
+                "because counting them passed this preview's budget; see "
+                "files_not_counted. See residue.file_text, which names the "
+                "files."), detail
+
+    def test_counted_and_uncounted_files_are_told_apart(self, project,
+                                                        monkeypatch):
+        """The QA gate's `test_e` shape: a counted file with a name left,
+        then the budget, then files past it that show one."""
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        for fid in range(5, 10):
+            _set_text(project, fid, f"THOMAS in {fid}.", name=f"f{fid}.txt")
+        _set_text(project, 4, "Thomas_P01 in four.")
+        text1 = query(project, "SELECT fulltext FROM source WHERE id=1"
+                      )[0]["fulltext"]
+        after = P.apply_replacements(text1,
+                                     P.find_replacements(compiled, text1))
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", (
+            len(after) + len("extracted page text")
+            + len("Thomas_P01 in four.")) * (
+            len(compiled.forms) + P.RESIDUE_WORK_PER_CHARACTER))
+        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 3)
+        out = preview_of()
+        assert _file_text_warning(out) == (
+            "Warning: after this run, 1 occurrence(s) of these names would "
+            "still be in the text of 1 file(s), because the rewrite replaces "
+            "whole words only and in one file per call. 1 of those are a "
+            "name inside a longer word (usually a different word, left as it "
+            "is). The split by kind is a heuristic; the total is not. 5 "
+            "further file(s) would still show one of these names in their "
+            "text, and were not counted in full because counting them passed "
+            "this preview's budget; see files_not_counted. See "
+            "residue.file_text, which names the files.")
+
+    def test_a_counted_file_shows_a_name_on_either_reading(self, project,
+                                                           monkeypatch):
+        """QA-6 (Q03): a counted file shows a name when EITHER reading is
+        non-zero. The union of F2 makes a whole word without a wide
+        occurrence unreachable through the real engine, so the rule is
+        driven with one whose answer for file 4 is exactly that."""
+        _set_text(project, 4, "whatever the engine says.")
+        real = P.names_left_in_text
+
+        def only_whole_word(compiled, text, *args, **kwargs):
+            found = real(compiled, text, *args, **kwargs)
+            if found is not None and text == "whatever the engine says.":
+                found["occurrences"] = {"wide": 0, "whole_word": 1}
+            return found
+
+        monkeypatch.setattr(P, "names_left_in_text", only_whole_word)
+        out = preview_of(residue_detail="project")
+        assert 4 in _rows(out)
+        assert _block(out)["totals"]["files_showing_a_name"] == 1
+        assert _block(out)["totals"]["files_whole_word_above_wide"] == 1
+        assert _file_text_warning(out) is not None
+
+    def test_a_file_with_more_whole_words_than_wide_ones_is_said(
+            self, project):
+        """QA-7: "Mary, Ann" in another file under {Mary Ann, Mary, Ann}
+        is one wide occurrence and two whole words."""
+        mapping = [{"original": "Mary Ann", "pseudonym": "Pat"},
+                   {"original": "Mary", "pseudonym": "Sue"},
+                   {"original": "Ann", "pseudonym": "Joy"}]
+        _set_text(project, 4, "Mary, Ann came.")
+        out = preview_of(mapping=mapping)
+        assert _rows(out)[4]["occurrences"] == {"wide": 1, "whole_word": 2}
+        assert _block(out)["totals"]["files_whole_word_above_wide"] == 1
+        assert ("In 1 of those file(s) the whole-word count is higher than "
+                "the wide one, because the two readings divide the text into "
+                "names differently (Mary, Ann read as Mary Ann), so running "
+                "them would replace more names than the wide count says."
+                in _file_text_warning(out))
+
+    def test_the_fields_warning_says_a_non_zero_whole_word_number(
+            self, project):
+        """QA-6 (Q08): the only pin on "{M} of those" had it at 0."""
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET memo='about Thomas' WHERE id=1")
+        con.execute("UPDATE cases SET name='Thomas' WHERE caseid=1")
+        con.execute("UPDATE code_name SET memo='Thomas_P01 said' "
+                    "WHERE cid=1")
+        con.commit()
+        con.close()
+        _reconnect(project)
+        fields = [w for w in preview_of()["warnings"]
+                  if "note(s), label(s)" in w]
+        assert fields[0].startswith(
+            "Warning: 3 note(s), label(s) or attribute value(s) may still "
+            "show one of these names, and this tool does not rewrite any of "
+            "them; 2 of those match this run's own whole-word rule.")
+
+
+class TestTheLongerWordsThroughTheTool:
+    """F3 at tool level: the Security gate's samples in another file, and
+    the one budget every list in a preview shares."""
+
+    @pytest.mark.parametrize("name,text", [
+        ("Thomas", "See Thomas_Smith_DOB_1984_03_12_NHS_4857773456_Grimsby_"
+                   "ward_7 today."),
+        ("トーマス",
+         "トーマスさんは病院で働"
+         "いていました。"),
+        ("托马斯",
+         "托马斯在医院当护士。"),
+    ], ids=["identifier", "japanese", "chinese"])
+    def test_a_clause_or_an_identifier_is_never_listed(self, project, name,
+                                                       text):
+        _set_text(project, 7, text, name="other.txt")
+        out = preview_of(mapping=[{"original": name,
+                                   "pseudonym": "Alexandra"}],
+                         residue_detail="project")
+        entry = _rows(out)[7]["entries"][0]
+        assert entry["inside_a_longer_word"] == 1
+        assert entry["longer_words"] == []
+        assert entry["longer_words_truncated"] is True
+        assert "Grimsby" not in json.dumps(out)
+        assert "病院" not in json.dumps(out)
+
+    def test_every_list_in_a_preview_shares_one_budget(self, project,
+                                                       monkeypatch):
+        for fid in range(5, 9):
+            _set_text(project, fid, f"Thomas_P0{fid} and Thomasin_{fid}.",
+                      name=f"f{fid}.txt")
+        monkeypatch.setattr(P, "MAX_LONGER_WORDS_TOTAL_CHARS", 40)
+        block = _block(preview_of(residue_detail="project"))
+        listed = [item["word"] for row in block["files"]
+                  for entry in row.get("entries", [])
+                  for item in entry.get("longer_words", [])]
+        assert sum(len(word) for word in listed) <= 40
+        # A prefix of the rows' order: file 5's words, then file 6's.
+        assert listed == ["Thomas_P05", "Thomasin_5", "Thomas_P06",
+                          "Thomasin_6"]
+        rows = {row["file_id"]: row for row in block["files"]}
+        assert rows[7]["entries"][0]["longer_words"] == []
+        assert rows[7]["entries"][0]["longer_words_truncated"] is True
+        assert block["longer_words_note"].startswith(
+            "The longer words this preview lists share one budget of 40 "
+            "characters")

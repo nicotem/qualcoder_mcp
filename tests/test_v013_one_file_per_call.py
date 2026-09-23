@@ -101,6 +101,41 @@ class TestTheSignature:
         assert backups(project) == []
 
 
+class TestTheTransportCoercesFileId:
+    """QA-3, and the lead's ruling on it: kept, for usability (local
+    models often send numbers as strings), documented in the tool's
+    description, and pinned as it behaves. Over MCP the arguments are
+    validated in pydantic's lax mode before the tool runs: "1", 1.0 and
+    true reach the tool as the integer 1; 1.5 and "one" are refused in
+    pydantic's words; 0 and -1 reach the tool and are refused in ours."""
+
+    @pytest.mark.parametrize("sent", ["1", 1.0, True],
+                             ids=["string", "float", "true"])
+    def test_a_host_value_that_means_one_is_file_1(self, project, sent):
+        answer = _preview_body(asyncio.run(server.mcp.call_tool(
+            "pseudonymise_source", {"mapping": MAPPING, "file_id": sent})))
+        assert answer["requires_confirmation"] is True
+        assert answer["execute_with"]["arguments"]["file_id"] == 1
+        assert isinstance(answer["execute_with"]["arguments"]["file_id"],
+                          int)
+        assert backups(project) == []
+
+    @pytest.mark.parametrize("sent", [1.5, "one"], ids=["fraction", "word"])
+    def test_a_value_that_is_not_an_integer_is_refused_by_the_transport(
+            self, project, sent):
+        with pytest.raises(Exception) as refused:
+            asyncio.run(server.mcp.call_tool(
+                "pseudonymise_source", {"mapping": MAPPING, "file_id": sent}))
+        assert "file_id" in str(refused.value)
+
+    @pytest.mark.parametrize("sent", [0, -1])
+    def test_zero_and_below_reach_the_tool_and_are_refused_in_our_words(
+            self, project, sent):
+        answer = _preview_body(asyncio.run(server.mcp.call_tool(
+            "pseudonymise_source", {"mapping": MAPPING, "file_id": sent})))
+        assert answer == {"error": "file_id must be a positive integer."}
+
+
 # =============================================================================
 # THE REFUSALS THAT REPLACE `skipped_files`
 # =============================================================================
@@ -260,6 +295,11 @@ class TestWhatWentWithTheList:
         assert result["journal_entry"].startswith(
             "Pseudonymisation interview_01_txt ")
         assert [item["file_id"] for item in result["files"]] == [1]
+        # And its body says so in the singular (fix round 1, QA-9).
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert ("Positions after the first replacement in this file have "
+                "changed.") in body
+        assert "these files" not in body
 
     def test_neither_the_preview_nor_the_nothing_to_do_answer_lists_skips(
             self, project):

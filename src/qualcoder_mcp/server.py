@@ -10441,23 +10441,25 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
 
     Kept apart from the fields warning, so that fields and occurrences
     are never added together. It fires when any name is left in any
-    file's text, and ALSO when files past the work budget show a name
-    while none was counted: a budget must never be a way to get a quiet
-    preview, so a file that was only asked "does a name show here" and
-    answered yes is said out loud either way.
+    file's text under either reading, and ALSO when files past a budget
+    show a name while none was counted: a budget must never be a way to
+    get a quiet preview, so a file that was only asked "does a name show
+    here" and answered yes is said out loud either way.
+
+    It reads the block's TOTALS and nothing else. The rows are compact by
+    default and capped in any case, and a warning built from them could
+    be silenced by folding them (fix round 1: the owner's "compact by
+    default" ruling; QA-2).
     """
     totals = file_text.get("totals") or {}
-    wide = (totals.get("occurrences") or {}).get("wide", 0)
-    whole_word = (totals.get("occurrences") or {}).get("whole_word", 0)
+    occurrences = totals.get("occurrences") or {}
+    wide = occurrences.get("wide", 0)
+    whole_word = occurrences.get("whole_word", 0)
     reasons = totals.get("by_reason") or {}
-    not_counted = set(file_text.get("files_not_counted") or [])
-    uncounted_showing = sum(
-        1 for row in file_text.get("files") or []
-        if not row.get("counted") and row.get("shows_a_name"))
-    uncounted_showing += len(not_counted.intersection(
-        file_text.get("more_files_showing_a_name") or []))
+    uncounted_showing = totals.get("files_showing_a_name_not_counted", 0)
     counted_showing = totals.get("files_showing_a_name", 0) \
         - uncounted_showing
+    above = totals.get("files_whole_word_above_wide", 0)
     sentences: List[str] = []
     if wide or whole_word:
         clauses = []
@@ -10478,13 +10480,25 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"because the rewrite replaces whole words only and in one "
             f"file per call. {listed}. The split by kind is a heuristic; "
             f"the total is not.")
+        if above:
+            # QA-7: the two readings can divide a name of several words
+            # differently ("Mary, Ann" is one wide occurrence and two
+            # whole words), and then the next run of that file replaces
+            # more than the wide count says.
+            sentences.append(
+                f"In {above} of those file(s) the whole-word count is "
+                f"higher than the wide one, because the two readings divide "
+                f"the text into names differently (Mary, Ann read as Mary "
+                f"Ann), so running them would replace more names than the "
+                f"wide count says.")
     if uncounted_showing:
         sentences.append(
-            f"{'Warning: after this run, ' if not wide else ''}"
-            f"{uncounted_showing} {'further ' if wide else ''}file(s) "
+            f"{'Warning: after this run, ' if not (wide or whole_word) else ''}"
+            f"{uncounted_showing} "
+            f"{'further ' if (wide or whole_word) else ''}file(s) "
             f"would still show one of these names in their text, and "
             f"were not counted in full because counting them passed this "
-            f"preview's work budget; see files_not_counted.")
+            f"preview's budget; see files_not_counted.")
     if not sentences:
         return None
     sentences.append("See residue.file_text, which names the files.")
@@ -10610,6 +10624,16 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         text_warning = _pseudonymise_file_text_warning(file_text)
         if text_warning:
             warnings.append(text_warning)
+    unreadable = residue.get("unreadable") or []
+    if unreadable:
+        # Fix round 1, S-5: a part the report could not read is counted
+        # nowhere, and a report silent about it reads as a clean one.
+        warnings.append(
+            f"Warning: this report could not read {', '.join(unreadable)}, "
+            f"so it does not cover them, and a name there is counted "
+            f"nowhere in residue. Preview again; if the same parts still "
+            f"cannot be read, check them in QualCoder before sharing the "
+            f"project.")
     # v0.13, ruling 8: a pseudonym that contains a name from the mapping
     # puts that name back wherever it is written. Warned about and
     # counted, never refused: a researcher may mean to run the contained
@@ -10831,7 +10855,7 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     lines.append(f"Run manifest: {manifest_name}.")
     lines.append(
         "The names replaced are not recorded here. Positions after the "
-        "first replacement in these files have changed.")
+        "first replacement in this file have changed.")
     return "\n".join(lines)
 
 
@@ -10960,12 +10984,13 @@ def pseudonymise_source(
     include_context: bool = False,
     context_chars: int = 30,
     scan_residue: bool = True,
+    residue_detail: str = "file",
     max_spans_per_entry: int = 50,
 ) -> str:
     """Replace names with pseudonyms in a project's stored text.
 
     THIS REWRITES SOURCE TEXT and moves every coding, annotation and case
-    link in the files it touches. It is the only tool in this server that
+    link in the file it touches. It is the only tool in this server that
     changes the text those positions are measured against.
 
     One file per call: file_id names the file, and a mapping that is
@@ -11019,13 +11044,13 @@ def pseudonymise_source(
     The backup keeps the real names, and so does pseudonyms.json if the
     researcher keeps one; both are the reverse key and belong somewhere
     secure. The run manifest this tool writes and the journal entry it
-    can add never contain an original name: a file name, folder name or
-    path that carries one is withheld from both and the file id is used
-    instead.
+    can add never contain an original name: a file name, folder name,
+    path or pseudonym that carries one is withheld from both and the file
+    id or the entry number is used instead.
 
-    After the run, re-read every touched file before any further coding:
-    every position after the first replacement in it has changed, and
-    any pending coding suggestion for them is stale.
+    After the run, re-read the file before any further coding: every
+    position after the first replacement in it has changed, and any
+    pending coding suggestion for it is stale.
 
     QualCoder notes: an open QualCoder window does not refresh from this
     write on its own (re-selecting the file in the Files list re-reads
@@ -11045,14 +11070,19 @@ def pseudonymise_source(
                  replacements and this tool will not.
         file_id: The one text source this call rewrites. A PDF, a media
                  file or a source with no stored text is refused with the
-                 reason (pdf_source, no_fulltext, unknown_file_id).
+                 reason (pdf_source, no_fulltext, unknown_file_id). A host
+                 that sends "1", 1.0 or true gets file 1: the transport
+                 turns each into the integer before this tool runs.
         use_project_pseudonyms: Read the mapping from the project's own
                  pseudonyms.json instead (QualCoder's import-time list).
                  Give this or `mapping`, not both. The original names in
                  that file are the researcher's reverse key and you did not supply
                  them, so on this path no diagnostic and no refusal
                  quotes one, and include_context returns no context at
-                 all rather than the text around each match. Four
+                 all rather than the text around each match. A pseudonym
+                 that carries one of those names is withheld (null)
+                 wherever the preview would quote it, and its entry
+                 number stands in. Four
                  things are still returned exactly as they stand,
                  because a preview you cannot name the files in is not
                  a preview you can relay: the project path, each file's
@@ -11115,13 +11145,18 @@ def pseudonymise_source(
                  and attribute values, and in the text of every file
                  after the run (default true). Both readings, wide and
                  whole-word, for every count.
+        residue_detail: "file" (default): full detail for the file this
+                 call names and, for every other file that still shows a
+                 name, one row with its id, name and two counts. "project":
+                 full detail for every file. The totals and the warnings
+                 are the same either way.
         max_spans_per_entry: How many match positions to list per entry
                  per file before truncating (default 50, capped at 500).
                  With include_context on, the context windows also share
                  one budget for the whole preview; a block that runs out
                  of it says context_truncated.
 
-    The last four arguments and record_in_journal are NOT bound into the
+    The last five arguments and record_in_journal are NOT bound into the
     token: passing a different value for one of them on the execute call
     is not "a different operation", it simply changes what is shown or
     whether the run is recorded. The four that ARE bound are mapping,
@@ -11145,6 +11180,10 @@ def pseudonymise_source(
         return json.dumps({"error": (
             f"overlap_policy must be one of "
             f"{', '.join(pseudo.OVERLAP_POLICIES)}.")}, indent=2)
+    if residue_detail not in QualcoderDatabase.RESIDUE_DETAIL:
+        return json.dumps({"error": (
+            f"residue_detail must be one of "
+            f"{', '.join(QualcoderDatabase.RESIDUE_DETAIL)}.")}, indent=2)
 
     try:
         context_chars = _pseudonymise_count_arg(
@@ -11257,7 +11296,7 @@ def pseudonymise_source(
             plan, ai_names, include_context=include_context,
             context_chars=context_chars, scan_residue=scan_residue,
             max_spans_per_entry=max_spans_per_entry,
-            may_echo_names=may_echo_names)
+            may_echo_names=may_echo_names, residue_detail=residue_detail)
         if sidecar_encoding is not None:
             preview["pseudonyms_json_encoding"] = sidecar_encoding
         preview["_effect"] = db_.pseudonymise_effect(plan)
@@ -11412,7 +11451,7 @@ def pseudonymise_source(
                 f"beyond U+FFFF (e.g. emoji), so QualCoder's GUI uses a "
                 f"different position system for them (its documented emoji "
                 f"bug). That was already true before this run and is not "
-                f"made worse by it; GUI-created codings in those files may "
+                f"made worse by it; GUI-created codings in that file may "
                 f"not align with the slices this server reports.")
         return result
 

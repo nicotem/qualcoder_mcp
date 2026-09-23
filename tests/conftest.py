@@ -109,20 +109,21 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     v0.13, ruling 7: the work budget of `pseudonymise_source`'s file-text
     count is "about two seconds", sanity-checked on the slowest CI
     platform before the constant is frozen. The performance guard
-    records its rate as a user property, and a passing test's own output
-    is captured and never shown (CI runs `-ra -q`), so the rate is
-    written here, into the summary every CI log carries, with the
-    platform and the interpreter it was measured on.
+    records its rate, and the worst case of the two budgets it implies,
+    as a user property, and a passing test's own output is captured and
+    never shown (CI runs `-ra -q`), so the line is written here, into the
+    summary every CI log carries, with the platform and the interpreter
+    it was measured on; the CI workflow copies it into the step summary.
     """
     for key in ("passed", "failed"):
         for report in terminalreporter.stats.get(key, []):
             for name, value in getattr(report, "user_properties", []):
-                if name == "file_text_ms_per_mb_per_form":
+                if name == "file_text_rate":
                     terminalreporter.write_line(
-                        f"file-text count rate: {value} ms per MB per "
-                        f"surface form ({sys.platform}, Python "
-                        f"{sys.version_info[0]}.{sys.version_info[1]}."
-                        f"{sys.version_info[2]}, test {key})")
+                        f"file-text count rate: {value} ({sys.platform}, "
+                        f"Python {sys.version_info[0]}."
+                        f"{sys.version_info[1]}.{sys.version_info[2]}, "
+                        f"test {key})")
 
 
 # The baseline for the guard below, and the proof that it was taken

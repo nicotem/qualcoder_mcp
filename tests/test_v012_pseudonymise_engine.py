@@ -2865,32 +2865,64 @@ class TestTheFileTextCountStaysCheap:
         return mapping, " ".join(pieces)
 
     def test_a_megabyte_at_a_hundred_forms(self, record_property):
+        """The rate probe, and the worst case ruling 7 is checked on.
+
+        The same megabyte is counted at a hundred forms and at one, and a
+        dense text (the name repeated as one run, on the typed path, the
+        dearest match there is) is counted for its per-match cost. From
+        the three, the rate per unit of work, the per-character term and
+        the worst case of each budget follow; the line written into the
+        run's summary carries them, so every CI log says whether the
+        budgets are "about two seconds" on its platform (fix round 1,
+        S-4 and F-3: a rate taken at a hundred forms alone could not see
+        the one-form case)."""
         mapping, text = self._corpus()
         compiled = P.Compiled(P.validate_mapping(mapping))
         assert len(compiled.forms) == 100
         compiled.text_lookup()
         found, elapsed = self._timed(compiled, text)
+        one = P.Compiled(P.validate_mapping(mapping[:1]))
+        one.text_lookup()
+        _, one_elapsed = self._timed(one, text)
+        dense = ("ab" * 50_000)
+        pair = P.Compiled(P.validate_mapping(
+            [{"original": "Ab", "pseudonym": "Xyz"}]))
+        pair.text_lookup()
+        dense_found, dense_elapsed = self._timed(pair, dense)
         megabytes = len(text) / 1_000_000
-        rate = elapsed * 1000 / megabytes / len(compiled.forms)
-        record_property("file_text_ms_per_mb_per_form", round(rate, 3))
-        sys.stderr.write(
-            f"\nfile-text count: {rate:.3f} ms per MB per surface form "
-            f"({elapsed * 1000:.0f} ms over {megabytes:.2f} MB and "
-            f"{len(compiled.forms)} forms)\n")
+        at_100 = elapsed * 1000 / megabytes
+        at_1 = one_elapsed * 1000 / megabytes
+        unit = max((at_100 - at_1) / 99, 1e-6)
+        per_character = at_1 / unit - 1
+        per_match = max(dense_elapsed * 1000 - len(dense) / 1_000_000 * (
+            1 + P.RESIDUE_WORK_PER_CHARACTER) * unit, 0) / \
+            dense_found["matches"]
+        work_s = P.MAX_RESIDUE_SCAN_WORK / 1_000_000 * unit / 1000
+        match_s = P.MAX_RESIDUE_SCAN_MATCHES * per_match / 1000
+        line = (f"{at_100 / 100:.3f} ms per MB per surface form at 100 "
+                f"forms, {at_1:.1f} ms per MB at one form (per-character "
+                f"term {per_character:.2f}, model "
+                f"{P.RESIDUE_WORK_PER_CHARACTER}); worst case at the full "
+                f"budgets about "
+                f"{work_s + match_s:.2f} s (work {work_s:.2f} s, matches "
+                f"{match_s:.2f} s)")
+        record_property("file_text_rate", line)
+        sys.stderr.write(f"\nfile-text count rate: {line}\n")
         assert found["occurrences"]["wide"] > 1000
         assert found["unattributed"] == 0
+        assert dense_found["matches"] == 50_000
         assert elapsed < self.CEILING_SECONDS, (
             f"{elapsed:.2f} s for 1 MB at 100 forms: the file-text count "
             f"has lost its ungrouped pass")
 
     def test_the_guard_that_tells_the_two_shapes_apart(self):
-        """The rate probe above does not discriminate on its own: at 100
-        forms a capture group per alternative measured 2.45 s for its
-        pass alone over this megabyte, under the ceiling. The curve is
-        steep in the number of forms, so the same ceiling is applied
-        where it separates the two shapes by more than twenty times: a
-        quarter of a megabyte at 400 forms, 0.26 s with the key lookup
-        and 5.6 s with capture groups on the machine that measured it."""
+        """The absolute guard: the rate probe above does not discriminate
+        on its own (at 100 forms one capture group per alternative
+        measured 2.4 s for its pass alone over this megabyte, under the
+        ceiling). The curve is steep in the number of forms, so the same
+        ceiling is applied at a quarter of a megabyte and 400 forms: 0.25
+        s with the key lookup and 5.4 s with capture groups on the
+        machine that measured it."""
         mapping, text = self._corpus(forms=400, size=250_000)
         compiled = P.Compiled(P.validate_mapping(mapping))
         assert len(compiled.forms) == 400
@@ -2900,6 +2932,42 @@ class TestTheFileTextCountStaysCheap:
         assert elapsed < self.CEILING_SECONDS, (
             f"{elapsed:.2f} s for a quarter of a megabyte at 400 forms: "
             f"the file-text count has lost its ungrouped pass")
+
+    # The ratio guard (fix round 1, QA-9): the count against a plain
+    # ungrouped `findall` of the same pattern over the same text, both in
+    # this process, so the margin does not depend on the machine. Measured
+    # at 400 forms: the count 1.3 times the plain pass on both
+    # interpreters, one capture group per alternative 27 times.
+    RATIO_CEILING = 5.0
+
+    def test_the_count_is_a_small_multiple_of_one_plain_pass(self):
+        mapping, text = self._corpus(forms=400, size=250_000)
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        compiled.text_lookup()
+        seen = P._reader_sees(text)
+        import gc
+        import time
+        gc.collect()
+        gc.disable()
+        try:
+            plain = min(self._stopwatch(
+                lambda: compiled.detector._direct.findall(seen))
+                for _ in range(3))
+            count = min(self._stopwatch(
+                lambda: P.names_left_in_text(compiled, text, True, False))
+                for _ in range(3))
+        finally:
+            gc.enable()
+        assert count / plain < self.RATIO_CEILING, (
+            f"the count took {count / plain:.1f} times one plain pass: it "
+            f"has lost its ungrouped pass")
+
+    @staticmethod
+    def _stopwatch(fn):
+        import time
+        started = time.perf_counter()
+        fn()
+        return time.perf_counter() - started
 
     def test_the_rate_reaches_the_summary_ci_prints(self):
         """Ruling 7's check reads the rate from the six CI logs, and CI
@@ -2920,7 +2988,9 @@ class TestTheFileTextCountStaysCheap:
         lines = [line for line in result.stdout.splitlines()
                  if line.startswith("file-text count rate: ")]
         assert len(lines) == 1, result.stdout[-2000:]
-        assert " ms per MB per surface form (" in lines[0]
+        assert " ms per MB per surface form at 100 forms, " in lines[0]
+        assert " ms per MB at one form " in lines[0]
+        assert "; worst case at the full budgets about " in lines[0]
         assert "test passed)" in lines[0]
 
 
@@ -2997,3 +3067,23 @@ class TestPseudonymsWithheld:
         # pseudonym that merely contains its letters.
         assert self._withheld([{"original": "Ed", "pseudonym": "Fred"}]) \
             == (0,)
+
+
+class TestTheRateReachesThePublicRunPage:
+    """Fix round 1 (the lead's addition to the owner's F-1 ruling): the CI
+    workflow copies the `file-text count rate:` line into the step
+    summary, so ruling 7's freezing check reads from the public run page
+    without admin rights. Read from the workflow's own run step."""
+
+    def test_the_step_summary_copies_the_rate_line(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github" /
+                    "workflows" / "ci.yml").read_text(encoding="utf-8")
+        step = workflow[workflow.index("- name: Run test suite"):
+                        workflow.index("- name: Upload pytest output")]
+        # The block the step pipes into the summary: from its opening
+        # brace to the redirect.
+        closing = step.index('} >> "$GITHUB_STEP_SUMMARY"')
+        summary = step[step.rindex("{\n", 0, closing):closing]
+        assert summary.count("echo") >= 2       # the block, not a fragment
+        assert 'grep -E "^file-text count rate: " pytest_output.txt' in \
+            summary

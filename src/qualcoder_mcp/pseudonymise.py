@@ -110,17 +110,38 @@ MAX_OVERLAP_CONFLICTS = 200
 # (re-verification 6.2 measured the turn from zero false hits to one in
 # five at four). The rewrite is whole-word and is not affected.
 SHORT_FORM_CHARS = 4
-# Ours (v0.13, ruling 7). The file-text count's work budget, in
-# characters times surface forms, summed over the files in the order the
-# count reads them. Deterministic rather than a clock, so the same
-# preview always counts the same files. About two seconds at the rate
-# the counts study measured (4.7 ms per megabyte per surface form):
-# 1.8 MB at 200 forms, or 10 MB at 40, and a twenty-interview study at
-# seven forms uses three per cent of it. A file past the budget is still
-# read, with the one cheap question "does any name show here", and the
-# report says which files those are; it is never omitted and never
-# reported clean when it is not.
-MAX_RESIDUE_SCAN_WORK = 400_000_000
+# Ours (v0.13, ruling 7; re-derived in fix round 1 from S-4). The
+# file-text count's work budget, deterministic rather than a clock so the
+# same preview always counts the same files. A file's work is
+# `len(text) * (surface forms + RESIDUE_WORK_PER_CHARACTER)`: the count
+# costs a little per character whatever the mapping (the reader's reading,
+# the two passes' own scan), and that term is what a one-form mapping
+# spends most of, the worst case a rate taken at a hundred forms cannot
+# see (the Security gate measured 6 seconds at one form under the old
+# model). Measured on 1 MB of English prose at 1, 10 and 100 forms, best
+# of five: 4.24 ms per MB per unit of work with the per-character term at
+# 2.45 on Python 3.13.5, 3.98 and 2.32 on 3.11.13; the term is rounded up
+# to 3. So the work budget's worst case is about 350 x 4.24 ms, 1.5
+# seconds, at any number of forms, and 1.3 seconds at one. Past the
+# budget a file is still read, with the one cheap question "does any
+# name show here", and the report says which files those are; it is
+# never omitted and never reported clean when it is not.
+RESIDUE_WORK_PER_CHARACTER = 3
+MAX_RESIDUE_SCAN_WORK = 350_000_000
+# Ours (fix round 1, S-4). Matches cost work the character model does not
+# see: a text that is nothing but the name repeated has a match every few
+# characters. Every match of either pass counts against this budget; past
+# it a file drops to the cheap question too, and so does every file after
+# it, as with the work budget. The dearest match measured, a name inside
+# a long run of word characters on the typed path, cost 1.84 microseconds
+# on 3.13.5, so the match budget's worst case is about 0.4 seconds, and
+# the two budgets together stay near ruling 7's "about two seconds".
+MAX_RESIDUE_SCAN_MATCHES = 200_000
+# Ours (fix round 1, S-3). Entry rows in one file row, in wide-count
+# order; the row's own totals stay complete and the row says
+# `entries_truncated`. The same cap bounds each of the row's two
+# spelling lists.
+MAX_RESIDUE_ENTRY_ROWS = 50
 # Ours (v0.13). Rows in the residue's file-text block. The totals are
 # always complete, and every further file that shows a name is listed by
 # id: the house shape of `max_spans_per_entry` and
@@ -1391,7 +1412,9 @@ def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
 
 def names_left_in_text(compiled: "Compiled", text: str,
                        list_longer_words: bool,
-                       rewritten_by_this_run: bool) -> TextResidue:
+                       rewritten_by_this_run: bool,
+                       max_matches: Optional[int] = None
+                       ) -> Optional[TextResidue]:
     """Where this mapping's names are left in one file's text.
 
     `text` is the file as it will be AFTER the run: the rewritten text
@@ -1428,8 +1451,16 @@ def names_left_in_text(compiled: "Compiled", text: str,
     is charged to whole_word_in_a_file_not_rewritten instead. The `min`
     and `max` are a declared HEURISTIC about which cause an occurrence
     is charged to when both are present; their sum is exact.
+
+    `max_matches` bounds the work a hostile text can cost: every match of
+    either pass counts against it, and past it the count stops and the
+    function returns None, which the caller reads as "not counted in
+    full" (the match budget, fix round 1, S-4). The result's `matches` is
+    what the count spent.
     """
     lookup = compiled.text_lookup()
+    spent = 0
+    limit = max_matches if max_matches is not None else -1
     seen = _reader_sees(text)
     rows: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
@@ -1449,6 +1480,9 @@ def names_left_in_text(compiled: "Compiled", text: str,
     for match, candidate in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         direct_total += 1
+        spent += 1
+        if spent == limit + 1:
+            return None
         if candidate is None:
             unattributed += 1
             continue
@@ -1497,6 +1531,9 @@ def names_left_in_text(compiled: "Compiled", text: str,
         for _match, candidate in _attributed(
                 compiled.detector._folded.finditer(_fold(seen)),
                 lookup.folded):
+            spent += 1
+            if spent == limit + 1:
+                return None
             if candidate is None:
                 folded_unattributed += 1
                 continue
@@ -1527,6 +1564,9 @@ def names_left_in_text(compiled: "Compiled", text: str,
     whole_word_total = 0
     for match in compiled.pattern.finditer(text):
         whole_word_total += 1
+        spent += 1
+        if spent == limit + 1:
+            return None
         row = row_for(_rewriter_form(compiled, lookup, match.group(0)))
         row["whole_word"] += 1
         snippet = _with_trailing_marks(text, match.start(), match.end())
@@ -1588,7 +1628,11 @@ def names_left_in_text(compiled: "Compiled", text: str,
                                            "count": spelling})
 
     listed: List[Dict[str, Any]] = []
-    for index in sorted(entries):
+    # In wide-count order, the entry index breaking ties, so a cap on the
+    # rows (the caller's) keeps the entries with the most left.
+    for index in sorted(entries, key=lambda i: (
+            -entries[i]["occurrences"]["wide"],
+            -entries[i]["occurrences"]["whole_word"], i)):
         entry = entries[index]
         words = entry.pop("_words")
         withheld = entry.pop("_withheld")
@@ -1608,7 +1652,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
             "unattributed": unattributed,
             "entries": listed,
             "case_variants_seen": case_variants,
-            "normalisation_variants_seen": normalisation_variants}
+            "normalisation_variants_seen": normalisation_variants,
+            "matches": spent}
 
 
 # The owner's ruling of 2026-09-23 on Brief 1's finding F-1: a pseudonym

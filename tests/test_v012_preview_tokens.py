@@ -282,6 +282,7 @@ class TestCanonicalJson:
             overlap_policy="snap_to_pseudonym",
             use_project_pseudonyms=True, include_context=True,
             context_chars=99, scan_residue=False, max_spans_per_entry=1,
+            residue_detail="project",
             record_in_journal=False, allow_hidden_coder=True,
             preview_token="qcp1.1.aaaaaaaa." + "a" * 32, confirm=True)
         assert bound == {
