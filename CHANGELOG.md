@@ -61,9 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the short row for up to 1,000 more. The totals and the warnings are
   the same either way. Measured on the QA gate's shapes (the name twenty
   times in five spellings per file), a default preview of a 60-file
-  project is 14,973 characters (53,966 with every file's detail, which
+  project is 14,979 characters (53,966 with every file's detail, which
   is what the first build gave by default) and of a 250-file project
-  32,814 (162,233); at the 1,000-row cap the block alone is about 97,000
+  32,820 (162,233); at the 1,000-row cap the block alone is about 97,000
   characters. The split by
   kind is a heuristic and the total is not; an occurrence no entry can
   be charged to is still counted, as `unattributed`. A name inside a
