@@ -105,12 +105,18 @@ class TestTheTransportCoercesFileId:
     """QA-3, and the lead's ruling on it: kept, for usability (local
     models often send numbers as strings), documented in the tool's
     description, and pinned as it behaves. Over MCP the arguments are
-    validated in pydantic's lax mode before the tool runs: "1", 1.0 and
-    true reach the tool as the integer 1; 1.5 and "one" are refused in
-    pydantic's words; 0 and -1 reach the tool and are refused in ours."""
+    validated in pydantic's lax mode before the tool runs, which reads as
+    an integer anything Python's own integer syntax does: "1", 1.0, true,
+    "01", "+1", " 1 " and "1.0" reach the tool as the integer 1, and
+    "1_0" as the integer 10 (the underscore is a digit separator in that
+    syntax; fix round 2, CORR-5, where the description now says so);
+    false reaches it as 0; 1.5, "one" and "abc" are refused in pydantic's
+    words; 0, -1 and false reach the tool and are refused in ours."""
 
-    @pytest.mark.parametrize("sent", ["1", 1.0, True],
-                             ids=["string", "float", "true"])
+    @pytest.mark.parametrize("sent", ["1", 1.0, True, "01", "+1", " 1 ",
+                                      "1.0"],
+                             ids=["string", "float", "true", "leading-zero",
+                                  "plus", "spaces", "string-float"])
     def test_a_host_value_that_means_one_is_file_1(self, project, sent):
         answer = _preview_body(asyncio.run(server.mcp.call_tool(
             "pseudonymise_source", {"mapping": MAPPING, "file_id": sent})))
@@ -128,12 +134,21 @@ class TestTheTransportCoercesFileId:
                 "pseudonymise_source", {"mapping": MAPPING, "file_id": sent}))
         assert "file_id" in str(refused.value)
 
-    @pytest.mark.parametrize("sent", [0, -1])
+    @pytest.mark.parametrize("sent", [0, -1, False],
+                             ids=["zero", "minus-one", "false"])
     def test_zero_and_below_reach_the_tool_and_are_refused_in_our_words(
             self, project, sent):
         answer = _preview_body(asyncio.run(server.mcp.call_tool(
             "pseudonymise_source", {"mapping": MAPPING, "file_id": sent})))
         assert answer == {"error": "file_id must be a positive integer."}
+
+    def test_an_underscore_is_a_digit_separator(self, project):
+        """"1_0" is file 10, which this project does not have, so it is
+        refused by that number: the surprise the description names."""
+        answer = _preview_body(asyncio.run(server.mcp.call_tool(
+            "pseudonymise_source", {"mapping": MAPPING, "file_id": "1_0"})))
+        assert "10" in answer["error"]
+        assert answer.get("reason") == "unknown_file_id"
 
 
 # =============================================================================

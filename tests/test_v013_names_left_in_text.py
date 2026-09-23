@@ -76,7 +76,8 @@ def _file_text_warning(out):
     found = [w for w in out.get("warnings", [])
              if "occurrence(s) of these names would still be in the text"
              in w or "would still show one of these names in their text"
-             in w]
+             in w or "own whole-word rule would still match" in w
+             or "were not checked; preview them one at a time" in w]
     assert len(found) <= 1, found
     return found[0] if found else None
 
@@ -518,7 +519,11 @@ class TestTheRowCap:
         for fid in range(5, 10):
             _set_text(project, fid, f"THOMAS in {fid}.", name=f"f{fid}.txt")
         full = _block(preview_of())
-        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 2)
+        # By default the other files have compact rows, under a cap of
+        # their own (fix round 2, the lead's ruling on CORR-4); the cap
+        # on full rows does not touch them.
+        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 1)
+        monkeypatch.setattr(P, "MAX_RESIDUE_COMPACT_ROWS", 2)
         capped = _block(preview_of())
         assert [row["file_id"] for row in capped["files"]] == [5, 6]
         assert capped["files_truncated"] is True
@@ -526,6 +531,24 @@ class TestTheRowCap:
         assert capped["totals"] == full["totals"]
         assert full["files_truncated"] is False
         assert full["more_files_showing_a_name"] == []
+
+    def test_project_detail_gives_full_rows_then_compact_rows_then_ids(
+            self, project, monkeypatch):
+        """In project detail the first files get full rows up to their
+        cap, the next compact rows up to theirs, the rest their ids."""
+        for fid in range(5, 10):
+            _set_text(project, fid, f"THOMAS in {fid}.", name=f"f{fid}.txt")
+        monkeypatch.setattr(P, "MAX_RESIDUE_FILE_ROWS", 2)
+        monkeypatch.setattr(P, "MAX_RESIDUE_COMPACT_ROWS", 2)
+        block = _block(preview_of(residue_detail="project"))
+        rows = block["files"]
+        assert [row["file_id"] for row in rows] == [5, 6, 7, 8]
+        assert "entries" in rows[0] and "entries" in rows[1]
+        assert set(rows[2]) == set(rows[3]) == {"file_id", "name",
+                                                "occurrences"}
+        assert block["more_files_showing_a_name"] == [9]
+        assert block["files_truncated"] is True
+        assert block["totals"]["files_showing_a_name"] == 5
 
 
 # =============================================================================
@@ -1158,8 +1181,14 @@ class TestTheReportIsCompactByDefault:
         out = preview_of()
         block = _block(out)
         assert block["detail"] == "file"
-        assert block["detail_note"] == \
-            QualcoderDatabase.PSEUDONYMISE_DETAIL_NOTE
+        assert block["detail_note"] == (
+            "Full detail is given for the file this call names; every "
+            "other file that still shows a name has one row, its id, its "
+            "name and the two readings' counts, for up to 1,000 files, and "
+            "past that is listed by id only in more_files_showing_a_name. "
+            "The totals and the warnings cover every file either way. Call "
+            "again with residue_detail=\"project\" for the full detail of "
+            "up to 200 files, with one such row for the rest.")
         rows = _rows(out)
         assert sorted(rows) == [4, 5]          # six shows nothing, one is clean
         for fid in (4, 5):
@@ -1301,15 +1330,27 @@ class TestTheBlockIsBounded:
             _file_text_warning(out)
 
     def test_the_engine_stops_at_the_match_budget(self):
-        compiled = P.Compiled(P.validate_mapping(
-            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        """Ten matches in each of the two passes that run on ASCII text,
+        and one more in each for the first sight of the spelling (fix
+        round 2: placing a new spelling costs about a match again). A
+        fresh compiled mapping for each call: the whole-word pass places a
+        spelling once per PREVIEW, so a second call on the same one would
+        be charged one less."""
+        def compiled():
+            return P.Compiled(P.validate_mapping(
+                [{"original": "Thomas", "pseudonym": "Alex"}]))
         text = "Thomas " * 10
-        assert P.names_left_in_text(compiled, text, True, False,
-                                    max_matches=19) is None
-        found = P.names_left_in_text(compiled, text, True, False,
-                                     max_matches=20)
-        assert found["matches"] == 20          # ten each, both passes
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=21) is None
+        found = P.names_left_in_text(compiled(), text, True, False,
+                                     max_matches=22)
+        assert found["matches"] == 22
         assert found["occurrences"] == {"wide": 10, "whole_word": 10}
+        again = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        P.names_left_in_text(again, text, True, False)
+        assert P.names_left_in_text(again, text, True, False)[
+            "matches"] == 21
 
     def test_the_work_has_a_per_character_term(self, project, monkeypatch):
         """The work of a file is its length times the surface forms PLUS
@@ -1356,7 +1397,7 @@ class TestAnUnreadablePartIsSaid:
         assert out["preview"]["residue"]["unreadable"] == ["source.fulltext"]
         assert self._unreadable_warning(out) == (
             "Warning: this report could not read source.fulltext, so it "
-            "does not cover them, and a name there is counted nowhere in "
+            "does not cover it, and a name there is counted nowhere in "
             "residue. Preview again; if the same parts still cannot be "
             "read, check them in QualCoder before sharing the project.")
 
@@ -1442,8 +1483,14 @@ class TestTheFileTextWarningsArithmetic:
                                                            monkeypatch):
         """QA-6 (Q03): a counted file shows a name when EITHER reading is
         non-zero. The union of F2 makes a whole word without a wide
-        occurrence unreachable through the real engine, so the rule is
-        driven with one whose answer for file 4 is exactly that."""
+        occurrence unreachable through the real engine since fix round 2
+        reads the whole run of marks after a word (fix round 1 read
+        sixteen, and a seventeenth that composed reached it: the
+        re-verification's CORR-2; the argument that nothing else can is
+        its composers sweep), so the rule is driven with an engine whose
+        answer for file 4 is exactly that. The warning then says what
+        the whole-word rule would still match, with no list of kinds
+        (every kind is zero) and without the Mary, Ann reason."""
         _set_text(project, 4, "whatever the engine says.")
         real = P.names_left_in_text
 
@@ -1458,7 +1505,11 @@ class TestTheFileTextWarningsArithmetic:
         assert 4 in _rows(out)
         assert _block(out)["totals"]["files_showing_a_name"] == 1
         assert _block(out)["totals"]["files_whole_word_above_wide"] == 1
-        assert _file_text_warning(out) is not None
+        assert _file_text_warning(out) == (
+            "Warning: after this run, this run's own whole-word rule would "
+            "still match 1 occurrence(s) of these names in the text of 1 "
+            "file(s), which the wide reading did not count. See "
+            "residue.file_text, which names the files.")
 
     def test_a_file_with_more_whole_words_than_wide_ones_is_said(
             self, project):
@@ -1542,3 +1593,4 @@ class TestTheLongerWordsThroughTheTool:
         assert block["longer_words_note"].startswith(
             "The longer words this preview lists share one budget of 40 "
             "characters")
+

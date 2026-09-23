@@ -10441,10 +10441,12 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
 
     Kept apart from the fields warning, so that fields and occurrences
     are never added together. It fires when any name is left in any
-    file's text under either reading, and ALSO when files past a budget
-    show a name while none was counted: a budget must never be a way to
-    get a quiet preview, so a file that was only asked "does a name show
-    here" and answered yes is said out loud either way.
+    file's text under either reading, ALSO when files past a budget
+    show a name while none was counted, and ALSO when files were not
+    checked at all: a budget must never be a way to get a quiet preview,
+    so a file that was only asked "does a name show here" and answered
+    yes is said out loud either way, and so is a file nobody asked (fix
+    round 2, the lead's ruling on B-2).
 
     It reads the block's TOTALS and nothing else. The rows are compact by
     default and capped in any case, and a warning built from them could
@@ -10460,8 +10462,9 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
     counted_showing = totals.get("files_showing_a_name", 0) \
         - uncounted_showing
     above = totals.get("files_whole_word_above_wide", 0)
+    unchecked = totals.get("files_not_checked", 0)
     sentences: List[str] = []
-    if wide or whole_word:
+    if wide:
         clauses = []
         for key, text, verb in _FILE_TEXT_WARNING_KINDS:
             count = reasons.get(key, 0)
@@ -10478,8 +10481,14 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"Warning: after this run, {wide} occurrence(s) of these names "
             f"would still be in the text of {counted_showing} file(s), "
             f"because the rewrite replaces whole words only and in one "
-            f"file per call. {listed}. The split by kind is a heuristic; "
-            f"the total is not.")
+            f"file per call.")
+        # Every kind can be zero when the wide occurrences are the ones
+        # no entry could be charged to; the clause list is left out then
+        # rather than said empty (fix round 2, CORR-2).
+        if listed:
+            sentences.append(f"{listed}.")
+        sentences.append(
+            "The split by kind is a heuristic; the total is not.")
         if above:
             # QA-7: the two readings can divide a name of several words
             # differently ("Mary, Ann" is one wide occurrence and two
@@ -10491,14 +10500,32 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
                 f"the text into names differently (Mary, Ann read as Mary "
                 f"Ann), so running them would replace more names than the "
                 f"wide count says.")
+    elif whole_word:
+        # The union makes this unreachable through the engine (a whole
+        # word the reader's reading does not see is counted in the wide
+        # reading too); kept so the warning never goes quiet if that ever
+        # stops being true, and worded without the kinds, which are all
+        # zero here, and without the Mary, Ann reason, which is not it.
+        sentences.append(
+            f"Warning: after this run, this run's own whole-word rule "
+            f"would still match {whole_word} occurrence(s) of these names "
+            f"in the text of {counted_showing} file(s), which the wide "
+            f"reading did not count.")
     if uncounted_showing:
         sentences.append(
-            f"{'Warning: after this run, ' if not (wide or whole_word) else ''}"
+            f"{'Warning: after this run, ' if not sentences else ''}"
             f"{uncounted_showing} "
             f"{'further ' if (wide or whole_word) else ''}file(s) "
             f"would still show one of these names in their text, and "
             f"were not counted in full because counting them passed this "
             f"preview's budget; see files_not_counted.")
+    if unchecked:
+        # The lead's ruling on B-2, in its own words.
+        sentences.append(
+            f"{'Warning: ' if not sentences else ''}"
+            f"{unchecked} file(s) were not checked; preview them one at a "
+            f"time, or use fewer names, to check them (see "
+            f"files_not_checked).")
     if not sentences:
         return None
     sentences.append("See residue.file_text, which names the files.")
@@ -10630,7 +10657,8 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         # nowhere, and a report silent about it reads as a clean one.
         warnings.append(
             f"Warning: this report could not read {', '.join(unreadable)}, "
-            f"so it does not cover them, and a name there is counted "
+            f"so it does not cover {'it' if len(unreadable) == 1 else 'them'}"
+            f", and a name there is counted "
             f"nowhere in residue. Preview again; if the same parts still "
             f"cannot be read, check them in QualCoder before sharing the "
             f"project.")
@@ -11070,9 +11098,10 @@ def pseudonymise_source(
                  replacements and this tool will not.
         file_id: The one text source this call rewrites. A PDF, a media
                  file or a source with no stored text is refused with the
-                 reason (pdf_source, no_fulltext, unknown_file_id). A host
-                 that sends "1", 1.0 or true gets file 1: the transport
-                 turns each into the integer before this tool runs.
+                 reason (pdf_source, no_fulltext, unknown_file_id). The
+                 transport turns anything Python reads as an integer into
+                 that integer before this tool runs: "1", 1.0, true, "01"
+                 and "+1" are file 1, and "1_0" is file 10.
         use_project_pseudonyms: Read the mapping from the project's own
                  pseudonyms.json instead (QualCoder's import-time list).
                  Give this or `mapping`, not both. The original names in
@@ -11144,12 +11173,17 @@ def pseudonymise_source(
         scan_residue: Count where the names also occur in notes, labels
                  and attribute values, and in the text of every file
                  after the run (default true). Both readings, wide and
-                 whole-word, for every count.
+                 whole-word, for every count. The file-text count has
+                 fixed budgets: past them a file is only asked whether a
+                 name shows, and past a budget for that question it is
+                 not checked, and the warning names it.
         residue_detail: "file" (default): full detail for the file this
-                 call names and, for every other file that still shows a
-                 name, one row with its id, name and two counts. "project":
-                 full detail for every file. The totals and the warnings
-                 are the same either way.
+                 call names and, for up to 1,000 other files that still
+                 show a name, one row with its id, name and two counts;
+                 past that, their ids. "project": full detail for up to
+                 200 files and one such row for the rest; on a large
+                 mapping over many files that is megabytes. The totals
+                 and the warnings are the same either way.
         max_spans_per_entry: How many match positions to list per entry
                  per file before truncating (default 50, capped at 500).
                  With include_context on, the context windows also share

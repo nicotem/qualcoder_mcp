@@ -4960,14 +4960,21 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "a file name, folder name, path or pseudonym that carries one is "
          "withheld from both and the file id or the entry number is used "
          "instead."),
-        ("the_transport_coerces_file_id",                # fix round 1, QA-3
-         "A host that sends \"1\", 1.0 or true gets file 1: the transport "
-         "turns each into the integer before this tool runs."),
-        ("the_residue_detail_argument",                  # fix round 1, F4
+        ("the_transport_coerces_file_id",   # fix round 1, QA-3; fix round 2, CORR-5
+         "The transport turns anything Python reads as an integer into that "
+         "integer before this tool runs: \"1\", 1.0, true, \"01\" and \"+1\" "
+         "are file 1, and \"1_0\" is file 10."),
+        ("the_residue_detail_argument",     # fix round 1, F4; fix round 2, CORR-4
          "residue_detail: \"file\" (default): full detail for the file this "
-         "call names and, for every other file that still shows a name, one "
-         "row with its id, name and two counts. \"project\": full detail for "
-         "every file. The totals and the warnings are the same either way."),
+         "call names and, for up to 1,000 other files that still show a "
+         "name, one row with its id, name and two counts; past that, their "
+         "ids. \"project\": full detail for up to 200 files and one such row "
+         "for the rest; on a large mapping over many files that is "
+         "megabytes. The totals and the warnings are the same either way."),
+        ("the_file_text_budgets",                        # fix round 2, B-2
+         "The file-text count has fixed budgets: past them a file is only "
+         "asked whether a name shows, and past a budget for that question "
+         "it is not checked, and the warning names it."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "

@@ -8427,18 +8427,27 @@ class QualcoderDatabase:
     PSEUDONYMISE_DETAIL_NOTE = (
         "Full detail is given for the file this call names; every other "
         "file that still shows a name has one row, its id, its name and "
-        "the two readings' counts. The totals and the warnings cover every "
-        "file either way. Call again with residue_detail=\"project\" for "
-        "the full detail of every file.")
+        "the two readings' counts, for up to {compact} files, and past "
+        "that is listed by id only in more_files_showing_a_name. The "
+        "totals and the warnings cover every file either way. Call again "
+        "with residue_detail=\"project\" for the full detail of up to "
+        "{full} files, with one such row for the rest.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full, because counting them "
         "passed one of this preview's two budgets: the work (characters "
-        "times surface forms, and a little for every character) or the "
-        "number of matches. Each is listed in files_not_counted and was "
-        "still asked whether any name shows in it, and every one that does "
-        "is in the totals and the warnings. The budgets are fixed: a "
-        "smaller mapping lowers the work, and a file past the match budget "
-        "is one to read directly.")
+        "times surface forms, and a little more for every character, more "
+        "again in text that is not plain ASCII) or the number of matches. "
+        "Each is listed in files_not_counted and was still asked whether "
+        "any name shows in it, and every one that does is in the totals "
+        "and the warnings. The budgets are fixed: a smaller mapping lowers "
+        "the work, and a file past the match budget is one to read "
+        "directly.")
+    PSEUDONYMISE_NOT_CHECKED_NOTE = (
+        "{count} file(s) were not checked at all: asking whether a name "
+        "shows in them passed this preview's budget for that question, "
+        "which costs as much as a count on a file where no name shows. "
+        "They are listed in files_not_checked and are not reported clean: "
+        "preview them one at a time, or use fewer names, to check them.")
 
     @staticmethod
     def _pseudonymise_spend_words(entries: Sequence[Dict[str, Any]],
@@ -8552,11 +8561,11 @@ class QualcoderDatabase:
         # is looking before anywhere else.
         sources.sort(key=lambda source: (source[0] != chosen, source[0]))
 
-        per_character = len(compiled.forms) + \
-            engine.RESIDUE_WORK_PER_CHARACTER
         work_done = 0
+        check_done = 0
         matches_left = engine.MAX_RESIDUE_SCAN_MATCHES
         past_budget = False
+        past_check = False
         wide_total = 0
         whole_word_total = 0
         by_reason = {reason: 0 for reason in engine.TEXT_RESIDUE_REASONS}
@@ -8567,7 +8576,10 @@ class QualcoderDatabase:
         counted = 0
         characters = 0
         not_counted: List[int] = []
+        not_checked: List[int] = []
         listed: List[Dict[str, Any]] = []
+        full_rows = 0
+        compact_rows = 0
         more: List[int] = []
         truncated = False
         words_left = engine.MAX_LONGER_WORDS_TOTAL_CHARS
@@ -8575,12 +8587,13 @@ class QualcoderDatabase:
         for fid, name, text, reason in sources:
             characters += len(text)
             full = detail == "project" or fid == chosen
-            head: Dict[str, Any] = {"file_id": fid, "name": name}
+            base: Dict[str, Any] = {"file_id": fid, "name": name}
+            head = dict(base)
             if full:
                 head["rewritten_by_this_run"] = reason is None
                 if reason is not None:
                     head["file_not_rewritten_because"] = reason
-            work = len(text) * per_character
+            work = engine.residue_work(compiled, text)
             found = None
             if not past_budget and work_done + work <= \
                     engine.MAX_RESIDUE_SCAN_WORK:
@@ -8588,9 +8601,12 @@ class QualcoderDatabase:
                     compiled, text,
                     list_longer_words=may_echo_names and full,
                     rewritten_by_this_run=reason is None,
-                    max_matches=matches_left)
+                    max_matches=matches_left,
+                    max_extra_work=(engine.MAX_RESIDUE_SCAN_WORK
+                                    - work_done - work))
+            compact: Optional[Dict[str, Any]] = None
             if found is not None:
-                work_done += work
+                work_done += work + found["extra_work"]
                 matches_left -= found["matches"]
                 counted += 1
                 occurrences = found["occurrences"]
@@ -8605,9 +8621,8 @@ class QualcoderDatabase:
                     continue
                 if occurrences["whole_word"] > occurrences["wide"]:
                     whole_word_above_wide += 1
-                if not full:
-                    row_out = {**head, "occurrences": occurrences}
-                else:
+                compact = {**base, "occurrences": occurrences}
+                if full:
                     row_out = {**head, "counted": True,
                                "occurrences": occurrences,
                                "unattributed": found["unattributed"]}
@@ -8630,29 +8645,49 @@ class QualcoderDatabase:
                     self._pseudonymise_capped(
                         spellings, "normalisation_variants_seen", row_out,
                         "normalisation_variants_seen_truncated")
-                    if may_echo_names and \
-                            len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
-                        words_left, cut = self._pseudonymise_spend_words(
-                            row_out["entries"], words_left)
-                        words_cut = words_cut or cut
-            else:
-                # The cheap question. Once a budget is passed it stays
-                # passed, so which files are counted depends on the
-                # order alone and is the same on every preview.
+            elif not past_check and check_done + work <= \
+                    engine.MAX_RESIDUE_CHECK_WORK:
+                # The cheap question, charged to a budget of its own (fix
+                # round 2, the lead's ruling on B-2). Once a budget is
+                # passed it stays passed, so which files are counted,
+                # checked or neither depends on the order alone and is the
+                # same on every preview.
                 past_budget = True
                 not_counted.append(fid)
+                check_done += work
                 shows = compiled.carries_a_name(text)
                 if shows:
                     showing_not_counted += 1
+                    compact = {**base, "counted": False}
                 elif not full:
                     continue
                 row_out = {**head, "counted": False}
                 if full:
                     row_out["shows_a_name"] = shows
+            else:
+                # Past both: not checked, never reported clean. Named by id
+                # in `files_not_checked` and in the warning; a full row
+                # says so where the detail asks for one.
+                past_budget = past_check = True
+                not_checked.append(fid)
+                if not full:
+                    continue
+                shows = False
+                row_out = {**head, "counted": False, "checked": False}
             if shows:
                 showing += 1
-            if len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
+            if full and full_rows < engine.MAX_RESIDUE_FILE_ROWS:
+                if found is not None and may_echo_names:
+                    words_left, cut = self._pseudonymise_spend_words(
+                        row_out["entries"], words_left)
+                    words_cut = words_cut or cut
                 listed.append(row_out)
+                full_rows += 1
+                continue
+            if compact is not None and \
+                    compact_rows < engine.MAX_RESIDUE_COMPACT_ROWS:
+                listed.append(compact)
+                compact_rows += 1
                 continue
             truncated = True
             if shows:
@@ -8670,17 +8705,21 @@ class QualcoderDatabase:
                        "files_showing_a_name": showing,
                        "files_showing_a_name_not_counted":
                            showing_not_counted,
+                       "files_not_checked": len(not_checked),
                        "files_whole_word_above_wide": whole_word_above_wide,
                        "by_reason": by_reason},
             "files": listed,
             "files_counted": counted,
             "files_not_counted": not_counted,
+            "files_not_checked": not_checked,
             "files_truncated": truncated,
             "more_files_showing_a_name": more,
             "reading_note": self.PSEUDONYMISE_FILE_TEXT_NOTE,
         }
         if detail == "file":
-            block["detail_note"] = self.PSEUDONYMISE_DETAIL_NOTE
+            block["detail_note"] = self.PSEUDONYMISE_DETAIL_NOTE.format(
+                compact=f"{engine.MAX_RESIDUE_COMPACT_ROWS:,}",
+                full=engine.MAX_RESIDUE_FILE_ROWS)
         if words_cut:
             block["longer_words_note"] = \
                 self.PSEUDONYMISE_LONGER_WORDS_NOTE.format(
@@ -8689,6 +8728,10 @@ class QualcoderDatabase:
             block["files_not_counted_note"] = \
                 self.PSEUDONYMISE_NOT_COUNTED_NOTE.format(
                     count=len(not_counted))
+        if not_checked:
+            block["files_not_checked_note"] = \
+                self.PSEUDONYMISE_NOT_CHECKED_NOTE.format(
+                    count=len(not_checked))
         return block
 
     def pseudonymise_residue(self, compiled,

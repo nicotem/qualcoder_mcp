@@ -2478,8 +2478,14 @@ class TestNamesLeftInText:
          " \u0e17\u0e38\u0e01\u0e27\u0e31\u0e19"),
         # One Han character is enough, however short the extension.
         ("Thomas", "Thomas\u5148 said so."),
+        # And on the LEFT of the name (fix round 2, the re-verification's
+        # DR-3: every sample before had it on the right), and a Latin name
+        # inside a Chinese sentence, Han on both sides.
+        ("Thomas", "\u5148Thomas said so."),
+        ("Thomas", "\u6628\u5929Thomas\u6765\u4e86\u533b\u9662\u3002"),
     ], ids=["identifier", "latin-run", "japanese", "chinese", "thai",
-            "one-han-character"])
+            "one-han-character", "one-han-character-left",
+            "chinese-middle"])
     def test_a_run_that_is_not_a_word_is_counted_not_listed(self, name,
                                                              text):
         entry = _left([{"original": name, "pseudonym": "Alexandra"}],
@@ -2581,14 +2587,18 @@ class TestNamesLeftInText:
 
     def test_an_occurrence_neither_pass_can_share_is_counted_once(self):
         """Dotted capital I: IGNORECASE matches it to "i" and casefolding
-        spells it as two code points, so the direct pass cannot place it
-        and the folded pass can. It is ONE occurrence: counted once,
-        charged to no entry, and the total still adds up."""
+        spells it as two code points. Until fix round 2 the direct pass
+        keyed matches by casefolding and could not place it, and it was
+        charged to no entry; the key is now the pattern's own comparison
+        (`ignorecase_key`), so it is ONE occurrence, counted once, charged
+        to its entry as a difference of letter case, and the total still
+        adds up."""
         found = _left([{"original": "Ali", "pseudonym": "Bob"}],
                       "ALİ came")
         assert found["occurrences"]["wide"] == 1
-        assert found["unattributed"] == 1
-        assert found["entries"] == []
+        assert found["unattributed"] == 0
+        assert [(entry["entry"], entry["case_only"])
+                for entry in found["entries"]] == [(0, 1)]
 
     # QA-1, fixed at the engine: a name followed by a combining mark (an
     # NFD "René") is a whole word to the rewriter and composed away by the
@@ -2910,7 +2920,9 @@ class TestTheFileTextCountStaysCheap:
         sys.stderr.write(f"\nfile-text count rate: {line}\n")
         assert found["occurrences"]["wide"] > 1000
         assert found["unattributed"] == 0
-        assert dense_found["matches"] == 50_000
+        # 50,000 matches of one spelling, whose first sight is charged
+        # once more (fix round 2).
+        assert dense_found["matches"] == 50_001
         assert elapsed < self.CEILING_SECONDS, (
             f"{elapsed:.2f} s for 1 MB at 100 forms: the file-text count "
             f"has lost its ungrouped pass")
@@ -3058,6 +3070,19 @@ class TestPseudonymsWithheld:
                                 "pseudonym": "Thomasina"}]) == (0,)
         assert P.pseudonyms_containing_a_name(P.Compiled(P.validate_mapping(
             [{"original": "Thomas", "pseudonym": "Thomasina"}]))) == []
+
+    def test_a_pseudonym_only_the_rewriter_reads_as_carrying_a_name(self):
+        """The re-verification's DR-1: a pseudonym carrying a mapped name
+        before a combining mark ("Rene" then U+0301, the decomposed
+        spelling of René, when "Rene" is mapped). NFKC composes the mark
+        onto the "e", so the detector does not see "Rene"; the rewriter's
+        whole-word rule does. Withheld by the union's rewriter half."""
+        mapping = [{"original": "Rene", "pseudonym": "Paul"},
+                   {"original": "Thomas", "pseudonym": "Rene\u0301 Martin"}]
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        assert not compiled.detector.contains("Rene\u0301 Martin")
+        assert compiled.pattern.search("Rene\u0301 Martin")
+        assert self._withheld(mapping) == (1,)
 
     def test_a_clean_mapping_and_the_declared_price(self):
         assert self._withheld([{"original": "Thomas", "pseudonym": "Alex"},

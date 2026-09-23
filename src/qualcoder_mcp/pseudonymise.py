@@ -126,8 +126,25 @@ SHORT_FORM_CHARS = 4
 # budget a file is still read, with the one cheap question "does any
 # name show here", and the report says which files those are; it is
 # never omitted and never reported clean when it is not.
+#
+# Fix round 2 (the re-verification's B-1): the term above was measured on
+# text stripped to ASCII. On any text that is not ASCII (one curly
+# apostrophe is enough) the reader's reading costs more per character, so
+# the term is priced by the text's own class, `RESIDUE_WORK_PER_CHARACTER`
+# for ASCII and `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` for the rest
+# (`residue_work`). The constants and their measurements: see
+# `MAX_RESIDUE_SCAN_WORK` below.
 RESIDUE_WORK_PER_CHARACTER = 3
+RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
 MAX_RESIDUE_SCAN_WORK = 350_000_000
+# Ours (fix round 2, the lead's ruling on B-2). Past the work or the match
+# budget a file is asked the cheap question "does any name show here", and
+# on a file where none shows that question reads the whole text at the
+# count's own rate: charged to this budget of its own, in the same units.
+# Past it a file is not checked at all: it is listed in
+# `files_not_checked`, the warning says how to get it checked, and it is
+# never reported clean.
+MAX_RESIDUE_CHECK_WORK = 150_000_000
 # Ours (fix round 1, S-4). Matches cost work the character model does not
 # see: a text that is nothing but the name repeated has a match every few
 # characters. Every match of either pass counts against this budget; past
@@ -142,11 +159,17 @@ MAX_RESIDUE_SCAN_MATCHES = 200_000
 # `entries_truncated`. The same cap bounds each of the row's two
 # spelling lists.
 MAX_RESIDUE_ENTRY_ROWS = 50
-# Ours (v0.13). Rows in the residue's file-text block. The totals are
-# always complete, and every further file that shows a name is listed by
-# id: the house shape of `max_spans_per_entry` and
-# `MAX_OVERLAP_CONFLICTS`.
+# Ours (v0.13). Full rows in the residue's file-text block. The totals are
+# always complete, and every further file that shows a name has a compact
+# row or, past that cap too, is listed by id: the house shape of
+# `max_spans_per_entry` and `MAX_OVERLAP_CONFLICTS`.
 MAX_RESIDUE_FILE_ROWS = 200
+# Ours (fix round 2, the lead's ruling on CORR-4). Compact rows (id, name,
+# the two readings' counts) have a cap of their own, so the owner's
+# "compact by default" promise of a row for each file still showing a name
+# holds up to a thousand files; past it a file is listed by id only in
+# `more_files_showing_a_name`, and the detail note says so.
+MAX_RESIDUE_COMPACT_ROWS = 1000
 # Ours (v0.13, decision B). The longer words listed per entry per file
 # on the typed path, most frequent first; the list says when it stopped.
 MAX_LONGER_WORDS_PER_ENTRY = 20
@@ -667,19 +690,75 @@ def is_default_ignorable(code_point: int) -> bool:
 # it build the same table and the second assignment replaces the first
 # with an equal one, so no lock is needed.
 _UNSEEN_TABLE: Optional[Dict[int, None]] = None
+# The same code points as one compiled character class, which is what
+# `_strip_unseen` applies since fix round 2 (B-1): `str.translate` with a
+# table of four thousand entries looks every character of a non-ASCII
+# text up in a dictionary, 36 to 42 ms per MB on Python 3.13.5, while one
+# character class applied with `re.sub` costs about 6 and gives the same
+# string (pinned). Built with the table, on first use.
+_UNSEEN_PATTERN: Optional["re.Pattern[str]"] = None
+
+
+# The combining marks (categories Mn, Mc and Me of the running
+# interpreter), as ranges; found in the same one sweep of the code points
+# as the Cf characters above, and made into a pattern on first use.
+_MARK_RANGES: Optional[List[List[int]]] = None
+
+
+def _sweep_code_points() -> None:
+    """One pass over every code point: the Cf characters for the unseen
+    table and the combining marks for `_mark_run_pattern`. Tens of
+    milliseconds once per process, paid on the first text that is not
+    ASCII and never at import."""
+    global _UNSEEN_TABLE, _MARK_RANGES
+    table = dict.fromkeys(_DEFAULT_IGNORABLE)
+    marks: List[List[int]] = []
+    category = unicodedata.category
+    for code_point in range(0x110000):
+        kind = category(chr(code_point))
+        if kind == "Cf":
+            table[code_point] = None
+        elif kind[0] == "M":
+            if marks and code_point == marks[-1][1] + 1:
+                marks[-1][1] = code_point
+            else:
+                marks.append([code_point, code_point])
+    _MARK_RANGES = marks
+    _UNSEEN_TABLE = table
 
 
 def _unseen_table() -> Dict[int, None]:
-    """The translation table `_strip_unseen` applies, built once."""
-    global _UNSEEN_TABLE
+    """The code points `_strip_unseen` removes, as a translation table,
+    built once."""
     table = _UNSEEN_TABLE
     if table is None:
-        table = dict.fromkeys(_DEFAULT_IGNORABLE)
-        table.update(dict.fromkeys(
-            code_point for code_point in range(0x110000)
-            if unicodedata.category(chr(code_point)) == "Cf"))
-        _UNSEEN_TABLE = table
+        _sweep_code_points()
+        table = _UNSEEN_TABLE
     return table
+
+
+def _unseen_pattern() -> "re.Pattern[str]":
+    """`_unseen_table()`'s code points as one character class, built once.
+
+    Every run of consecutive code points becomes one range, each end
+    through `re.escape`, so nothing in the class is ever read as
+    syntax.
+    """
+    global _UNSEEN_PATTERN
+    pattern = _UNSEEN_PATTERN
+    if pattern is None:
+        ranges: List[List[int]] = []
+        for code_point in sorted(_unseen_table()):
+            if ranges and code_point == ranges[-1][1] + 1:
+                ranges[-1][1] = code_point
+            else:
+                ranges.append([code_point, code_point])
+        pattern = _UNSEEN_PATTERN = re.compile(
+            "[" + "".join(
+                re.escape(chr(low)) if low == high
+                else re.escape(chr(low)) + "-" + re.escape(chr(high))
+                for low, high in ranges) + "]")
+    return pattern
 
 
 def _strip_unseen(text: str) -> str:
@@ -700,14 +779,16 @@ def _strip_unseen(text: str) -> str:
     How the sweep is applied, since v0.13, and nothing about what it
     removes: pure ASCII is returned as it stands, because no ASCII code
     point is default-ignorable or in category Cf; anything else goes
-    through `_unseen_table()`, the property and the interpreter's own Cf
-    sweep united in one `str.translate` table. The output is the
-    per-character generator's, byte for byte (pinned against a copy of
-    that generator kept in the tests), at a fraction of its cost.
+    through `_unseen_pattern()`, the property and the interpreter's own
+    Cf sweep united in one character class (fix round 2, B-1; it was a
+    `str.translate` table, which cost six times as much per character).
+    The output is the per-character generator's, byte for byte (pinned
+    against a copy of that generator kept in the tests), at a fraction
+    of its cost.
     """
     if text.isascii():
         return text
-    return text.translate(_unseen_table())
+    return _unseen_pattern().sub("", text)
 
 
 def _reader_sees(value: str) -> str:
@@ -845,13 +926,86 @@ class NameDetector:
                     or self._folded.search(_fold(text)))
 
 
+# `re.IGNORECASE` compares a literal character by character: a text
+# character matches a cased pattern character when the two have the same
+# simple lower case, or when that lower case is one of a few groups the
+# module treats as one letter (i and dotless i, s and long s, the Greek
+# letters with two lower cases). `str.casefold` is a different mapping
+# (U+0130 casefolds to two code points; U+00DF to two letters), which is
+# why a match the pattern accepts can miss the casefolded dictionary
+# (the re-verification's B-3, Turkish capitals under an insensitive
+# mode). The key below reproduces the module's own comparison, from the
+# same functions its compiler calls, so the forms a match can be sharing
+# a key with are found by one dictionary lookup. It is a short cut, never
+# the authority: every candidate is confirmed by a full match of its
+# compiled pattern, and a key the table cannot build (an interpreter
+# without these private functions) finds nothing and the exact scan
+# below it runs instead (fix round 2).
+try:                                          # pragma: no cover - import
+    import _sre
+    _SRE_TOLOWER = getattr(_sre, "unicode_tolower", None)
+    _SRE_ISCASED = getattr(_sre, "unicode_iscased", None)
+except ImportError:                           # pragma: no cover
+    _SRE_TOLOWER = _SRE_ISCASED = None
+
+
+def _ignorecase_groups() -> Dict[int, Tuple[int, ...]]:
+    """The module's extra case groups, keyed by lower case."""
+    try:
+        from re import _casefix               # Python 3.11 and later
+        return dict(_casefix._EXTRA_CASES)
+    except (ImportError, AttributeError):
+        pass
+    try:                                      # pragma: no cover - 3.10
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import sre_compile
+        return dict(getattr(sre_compile, "_ignorecase_fixes", {}))
+    except ImportError:                       # pragma: no cover
+        return {}
+
+
+class _IgnoreCaseTable(dict):
+    """A `str.translate` table that fills itself: each code point to the
+    one standing for every character `re.IGNORECASE` treats as it."""
+
+    groups: Dict[int, Tuple[int, ...]] = {}
+
+    def __missing__(self, code_point: int) -> int:
+        key = code_point
+        if _SRE_TOLOWER is not None and _SRE_ISCASED(code_point):
+            lower = _SRE_TOLOWER(code_point)
+            key = min((lower,) + tuple(self.groups.get(lower, ())))
+        self[code_point] = key
+        return key
+
+
+_IGNORECASE_TABLE = _IgnoreCaseTable()
+_IgnoreCaseTable.groups = _ignorecase_groups()
+
+
+def ignorecase_key(value: str) -> str:
+    """`value` with each character replaced by its `re.IGNORECASE` key."""
+    return value.translate(_IGNORECASE_TABLE)
+
+
+def _word_key(value: str) -> str:
+    """How the file-text count compares words: `ignorecase_key`, or
+    casefolding where the interpreter lacks what that key is built from."""
+    if _SRE_TOLOWER is not None:
+        return ignorecase_key(value)
+    return _fold(value)                       # pragma: no cover
+
+
 class Compiled:
     """A mapping compiled into one pattern, plus the lookups it needs."""
 
     __slots__ = ("mapping", "case_mode", "flags", "pattern", "forms",
                  "_exact", "_folded", "_by_first", "max_form_len",
                  "pseudonym_pattern", "_pseudonym_entries", "detector",
-                 "_text_lookup")
+                 "_text_lookup", "_entry_memo", "_form_patterns",
+                 "_by_key", "_by_length")
 
     def __init__(self, mapping: Mapping):
         self.mapping = mapping
@@ -897,6 +1051,15 @@ class Compiled:
         # Built on first use by the file-text count, never here: nothing
         # on the rewrite path needs it (v0.13).
         self._text_lookup: Optional["_TextLookup"] = None
+        # Fix round 2 (B-3): which entry a matched spelling belongs to is
+        # decided once per spelling, and the per-form patterns the exact
+        # fall-back full-matches are compiled once each and held here,
+        # rather than recompiled through `re`'s cache of 512, which a
+        # mapping of 2,000 forms overflows on every call.
+        self._entry_memo: Dict[str, int] = {}
+        self._form_patterns: Dict[str, "re.Pattern[str]"] = {}
+        self._by_key: Optional[Dict[str, List[Tuple[str, int]]]] = None
+        self._by_length: Optional[Dict[int, List[Tuple[str, int]]]] = None
 
     def text_lookup(self) -> "_TextLookup":
         """What `names_left_in_text` needs from these forms, built once."""
@@ -935,17 +1098,64 @@ class Compiled:
         because `re.IGNORECASE` and `str.casefold` do not agree on every
         code point (U+00DF folds to "ss" but does not match "SS" under
         IGNORECASE).
+
+        Decided once per spelling (fix round 2, B-3): a transcript of a
+        thousand speaker labels asks the same question a thousand times,
+        and the last step, which the dictionaries miss under an
+        insensitive mode for a spelling such as `ALİ`, cost 12 ms a match
+        at 2,000 forms before it was memoised and indexed.
         """
-        found = self._exact.get(matched)
+        found = self._entry_memo.get(matched)
         if found is not None:
             return found
-        if self.flags:
+        found = self._exact.get(matched)
+        if found is None and self.flags:
             found = self._folded.get(_fold(matched))
-            if found is not None:
-                return found
-        for form, index in self.forms:
-            if re.fullmatch(re.escape(form), matched, self.flags):
-                return index
+        if found is None:
+            found = self.first_full_match(matched)[1]
+        self._entry_memo[matched] = found
+        return found
+
+    def form_pattern(self, form: str) -> "re.Pattern[str]":
+        """One surface form, escaped and compiled under this case mode,
+        once per form."""
+        pattern = self._form_patterns.get(form)
+        if pattern is None:
+            pattern = self._form_patterns[form] = re.compile(
+                re.escape(form), self.flags)
+        return pattern
+
+    def first_full_match(self, matched: str) -> Tuple[str, int]:
+        """The first form, in the pattern's own order, whose escaped
+        alternative full-matches `matched` under this case mode.
+
+        Exact, and the answer the combined pattern's alternation gives:
+        a literal matches character for character under `re.IGNORECASE`
+        as without it, so only the forms of `matched`'s length can match,
+        and among the forms sharing its `ignorecase_key` the first that
+        full-matches is the first of all (the key is the module's own
+        comparison). The key is tried first; the forms of the same length
+        are the fall-back, in the same order, so a key that found
+        nothing never changes an answer.
+        """
+        if self.flags:
+            by_key = self._by_key
+            if by_key is None:
+                by_key = self._by_key = {}
+                for form, index in self.forms:
+                    by_key.setdefault(ignorecase_key(form), []).append(
+                        (form, index))
+            for form, index in by_key.get(ignorecase_key(matched), ()):
+                if self.form_pattern(form).fullmatch(matched):
+                    return form, index
+        by_length = self._by_length
+        if by_length is None:
+            by_length = self._by_length = {}
+            for form, index in self.forms:
+                by_length.setdefault(len(form), []).append((form, index))
+        for form, index in by_length.get(len(matched), ()):
+            if self.form_pattern(form).fullmatch(matched):
+                return form, index
         raise AssertionError(                 # pragma: no cover - impossible
             "a matched span belongs to no surface form")
 
@@ -969,7 +1179,7 @@ class Compiled:
                 # The regex, not a case-folded comparison: this decides
                 # whether a form is REPORTED as having lost, so it has
                 # to be the same test the matching pass itself applies.
-                if not re.fullmatch(re.escape(form), candidate, self.flags):
+                if not self.form_pattern(form).fullmatch(candidate):
                     continue
             elif candidate != form:
                 continue
@@ -1221,11 +1431,53 @@ def _residue_key(value: str) -> Tuple[str, str]:
     study, and this one in none, so the joined key is the right one. A
     value with no letters or digits keys by its literal reading, in a
     namespace of its own, so it never collides with a word key.
+
+    Since fix round 2 the words are keyed the way `re.IGNORECASE`
+    compares them (`ignorecase_key`), which is the comparison the direct
+    pattern made, rather than casefolded: the two disagree on a few
+    letters (a capital I with a dot above, a dotless i, a long s), and a
+    match the pattern accepted and the casefolded key could not place was
+    charged to no entry. Where the interpreter lacks the functions that
+    key is built from, casefolding stands in, as before.
     """
     parts = _detector_parts(value)
     if parts:
-        return ("words", _fold("".join(parts)))
-    return ("literal", _fold(_reader_sees(value)))
+        return ("words", _word_key("".join(parts)))
+    return ("literal", _word_key(_reader_sees(value)))
+
+
+_NOT_A_WORD_CHARACTER = re.compile(r"[\W_]+")
+
+
+def _folded_key(folded: str) -> Tuple[str, str]:
+    """The attribution key of a match of the FOLDED pattern, and of the
+    folded reading of a form.
+
+    The folded pattern is the forms' words casefolded, escaped and
+    joined by separator runs, compiled without flags, so a match of it
+    is those casefolded words exactly, with separators between. Keyed
+    as it stands with the separators taken out, never normalised again:
+    fix round 1 keyed it through `_residue_key`, whose NFKC composed a
+    combining mark in the text onto the casefolded letter before it
+    ("ß" followed by U+0301 folds to "ss" and then reads "sś"), so the
+    key matched no form and the occurrence was charged to no entry (the
+    re-verification's CORR-1; the property that asserted it never
+    happens failed on about one random seed in twenty). A form's own
+    folded words keyed the same way are the key of every match of its
+    alternative, so this pass charges every match to an entry.
+    """
+    words = _NOT_A_WORD_CHARACTER.sub("", folded)
+    if words:
+        return ("words", words)
+    return ("literal", folded)
+
+
+def _form_folded_key(form: str) -> Tuple[str, str]:
+    """`_folded_key` of what a form's folded alternative matches."""
+    parts = _detector_parts(form)
+    if parts:
+        return _folded_key("".join(_fold(part) for part in parts))
+    return ("literal", _fold(_reader_sees(form)))
 
 
 class _TextLookup:
@@ -1238,7 +1490,8 @@ class _TextLookup:
     """
 
     __slots__ = ("direct", "folded", "reader_form", "all_ascii",
-                 "folded_form", "entry_forms")
+                 "folded_form", "entry_forms", "rewriter_form",
+                 "seen_alone", "own_patterns")
 
     def __init__(self, compiled: "Compiled"):
         self.direct: Dict[Tuple[str, str], List[Tuple[str, int, Any]]] = {}
@@ -1246,20 +1499,29 @@ class _TextLookup:
         self.reader_form: Dict[Tuple[int, str], str] = {}
         self.folded_form: Dict[Tuple[int, str], str] = {}
         self.entry_forms: Dict[int, List[str]] = {}
+        # Per matched spelling, across every file of one preview (fix
+        # round 2, B-3): the rewriter's form, and whether the detector
+        # sees a whole word read with its trailing marks.
+        self.rewriter_form: Dict[str, Tuple[int, str]] = {}
+        self.seen_alone: Dict[str, bool] = {}
+        # Each form's own two detector alternatives, direct and folded:
+        # the cheap first question about a whole word the rewriter
+        # matched, before the whole detector is asked.
+        self.own_patterns: Dict[Tuple[int, str], Tuple[Any, Any]] = {}
         for form, index in compiled.forms:
             self.entry_forms.setdefault(index, []).append(form)
             self.folded_form.setdefault((index, _fold(form)), form)
             if not _detector_alternative(form):
                 continue        # a form no reader can see matches nothing
-            key = _residue_key(form)
             # Each pattern built from the escaping builder at the site
             # that compiles it, as every pattern in this module is.
-            self.direct.setdefault(key, []).append(
-                (form, index,
-                 re.compile(_detector_alternative(form), re.IGNORECASE)))
-            self.folded.setdefault(key, []).append(
-                (form, index,
-                 re.compile(_detector_alternative(form, fold=True))))
+            direct = re.compile(_detector_alternative(form), re.IGNORECASE)
+            folded = re.compile(_detector_alternative(form, fold=True))
+            self.own_patterns[(index, form)] = (direct, folded)
+            self.direct.setdefault(_residue_key(form), []).append(
+                (form, index, direct))
+            self.folded.setdefault(_form_folded_key(form), []).append(
+                (form, index, folded))
             self.reader_form[(index, form)] = _reader_sees(form)
         self.all_ascii = all(form.isascii() for form, _ in compiled.forms)
 
@@ -1282,10 +1544,13 @@ def _pick(candidates: Sequence[Tuple[str, int, Any]], matched: str
     return candidates[0]
 
 
-def _attributed(matches, lookup_table):
+def _attributed(matches, lookup_table, key=_residue_key):
     """Each match of a detector pattern, with the form it is charged to.
 
-    Yields `(match, (form, entry) or None)`. The entry is recovered
+    Yields `(match, (form, entry) or None, new)`, `new` being whether
+    this is the first time the matched text was placed (the match
+    budget charges a first placing as a match of its own, fix round 2).
+    The entry is recovered
     from the matched TEXT by key, never from the regex engine: one
     capture group per alternative made the count cost 82 seconds per
     1.27 MB at the documented ceiling of 2,000 forms, which is the shape
@@ -1298,12 +1563,13 @@ def _attributed(matches, lookup_table):
     for match in matches:
         matched = match.group(0)
         candidate = placed.get(matched, _UNPLACED)
-        if candidate is _UNPLACED:
-            candidates = lookup_table.get(_residue_key(matched))
+        new = candidate is _UNPLACED
+        if new:
+            candidates = lookup_table.get(key(matched))
             candidate = (_pick(candidates, matched)[:2] if candidates
                          else None)
             placed[matched] = candidate
-        yield match, candidate
+        yield match, candidate, new
 
 
 def direct_attribution(compiled: "Compiled", seen: str
@@ -1319,7 +1585,7 @@ def direct_attribution(compiled: "Compiled", seen: str
     lookup = compiled.text_lookup()
     counts: Dict[Tuple[int, str], int] = {}
     unattributed = 0
-    for _match, candidate in _attributed(
+    for _match, candidate, _new in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         if candidate is None:
             unattributed += 1
@@ -1336,24 +1602,46 @@ def _rewriter_form(compiled: "Compiled", lookup: _TextLookup, matched: str
     The entry is `Compiled.entry_for`'s, which is exact by construction;
     the form is the mapping's own spelling the match stands for, looked
     up exactly, then case-folded, then by the same full match
-    `entry_for` falls back to.
+    `entry_for` falls back to, against the patterns `Compiled` holds
+    compiled. Decided once per spelling (fix round 2, B-3).
     """
+    found = lookup.rewriter_form.get(matched)
+    if found is not None:
+        return found
     index = compiled.entry_for(matched)
     if compiled._exact.get(matched) == index:
-        return index, matched
-    form = lookup.folded_form.get((index, _fold(matched)))
-    if form is not None:
-        return index, form
-    for candidate in lookup.entry_forms[index]:
-        if re.fullmatch(re.escape(candidate), matched, compiled.flags):
-            return index, candidate
-    return index, compiled.mapping.entries[index].original
+        found = (index, matched)
+    else:
+        form = lookup.folded_form.get((index, _fold(matched)))
+        if form is None:
+            form = next((candidate for candidate in lookup.entry_forms[index]
+                         if compiled.form_pattern(candidate).fullmatch(
+                             matched)),
+                        compiled.mapping.entries[index].original)
+        found = (index, form)
+    lookup.rewriter_form[matched] = found
+    return found
 
 
-# How far past a whole-word match the check below reads for combining
-# marks: composition only ever joins a base letter to the marks that
-# follow it, and no real name carries more than a few.
-_TRAILING_MARKS_READ = 16
+# Every combining mark (categories Mn, Mc and Me of the running
+# interpreter), as one pattern for a run of them, built on first use.
+_MARK_RUN_PATTERN: Optional["re.Pattern[str]"] = None
+
+
+def _mark_run_pattern() -> "re.Pattern[str]":
+    """A pattern for a run of zero or more combining marks, built once."""
+    global _MARK_RUN_PATTERN
+    pattern = _MARK_RUN_PATTERN
+    if pattern is None:
+        if _MARK_RANGES is None:
+            _sweep_code_points()
+        ranges = _MARK_RANGES
+        pattern = _MARK_RUN_PATTERN = re.compile(
+            "[" + "".join(
+                re.escape(chr(low)) if low == high
+                else re.escape(chr(low)) + "-" + re.escape(chr(high))
+                for low, high in ranges) + "]*")
+    return pattern
 
 
 def _with_trailing_marks(text: str, start: int, end: int) -> str:
@@ -1364,11 +1652,32 @@ def _with_trailing_marks(text: str, start: int, end: int) -> str:
     join the mark to the letter and read "René". Reading the match
     together with its trailing marks is how the detector is asked about
     the occurrence as a reader sees it.
+
+    The WHOLE run of marks is read (fix round 2, the re-verification's
+    CORR-2): fix round 1 read sixteen, and a seventeenth that composes
+    onto the name's last letter across sixteen that do not (a mark of a
+    lower combining class) brought QA-1's reading back. A run belongs to
+    the one match before it, so reading it whole keeps the cost linear in
+    the text; it is found with one compiled pattern, and no mark comes
+    before U+0300, so an ASCII text never builds it.
     """
-    stop = min(len(text), end + _TRAILING_MARKS_READ)
-    while end < stop and unicodedata.category(text[end]).startswith("M"):
-        end += 1
+    if end < len(text) and text[end] >= "̀":
+        end = _mark_run_pattern().match(text, end).end()
     return text[start:end]
+
+
+def residue_work(compiled: "Compiled", text: str) -> int:
+    """What counting (or checking) `text` costs, in the budgets' units.
+
+    `len(text) * (surface forms + the per-character term of the text's
+    class)`: `RESIDUE_WORK_PER_CHARACTER` when the text is ASCII,
+    `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` when it is not (fix round 2,
+    B-1). The same units price the count, the cheap question and the
+    whole detector asked about one word.
+    """
+    term = (RESIDUE_WORK_PER_CHARACTER if text.isascii()
+            else RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
+    return len(text) * (len(compiled.forms) + term)
 
 
 def in_a_no_separator_script(char: str) -> bool:
@@ -1413,7 +1722,8 @@ def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
 def names_left_in_text(compiled: "Compiled", text: str,
                        list_longer_words: bool,
                        rewritten_by_this_run: bool,
-                       max_matches: Optional[int] = None
+                       max_matches: Optional[int] = None,
+                       max_extra_work: Optional[int] = None
                        ) -> Optional[TextResidue]:
     """Where this mapping's names are left in one file's text.
 
@@ -1453,14 +1763,31 @@ def names_left_in_text(compiled: "Compiled", text: str,
     is charged to when both are present; their sum is exact.
 
     `max_matches` bounds the work a hostile text can cost: every match of
-    either pass counts against it, and past it the count stops and the
-    function returns None, which the caller reads as "not counted in
-    full" (the match budget, fix round 1, S-4). The result's `matches` is
-    what the count spent.
+    the three passes counts against it, and so does the first sight of
+    each spelling in a pass (placing a new spelling costs about what a
+    match costs again; a spelling met before is looked up; fix round 2),
+    and past it the count stops and the function returns None, which the
+    caller reads as "not counted in full" (the match budget, fix round
+    1, S-4). The result's `matches` is what the count spent, in those
+    units.
+
+    `max_extra_work` bounds the one cost the caller's work model does not
+    see (fix round 2): asking the whole detector about a whole word the
+    rewriter matched and the word's own alternatives do not find in its
+    reading (a name before a composing mark). Such a question costs what
+    the count costs per character of the word and its marks, and is
+    asked once per distinct spelling in a preview, so a text written to
+    make every spelling distinct could otherwise cost the count's time
+    again. Each such question is charged `residue_work` of the word and
+    its marks, and one match; past the allowance the
+    function returns None, as past the match budget. The result's
+    `extra_work` is what it charged.
     """
     lookup = compiled.text_lookup()
     spent = 0
     limit = max_matches if max_matches is not None else -1
+    extra_work = 0
+    extra_limit = max_extra_work if max_extra_work is not None else -1
     seen = _reader_sees(text)
     rows: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
@@ -1477,11 +1804,11 @@ def names_left_in_text(compiled: "Compiled", text: str,
     unattributed = 0
     direct_total = 0
     exact_mode = compiled.case_mode == "exact"
-    for match, candidate in _attributed(
+    for match, candidate, new in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         direct_total += 1
-        spent += 1
-        if spent == limit + 1:
+        spent += 2 if new else 1
+        if spent > limit >= 0:
             return None
         if candidate is None:
             unattributed += 1
@@ -1502,7 +1829,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
                     row["words"][word] = row["words"].get(word, 0) + 1
             continue
         reader_form = lookup.reader_form[(index, form)]
-        if _fold(matched) != _fold(reader_form):
+        # Compared the way the pattern compared them (fix round 2): a
+        # capital I with a dot above is the same letter to it, and to
+        # casefolding two code points, which read as joined differently.
+        if _word_key(matched) != _word_key(reader_form):
             row["joined_differently"] += 1
         elif matched != reader_form and exact_mode:
             row["case_only"] += 1
@@ -1528,11 +1858,11 @@ def names_left_in_text(compiled: "Compiled", text: str,
     if not (seen.isascii() and lookup.all_ascii):
         folded_counts: Dict[Tuple[int, str], int] = {}
         folded_unattributed = 0
-        for _match, candidate in _attributed(
+        for _match, candidate, new in _attributed(
                 compiled.detector._folded.finditer(_fold(seen)),
-                lookup.folded):
-            spent += 1
-            if spent == limit + 1:
+                lookup.folded, key=_folded_key):
+            spent += 2 if new else 1
+            if spent > limit >= 0:
                 return None
             if candidate is None:
                 folded_unattributed += 1
@@ -1559,21 +1889,36 @@ def names_left_in_text(compiled: "Compiled", text: str,
     # matches that the detector does not see, read with the combining
     # marks after it as a reader reads it, is an occurrence of the wide
     # reading too (the union; lead's ruling on QA-1), charged below to
-    # the whole-word kind of its row. Asked once per distinct spelling.
-    detector_sees: Dict[str, bool] = {}
+    # the whole-word kind of its row. Asked once per distinct spelling in
+    # the preview: first of the form's own two alternatives, which find
+    # it in all but the composing-mark case, then, only when they do not,
+    # of the whole detector, whose cost is charged (`max_extra_work`).
+    detector_sees = lookup.seen_alone
     whole_word_total = 0
     for match in compiled.pattern.finditer(text):
         whole_word_total += 1
-        spent += 1
-        if spent == limit + 1:
+        matched = match.group(0)
+        spent += 1 if matched in lookup.rewriter_form else 2
+        if spent > limit >= 0:
             return None
-        row = row_for(_rewriter_form(compiled, lookup, match.group(0)))
+        key = _rewriter_form(compiled, lookup, matched)
+        row = row_for(key)
         row["whole_word"] += 1
         snippet = _with_trailing_marks(text, match.start(), match.end())
         seen_alone = detector_sees.get(snippet)
         if seen_alone is None:
-            seen_alone = detector_sees[snippet] = \
-                compiled.detector.contains(snippet)
+            reading = _reader_sees(snippet)
+            own = lookup.own_patterns.get(key)
+            seen_alone = bool(own and (own[0].search(reading)
+                                       or own[1].search(_fold(reading))))
+            if not seen_alone:
+                spent += 1
+                extra_work += residue_work(compiled, snippet)
+                if spent > limit >= 0 or (
+                        extra_limit >= 0 and extra_work > extra_limit):
+                    return None
+                seen_alone = compiled.detector.contains(snippet)
+            detector_sees[snippet] = seen_alone
         if not seen_alone:
             row["rewriter_only"] += 1
 
@@ -1653,7 +1998,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
             "entries": listed,
             "case_variants_seen": case_variants,
             "normalisation_variants_seen": normalisation_variants,
-            "matches": spent}
+            "matches": spent,
+            "extra_work": extra_work}
 
 
 # The owner's ruling of 2026-09-23 on Brief 1's finding F-1: a pseudonym
