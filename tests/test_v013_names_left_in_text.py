@@ -1339,26 +1339,27 @@ class TestTheBlockIsBounded:
 
     def test_the_engine_stops_at_the_match_budget(self):
         """Ten matches in each of the two passes that run on ASCII text,
-        and one more in each for the first sight of the spelling (fix
-        round 2: placing a new spelling costs about a match again). A
-        fresh compiled mapping for each call: the whole-word pass places a
-        spelling once per PREVIEW, so a second call on the same one would
-        be charged one less."""
+        the first of each charged `RESIDUE_FIRST_SIGHT_MATCHES` (fix round
+        2: placing a new spelling costs several matches), so 2 x (5 + 9).
+        A fresh compiled mapping for each call: the whole-word pass places
+        a spelling once per PREVIEW, so a second call on the same one is
+        charged four less."""
         def compiled():
             return P.Compiled(P.validate_mapping(
                 [{"original": "Thomas", "pseudonym": "Alex"}]))
         text = "Thomas " * 10
+        assert P.RESIDUE_FIRST_SIGHT_MATCHES == 5
         assert P.names_left_in_text(compiled(), text, True, False,
-                                    max_matches=21) is None
+                                    max_matches=27) is None
         found = P.names_left_in_text(compiled(), text, True, False,
-                                     max_matches=22)
-        assert found["matches"] == 22
+                                     max_matches=28)
+        assert found["matches"] == 28
         assert found["occurrences"] == {"wide": 10, "whole_word": 10}
         again = P.Compiled(P.validate_mapping(
             [{"original": "Thomas", "pseudonym": "Alex"}]))
         P.names_left_in_text(again, text, True, False)
         assert P.names_left_in_text(again, text, True, False)[
-            "matches"] == 21
+            "matches"] == 24
 
     def test_the_work_has_a_per_character_term(self, project, monkeypatch):
         """The work of a file is its length times the surface forms PLUS
@@ -1774,10 +1775,10 @@ class TestTheMatchBudgetAcrossFiles:
         _set_text(project, 6, "Thomas " * 10, name="six.txt")
         alone = _block(preview_of(residue_detail="project"))
         assert alone["files_not_counted"] == []
-        # File 5 spends 22 (ten matches in each of two passes, and one
-        # more in each for the first sight of the spelling); file 6 would
-        # spend 21 on its own.
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", 30)
+        # File 5 spends 28 (ten matches in each of two passes, the first
+        # sight of the spelling charged five in each); file 6 would spend
+        # 24 on its own (the whole-word pass placed "Thomas" in file 5).
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", 40)
         block = _block(preview_of(residue_detail="project"))
         assert 5 not in block["files_not_counted"]
         assert 6 in block["files_not_counted"]
@@ -1859,9 +1860,9 @@ class TestTheMatchBudgetCountsTheFoldedPass:
     """The re-verification's lane 4, finding 5 (O2): FD-9's "the match
     budget counts all three passes", for the folded pass, which runs only
     on text that is not ASCII. "Straße" ten times: ten matches in each of
-    the direct, folded and whole-word passes, and one more in each for
-    the first sight of the spelling, 33; without the folded pass's share
-    it would be 22."""
+    the direct, folded and whole-word passes, the first sight of the
+    spelling charged five, 3 x 14 = 42; without the folded pass's share
+    it would be 28."""
 
     def test_straße_ten_times(self):
         def compiled():
@@ -1869,12 +1870,12 @@ class TestTheMatchBudgetCountsTheFoldedPass:
                 [{"original": "Straße", "pseudonym": "Alex"}]))
         text = "Straße " * 10
         found = P.names_left_in_text(compiled(), text, True, False)
-        assert found["matches"] == 33
+        assert found["matches"] == 42
         assert found["occurrences"] == {"wide": 10, "whole_word": 10}
         assert P.names_left_in_text(compiled(), text, True, False,
-                                    max_matches=32) is None
+                                    max_matches=41) is None
         assert P.names_left_in_text(compiled(), text, True, False,
-                                    max_matches=33) is not None
+                                    max_matches=42) is not None
 
 
 class TestTheLongerWordsAreAPrefix:
@@ -2046,3 +2047,125 @@ class TestCompactRowsHaveACapOfTheirOwn:
                         .read_text(encoding="utf-8").split())
         assert "up to 1,000 files" in text, document
         assert "more_files_showing_a_name" in text, document
+
+
+class TestACleanProjectPastBothBudgets:
+    """B-2's pin at the real budgets: a clean project large enough to pass
+    the count's budget and then the question's. Before fix round 2 the
+    question was charged to nothing, so a clean project cost its size
+    times its forms (17.7 s for twenty interviews at 1,997 forms). Now
+    the files past the second budget are not checked, the warning says
+    so in the lead's words, and what the preview reads stays inside the
+    two budgets: deterministic, by what the engine was given, and timed
+    against a ceiling far above the bound and far below the shape
+    without it (about 11 s here)."""
+
+    CEILING_SECONDS = 6.0
+
+    @staticmethod
+    def _mapping():
+        """500 entries of four forms, the documented ceiling, spelt like
+        names (any first letter): forms sharing a prefix let the regex
+        engine skip most positions and would measure nothing."""
+        import random
+        rng = random.Random(1302)
+        letters = "abcdefghijklmnopqrstuvwxyz"
+        names = set()
+        while len(names) < 4 * P.MAX_ENTRIES:
+            names.add(rng.choice(letters).upper() + "".join(
+                rng.choice(letters) for _ in range(rng.randint(5, 8))))
+        names = sorted(names)
+        rng.shuffle(names)
+        return [{"original": names[4 * i], "pseudonym": f"Pp{i:03d}",
+                 "variants": names[4 * i + 1:4 * i + 4]}
+                for i in range(P.MAX_ENTRIES)]
+
+    def test_the_question_has_a_budget_and_the_rest_are_not_checked(
+            self, project, monkeypatch):
+        import time
+        mapping = self._mapping()
+        clean = ("the interview was long and we talked about the day at "
+                 "work and at home. " * 140)[:10_000]
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.executemany(
+            "INSERT INTO source (id,name,fulltext,mediapath,memo,owner,date)"
+            " VALUES (?,?,?,NULL,'','TestCoder','d')",
+            [(fid, f"clean_{fid:03d}.txt", clean)
+             for fid in range(10, 110)])
+        con.commit()
+        con.close()
+        _reconnect(project)
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        assert len(compiled.forms) == 2000
+        assert not compiled.carries_a_name(clean)
+        counted, checked, inside = [], [], []
+        real_count = P.names_left_in_text
+        real_check = P.Compiled.carries_a_name
+        real_block = QualcoderDatabase._pseudonymise_file_text
+
+        def count(compiled, text, *args, **kwargs):
+            counted.append(P.residue_work(compiled, text))
+            return real_count(compiled, text, *args, **kwargs)
+
+        def check(self, value):
+            if inside:
+                checked.append(P.residue_work(self, value))
+            return real_check(self, value)
+
+        def block(self, *args, **kwargs):
+            inside.append(time.perf_counter())
+            try:
+                return real_block(self, *args, **kwargs)
+            finally:
+                inside.append(time.perf_counter() - inside.pop())
+
+        monkeypatch.setattr(P, "names_left_in_text", count)
+        monkeypatch.setattr(P.Compiled, "carries_a_name", check)
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_file_text",
+                            block)
+        out = preview_of(mapping=mapping)
+        elapsed = inside[-1]
+        file_text = _block(out)
+        assert file_text["files_not_checked"], file_text["totals"]
+        assert file_text["totals"]["files_showing_a_name"] == 0
+        assert sum(counted) <= P.MAX_RESIDUE_SCAN_WORK
+        assert sum(checked) <= P.MAX_RESIDUE_CHECK_WORK
+        unchecked = len(file_text["files_not_checked"])
+        assert _file_text_warning(out) == (
+            f"Warning: {unchecked} file(s) were not checked; preview them "
+            f"one at a time, or use fewer names, to check them (see "
+            f"files_not_checked). See residue.file_text, which names the "
+            f"files.")
+        assert elapsed < self.CEILING_SECONDS, elapsed
+
+
+class TestTheBudgetsAreDeliberate:
+    """The re-verification's N-4: none of the budgets' numbers was
+    pinned, so a budget ten times larger passed the suite. Each is pinned
+    at the value fix round 2 derived (BRIEF1_FIX2_REPORT.md), and the
+    figures the documents quote are tied to the constants."""
+
+    def test_the_values(self):
+        assert P.RESIDUE_WORK_PER_CHARACTER == 3
+        assert P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII == 7
+        assert P.MAX_RESIDUE_SCAN_WORK == 200_000_000
+        assert P.MAX_RESIDUE_CHECK_WORK == 60_000_000
+        assert P.MAX_RESIDUE_SCAN_MATCHES == 150_000
+        assert P.RESIDUE_FIRST_SIGHT_MATCHES == 5
+        assert P.MAX_RESIDUE_ENTRY_ROWS == 50
+
+    def test_the_changelog_quotes_the_constants(self):
+        text = " ".join((Path(__file__).resolve().parents[1] /
+                         "CHANGELOG.md").read_text(encoding="utf-8").split())
+        entry = text.split("## [0.12")[0]
+        assert (f"A row lists at most {P.MAX_RESIDUE_ENTRY_ROWS} entries"
+                in entry)
+        assert (f"for up to {P.MAX_RESIDUE_COMPACT_ROWS:,} files" in entry)
+        assert (f"full detail for up to {P.MAX_RESIDUE_FILE_ROWS} files"
+                in entry)
+
+    def test_the_text_class_prices_the_work(self):
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        forms = len(compiled.forms)
+        assert P.residue_work(compiled, "Thomas said") == 11 * (forms + 3)
+        assert P.residue_work(compiled, "Thomas’s") == 8 * (forms + 7)

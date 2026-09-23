@@ -58,11 +58,17 @@ jobs:
             grep -E "^[0-9]+ (passed|failed)| failed,| error" pytest_output.txt | tail -3
             grep -E "^(FAILED|ERROR) " pytest_output.txt | head -60
             # Ruling 7: the file-text count's rate and the worst case of
-            # its two budgets on this platform, readable from the public
+            # its three budgets on this platform, readable from the public
             # run page without admin rights.
             grep -E "^file-text count rate: " pytest_output.txt | head -3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # The same line as a check-run annotation: a job's step summary
+          # is hidden from signed-out visitors, and annotations are public
+          # through the API (/check-runs/<id>/annotations), so ruling 7's
+          # constant can be frozen from all six platforms without admin
+          # rights (v0.13 fix round 2).
+          sed -n 's/^file-text count rate: /::notice title=file-text count rate::/p' pytest_output.txt | head -3
           exit $code
 
       - name: Upload pytest output

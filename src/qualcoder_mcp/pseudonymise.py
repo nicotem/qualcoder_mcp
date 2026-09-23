@@ -118,42 +118,67 @@ SHORT_FORM_CHARS = 4
 # the two passes' own scan), and that term is what a one-form mapping
 # spends most of, the worst case a rate taken at a hundred forms cannot
 # see (the Security gate measured 6 seconds at one form under the old
-# model). Measured on 1 MB of English prose at 1, 10 and 100 forms, best
-# of five: 4.24 ms per MB per unit of work with the per-character term at
-# 2.45 on Python 3.13.5, 3.98 and 2.32 on 3.11.13; the term is rounded up
-# to 3. So the work budget's worst case is about 350 x 4.24 ms, 1.5
-# seconds, at any number of forms, and 1.3 seconds at one. Past the
+# model). Fix round 1 measured 1 MB of English prose at 1, 10 and 100
+# forms, best of five: 4.24 ms per MB per unit of work with the
+# per-character term at 2.45 on Python 3.13.5, 3.98 and 2.32 on 3.11.13,
+# rounded the term up to 3 and set the budget at 350 million. Past the
 # budget a file is still read, with the one cheap question "does any
 # name show here", and the report says which files those are; it is
 # never omitted and never reported clean when it is not.
 #
-# Fix round 2 (the re-verification's B-1): the term above was measured on
-# text stripped to ASCII. On any text that is not ASCII (one curly
+# Fix round 2 (the re-verification's B-1, B-2 and B-3) re-derived all
+# three budgets from the WORST of: one form on ASCII text, one form on
+# text that is not ASCII, the hostile dense run, and 1,997 forms with
+# Turkish capitals under an insensitive mode, on Python 3.13.5 and
+# 3.11.13 (BRIEF1_FIX2_REPORT.md has the figures). The term above was
+# measured on text stripped to ASCII; on any other text (one curly
 # apostrophe is enough) the reader's reading costs more per character, so
-# the term is priced by the text's own class, `RESIDUE_WORK_PER_CHARACTER`
-# for ASCII and `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` for the rest
-# (`residue_work`). The constants and their measurements: see
-# `MAX_RESIDUE_SCAN_WORK` below.
+# the term is priced by the text's own class (`residue_work`): measured
+# 2.2 to 2.7 on ASCII, rounded up to 3, and 3.4 to 6.7 on curly quotes,
+# Cyrillic, Japanese and accented Latin composed or decomposed, rounded
+# up to 7 (after `_strip_unseen` stopped costing 37 to 74 ms per MB). The
+# unit rate is 3.9 to 5.6 ms per MB per unit in exact mode and 4.4 to 6.0
+# in the insensitive ones, the worst 5.97 (3.11.13, curly quotes). So the
+# work budget's worst case is about 200 x 5.97 ms, 1.2 seconds, at any
+# number of forms and on any text.
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
-MAX_RESIDUE_SCAN_WORK = 350_000_000
+MAX_RESIDUE_SCAN_WORK = 200_000_000
 # Ours (fix round 2, the lead's ruling on B-2). Past the work or the match
 # budget a file is asked the cheap question "does any name show here", and
-# on a file where none shows that question reads the whole text at the
-# count's own rate: charged to this budget of its own, in the same units.
-# Past it a file is not checked at all: it is listed in
+# on a file where none shows that question reads the whole text: charged
+# to this budget of its own, in the same units. It costs a little more
+# per unit than the count (three scans where the count on ASCII makes
+# two): 2.8 to 4.2 ms per MB per unit at one form, 4.5 to 6.9 at a
+# hundred, so this budget's worst case is about 60 x 6.91 ms, 0.4
+# seconds. Past it a file is not checked at all: it is listed in
 # `files_not_checked`, the warning says how to get it checked, and it is
 # never reported clean.
-MAX_RESIDUE_CHECK_WORK = 150_000_000
-# Ours (fix round 1, S-4). Matches cost work the character model does not
-# see: a text that is nothing but the name repeated has a match every few
-# characters. Every match of either pass counts against this budget; past
-# it a file drops to the cheap question too, and so does every file after
-# it, as with the work budget. The dearest match measured, a name inside
-# a long run of word characters on the typed path, cost 1.84 microseconds
-# on 3.13.5, so the match budget's worst case is about 0.4 seconds, and
-# the two budgets together stay near ruling 7's "about two seconds".
-MAX_RESIDUE_SCAN_MATCHES = 200_000
+MAX_RESIDUE_CHECK_WORK = 60_000_000
+# Ours (fix round 1, S-4; re-derived in fix round 2). Matches cost work
+# the character model does not see: a text that is nothing but the name
+# repeated has a match every few characters. Every match of the three
+# passes counts against this budget, a first sight of a spelling as
+# `RESIDUE_FIRST_SIGHT_MATCHES`; past it a file drops to the cheap
+# question too, and so does every file after it, as with the work budget.
+# The dearest unit measured is a first sight of a Turkish capital at 1,997
+# forms under an insensitive mode, 2.2 microseconds on 3.11.13 (the dense
+# typed run, a name inside a long run of word characters, 1.3 to 1.6), so
+# this budget's worst case is about 0.33 seconds. The three together, and
+# the 0.08 seconds a 2,000-form mapping costs to prepare once per preview,
+# are about two seconds on this measurement (ruling 7).
+MAX_RESIDUE_SCAN_MATCHES = 150_000
+# Ours (fix round 2, the re-verification's B-3). The first sight of a
+# spelling in a pass is placed (the entry it belongs to, the rewriter's
+# form, whether the reader's reading sees it) and every later sight is
+# looked up, so a text written to make every sight a new spelling (case
+# variants, Turkish capitals under an insensitive mode) costs more per
+# match than the dense run the budget above was priced on. Measured at
+# 1,997 forms: a first sight costs up to 6.9 microseconds more than a
+# repeated one on 3.11.13 (4.5 on 3.13.5), against 1.4 to 1.7 for an
+# ordinary match, so a first sight is charged five matches, and one more
+# for each further form sharing its key that has to be tried.
+RESIDUE_FIRST_SIGHT_MATCHES = 5
 # Ours (fix round 1, S-3). Entry rows in one file row, in wide-count
 # order; the row's own totals stay complete and the row says
 # `entries_truncated`. The same cap bounds each of the row's two
@@ -1547,10 +1572,11 @@ def _pick(candidates: Sequence[Tuple[str, int, Any]], matched: str
 def _attributed(matches, lookup_table, key=_residue_key):
     """Each match of a detector pattern, with the form it is charged to.
 
-    Yields `(match, (form, entry) or None, new)`, `new` being whether
-    this is the first time the matched text was placed (the match
-    budget charges a first placing as a match of its own, fix round 2).
-    The entry is recovered
+    Yields `(match, (form, entry) or None, charge)`, `charge` being what
+    the match budget is charged for it: one match for a spelling placed
+    before, and `RESIDUE_FIRST_SIGHT_MATCHES` plus one for each further
+    candidate sharing its key for the first sight of a spelling, which
+    is what placing it costs (fix round 2, B-3). The entry is recovered
     from the matched TEXT by key, never from the regex engine: one
     capture group per alternative made the count cost 82 seconds per
     1.27 MB at the documented ceiling of 2,000 forms, which is the shape
@@ -1563,13 +1589,15 @@ def _attributed(matches, lookup_table, key=_residue_key):
     for match in matches:
         matched = match.group(0)
         candidate = placed.get(matched, _UNPLACED)
-        new = candidate is _UNPLACED
-        if new:
+        charge = 1
+        if candidate is _UNPLACED:
             candidates = lookup_table.get(key(matched))
             candidate = (_pick(candidates, matched)[:2] if candidates
                          else None)
             placed[matched] = candidate
-        yield match, candidate, new
+            charge = RESIDUE_FIRST_SIGHT_MATCHES + (
+                len(candidates) - 1 if candidates else 0)
+        yield match, candidate, charge
 
 
 def direct_attribution(compiled: "Compiled", seen: str
@@ -1585,7 +1613,7 @@ def direct_attribution(compiled: "Compiled", seen: str
     lookup = compiled.text_lookup()
     counts: Dict[Tuple[int, str], int] = {}
     unattributed = 0
-    for _match, candidate, _new in _attributed(
+    for _match, candidate, _charge in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         if candidate is None:
             unattributed += 1
@@ -1763,10 +1791,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
     is charged to when both are present; their sum is exact.
 
     `max_matches` bounds the work a hostile text can cost: every match of
-    the three passes counts against it, and so does the first sight of
-    each spelling in a pass (placing a new spelling costs about what a
-    match costs again; a spelling met before is looked up; fix round 2),
-    and past it the count stops and the function returns None, which the
+    the three passes counts against it, the first sight of each spelling
+    in a pass as `RESIDUE_FIRST_SIGHT_MATCHES` (placing a new spelling
+    costs several matches; a spelling met before is looked up; fix round
+    2), and past it the count stops and the function returns None, which the
     caller reads as "not counted in full" (the match budget, fix round
     1, S-4). The result's `matches` is what the count spent, in those
     units.
@@ -1804,10 +1832,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
     unattributed = 0
     direct_total = 0
     exact_mode = compiled.case_mode == "exact"
-    for match, candidate, new in _attributed(
+    for match, candidate, charge in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         direct_total += 1
-        spent += 2 if new else 1
+        spent += charge
         if spent > limit >= 0:
             return None
         if candidate is None:
@@ -1858,10 +1886,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
     if not (seen.isascii() and lookup.all_ascii):
         folded_counts: Dict[Tuple[int, str], int] = {}
         folded_unattributed = 0
-        for _match, candidate, new in _attributed(
+        for _match, candidate, charge in _attributed(
                 compiled.detector._folded.finditer(_fold(seen)),
                 lookup.folded, key=_folded_key):
-            spent += 2 if new else 1
+            spent += charge
             if spent > limit >= 0:
                 return None
             if candidate is None:
@@ -1898,7 +1926,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
     for match in compiled.pattern.finditer(text):
         whole_word_total += 1
         matched = match.group(0)
-        spent += 1 if matched in lookup.rewriter_form else 2
+        spent += (1 if matched in lookup.rewriter_form
+                  else RESIDUE_FIRST_SIGHT_MATCHES)
         if spent > limit >= 0:
             return None
         key = _rewriter_form(compiled, lookup, matched)

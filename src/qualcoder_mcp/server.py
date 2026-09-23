@@ -10501,11 +10501,14 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
                 f"Ann), so running them would replace more names than the "
                 f"wide count says.")
     elif whole_word:
-        # The union makes this unreachable through the engine (a whole
-        # word the reader's reading does not see is counted in the wide
-        # reading too); kept so the warning never goes quiet if that ever
-        # stops being true, and worded without the kinds, which are all
-        # zero here, and without the Mary, Ann reason, which is not it.
+        # No input is known to reach this since fix round 2 (the union
+        # counts a whole word the reader's reading does not see in the
+        # wide reading too, and the whole run of marks after the word is
+        # read; fix round 1 read sixteen, and a seventeenth that composed
+        # reached this branch: the re-verification's CORR-2). Kept so the
+        # warning never goes quiet if that ever stops being true, and
+        # worded without the kinds, which are all zero here, and without
+        # the Mary, Ann reason, which is not it.
         sentences.append(
             f"Warning: after this run, this run's own whole-word rule "
             f"would still match {whole_word} occurrence(s) of these names "

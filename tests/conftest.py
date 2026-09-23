@@ -128,7 +128,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     v0.13, ruling 7: the work budget of `pseudonymise_source`'s file-text
     count is "about two seconds", sanity-checked on the slowest CI
     platform before the constant is frozen. The performance guard
-    records its rate, and the worst case of the two budgets it implies,
+    records its rate, and the worst case of the three budgets it implies,
     as a user property, and a passing test's own output is captured and
     never shown (CI runs `-ra -q`), so the line is written here, into the
     summary every CI log carries, with the platform and the interpreter

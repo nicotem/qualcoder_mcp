@@ -2636,6 +2636,27 @@ class TestNamesLeftInText:
             found = P.names_left_in_text(compiled, text, True, False)
             assert found["occurrences"] == {"wide": 1, "whole_word": 1}
 
+    def test_the_whole_detector_question_is_charged(self):
+        """A whole word the form's own alternatives do not find in its
+        reading (a name before a composing mark) is asked of the whole
+        detector, once per spelling in a preview, and each question is
+        charged `residue_work` of the word and its marks against the
+        caller's allowance (fix round 2): past it the count stops."""
+        def compiled():
+            return P.Compiled(P.validate_mapping(
+                [{"original": "Rene", "pseudonym": "Alex"}]))
+        first, second = "Rene\u0316\u0301", "Rene\u0317\u0301"
+        text = f"Later {first} and {second} and {first} arrived."
+        found = P.names_left_in_text(compiled(), text, True, False)
+        one = compiled()
+        charged = P.residue_work(one, first) + P.residue_work(one, second)
+        assert found["extra_work"] == charged
+        assert found["occurrences"] == {"wide": 3, "whole_word": 3}
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_extra_work=charged - 1) is None
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_extra_work=charged) is not None
+
     # QA-1, fixed at the engine: a name followed by a combining mark (an
     # NFD "René") is a whole word to the rewriter and composed away by the
     # detector's NFKC reading. The union counts it in the wide reading.
@@ -2786,10 +2807,17 @@ class TestNamesLeftInText:
     @given(case=_residue_case(one_form=True))
     def test_for_one_single_word_form_wide_is_at_least_whole_word(
             self, case):
-        """`wide >= whole_word` for a FILE holds for a mapping of one
+        """`wide >= whole_word` for a FILE, for a mapping of one
         single-word form, a combining mark after it included (QA-1);
         `test_one_wide_occurrence_can_be_two_whole_words` shows why it
-        cannot hold in general."""
+        cannot hold for a mapping of several. Fix round 1 read sixteen
+        marks after a whole word, and a seventeenth that composed onto
+        the name made this false (the re-verification's CORR-2); the whole
+        run is read since fix round 2 (`test_the_whole_run_of_marks_after_
+        a_word_is_read`). That nothing else can make it false rests on
+        lane 2's sweep of every code point (no character before a word
+        composes into it), an argument and not a proof, so the defensive
+        branch of the file-text warning stays."""
         compiled, text, rewritten = case
         found = P.names_left_in_text(compiled, text, False, rewritten)
         assert found["occurrences"]["wide"] >= \
@@ -2899,6 +2927,7 @@ class TestTheFileTextCountStaysCheap:
     carry it for ruling 7's sanity check of the work budget."""
 
     CEILING_SECONDS = 3.0
+    CURLY_RATIO_CEILING = 2.8
 
     @staticmethod
     def _timed(compiled, text):
@@ -2946,58 +2975,141 @@ class TestTheFileTextCountStaysCheap:
             written += len(word) + 1
         return mapping, " ".join(pieces)
 
-    def test_a_megabyte_at_a_hundred_forms(self, record_property):
-        """The rate probe, and the worst case ruling 7 is checked on.
+    @classmethod
+    def measure(cls):
+        """The rate probe's measurements, in THIS interpreter: a dict.
 
-        The same megabyte is counted at a hundred forms and at one, and a
-        dense text (the name repeated as one run, on the typed path, the
-        dearest match there is) is counted for its per-match cost. From
-        the three, the rate per unit of work, the per-character term and
-        the worst case of each budget follow; the line written into the
-        run's summary carries them, so every CI log says whether the
-        budgets are "about two seconds" on its platform (fix round 1,
-        S-4 and F-3: a rate taken at a hundred forms alone could not see
-        the one-form case)."""
-        mapping, text = self._corpus()
-        compiled = P.Compiled(P.validate_mapping(mapping))
-        assert len(compiled.forms) == 100
-        compiled.text_lookup()
-        found, elapsed = self._timed(compiled, text)
+        The same megabyte at a hundred forms and at one, as it stands
+        (ASCII) and with curly quotes and apostrophes (fix round 2, B-1: a
+        rate taken on ASCII alone cannot see what a transcript from a word
+        processor costs); the cheap question past the budgets on half a
+        megabyte where no name shows (B-2); and a dense text, the name
+        repeated as one run on the typed path, the dearest ordinary match
+        there is."""
+        mapping, text = cls._corpus()
+        curly = text.replace("said", "“said”").replace(
+            " it ", " it’s ")
+        many = P.Compiled(P.validate_mapping(mapping))
         one = P.Compiled(P.validate_mapping(mapping[:1]))
-        one.text_lookup()
-        _, one_elapsed = self._timed(one, text)
-        dense = ("ab" * 50_000)
+        for compiled in (many, one):
+            compiled.text_lookup()
+        found, elapsed = cls._timed(many, text)
+        _, one_elapsed = cls._timed(one, text)
+        curly_found, curly_elapsed = cls._timed(many, curly)
+        _, curly_one = cls._timed(one, curly)
+        import random
+        rng = random.Random(1301)
+        words = ["the", "and", "“said”", "interview", "it’s",
+                 "because", "then", "a", "long", "day", "at", "work"]
+        clean = " ".join(rng.choice(words) for _ in range(90_000))
+        assert not many.carries_a_name(clean)
+        import gc
+        import time
+        gc.collect()
+        gc.disable()
+        try:
+            started = time.perf_counter()
+            many.carries_a_name(clean)
+            check_elapsed = time.perf_counter() - started
+        finally:
+            gc.enable()
         pair = P.Compiled(P.validate_mapping(
             [{"original": "Ab", "pseudonym": "Xyz"}]))
         pair.text_lookup()
-        dense_found, dense_elapsed = self._timed(pair, dense)
-        megabytes = len(text) / 1_000_000
-        at_100 = elapsed * 1000 / megabytes
-        at_1 = one_elapsed * 1000 / megabytes
+        dense = "ab" * 50_000
+        dense_found, dense_elapsed = cls._timed(pair, dense)
+        return {
+            "megabytes": len(text) / 1e6, "curly_megabytes": len(curly) / 1e6,
+            "elapsed": elapsed, "one_elapsed": one_elapsed,
+            "curly_elapsed": curly_elapsed, "curly_one": curly_one,
+            "check_elapsed": check_elapsed,
+            "check_work": P.residue_work(many, clean),
+            "check_megabytes": len(clean) / 1e6,
+            "dense_chars": len(dense), "dense_elapsed": dense_elapsed,
+            "dense_matches": dense_found["matches"],
+            "wide": found["occurrences"]["wide"],
+            "curly_wide": curly_found["occurrences"]["wide"],
+            "unattributed": found["unattributed"]
+            + curly_found["unattributed"]}
+
+    @staticmethod
+    def line(m):
+        """The summary line, and the worst case of the three budgets."""
+        at_100 = m["elapsed"] * 1000 / m["megabytes"]
+        at_1 = m["one_elapsed"] * 1000 / m["megabytes"]
         unit = max((at_100 - at_1) / 99, 1e-6)
-        per_character = at_1 / unit - 1
-        per_match = max(dense_elapsed * 1000 - len(dense) / 1_000_000 * (
-            1 + P.RESIDUE_WORK_PER_CHARACTER) * unit, 0) / \
-            dense_found["matches"]
-        work_s = P.MAX_RESIDUE_SCAN_WORK / 1_000_000 * unit / 1000
+        term = at_1 / unit - 1
+        curly_100 = m["curly_elapsed"] * 1000 / m["curly_megabytes"]
+        curly_1 = m["curly_one"] * 1000 / m["curly_megabytes"]
+        curly_unit = max((curly_100 - curly_1) / 99, 1e-6)
+        curly_term = curly_1 / curly_unit - 1
+        check_unit = m["check_elapsed"] * 1000 / (m["check_work"] / 1e6)
+        check_100 = m["check_elapsed"] * 1000 / m["check_megabytes"]
+        per_match = max(m["dense_elapsed"] * 1000 - m["dense_chars"] / 1e6 * (
+            1 + P.RESIDUE_WORK_PER_CHARACTER) * unit, 0) / m["dense_matches"]
+        work_s = P.MAX_RESIDUE_SCAN_WORK / 1e6 * max(unit, curly_unit) / 1000
+        check_s = P.MAX_RESIDUE_CHECK_WORK / 1e6 * check_unit / 1000
         match_s = P.MAX_RESIDUE_SCAN_MATCHES * per_match / 1000
-        line = (f"{at_100 / 100:.3f} ms per MB per surface form at 100 "
+        return (f"{at_100 / 100:.3f} ms per MB per surface form at 100 "
                 f"forms, {at_1:.1f} ms per MB at one form (per-character "
-                f"term {per_character:.2f}, model "
-                f"{P.RESIDUE_WORK_PER_CHARACTER}); worst case at the full "
-                f"budgets about "
-                f"{work_s + match_s:.2f} s (work {work_s:.2f} s, matches "
+                f"term {term:.2f}, model {P.RESIDUE_WORK_PER_CHARACTER}); "
+                f"with curly quotes {curly_100 / 100:.3f} and "
+                f"{curly_1:.1f} (per-character term {curly_term:.2f}, model "
+                f"{P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII}); the question "
+                f"past the budgets {check_100 / 100:.3f} ms per MB per "
+                f"surface form at 100 forms; worst case at the full budgets "
+                f"about {work_s + check_s + match_s:.2f} s (work "
+                f"{work_s:.2f} s, check {check_s:.2f} s, matches "
                 f"{match_s:.2f} s)")
+
+    def test_a_megabyte_at_a_hundred_forms(self, record_property):
+        """The rate probe, and the worst case ruling 7 is checked on.
+
+        Measured in a FRESH interpreter (fix round 2): inside the full
+        suite the same count read three and a half times slower (14.8 ms
+        per MB per form against 4.3, the collector already paused), from
+        the suite's own heap, which a server process does not have, so
+        the line CI publishes was the suite's, not the tool's. From the
+        measurements, the rate per unit of work, the per-character term of
+        each class of text and the worst case of each budget follow; the
+        line written into the run's summary carries them, so every CI log
+        says whether the budgets are "about two seconds" on its
+        platform."""
+        import json
+        import subprocess
+        here = Path(__file__).resolve()
+        probe = ("import sys, json; sys.path[:0] = ['src', 'tests']; "
+                 "import test_v012_pseudonymise_engine as t; "
+                 "print(json.dumps("
+                 "t.TestTheFileTextCountStaysCheap.measure()))")
+        result = subprocess.run([sys.executable, "-B", "-c", probe],
+                                cwd=str(here.parents[1]),
+                                capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stderr[-2000:]
+        m = json.loads(result.stdout.strip().splitlines()[-1])
+        line = self.line(m)
         record_property("file_text_rate", line)
         sys.stderr.write(f"\nfile-text count rate: {line}\n")
-        assert found["occurrences"]["wide"] > 1000
-        assert found["unattributed"] == 0
+        assert m["wide"] > 1000 and m["curly_wide"] > 1000
+        assert m["unattributed"] == 0
         # 50,000 matches of one spelling, whose first sight is charged
-        # once more (fix round 2).
-        assert dense_found["matches"] == 50_001
-        assert elapsed < self.CEILING_SECONDS, (
-            f"{elapsed:.2f} s for 1 MB at 100 forms: the file-text count "
-            f"has lost its ungrouped pass")
+        # `RESIDUE_FIRST_SIGHT_MATCHES` (fix round 2).
+        assert m["dense_matches"] == 50_000 - 1 + \
+            P.RESIDUE_FIRST_SIGHT_MATCHES
+        assert m["elapsed"] < self.CEILING_SECONDS, (
+            f"{m['elapsed']:.2f} s for 1 MB at 100 forms: the file-text "
+            f"count has lost its ungrouped pass")
+        # B-1's guard, a ratio in one fresh process so the machine cancels:
+        # a one-form count of the curly megabyte against the plain one.
+        # 1.6 to 2.0 since the unseen characters are stripped by one
+        # character class; 3.1 (3.11.13) to 4.0 (3.13.5) with the
+        # `str.translate` table it replaced.
+        ratio = (m["curly_one"] / m["curly_megabytes"]) / (
+            m["one_elapsed"] / m["megabytes"])
+        assert ratio < self.CURLY_RATIO_CEILING, (
+            f"a curly-quoted megabyte costs {ratio:.1f} times a plain one "
+            f"at one form: the reader's reading of text that is not ASCII "
+            f"has become dear again")
 
     def test_the_guard_that_tells_the_two_shapes_apart(self):
         """The absolute guard: the rate probe above does not discriminate
@@ -3074,8 +3186,138 @@ class TestTheFileTextCountStaysCheap:
         assert len(lines) == 1, result.stdout[-2000:]
         assert " ms per MB per surface form at 100 forms, " in lines[0]
         assert " ms per MB at one form " in lines[0]
+        # Fix round 2: text that is not ASCII (B-1), the question past the
+        # budgets (B-2), and the third budget in the worst case.
+        assert "; with curly quotes " in lines[0]
+        assert "; the question past the budgets " in lines[0]
         assert "; worst case at the full budgets about " in lines[0]
+        assert ", check " in lines[0]
         assert "test passed)" in lines[0]
+
+
+def _two_thousand_forms(mode="insensitive", stem="Zq", first="Ali"):
+    """1,997 forms, the documented ceiling's shape (entries of four, the
+    last entry alone and last in pattern order), as the bounds lane built
+    them for B-3."""
+    def word(i):
+        a, b = divmod(i, 26 * 26)
+        b, c = divmod(b, 26)
+        return stem + chr(97 + a % 26) + chr(97 + b) + chr(97 + c)
+    entries, made, i = [], 0, 0
+    while made + 4 <= 1996 and len(entries) < P.MAX_ENTRIES - 1:
+        entries.append({"original": word(4 * i),
+                        "pseudonym": "Pp" + word(4 * i)[2:],
+                        "variants": [word(4 * i + k) for k in (1, 2, 3)]})
+        made += 4
+        i += 1
+    entries.append({"original": first, "pseudonym": "Xyz"})
+    return P.Compiled(P.validate_mapping(entries, mode))
+
+
+class TestAMatchIsPlacedOncePerSpelling:
+    """The re-verification's B-3: under an insensitive mode a spelling
+    such as `ALİ` misses both of `entry_for`'s dictionaries and fell to a
+    `re.fullmatch` per form, recompiled once the forms outnumber `re`'s
+    cache: 12 to 13.5 ms a match at 1,997 forms, 32.8 s and 249.6 s for
+    one preview inside both budgets, and 66 to 84 s to plan the rewrite
+    of a 90,000-character transcript. Decided once per spelling now,
+    through `ignorecase_key`, against patterns held compiled."""
+
+    TURKISH = "ALİ: evet, dün geldim ve toplantıya katıldım. "
+
+    def test_the_key_is_the_modules_own_comparison(self):
+        """`ignorecase_key(a) == ignorecase_key(b)` exactly when a literal
+        `a` matches `b` under re.IGNORECASE: every cased code point
+        against every cased one, and no uncased code point matched by a
+        cased literal or sharing its key. The whole range was checked on
+        3.13.5, 3.11.13 and 3.10.16 (the fix report's evidence); this is
+        the part a changed interpreter would move."""
+        cased = [chr(c) for c in range(0x110000)
+                 if not 0xD800 <= c <= 0xDFFF and P._SRE_ISCASED(c)]
+        all_cased = "".join(cased)
+        keys = {ch: P.ignorecase_key(ch) for ch in cased}
+        for ch in cased:
+            matched = set(re.findall(re.escape(ch), all_cased, re.IGNORECASE))
+            assert matched == {other for other in cased
+                               if keys[other] == keys[ch]}, ch
+        any_cased = re.compile(
+            "[" + "".join(re.escape(ch) for ch in cased) + "]", re.IGNORECASE)
+        every = "".join(chr(c) for c in range(0x110000)
+                        if not 0xD800 <= c <= 0xDFFF)
+        assert set(any_cased.findall(every)) <= set(cased)
+        assert set(keys.values()) <= set(cased)
+
+    def test_a_spelling_is_placed_once(self, monkeypatch):
+        compiled = _two_thousand_forms()
+        calls = []
+        real = P.Compiled.first_full_match
+
+        def counted(self, matched):
+            calls.append(matched)
+            return real(self, matched)
+
+        monkeypatch.setattr(P.Compiled, "first_full_match", counted)
+        found = P.names_left_in_text(compiled, "ALİ: evet.\n" * 500, True,
+                                     False)
+        assert found["occurrences"]["whole_word"] == 500
+        assert calls == ["ALİ"]
+        assert [compiled.entry_for("ALİ") for _ in range(3)] == [
+            len(compiled.mapping.entries) - 1] * 3
+        assert calls == ["ALİ"]
+
+    def test_a_form_pattern_is_compiled_once(self):
+        """Held by the compiled mapping, not by `re`'s cache of 512, which
+        2,000 forms overflow: the first form's pattern is the same object
+        after every other form's has been asked for."""
+        compiled = _two_thousand_forms()
+        first = compiled.form_pattern(compiled.forms[0][0])
+        for form, _ in compiled.forms:
+            compiled.form_pattern(form)
+        assert compiled.form_pattern(compiled.forms[0][0]) is first
+
+    # Generous: measured 0.14 s to plan and about 0.3 s to count on this
+    # Mac, against 66 to 84 s and 32.8 s before; a machine forty times
+    # slower passes, and the shape before the fix cannot.
+    CEILING_SECONDS = 6.0
+
+    def test_the_rewrite_is_planned_quickly_at_two_thousand_forms(self):
+        import time
+        compiled = _two_thousand_forms()
+        text = (self.TURKISH * (90_000 // len(self.TURKISH) + 1))[:90_000]
+        started = time.perf_counter()
+        found = P.find_replacements(compiled, text)
+        elapsed = time.perf_counter() - started
+        assert len(found) == text.count("ALİ")
+        assert elapsed < self.CEILING_SECONDS, elapsed
+
+    def test_distinct_spellings_are_placed_quickly(self):
+        """Every label a NEW spelling, so no memo helps: the forms a
+        spelling can belong to are found through `ignorecase_key`, one
+        dictionary lookup, rather than by a full match against every form
+        (which, at 12 ms a spelling, is 18 s for these 1,500 labels)."""
+        import time
+        compiled = _two_thousand_forms(stem="i")
+        labels = []
+        for form, _ in compiled.forms[:500]:
+            rest = form[1:]
+            labels += ["\u0130" + rest.upper(), "\u0130" + rest,
+                       "\u0130" + rest.capitalize()]
+        text = "".join(f"{label}: evet.\n" for label in labels)
+        started = time.perf_counter()
+        found = P.names_left_in_text(compiled, text, True, False)
+        elapsed = time.perf_counter() - started
+        assert found["occurrences"]["whole_word"] == len(labels) == 1500
+        assert elapsed < self.CEILING_SECONDS, elapsed
+
+    def test_the_count_is_quick_at_two_thousand_forms(self):
+        import time
+        compiled = _two_thousand_forms()
+        text = (self.TURKISH * (90_000 // len(self.TURKISH) + 1))[:90_000]
+        started = time.perf_counter()
+        found = P.names_left_in_text(compiled, text, True, False)
+        elapsed = time.perf_counter() - started
+        assert found["occurrences"]["whole_word"] == text.count("ALİ")
+        assert elapsed < self.CEILING_SECONDS, elapsed
 
 
 class TestPseudonymsContainingAName:
@@ -3184,3 +3426,22 @@ class TestTheRateReachesThePublicRunPage:
         assert summary.count("echo") >= 2       # the block, not a fragment
         assert 'grep -E "^file-text count rate: " pytest_output.txt' in \
             summary
+
+    def test_the_rate_is_also_a_check_run_annotation(self):
+        """The lead's follow-on (fix round 2, G5): GitHub hides a job's
+        step summary from signed-out visitors, and a check run's
+        annotations are public through the API. So the step also prints
+        the line as a `::notice title=file-text count rate::` workflow
+        command, OUTSIDE the block piped into the summary (a workflow
+        command inside it would be written to the summary as text)."""
+        workflow = (Path(__file__).resolve().parents[1] / ".github" /
+                    "workflows" / "ci.yml").read_text(encoding="utf-8")
+        step = workflow[workflow.index("- name: Run test suite"):
+                        workflow.index("- name: Upload pytest output")]
+        closing = step.index('} >> "$GITHUB_STEP_SUMMARY"')
+        outside = step[closing:]
+        assert ("sed -n 's/^file-text count rate: "
+                "/::notice title=file-text count rate::/p' "
+                "pytest_output.txt") in outside
+        assert outside.index("::notice title=file-text count rate::") < \
+            outside.index("exit $code")

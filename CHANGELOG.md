@@ -74,11 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Chinese, Japanese, Thai, Lao, Khmer, Myanmar), at most 20 per entry
   per file and 4,000 characters in a whole preview. On the
   `use_project_pseudonyms` path no longer word and no form is returned.
-  The count has two fixed budgets, for its work and for the number of
-  matches, measured to stay near two seconds together (about 1.8 s on
-  Python 3.13.5 here, 1.3 s for a one-name mapping); past them a file is
-  only asked whether any name shows, is listed in `files_not_counted`,
-  and the preview says so. A row lists at most 50 entries, the most
+  The count has fixed budgets, for its work (characters times names,
+  and a little more for every character, more again in text that is not
+  plain ASCII) and for the number of matches; past them a file is only
+  asked whether any name shows, is listed in `files_not_counted`, and
+  the preview says so. That question has a budget of its own, because on
+  a file where no name shows it reads as much as a count: past it a file
+  is not checked at all, is listed in `files_not_checked`, the warning
+  names it and says how to get it checked, and it is never reported
+  clean. The three are measured to stay near two seconds together on any
+  text and at any mapping size up to the 2,000-name maximum (about 2.0 s
+  at worst on Python 3.11.13 here, on curly-quoted text with a
+  case-insensitive mapping). A row lists at most 50 entries, the most
   frequent first, with its own totals complete. A second warning reads
   the file-text counts out, kept apart from the fields warning, and it
   says so when a file's whole-word count is above its wide one. A part
@@ -112,12 +119,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes it into the text, with its warning.
 - The character sweep behind the wide reading, and behind the rule that
   withholds a file name from the run record and the journal entry, is
-  much faster (pure ASCII costs nothing at all) and gives byte-identical
-  answers.
-- The test suite prints the file-text count's rate, and the worst case
-  of its two budgets, in its summary, and CI copies that line into each
-  job's step summary, so the budgets can be checked on every platform
-  from the public run page.
+  much faster (pure ASCII costs nothing at all, and any other text a
+  sixth to a half of what it did) and gives byte-identical answers.
+- The test suite measures the file-text count's rate in a fresh
+  interpreter, on plain and on curly-quoted text, and prints it with the
+  worst case of the three budgets in its summary; CI copies that line
+  into each job's step summary and into a check-run annotation, which
+  the public API returns without signing in, so the budgets can be
+  checked on every platform.
 
 ### Changed: `pseudonymise_source` rewrites one file per call
 
