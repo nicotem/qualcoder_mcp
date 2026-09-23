@@ -10,7 +10,13 @@ honours the same convention on every memo it returns to the client and
 on every memo it writes, so a project touched by both tools keeps the
 same promise to the researcher.
 
-Behaviour is matched to upstream ai_memo.py exactly:
+PERSONAL_NOTE_MARK, _SEPARATOR_CHARS, split_public_private_memo,
+extract_ai_memo and merge_public_memo are QualCoder's own code, copied
+from ai_memo.py:28-59 at 9bddf17 (author Kai Dröge) statement for
+statement, with local names changed, so that the behaviour is upstream's
+exactly; NOTICE lists them.
+neutralize_marker and strip_private_memos are this project's own. The
+behaviour the copied functions give:
 
 - Split: the FIRST marker wins; the private suffix starts AT the
   marker, marker included. Text with no marker is entirely public.
