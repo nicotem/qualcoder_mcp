@@ -188,4 +188,4 @@ parity with QualCoder needs its own code, a routine may be copied or
 transcribed, and it is then listed in [NOTICE](NOTICE): its file and
 function here, the QualCoder file and lines it comes from, and why it
 was copied. Otherwise re-implement the behaviour and cite the upstream
-file and line you matched, as `memo_privacy.py` does.
+file and line you matched in the docstring.
