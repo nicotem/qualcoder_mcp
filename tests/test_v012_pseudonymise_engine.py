@@ -2600,6 +2600,42 @@ class TestNamesLeftInText:
         assert [(entry["entry"], entry["case_only"])
                 for entry in found["entries"]] == [(0, 1)]
 
+    # The re-verification's CORR-1 (lane 2) and finding 1 (lane 4): the
+    # property below met these on about one random seed in twenty, and
+    # the engine gave the same answer at 4b46345. The folded pass keyed
+    # its match through NFKC again, which composed the acute onto the
+    # casefolded "ss" ("sś") so no form's key matched; it is keyed as it
+    # stands now (`_folded_key`), and each case is charged to an entry.
+    @pytest.mark.parametrize("mapping, text", [
+        ([("ß A", "Qqq ß A"), ("A A", "Www"), ("ß ß", "Eee")],
+         "SS SS ß\u0301 ß A"),
+        ([("ß ß", "Eee")], "ß ss ß ß ß\u0301 ß ß"),
+        ([("ss ß", "Eee")], "ß\u0301 ß"),
+    ], ids=["lane-4-seed", "lane-2-seed-1212", "lane-2-shortest"])
+    def test_a_folded_match_before_a_combining_mark_is_attributed(
+            self, mapping, text):
+        found = _left([{"original": original, "pseudonym": pseudonym}
+                       for original, pseudonym in mapping], text)
+        assert found["unattributed"] == 0
+        kinds = sum(entry[kind] for entry in found["entries"]
+                    for kind in P.TEXT_RESIDUE_REASONS)
+        assert kinds == found["occurrences"]["wide"] > 0
+
+    def test_the_whole_run_of_marks_after_a_word_is_read(self):
+        """The re-verification's CORR-2: sixteen marks that compose with
+        nothing (U+0316) and a seventeenth that composes onto the "e"
+        across them (its combining class is higher). Fix round 1 read
+        sixteen marks and the file read {wide 0, whole_word 1}; the whole
+        run is read now, so the rewriter's whole word is in the wide
+        reading too. Forty marks as well, past any window."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Rene", "pseudonym": "Alex"}]))
+        for below in (16, 39):
+            text = f"Later Rene{chr(0x316) * below}\u0301 arrived."
+            assert not compiled.detector.contains(text)
+            found = P.names_left_in_text(compiled, text, True, False)
+            assert found["occurrences"] == {"wide": 1, "whole_word": 1}
+
     # QA-1, fixed at the engine: a name followed by a combining mark (an
     # NFD "René") is a whole word to the rewriter and composed away by the
     # detector's NFKC reading. The union counts it in the wide reading.
@@ -2815,6 +2851,42 @@ class TestNamesLeftInText:
 
         count()
         assert all(value > 0 for value in seen.values()), seen
+
+
+class TestThePropertiesAreDerandomisedInCI:
+    """Fix round 2, the lead's ruling on CORR-1: CI runs the properties
+    derandomised through a Hypothesis profile (tests/conftest.py), so a
+    push is never red by the luck of a seed; a random or a chosen seed
+    stays available locally."""
+
+    def test_the_environment_picks_the_profile(self):
+        import conftest
+        pick = conftest.hypothesis_profile_for
+        assert pick({"CI": "true"}) == "ci"
+        assert pick({}) == "default"
+        assert pick({"CI": "true", "HYPOTHESIS_PROFILE": "default"}) == \
+            "default"
+        profile = settings.get_profile("ci")
+        assert profile.derandomize is True
+        assert profile.database is None
+
+    def test_a_settings_object_made_at_import_inherits_it_in_ci(self):
+        """The mechanism itself, in a fresh interpreter with CI set: a
+        module-level `settings(...)` such as `_RESIDUE_SETTINGS`, made
+        after conftest has loaded the profile, is derandomised."""
+        import os
+        import subprocess
+        here = Path(__file__).resolve()
+        probe = ("import sys; sys.path.insert(0, 'tests'); import conftest; "
+                 "from hypothesis import settings; "
+                 "print(settings(max_examples=3).derandomize)")
+        environ = {**os.environ, "CI": "true"}
+        environ.pop("HYPOTHESIS_PROFILE", None)
+        result = subprocess.run([sys.executable, "-B", "-c", probe],
+                                cwd=str(here.parents[1]), env=environ,
+                                capture_output=True, text=True, timeout=120)
+        assert result.stdout.strip().splitlines()[-1:] == ["True"], \
+            result.stderr[-2000:]
 
 
 class TestTheFileTextCountStaysCheap:

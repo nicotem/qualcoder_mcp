@@ -23,6 +23,25 @@ from track5_helpers import (write_fixture_sidecar, REAL_WORKSPACE,
                             GUARDED_REAL_FOLDERS, SHARING_VIOLATION,
                             open_paths_under)
 from qualcoder_mcp.sessions import SessionManager, AICodingSession, CodingSuggestion
+from hypothesis import settings as _hypothesis_settings
+
+
+# v0.13 fix round 2 (the lead's ruling on the re-verification's CORR-1):
+# every property in this suite runs derandomised in CI, so a push is
+# never red by the luck of a seed; locally the seed stays random, and a
+# chosen one is `--hypothesis-seed=N`. GitHub Actions sets CI=true on
+# every runner. HYPOTHESIS_PROFILE picks a profile by name either way.
+_hypothesis_settings.register_profile("ci", derandomize=True,
+                                      database=None, print_blob=True)
+
+
+def hypothesis_profile_for(environ) -> str:
+    """The profile this run loads, from its environment."""
+    return environ.get("HYPOTHESIS_PROFILE") or (
+        "ci" if environ.get("CI") else "default")
+
+
+_hypothesis_settings.load_profile(hypothesis_profile_for(os.environ))
 
 
 @pytest.fixture(autouse=True)
