@@ -5097,6 +5097,13 @@ class TestTheDocumentsTellTheTruth:
         "exact entry can be added.",
         "file names, including every file the residue names, and the "
         "project path are still returned as they stand.",
+        # Fix round 1.
+        "A longer word is listed only when it extends the name by at most "
+        "eight characters and is not in a script written without spaces",
+        "`residue_detail=\"project\"` gives every file's detail, and the "
+        "totals and the warnings are the same either way.",
+        "a pseudonym that carries one of its names is withheld by entry "
+        "number",
     ])
     def test_readme_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("README.md")
@@ -5156,9 +5163,15 @@ class TestTheDocumentsTellTheTruth:
         "requires the override.",
         # v0.13, Brief 1: the file text, and the four things the sidecar
         # path still returns, as the description declares them.
-        "The block names every file it counts in, including the files "
-        "this run does not touch, on both mapping paths, so name your "
-        "files accordingly.",
+        "The block names every file in which a name still shows, "
+        "including the files this run does not touch, on both mapping "
+        "paths, so name your files accordingly.",
+        # Fix round 1: what a longer word is, and the records' pseudonyms.
+        "A longer word is listed only when it extends the name by at most "
+        "eight characters and carries no character of a script written "
+        "without spaces between words (Chinese, Japanese, Thai, Lao, "
+        "Khmer, Myanmar)",
+        "A pseudonym that itself carries a name from the mapping",
         "On a mapping you type, it also lists the longer words a name sits "
         "inside (`Thomas_P01`, `Thomasson`), which are words of the file "
         "text, so an exact entry can be added for one; on the "

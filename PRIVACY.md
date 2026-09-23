@@ -630,12 +630,21 @@ will ask, and the summary above depends on them:
     way or spelled with an invisible character, or where a pseudonym
     puts one back), every other file with stored text, which this call
     does not touch, and the PDF sources, which are never rewritten. The
-    block names every file it counts in, including the files this run
-    does not touch, on both mapping paths, so name your files
-    accordingly. On a mapping you type, it also lists the longer words a
-    name sits inside (`Thomas_P01`, `Thomasson`), which are words of the
-    file text, so an exact entry can be added for one; on the
-    `use_project_pseudonyms` path it lists none and names no form.
+    block names every file in which a name still shows, including the
+    files this run does not touch, on both mapping paths, so name your
+    files accordingly. By default it gives full detail for the file this
+    call names and, for every other file, only its id, its name and the
+    two counts; `residue_detail="project"` gives every file's detail.
+    On a mapping you type, it also lists the longer words a name sits
+    inside (`Thomas_P01`, `Thomasson`), which are words of the file
+    text, so an exact entry can be added for one; on the
+    `use_project_pseudonyms` path it lists none and names no form. A
+    longer word is listed only when it extends the name by at most eight
+    characters and carries no character of a script written without
+    spaces between words (Chinese, Japanese, Thai, Lao, Khmer, Myanmar),
+    where a run of letters is a clause rather than a word; anything else
+    is counted and not listed, and every list in one preview shares a
+    budget of 4,000 characters.
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or
@@ -647,7 +656,11 @@ will ask, and the summary above depends on them:
     `delete_coding_session` is yours to call.
   - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` and the
     journal entry inside the project carry pseudonyms, counts and row
-    ids only, never an original name. That covers the names of things
+    ids only, never an original name. A pseudonym that itself carries a
+    name from the mapping ("Alex Smith" when Smith is mapped, "Thomasina"
+    when Thomas is) is withheld from both, and on the
+    `use_project_pseudonyms` path from the preview too, by its entry
+    number. That covers the names of things
     as well as the names in the mapping: a file called
     `Thomas_interview.txt`, a project folder called `Thomas study.qda`
     and the backup folder derived from it are all withheld from those

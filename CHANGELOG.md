@@ -27,10 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"wide": N, "whole_word": M}`. `wide` is the count the block always
   gave, the heuristic reading of what a person would see (inside a
   longer word, in any letter case, a name of several words however it
-  is joined); `whole_word` is how many of the same fields this run's own
+  is joined), and it now also counts every field this run's own rule
+  matches: a name followed by a combining accent ("Rene" typed as a
+  decomposed "René") is a whole word to the rule and was invisible to
+  the old reading, and the rule that withholds a file name, a path or a
+  pseudonym from the records reads the same way, so it withholds more,
+  never less. `whole_word` is how many of the same fields this run's own
   rule matches. A wide count far ahead of its whole-word count is the
-  sign of a short name, and the preview's warning now carries both
-  numbers. Both readings read a note's public part only: a name that
+  sign of a short name, and the preview's warnings carry both numbers
+  and speak when either is non-zero. Both readings read a note's public part only: a name that
   occurs only after `#####` is counted by neither. The block names its
   unit in a `counts` string, "fields, not occurrences", and the warning
   and the reading note say "notes" for the twelve memo-like fields (the
@@ -40,24 +45,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text was not counted at all, and a file the rewrite never fired on was
   absent from the whole preview. Every file with stored text is read as
   it will be after the run: the one this call rewrites, every file it
-  does not touch, and the PDF sources, which are never rewritten. Each
-  file is named, on both mapping paths, with its counts as occurrences,
-  both readings, and each entry's wide count split by kind: inside a
+  does not touch, and the PDF sources, which are never rewritten. Every
+  file in which a name still shows is named, on both mapping paths, with
+  its counts as occurrences, both readings. The file this call names
+  gets full detail: each entry's wide count split by kind (inside a
   longer word, case only, joined differently, an invisible character or
-  another Unicode normalisation (`normalisation_variants_seen` lists
-  them by form, beside `case_variants_seen`), put back by a pseudonym,
-  and whole words in a file this run did not rewrite. The split is a
-  heuristic and the total is not; an occurrence no entry can be charged
-  to is still counted, as `unattributed`. A name inside a longer word
-  is reported and never substituted, and on a typed mapping the longer
-  words themselves are listed (at most 20 per entry per file) so an
-  exact entry can be added; on the `use_project_pseudonyms` path no
-  longer word and no form is returned. The count has a fixed work
-  budget in characters times surface forms; past it a file is only
-  asked whether any name shows, is listed in `files_not_counted`, and
-  the preview says so and says the one way to get the full counts, a
-  smaller mapping. A second warning reads the file-text counts out, kept
-  apart from the fields warning.
+  another Unicode normalisation, put back by a pseudonym, and whole
+  words in a file this run did not rewrite), and
+  `normalisation_variants_seen` beside `case_variants_seen`. Every other
+  file gets one short row, its id, its name and the two counts, so the
+  loop of one preview per file does not repeat the whole project's
+  detail on every call: `residue_detail="project"` gives every file's
+  detail. The totals and the warnings are the same either way. Measured
+  on the QA gate's shapes (the name twenty times in five spellings per
+  file), a default preview of a 60-file project is 14,808 characters
+  (53,832 with every file's detail, as the first build gave it by
+  default) and of a 250-file project 28,196 (159,200). The split by
+  kind is a heuristic and the total is not; an occurrence no entry can
+  be charged to is still counted, as `unattributed`. A name inside a
+  longer word is reported and never substituted, and on a typed mapping
+  the longer words themselves are listed so an exact entry can be
+  added: only a word that extends the name by at most eight characters
+  and carries no character of a script written without spaces
+  (Chinese, Japanese, Thai, Lao, Khmer, Myanmar), at most 20 per entry
+  per file and 4,000 characters in a whole preview. On the
+  `use_project_pseudonyms` path no longer word and no form is returned.
+  The count has two fixed budgets, for its work and for the number of
+  matches, measured to stay near two seconds together (about 1.8 s on
+  Python 3.13.5 here, 1.3 s for a one-name mapping); past them a file is
+  only asked whether any name shows, is listed in `files_not_counted`,
+  and the preview says so. A row lists at most 50 entries, the most
+  frequent first, with its own totals complete. A second warning reads
+  the file-text counts out, kept apart from the fields warning, and it
+  says so when a file's whole-word count is above its wide one. A part
+  of the project the report could not read is named in a warning of its
+  own.
 - **A pseudonym that contains a name from the mapping is found and
   warned about.** `{"Smith": "Jones", "Thomas Smith": "Alex Smith"}`
   writes "Alex Smith" and so puts the real surname back into the text,
@@ -73,10 +95,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forms a name with the words around it is caught by the count alone,
   with a warning of its own. QualCoder accepts such a mapping in
   silence; this is a named departure.
+- **Such a pseudonym is withheld from the records.** The run manifest
+  and the journal entry promise never to carry an original name, and a
+  pseudonym that contains one ("Alex Smith" when Smith is mapped,
+  "Thomas Jr", "Thomasina" when Thomas is) carried it into both. It is
+  now withheld from both, on both mapping paths, as a file name that
+  carries a name always was: null in the manifest, "withheld" in the
+  journal, the entry number kept and one sentence saying why. On the
+  `use_project_pseudonyms` path it is withheld from every place the
+  preview quotes a pseudonym, and from `import_text_file`'s report when
+  that applies the project's `pseudonyms.json`. The run itself still
+  writes it into the text, with its warning.
 - The character sweep behind the wide reading, and behind the rule that
   withholds a file name from the run record and the journal entry, is
   much faster (pure ASCII costs nothing at all) and gives byte-identical
   answers.
+- The test suite prints the file-text count's rate, and the worst case
+  of its two budgets, in its summary, and CI copies that line into each
+  job's step summary, so the budgets can be checked on every platform
+  from the public run page.
 
 ### Changed: `pseudonymise_source` rewrites one file per call
 
@@ -209,7 +246,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about the old one, and a caller that passes both gets the preview for
   `file_id` alone. `skipped_files` is gone from the preview and from the
   nothing-to-do answer: an ineligible `file_id` is a refusal carrying
-  `reason` instead. Every count in `residue` is now an object with
+  `reason` instead. A host that sends `file_id` as "1", 1.0 or true
+  gets file 1: the transport turns each into the integer before the tool
+  runs. Every count in `residue` is now an object with
   `wide` and `whole_word` in place of an integer, so a caller that reads
   `residue["memos"]["source"]` as a number fails at once, which is
   deliberate: a smaller number read silently in its place would be the
@@ -217,7 +256,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wide` keeps exactly the meaning and the value the integer had.
   `preview.files`, the result's `files` and the run record's `files`
   stay lists, so nothing that reads them changes shape for this, and
-  each now holds at most one entry.
+  each now holds at most one entry. `import_text_file`'s
+  `project_pseudonyms.per_pseudonym` rows now carry their `entry`, and a
+  pseudonym there, in the preview on the `use_project_pseudonyms` path,
+  or in the run manifest's `entries` can be `null` (withheld, with
+  `pseudonyms_withheld` beside it).
 
 ## [0.12.1-alpha] - 2026-09-21
 
