@@ -8419,6 +8419,11 @@ class QualcoderDatabase:
         "name, to be run with its own mapping. The counts are of the "
         "spellings you gave; a look-alike letter from another script is "
         "not caught.")
+    PSEUDONYMISE_LONGER_WORDS_NOTE = (
+        "The longer words this preview lists share one budget of {budget} "
+        "characters, spent in the order of the files above; it ran out, so "
+        "the rest are counted under inside_a_longer_word and not listed, "
+        "and each list it cut says longer_words_truncated.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full because the work of "
         "counting them (characters times surface forms) passed this "
@@ -8426,6 +8431,37 @@ class QualcoderDatabase:
         "(shows_a_name) and is listed in files_not_counted. The budget is "
         "fixed, so the one way to get the full counts is a smaller "
         "mapping.")
+
+    @staticmethod
+    def _pseudonymise_spend_words(entries: Sequence[Dict[str, Any]],
+                                  left: int) -> Tuple[int, bool]:
+        """List longer words until the preview's budget runs out.
+
+        Every list a preview carries draws on one budget
+        (`MAX_LONGER_WORDS_TOTAL_CHARS`, the lead's ruling on S-1), spent
+        in the order the rows and entries are listed. The first word that
+        does not fit ends the listing for the whole preview, so what is
+        listed is a prefix of that order and the same on every call;
+        every list it cut says `longer_words_truncated`.
+        Returns (what is left, whether anything was cut).
+        """
+        cut = False
+        for entry in entries:
+            words = entry.get("longer_words")
+            if not words:
+                continue
+            kept = []
+            for item in words:
+                if len(item["word"]) > left:
+                    left = 0
+                    break
+                kept.append(item)
+                left -= len(item["word"])
+            if len(kept) < len(words):
+                entry["longer_words"] = kept
+                entry["longer_words_truncated"] = True
+                cut = True
+        return left, cut
 
     def _pseudonymise_file_text(self, compiled, plan: Optional[Dict[str, Any]],
                                 may_echo_names: bool) -> Dict[str, Any]:
@@ -8497,6 +8533,8 @@ class QualcoderDatabase:
         listed: List[Dict[str, Any]] = []
         more: List[int] = []
         truncated = False
+        words_left = engine.MAX_LONGER_WORDS_TOTAL_CHARS
+        words_cut = False
         for fid, name, text, reason in sources:
             characters += len(text)
             head: Dict[str, Any] = {"file_id": fid, "name": name,
@@ -8525,6 +8563,10 @@ class QualcoderDatabase:
                     entries = found["entries"]
                     case_variants = found["case_variants_seen"]
                     spellings = found["normalisation_variants_seen"]
+                    if len(listed) < engine.MAX_RESIDUE_FILE_ROWS:
+                        words_left, cut = self._pseudonymise_spend_words(
+                            entries, words_left)
+                        words_cut = words_cut or cut
                 else:
                     entries = self._pseudonymise_without_forms(
                         found["entries"])
@@ -8572,6 +8614,10 @@ class QualcoderDatabase:
             "more_files_showing_a_name": more,
             "reading_note": self.PSEUDONYMISE_FILE_TEXT_NOTE,
         }
+        if words_cut:
+            block["longer_words_note"] = \
+                self.PSEUDONYMISE_LONGER_WORDS_NOTE.format(
+                    budget=f"{engine.MAX_LONGER_WORDS_TOTAL_CHARS:,}")
         if not_counted:
             block["files_not_counted_note"] = \
                 self.PSEUDONYMISE_NOT_COUNTED_NOTE.format(

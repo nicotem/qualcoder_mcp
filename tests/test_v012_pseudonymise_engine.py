@@ -2456,17 +2456,103 @@ class TestNamesLeftInText:
         assert listed[1] == {"word": "Thomas_00", "count": 1}
         assert entry["longer_words_truncated"] is True
 
-    def test_a_run_too_long_to_be_a_word_is_counted_not_listed(self):
-        slab = "Thomas" + "x" * P.MAX_LONGER_WORD_CHARS
-        entry = _left(self.FIXTURE_MAPPING, f"{slab} and Thomasin")[
-            "entries"][0]
-        assert entry["inside_a_longer_word"] == 2
-        assert entry["longer_words"] == [{"word": "Thomasin", "count": 1}]
+    # Fix round 1, F3 (the lead's ruling on S-1): a longer word is a word.
+    # Listed only when it extends the name by at most eight characters,
+    # left and right together, and never when what extends it is in a
+    # script written without separators. The Security gate's samples.
+    @pytest.mark.parametrize("name,text", [
+        ("Thomas", "See Thomas_Smith_DOB_1984_03_12_NHS_4857773456_Grimsby_"
+                   "ward_7 today."),
+        ("Thomas", "x" * 40 + "Thomas" + "y" * 53 + "."),
+        ("\u30c8\u30fc\u30de\u30b9",
+         "\u30c8\u30fc\u30de\u30b9\u3055\u3093\u306f\u30b0\u30ea\u30e0"
+         "\u30b9\u30d3\u30fc\u306e\u75c5\u9662\u3067\u770b\u8b77\u5e2b"
+         "\u3068\u3057\u3066\u50cd\u3044\u3066\u3044\u307e\u3057\u305f"
+         "\u3002"),
+        ("\u6258\u9a6c\u65af",
+         "\u6258\u9a6c\u65af\u5728\u683c\u91cc\u59c6\u65af\u6bd4\u7684"
+         "\u533b\u9662\u5f53\u62a4\u58eb\uff0c\u4ed6\u7684\u59b9\u59b9"
+         "\u4f4f\u5728\u4f26\u6566\u3002"),
+        ("\u0e42\u0e17\u0e21\u0e31\u0e2a",
+         "\u0e42\u0e17\u0e21\u0e31\u0e2a\u0e17\u0e33\u0e07\u0e32\u0e19"
+         " \u0e17\u0e38\u0e01\u0e27\u0e31\u0e19"),
+        # One Han character is enough, however short the extension.
+        ("Thomas", "Thomas\u5148 said so."),
+    ], ids=["identifier", "latin-run", "japanese", "chinese", "thai",
+            "one-han-character"])
+    def test_a_run_that_is_not_a_word_is_counted_not_listed(self, name,
+                                                             text):
+        entry = _left([{"original": name, "pseudonym": "Alexandra"}],
+                      text)["entries"][0]
+        assert entry["inside_a_longer_word"] == 1
+        assert entry["longer_words"] == []
         assert entry["longer_words_truncated"] is True
-        near = "Thomas" + "x" * (P.MAX_LONGER_WORD_CHARS - 6)
-        assert len(near) == P.MAX_LONGER_WORD_CHARS
-        assert _left(self.FIXTURE_MAPPING, near)["entries"][0][
-            "longer_words"] == [{"word": near, "count": 1}]
+
+    def test_the_extension_bound_is_eight_characters_in_all(self):
+        assert P.MAX_LONGER_WORD_EXTENSION == 8
+        for word in ("Thomasson", "Thomas_P01", "Thomasin", "Thomas_Smith",
+                     "xxThomasyyyyyy", "Thomasxxxxxxxx", "xxxxxxxxThomas"):
+            entry = _left(self.FIXTURE_MAPPING, f"see {word} now")[
+                "entries"][0]
+            assert entry["longer_words"] == [{"word": word, "count": 1}], word
+            assert "longer_words_truncated" not in entry
+        for word in ("xxThomasyyyyyyy", "Thomasxxxxxxxxx", "xxxxxxxxxThomas"):
+            entry = _left(self.FIXTURE_MAPPING, f"see {word} now")[
+                "entries"][0]
+            assert entry["longer_words"] == [], word
+            assert entry["longer_words_truncated"] is True
+
+    # The table, pinned range by range, so an edit to it is red here.
+    NO_SEPARATOR_RANGES = (
+        (0x0E00, 0x0E7F), (0x0E80, 0x0EFF), (0x1000, 0x109F),
+        (0x1780, 0x17FF), (0x19E0, 0x19FF), (0x2E80, 0x2EFF),
+        (0x2F00, 0x2FDF), (0x3005, 0x3007), (0x3021, 0x3029),
+        (0x3038, 0x303B), (0x3040, 0x309F), (0x30A0, 0x30FF),
+        (0x31F0, 0x31FF), (0x3400, 0x4DBF), (0x4E00, 0x9FFF),
+        (0xA9E0, 0xA9FF), (0xAA60, 0xAA7F), (0xF900, 0xFAFF),
+        (0xFF66, 0xFF9F), (0x1AFF0, 0x1B16F), (0x20000, 0x2FA1F),
+        (0x30000, 0x323AF))
+
+    def test_the_no_separator_scripts_are_the_seven_named(self):
+        assert tuple((low, high) for low, high, _ in
+                     P.NO_SEPARATOR_RANGES) == self.NO_SEPARATOR_RANGES
+        previous = -1
+        for low, high in self.NO_SEPARATOR_RANGES:
+            assert previous < low <= high
+            previous = high
+            for code_point in (low, high):
+                assert P.in_a_no_separator_script(chr(code_point))
+            assert not P.in_a_no_separator_script(chr(low - 1)) or \
+                any(l <= low - 1 <= h for l, h in self.NO_SEPARATOR_RANGES)
+        # One character from each script the ruling names, and some that
+        # are not in them: Latin, Cyrillic, Greek, Hangul (written with
+        # spaces), a digit and the underscore.
+        for char in "\u6258\u3055\u30c8\u0e17\u0ea5\u1780\u1000":
+            assert P.in_a_no_separator_script(char), hex(ord(char))
+        for char in "a\u0416\u03a9\uac00_7":
+            assert not P.in_a_no_separator_script(char), hex(ord(char))
+
+    def test_a_match_inside_a_long_run_costs_a_bounded_walk(self):
+        """S-4's per-match cost: the walk stops one character past the
+        bound on each side, so a hostile run of the name repeated is not
+        walked once per match. Counted here by the characters the walk
+        reads, which is fixed per match whatever the run's length."""
+        reads = []
+        original = P._is_word_char
+
+        def counting(char):
+            reads.append(char)
+            return original(char)
+
+        P._is_word_char = counting
+        try:
+            _left(self.FIXTURE_MAPPING, "Thomas" * 2000)
+        finally:
+            P._is_word_char = original
+        # 2,000 matches; the boundary test reads two characters each and
+        # the walk at most nine more on each side.
+        assert len(reads) <= 2000 * (2 + 2 * (P.MAX_LONGER_WORD_EXTENSION
+                                              + 1))
 
     def test_the_tie_is_broken_the_way_the_pattern_breaks_it(self):
         """Two forms whose words concatenate to one key, `Ann Marie` and

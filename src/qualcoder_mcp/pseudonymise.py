@@ -129,11 +129,50 @@ MAX_RESIDUE_FILE_ROWS = 200
 # Ours (v0.13, decision B). The longer words listed per entry per file
 # on the typed path, most frequent first; the list says when it stopped.
 MAX_LONGER_WORDS_PER_ENTRY = 20
-# Ours (v0.13). A run of word characters longer than this is not a word
-# anybody would add as an exact entry, and returning it would return a
-# slab of the file text; it is counted and not listed, and the list says
-# it is incomplete.
-MAX_LONGER_WORD_CHARS = 100
+# Ours (v0.13, the lead's ruling on S-1). A longer word is listed only
+# when it extends the matched name by at most this many characters, left
+# and right together: `Thomasson` (+3), `Thomas_P01` (+4), `Thomasin`
+# (+2) and `Thomas_Smith` (+6) are words; a run of word characters that
+# carries a date of birth and a record number joined to the name is not,
+# and is counted and not listed, the list saying it is incomplete.
+MAX_LONGER_WORD_EXTENSION = 8
+# Ours (v0.13, the same ruling). All the longer words one preview lists
+# share this many characters; past it an occurrence is counted and not
+# listed. On by default on the typed path, so it sits well under the
+# 10,000 characters `include_context` may spend when the caller opts in.
+MAX_LONGER_WORDS_TOTAL_CHARS = 4000
+# Scripts written without separators between words, where one character
+# can be a word of its own and a run of "word characters" is a clause:
+# Han, Hiragana, Katakana, Thai, Lao, Khmer and Myanmar (the lead's ruling
+# on S-1). A longer word whose extension carries any of these is never
+# listed. Explicit ranges, because `unicodedata` does not expose the
+# Script property; each range is pinned.
+NO_SEPARATOR_RANGES = (
+    (0x0E00, 0x0E7F, "Thai"),
+    (0x0E80, 0x0EFF, "Lao"),
+    (0x1000, 0x109F, "Myanmar"),
+    (0x1780, 0x17FF, "Khmer"),
+    (0x19E0, 0x19FF, "Khmer Symbols"),
+    (0x2E80, 0x2EFF, "CJK Radicals Supplement"),
+    (0x2F00, 0x2FDF, "Kangxi Radicals"),
+    (0x3005, 0x3007, "CJK iteration and zero marks"),
+    (0x3021, 0x3029, "Hangzhou numerals"),
+    (0x3038, 0x303B, "CJK iteration marks"),
+    (0x3040, 0x309F, "Hiragana"),
+    (0x30A0, 0x30FF, "Katakana"),
+    (0x31F0, 0x31FF, "Katakana Phonetic Extensions"),
+    (0x3400, 0x4DBF, "CJK Unified Ideographs Extension A"),
+    (0x4E00, 0x9FFF, "CJK Unified Ideographs"),
+    (0xA9E0, 0xA9FF, "Myanmar Extended-B"),
+    (0xAA60, 0xAA7F, "Myanmar Extended-A"),
+    (0xF900, 0xFAFF, "CJK Compatibility Ideographs"),
+    (0xFF66, 0xFF9F, "Halfwidth Katakana"),
+    (0x1AFF0, 0x1B16F, "Kana Extended-B to Small Kana Extension"),
+    (0x20000, 0x2FA1F, "CJK Unified Ideographs Extensions B to F, "
+                       "and the Compatibility Supplement"),
+    (0x30000, 0x323AF, "CJK Unified Ideographs Extensions G and H"),
+)
+_NO_SEPARATOR_STARTS = tuple(low for low, _, _ in NO_SEPARATOR_RANGES)
 
 CASE_MODES = ("exact", "insensitive", "insensitive_preserve")
 OVERLAP_POLICIES = ("snap_to_pseudonym", "qualcoder_edit_parity")
@@ -1311,15 +1350,27 @@ def _with_trailing_marks(text: str, start: int, end: int) -> str:
     return text[start:end]
 
 
+def in_a_no_separator_script(char: str) -> bool:
+    """Whether `char` belongs to one of `NO_SEPARATOR_RANGES`."""
+    code_point = ord(char)
+    index = bisect_right(_NO_SEPARATOR_STARTS, code_point) - 1
+    return index >= 0 and code_point <= NO_SEPARATOR_RANGES[index][1]
+
+
 def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
-    """The run of word characters around a match, as the reader sees it.
+    """The run of word characters around a match, as the reader sees it,
+    when it is a word.
 
     `Thomas_P01` is one word and `Thomas_Smith.txt` gives
-    `Thomas_Smith`. None when the run is longer than
-    `MAX_LONGER_WORD_CHARS`: that is a slab of the text, not a word,
-    and the scan stops there rather than walking it.
+    `Thomas_Smith`. None, and the occurrence is counted and not listed,
+    when the run extends the name by more than
+    `MAX_LONGER_WORD_EXTENSION` characters, or when what extends it
+    carries a character of a script written without separators
+    (`NO_SEPARATOR_RANGES`), where the run is a clause. The walk stops
+    one character past the bound on each side, so a match inside a long
+    run costs a fixed handful of steps, never a walk of the run.
     """
-    budget = MAX_LONGER_WORD_CHARS - (end - start)
+    budget = MAX_LONGER_WORD_EXTENSION
     left = start
     while left > 0 and _is_word_char(seen[left - 1]):
         left -= 1
@@ -1332,6 +1383,9 @@ def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
         budget -= 1
         if budget < 0:
             return None
+    extension = seen[left:start] + seen[end:right]
+    if any(in_a_no_separator_script(char) for char in extension):
+        return None
     return seen[left:right]
 
 
