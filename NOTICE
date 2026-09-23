@@ -1,0 +1,114 @@
+qualcoder-mcp
+=============
+
+A Model Context Protocol server for QualCoder qualitative data analysis
+projects.
+
+Copyright (C) 2025-2026 Niccolò Tempini
+
+qualcoder-mcp is free software: you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version (SPDX: LGPL-3.0-or-later).
+
+qualcoder-mcp is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
+General Public License for more details.
+
+The licence texts ship with this program: COPYING.LESSER is the GNU
+Lesser General Public License, version 3, and COPYING is the GNU General
+Public License, version 3, whose terms the Lesser licence incorporates.
+
+This licence applies from version 0.13. Every release up to and
+including 0.12.1 was published under the MIT License, and those releases
+remain available under the terms they were published with.
+
+
+Code derived from QualCoder
+===========================
+
+qualcoder-mcp works on QualCoder's own project files
+(https://github.com/ccbogel/QualCoder). The routines listed below are
+copied or transcribed from QualCoder's source, so that the numbers,
+matches and offsets this server produces are exactly the ones QualCoder
+produces for the same data. Everything else in qualcoder-mcp is written
+for this project.
+
+QualCoder is copyright Colin Curtain and contributors (its source file
+headers name the authors as Colin Curtain, Kai Dröge, Justin
+Missaghieh--Poncet and Lorenzo Salomón), and is licensed under the GNU
+Lesser General Public License, version 3 or (at your option) any later
+version (LGPL-3.0-or-later). The routines below remain under that
+licence.
+
+QualCoder file and line references are to QualCoder's master branch at
+commit 9bddf17f86aa457aff72c3a38dbc10a37f296ad2, under src/qualcoder/,
+unless a reference is marked 3.8.2 (QualCoder's 3.8.2 release tag).
+
+1. QualCoder's "Kappa" value
+   Here: src/qualcoder_mcp/coder_comparison.py, function kappa_qualcoder.
+   From: reports.py, lines 1140-1151 (the same expression appears in
+   report_compare_coder_file.py, lines 818-830).
+   Why: so the value reported as kappa_qualcoder is the number QualCoder's
+   Coder comparison report displays, computed by the same expressions in
+   the same order and therefore identical to the last floating-point
+   digit.
+
+2. QualCoder's coder comparison counting
+   Here: src/qualcoder_mcp/coder_comparison.py, function
+   qualcoder_report_values.
+   From: reports.py, lines 1061-1108.
+   Why: so a comparison result can state exactly what QualCoder's report
+   would show for the same data where QualCoder counts differently from
+   this server (one coder's overlapping segments of the same code).
+
+3. QualCoder's coding editor span walk
+   Here: src/qualcoder_mcp/pseudonymise.py, method SpanMapper._parity
+   (the overlap policy qualcoder_edit_parity).
+   From: code_text.py, lines 5893-5927 (apply_insert and apply_delete),
+   driven by the running offset of lines 5933-5950.
+   Why: so that under this policy a coded span moves, shrinks or is
+   deleted exactly as QualCoder's own editor would move, shrink or delete
+   it when a name is deleted and its pseudonym typed in its place.
+
+4. QualCoder's whole-word replacement pattern
+   Here: src/qualcoder_mcp/pseudonymise.py, the replacement pattern built
+   in Compiled.__init__.
+   From: manage_files.py, line 3348.
+   Why: so a name is replaced at exactly the positions QualCoder's own
+   file import replaces it: a word boundary on both sides, and the name
+   escaped so that it is never read as a regular expression.
+
+5. Test oracles: QualCoder's replacement patterns
+   Here: tests/test_v012_pseudonymise_engine.py, functions
+   master_boundary_spans and legacy_boundary_spans.
+   From: manage_files.py, line 3348 (master_boundary_spans); 3.8.2
+   manage_files.py, lines 2035-2040, and import_survey.py, lines 134-140
+   (legacy_boundary_spans, the older unescaped form).
+   Why: the tests compare this server's matches with QualCoder's at every
+   position, and pin the documented differences from the older form.
+
+6. Test oracle: QualCoder's coding editor span walk
+   Here: tests/test_v012_pseudonymise_engine.py, class MasterEditWalk.
+   From: code_text.py, lines 5893-5927, driven by the running offset of
+   lines 5933-5950.
+   Why: a second copy kept in QualCoder's own shape (every row walked per
+   edit, where item 3 walks every edit per row), so that the tests check
+   item 3 against QualCoder's walk rather than against itself.
+
+7. Test oracle: the coder comparison reference
+   Here: tests/test_v012_compare_coders.py, class TestReferenceEquivalence.
+   From: no QualCoder code of its own. It runs items 1 and 2 as the
+   reference, and the expected values in class TestParityPins are the
+   values QualCoder's report displays for the same data (reports.py,
+   lines 1049-1152).
+   Why: to check that this server's statistics equal QualCoder's wherever
+   the two ways of counting agree.
+
+8. QualCoder's colour palette
+   Here: src/qualcoder_mcp/database.py, the list QUALCODER_COLORS.
+   From: color_selector.py, lines 52-65 (the list colors, 120 colours).
+   Why: so a code created by this server takes its colour from the same
+   palette as a code created in QualCoder, and a colour the AI supplies is
+   snapped onto that palette.
