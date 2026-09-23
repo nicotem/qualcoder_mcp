@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,183 characters (about 39.3k tokens at
+  below included: full = 157,388 characters (about 39.3k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,195 and
+  in the repository's `.venv/`, the same definitions measure 165,412 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -81,8 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the preview says so. That question has a budget of its own, because on
   a file where no name shows it reads as much as a count: past it a file
   is not checked at all, is listed in `files_not_checked`, the warning
-  names it and says how to get it checked, and it is never reported
-  clean. The three are sized so that, on any text and at any mapping
+  names it and says to preview such files one at a time, and it is never
+  reported clean. The file this call rewrites has budgets of its own, so
+  the others never crowd it out. A file too large to count with this
+  many names on its own (at 1,000 names, an interview of about 90,000
+  characters) is told apart, in `files_too_large_for_this_mapping` and
+  in the warning, whose remedy for it is fewer names; it never closes a
+  budget for the files after it, and the file this call rewrites is
+  still asked whether any name shows, with the rewrite applied as
+  usual. The three are sized so that, on any text and at any mapping
   size up to the maximum of 500 entries, they take under one second
   together on the development Mac (about 0.95 s at worst, Python 3.11.13,
   curly-quoted text with a case-insensitive mapping) and about two

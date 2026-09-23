@@ -10514,20 +10514,58 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"would still match {whole_word} occurrence(s) of these names "
             f"in the text of {counted_showing} file(s), which the wide "
             f"reading did not count.")
-    if uncounted_showing:
+    # Fix round 3, the lead's rulings 1 to 3: a file too large to count
+    # with this many names is told apart from one passed over because the
+    # files before it spent the budget, each with its own remedy.
+    large = totals.get("files_too_large_for_this_mapping", 0)
+    large_showing = totals.get("files_too_large_showing_a_name", 0)
+    large_unchecked = totals.get("files_too_large_not_checked", 0)
+    named_large = bool(totals.get("named_file_too_large"))
+    named_shows = bool(totals.get("named_file_shows_a_name"))
+    if named_large:
+        shown = ("and a name would still show in it after this run"
+                 if named_shows else
+                 "and it was asked whether a name would still show in it "
+                 "after this run: none does")
+        sentences.append(
+            f"{'Warning: the' if not sentences else 'The'}"
+            f" file this call rewrites is too large to count in full "
+            f"with this many names, {shown}. The rewrite still applies to "
+            f"it, and fewer names would let it be counted (see "
+            f"files_too_large_for_this_mapping).")
+    past_showing = uncounted_showing - large_showing
+    if past_showing:
         sentences.append(
             f"{'Warning: after this run, ' if not sentences else ''}"
-            f"{uncounted_showing} "
+            f"{past_showing} "
             f"{'further ' if (wide or whole_word) else ''}file(s) "
             f"would still show one of these names in their text, and "
-            f"were not counted in full because counting them passed this "
-            f"preview's budget; see files_not_counted.")
-    if unchecked:
+            f"were not counted in full because the files before them spent "
+            f"this preview's budget; preview them one at a time to count "
+            f"them (see files_not_counted).")
+    others = large - named_large
+    if others:
+        others_showing = large_showing - (named_large and named_shows)
+        parts = []
+        if others_showing:
+            parts.append(f"{others_showing} of them would still show one "
+                         f"of these names")
+        if large_unchecked:
+            parts.append(f"{large_unchecked} were not checked")
+        detail = f" ({' and '.join(parts)})" if parts else ""
+        sentences.append(
+            f"{'Warning: ' if not sentences else ''}"
+            f"{others} {'other ' if named_large else ''}file(s) are too "
+            f"large to count in full with this many names{detail}; fewer "
+            f"names would let them be counted, and previewing one on its "
+            f"own checks it (see files_too_large_for_this_mapping).")
+    past_unchecked = unchecked - large_unchecked
+    if past_unchecked:
         # The lead's ruling on B-2, in its own words.
         sentences.append(
             f"{'Warning: ' if not sentences else ''}"
-            f"{unchecked} file(s) were not checked; preview them one at a "
-            f"time, or use fewer names, to check them (see "
+            f"{past_unchecked} file(s) were not checked; preview them one at "
+            f"a time, or use fewer names, to check them (see "
             f"files_not_checked).")
     if not sentences:
         return None
@@ -11179,7 +11217,10 @@ def pseudonymise_source(
                  whole-word, for every count. The file-text count has
                  fixed budgets: past them a file is only asked whether a
                  name shows, and past a budget for that question it is
-                 not checked, and the warning names it.
+                 not checked, and the warning names it. The file this
+                 call names has budgets of its own; a file too large to
+                 count with this many names on its own is said to be,
+                 and fewer names would let it be counted.
         residue_detail: "file" (default): full detail for the file this
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;

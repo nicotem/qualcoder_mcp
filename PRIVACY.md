@@ -638,11 +638,17 @@ will ask, and the summary above depends on them:
     that a file is named by its id alone, in
     `more_files_showing_a_name`, and the totals and the warnings still
     count it. `residue_detail="project"` gives full detail for up to 200
-    files and the short row for up to 1,000 more. Past the count's
-    budgets a file is only asked whether a name shows, and past a budget
-    for that question it is not checked at all: it is listed by id in
-    `files_not_checked`, the warning says how to get it checked, and it
-    is never reported clean.
+    files and the short row for up to 1,000 more. The count has fixed
+    budgets, and the file this call rewrites has budgets of its own. A
+    file past the budgets because the files before it spent them is only
+    asked whether a name shows, and past a budget for that question it is
+    not checked at all; the warning says to preview such files one at a
+    time. A file too large to count with this many names on its own is
+    told apart: it is listed in `files_too_large_for_this_mapping`, the
+    file this call rewrites is still asked whether a name shows (and the
+    rewrite still applies to it), any other such file may not be
+    checked, and the warning says that fewer names would let them be
+    counted. No file is ever reported clean when it was not read.
     On a mapping you type, it also lists the longer words a name sits
     inside (`Thomas_P01`, `Thomasson`), which are words of the file
     text, so an exact entry can be added for one; on the
