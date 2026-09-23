@@ -39,10 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Earlier releases stay MIT.** Every release up to and including
   0.12.1 was published under the MIT License and remains available under
   those terms.
-- Every `.py` file under `src/` and `tests/` now opens with the line
-  `# SPDX-License-Identifier: LGPL-3.0-or-later`, and
+- Every `.py` file under `src/`, `tests/` and `scripts/` now opens with
+  the line `# SPDX-License-Identifier: LGPL-3.0-or-later`, and
   `tests/test_licence.py` pins the header, the declared expression, the
-  three files, and that every file and name NOTICE lists still exists.
+  three files, NOTICE's own licence grant, and NOTICE's entries: every
+  file and name they list still exists, and none is removed unnoticed.
   No code changed: the header is a comment, two docstrings now say
   which code is QualCoder's, and no tool description, argument or
   result moved.

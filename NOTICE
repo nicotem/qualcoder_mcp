@@ -33,10 +33,11 @@ files of QualCoder (https://github.com/ccbogel/QualCoder). It does not
 include QualCoder, but it contains a small number of routines and values
 taken from QualCoder so that its results match QualCoder's exactly, and
 it restates facts of QualCoder's file format so that projects stay
-compatible. This section lists every such item, from a line-by-line
-provenance audit of the repository against QualCoder's source and
-history (September 2026). Code written for this project to give
-QualCoder's results, without carrying QualCoder's code, is not listed.
+compatible. This section lists every such item, from a provenance audit
+(citation, string and similarity sweeps, with a completeness check) of
+the repository against QualCoder's source and history (September 2026).
+Code written for this project to give QualCoder's results, without
+carrying QualCoder's code, is not listed.
 
 QualCoder is copyright Colin Curtain and contributors (its source file
 headers name the authors as Colin Curtain, Kai Dröge, Justin
@@ -198,13 +199,15 @@ Values in the package
     its speaker coder.
 
 18. QualCoder 4.0's segment budget and sampling names
-    Here: src/qualcoder_mcp/server.py, MAX_SEGMENT_CHARS and
-    SEGMENT_STRATEGIES.
+    Here: src/qualcoder_mcp/server.py, MAX_SEGMENT_CHARS,
+    SEGMENT_STRATEGIES, _resolve_exclude_code_ids, get_coded_segments
+    and prune_backups.
     From: ai_mcp_server.py, lines 69-70, 1693, 2744, 3587, 3757 and 5358.
-    Why: the segment-budget ceiling, the sampling strategy names and the
-    parameter and field names exclude_code_ids, hit_max_char_limit and
-    requires_confirmation are aligned with QualCoder 4.0's own MCP
-    server.
+    Why: the segment-budget ceiling, QualCoder 4.0's 8000-character
+    default budget, which the get_coded_segments description recommends,
+    the sampling strategy names and the parameter and field names
+    exclude_code_ids, hit_max_char_limit and requires_confirmation are
+    aligned with QualCoder 4.0's own MCP server.
 
 19. QualCoder's journal-name attempt limit
     Here: src/qualcoder_mcp/server.py, JOURNAL_NAME_ATTEMPTS.

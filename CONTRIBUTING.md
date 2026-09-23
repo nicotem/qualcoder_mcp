@@ -178,7 +178,7 @@ incorporates. Releases up to 0.12.1 were published under the MIT
 License. By contributing you agree that your contribution is licensed
 under the same terms.
 
-Every `.py` file under `src/` and `tests/` opens with the line
+Every `.py` file under `src/`, `tests/` and `scripts/` opens with the line
 `# SPDX-License-Identifier: LGPL-3.0-or-later` (after a shebang or an
 encoding line, where the file has one), and `tests/test_licence.py`
 fails without it, so a new module needs it from its first commit.
@@ -198,4 +198,5 @@ its code is the owner's (2026-09-23):
   had to be copied. A test that carries QualCoder's code as its oracle
   is listed there too, and `tests/test_licence.py` fails if a file or
   name NOTICE gives no longer exists, so a rename or a rewrite updates
-  NOTICE in the same change.
+  NOTICE in the same change. It also holds NOTICE's entries as a
+  snapshot, so an entry is removed only by editing the test as well.
