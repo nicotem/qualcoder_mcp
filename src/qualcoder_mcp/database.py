@@ -8383,7 +8383,7 @@ class QualcoderDatabase:
         for value in values:
             if not isinstance(value, str):
                 continue
-            if compiled.detector.contains(value):
+            if compiled.carries_a_name(value):
                 pair["wide"] += 1
             if compiled.pattern.search(value):
                 pair["whole_word"] += 1
@@ -8544,8 +8544,7 @@ class QualcoderDatabase:
                 # order alone and is the same on every preview.
                 past_budget = True
                 not_counted.append(fid)
-                shows = bool(compiled.detector.contains(text)
-                             or compiled.pattern.search(text))
+                shows = compiled.carries_a_name(text)
                 row_out = {**head, "counted": False, "shows_a_name": shows}
             if shows:
                 showing += 1
@@ -8632,7 +8631,9 @@ class QualcoderDatabase:
                 if memo_has_private_zone(value):
                     private_zones += 1
                 public = extract_ai_memo(value)
-                if compiled.detector.contains(public):
+                # The wide reading is the union of the two matchers, so a
+                # field the run's own rule matches is always counted in it.
+                if compiled.carries_a_name(public):
                     hits["wide"] += 1
                 if compiled.pattern.search(public):
                     hits["whole_word"] += 1

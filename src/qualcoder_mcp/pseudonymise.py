@@ -844,6 +844,26 @@ class Compiled:
             self._text_lookup = _TextLookup(self)
         return self._text_lookup
 
+    def carries_a_name(self, value: Any) -> bool:
+        """Whether `value` shows a name to a reader OR to this run's rule.
+
+        The union of the two matchers, and the one predicate for every
+        question of the form "is a name here": the wide count of a note,
+        a label or an attribute value, whether a file shows a name, and
+        whether a file name, a path or a pseudonym is withheld from a
+        record. The detector alone reads NFKC, which composes a combining
+        mark onto the letter before it, so a name followed by one ("Rene"
+        typed decomposed as "René") is matched by the whole-word rule and
+        not seen by the detector; the union keeps the wide reading at
+        least as wide as the rewrite, which is what v0.12 founded it on,
+        and makes every withholding withhold more, never less (lead's
+        ruling of 2026-09-23 on QA-1).
+        """
+        if not isinstance(value, str) or not value:
+            return False
+        return bool(self.detector.contains(value)
+                    or self.pattern.search(value))
+
     def entry_for(self, matched: str) -> int:
         """Which entry produced `matched`.
 
@@ -1270,6 +1290,27 @@ def _rewriter_form(compiled: "Compiled", lookup: _TextLookup, matched: str
     return index, compiled.mapping.entries[index].original
 
 
+# How far past a whole-word match the check below reads for combining
+# marks: composition only ever joins a base letter to the marks that
+# follow it, and no real name carries more than a few.
+_TRAILING_MARKS_READ = 16
+
+
+def _with_trailing_marks(text: str, start: int, end: int) -> str:
+    """A whole-word match with the combining marks that follow it.
+
+    The rewriter's `(?!\\w)` treats a combining mark as a boundary, so
+    "Rene" followed by U+0301 is a whole word to it; a reader, and NFKC,
+    join the mark to the letter and read "René". Reading the match
+    together with its trailing marks is how the detector is asked about
+    the occurrence as a reader sees it.
+    """
+    stop = min(len(text), end + _TRAILING_MARKS_READ)
+    while end < stop and unicodedata.category(text[end]).startswith("M"):
+        end += 1
+    return text[start:end]
+
+
 def _longer_word(seen: str, start: int, end: int) -> Optional[str]:
     """The run of word characters around a match, as the reader sees it.
 
@@ -1307,11 +1348,15 @@ def names_left_in_text(compiled: "Compiled", text: str,
 
     Two readings of every count, in one object `{"wide", "whole_word"}`:
 
-    - wide: the detector's reading of the reader's text. Every wide
-      occurrence is charged to exactly one kind (`TEXT_RESIDUE_REASONS`)
-      or to `unattributed`, so the kinds and `unattributed` add up to
-      the wide count on every row; the split is a heuristic and the
-      total is not.
+    - wide: the detector's reading of the reader's text, and beside it
+      every whole word the rewriter matches that the reader's reading
+      does not see (a name followed by a combining mark, which NFKC
+      composes onto its last letter): an occurrence counts in the wide
+      reading when either matcher finds it. Every wide occurrence is
+      charged to exactly one kind (`TEXT_RESIDUE_REASONS`) or to
+      `unattributed`, so the kinds and `unattributed` add up to the wide
+      count on every row; the split is a heuristic and the total is
+      not.
     - whole_word: the rewriter's own pattern over the RAW text, reported
       as it stands. On the file this run rewrote it is normally zero,
       and non-zero means a pseudonym put a name back.
@@ -1340,8 +1385,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
             row = rows[key] = {"direct": 0, "inside_a_longer_word": 0,
                                "case_only": 0, "joined_differently": 0,
                                "left_whole": 0, "folded_excess": 0,
-                               "whole_word": 0, "words": {},
-                               "words_withheld": False}
+                               "whole_word": 0, "rewriter_only": 0,
+                               "words": {}, "words_withheld": False}
         return row
 
     unattributed = 0
@@ -1419,11 +1464,24 @@ def names_left_in_text(compiled: "Compiled", text: str,
             unattributed += min(surplus, max(
                 0, folded_unattributed - unattributed))
 
+    # The whole-word half, over the RAW text. A whole word the rewriter
+    # matches that the detector does not see, read with the combining
+    # marks after it as a reader reads it, is an occurrence of the wide
+    # reading too (the union; lead's ruling on QA-1), charged below to
+    # the whole-word kind of its row. Asked once per distinct spelling.
+    detector_sees: Dict[str, bool] = {}
     whole_word_total = 0
     for match in compiled.pattern.finditer(text):
         whole_word_total += 1
-        row_for(_rewriter_form(compiled, lookup, match.group(0)))[
-            "whole_word"] += 1
+        row = row_for(_rewriter_form(compiled, lookup, match.group(0)))
+        row["whole_word"] += 1
+        snippet = _with_trailing_marks(text, match.start(), match.end())
+        seen_alone = detector_sees.get(snippet)
+        if seen_alone is None:
+            seen_alone = detector_sees[snippet] = \
+                compiled.detector.contains(snippet)
+        if not seen_alone:
+            row["rewriter_only"] += 1
 
     entries: Dict[int, Dict[str, Any]] = {}
     case_variants: List[Dict[str, Any]] = []
@@ -1434,11 +1492,15 @@ def names_left_in_text(compiled: "Compiled", text: str,
         if row is None:
             continue
         # The heuristic split of the class the rewriter left whole, per
-        # form (see the docstring); the sum of the two is exact.
-        shared = min(row["whole_word"], row["left_whole"])
-        spelling = (max(0, row["left_whole"] - row["whole_word"])
+        # form (see the docstring); the sum of the two is exact. The
+        # whole words only the rewriter sees are whole words of that
+        # kind outright, and are added to the wide count.
+        only = row["rewriter_only"]
+        seen_whole = row["whole_word"] - only
+        shared = min(seen_whole, row["left_whole"]) + only
+        spelling = (max(0, row["left_whole"] - seen_whole)
                     + row["folded_excess"])
-        wide = row["direct"] + row["folded_excess"]
+        wide = row["direct"] + row["folded_excess"] + only
         wide_total += wide
         entry = entries.get(index)
         if entry is None:

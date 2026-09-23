@@ -2284,9 +2284,14 @@ def capture_group_attribution(compiled, seen):
 
 
 # The counts study's alphabet: letters, separators, soft hyphens,
-# zero-width spaces, fullwidth letters, U+00DF and mixed case.
+# zero-width spaces, fullwidth letters, U+00DF and mixed case; and since
+# the Brief 1 fix round, a combining mark after a letter (U+0301,
+# U+0308), which the whole-word rule reads as a boundary and NFKC
+# composes onto the letter (QA-1: the alphabet without it could not reach
+# the case that made the wide reading narrower than the rewrite).
 _RESIDUE_LETTERS = "abABßSａＢ"
-_RESIDUE_SEPARATORS = (" ", "_", "-", ".", "­", "​", "", ", ")
+_RESIDUE_SEPARATORS = (" ", "_", "-", ".", "\u00ad", "\u200b", "", ", ",
+                       "\u0301 ", "\u0308")
 _FULLWIDTH = {ord(c): chr(ord(c) + 0xFEE0) for c in
               "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}
 
@@ -2334,7 +2339,8 @@ def _residue_case(draw, max_entries=3, one_form=False):
         tokens += [form, form, form.upper(), form.lower(), form.swapcase(),
                    "".join(parts), "_".join(parts), " ".join(parts),
                    "x" + form, form + "b", form.translate(_FULLWIDTH),
-                   form[:1] + "­" + form[1:]]
+                   form[:1] + "\u00ad" + form[1:],
+                   form + "\u0301", form + "\u0308"]
     tokens += ["a", "S", "ß", "ss", "B"]
     pieces = []
     for index in range(draw(st.integers(0, 8))):
@@ -2498,6 +2504,54 @@ class TestNamesLeftInText:
         assert found["unattributed"] == 1
         assert found["entries"] == []
 
+    # QA-1, fixed at the engine: a name followed by a combining mark (an
+    # NFD "René") is a whole word to the rewriter and composed away by the
+    # detector's NFKC reading. The union counts it in the wide reading.
+    NFD_RENE = "Rene\u0301"
+
+    @pytest.mark.parametrize("mark", ["\u0301", "\u0308"],
+                             ids=["acute", "diaeresis"])
+    def test_a_name_before_a_combining_mark_is_in_the_wide_reading(
+            self, mark):
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Rene", "pseudonym": "Alex"}]))
+        text = f"Later Rene{mark} arrived."
+        assert compiled.pattern.search(text)
+        assert not compiled.detector.contains(text)
+        assert compiled.carries_a_name(text)
+        found = P.names_left_in_text(compiled, text, True, False)
+        assert found["occurrences"] == {"wide": 1, "whole_word": 1}
+        entry = found["entries"][0]
+        assert entry["whole_word_in_a_file_not_rewritten"] == 1
+        assert sum(entry[kind] for kind in P.TEXT_RESIDUE_REASONS) == 1
+
+    def test_a_combining_mark_counts_once_beside_a_plain_name(self):
+        """The plain whole word is counted by both matchers once; the
+        decomposed one by the rewriter alone, once; the longer word by the
+        detector alone, once."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Rene", "pseudonym": "Alex"}]))
+        found = P.names_left_in_text(
+            compiled, f"Rene met {self.NFD_RENE} and Renes.", True, False)
+        assert found["occurrences"] == {"wide": 3, "whole_word": 2}
+        entry = found["entries"][0]
+        assert entry["inside_a_longer_word"] == 1
+        assert entry["whole_word_in_a_file_not_rewritten"] == 2
+
+    def test_on_the_rewritten_row_it_is_put_back(self):
+        """A pseudonym that writes the name before a mark already there."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Jo Rene"},
+             {"original": "Rene", "pseudonym": "Alex"}]))
+        before = "Thomas\u0301 spoke."
+        after = P.apply_replacements(before,
+                                     P.find_replacements(compiled, before))
+        assert after == "Jo Rene\u0301 spoke."
+        found = P.names_left_in_text(compiled, after, True, True)
+        rows = {entry["entry"]: entry for entry in found["entries"]}
+        assert rows[1]["occurrences"] == {"wide": 1, "whole_word": 1}
+        assert rows[1]["put_back_by_a_pseudonym"] == 1
+
     # What the two readings are NOT, stated as pins so nobody builds on
     # the stronger claims. The wide reading joins a name's words across
     # any separators, and an invisible character splits words for the
@@ -2573,33 +2627,37 @@ class TestNamesLeftInText:
 
     @_RESIDUE_SETTINGS
     @given(case=_residue_case())
-    def test_wide_is_non_zero_exactly_where_the_detector_sees_a_name(
+    def test_wide_is_non_zero_exactly_where_either_matcher_sees_a_name(
             self, case):
-        """The folded second reading's purpose: `wide` is never zero on a
-        text `detector.contains` says a name shows in (and never
-        non-zero where it says none does)."""
+        """`wide` is never zero on a text either matcher finds a name in,
+        and never non-zero where neither does: the folded second reading
+        covers what IGNORECASE misses, and the union (fix round 1, QA-1)
+        covers the whole words the reader's NFKC reading composes away."""
         compiled, text, rewritten = case
         found = P.names_left_in_text(compiled, text, False, rewritten)
         assert (found["occurrences"]["wide"] >= 1) == \
-            compiled.detector.contains(text)
+            compiled.carries_a_name(text)
 
     @_RESIDUE_SETTINGS
     @given(case=_residue_case())
-    def test_a_field_the_rewriter_matches_is_one_the_detector_sees(
+    def test_a_field_the_rewriter_matches_is_one_the_wide_reading_counts(
             self, case):
         """`wide >= whole_word` for every FIELD: a field the rewriter's
-        own rule matches is always a field the wide reading counts."""
+        own rule matches is always a field the wide reading counts. The
+        detector alone does NOT satisfy this (QA-1: "Rene" + U+0301); the
+        union does, and this is the pin on the union."""
         compiled, text, _rewritten = case
         if compiled.pattern.search(text):
-            assert compiled.detector.contains(text)
+            assert compiled.carries_a_name(text)
 
     @_RESIDUE_SETTINGS
     @given(case=_residue_case(one_form=True))
     def test_for_one_single_word_form_wide_is_at_least_whole_word(
             self, case):
         """`wide >= whole_word` for a FILE holds for a mapping of one
-        single-word form; `test_one_wide_occurrence_can_be_two_whole_
-        words` shows why it cannot hold in general."""
+        single-word form, a combining mark after it included (QA-1);
+        `test_one_wide_occurrence_can_be_two_whole_words` shows why it
+        cannot hold in general."""
         compiled, text, rewritten = case
         found = P.names_left_in_text(compiled, text, False, rewritten)
         assert found["occurrences"]["wide"] >= \
@@ -2626,6 +2684,8 @@ class TestNamesLeftInText:
             assert wider.detector.contains(text)
         if compiled.pattern.search(text):
             assert wider.pattern.search(text)
+        if compiled.carries_a_name(text):
+            assert wider.carries_a_name(text)
         if P.names_left_in_text(compiled, text, False, rewritten)[
                 "occurrences"]["wide"]:
             assert P.names_left_in_text(wider, text, False, rewritten)[
@@ -2635,9 +2695,11 @@ class TestNamesLeftInText:
         """A property proves nothing about a branch its inputs never
         reach: over the real distribution (derandomised), every kind is
         reached, the whole-word count is non-zero somewhere, and so is a
-        folded excess."""
+        whole word only the rewriter sees (a combining mark after a
+        name, fix round 1)."""
         seen = {kind: 0 for kind in P.TEXT_RESIDUE_REASONS}
         seen["whole_word"] = 0
+        seen["rewriter_only"] = 0
 
         @settings(max_examples=400, deadline=None, derandomize=True,
                   phases=[Phase.generate],
@@ -2651,6 +2713,9 @@ class TestNamesLeftInText:
                 for kind in P.TEXT_RESIDUE_REASONS:
                     seen[kind] += bool(entry[kind])
             seen["whole_word"] += bool(found["occurrences"]["whole_word"])
+            seen["rewriter_only"] += bool(
+                compiled.pattern.search(text)
+                and not compiled.detector.contains(text))
 
         count()
         assert all(value > 0 for value in seen.values()), seen

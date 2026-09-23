@@ -10384,16 +10384,20 @@ def _pseudonymise_safe_name(name: Any, compiled) -> Optional[str]:
     and keeping it would put a real name into a journal entry that lives
     inside the project and is visible to every later AI read.
 
-    The test is `compiled.detector`, NOT `compiled.pattern`. The pattern
-    is the rewriter's whole-word matcher and `_` is a word character, so
-    it answers "no name here" for the commonest transcript file name
-    there is; that conflation is exactly what fix round 1 was called for
-    (QA F-1, Security S1). The detector asks the question this function
-    is actually asking.
+    The test is `compiled.detector`, NOT `compiled.pattern` alone. The
+    pattern is the rewriter's whole-word matcher and `_` is a word
+    character, so it answers "no name here" for the commonest transcript
+    file name there is; that conflation is exactly what fix round 1 was
+    called for (QA F-1, Security S1). The detector asks the question this
+    function is actually asking. Since v0.13 the test is the UNION of the
+    two (`Compiled.carries_a_name`): a name followed by a combining mark
+    ("Rene" typed decomposed as "René") is matched by the whole-word rule
+    and composed away by the detector's reading, and a withholding rule
+    withholds more, never less (lead's ruling on QA-1).
     """
     if not isinstance(name, str) or not name:
         return None
-    return None if compiled.detector.contains(name) else name
+    return None if compiled.carries_a_name(name) else name
 
 
 # The kinds of the file-text warning, in the order it says them, each
@@ -10432,6 +10436,7 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
     """
     totals = file_text.get("totals") or {}
     wide = (totals.get("occurrences") or {}).get("wide", 0)
+    whole_word = (totals.get("occurrences") or {}).get("whole_word", 0)
     reasons = totals.get("by_reason") or {}
     not_counted = set(file_text.get("files_not_counted") or [])
     uncounted_showing = sum(
@@ -10442,7 +10447,7 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
     counted_showing = totals.get("files_showing_a_name", 0) \
         - uncounted_showing
     sentences: List[str] = []
-    if wide:
+    if wide or whole_word:
         clauses = []
         for key, text, verb in _FILE_TEXT_WARNING_KINDS:
             count = reasons.get(key, 0)
@@ -10562,7 +10567,11 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         QualcoderDatabase.PSEUDONYMISE_RESIDUE_LABEL_KEYS if key in residue]
     residue_total = sum(count["wide"] for count in field_counts)
     whole_word_total = sum(count["whole_word"] for count in field_counts)
-    if residue_total:
+    # Either reading non-zero is a reason to speak (lead's ruling on
+    # QA-1). The wide reading is the union of the two matchers, so it is
+    # never below the whole-word one here; the `or` keeps the warning
+    # honest if that ever stops being true.
+    if residue_total or whole_word_total:
         # What this count MEASURES, rather than what it would be nice to
         # say it measures (re-verification 6.1). The detector reads
         # wider than the rewrite on purpose, so "the names occur in N

@@ -881,3 +881,67 @@ class TestAPseudonymThatContainsAName:
                 "snap_to_pseudonym", [1]))
         assert "pseudonyms_containing_a_name" not in json.dumps(effect)
         assert out["preview_token"]
+
+
+# =============================================================================
+# FIX ROUND 1, F2: THE WIDE READING SEES AT LEAST WHAT THE REWRITE MATCHES
+# =============================================================================
+
+class TestTheWideReadingIsAtLeastTheRewrite:
+    """QA-1, and the lead's ruling on it. "Rene" followed by U+0301 (an
+    NFD "René") is a whole word to the rewriter, which reads a combining
+    mark as a boundary, and is composed away by the detector's NFKC
+    reading. Before the fix a note and another file each reported
+    `{"wide": 0, "whole_word": 1}` and neither warning spoke. An
+    occurrence now counts in the wide reading when either matcher finds
+    it, both warnings speak when either count is non-zero, and the
+    withholding predicate is the same union."""
+
+    MAPPING = [{"original": "Rene", "pseudonym": "Alex"}]
+    NFD = "René"
+
+    def _nfd_project(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET memo=? WHERE id=1",
+                    (f"{self.NFD} said so",))
+        con.commit()
+        con.close()
+        _set_text(project, 1, "Rene met the team.")
+        _set_text(project, 4, f"Later {self.NFD} arrived.")
+        return preview_of(mapping=self.MAPPING)
+
+    def test_a_note_is_counted_in_both_readings(self, project):
+        out = self._nfd_project(project)
+        source = out["preview"]["residue"]["memos"]["source"]
+        assert source["wide"] == 1 and source["whole_word"] == 1
+
+    def test_another_file_is_counted_in_both_readings(self, project):
+        out = self._nfd_project(project)
+        row = _rows(out)[4]
+        assert row["occurrences"]["wide"] == 1
+        assert row["occurrences"]["whole_word"] == 1
+        assert row["entries"][0]["whole_word_in_a_file_not_rewritten"] == 1
+        assert _block(out)["totals"]["files_showing_a_name"] == 1
+
+    def test_both_warnings_speak(self, project):
+        out = self._nfd_project(project)
+        fields = [w for w in out["warnings"] if "note(s), label(s)" in w]
+        assert len(fields) == 1
+        assert fields[0].startswith(
+            "Warning: 1 note(s), label(s) or attribute value(s) may still "
+            "show one of these names, and this tool does not rewrite any of "
+            "them; 1 of those match this run's own whole-word rule.")
+        text = _file_text_warning(out)
+        assert text is not None
+        assert "1 occurrence(s) of these names would still be in the text" \
+            in text
+
+    def test_a_file_name_carrying_the_nfd_spelling_is_withheld(self):
+        """The same union withholds a file name, a path and (F1) a
+        pseudonym: a rule that withholds more, never less."""
+        compiled = P.Compiled(P.validate_mapping(self.MAPPING))
+        name = f"{self.NFD}_interview.txt"
+        assert not compiled.detector.contains(name)
+        assert server._pseudonymise_safe_name(name, compiled) is None
+        assert server._pseudonymise_safe_name(
+            "interview_07.txt", compiled) == "interview_07.txt"
