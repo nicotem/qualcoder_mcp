@@ -82,10 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a file where no name shows it reads as much as a count: past it a file
   is not checked at all, is listed in `files_not_checked`, the warning
   names it and says how to get it checked, and it is never reported
-  clean. The three are measured to stay near two seconds together on any
-  text and at any mapping size up to the maximum of 500 entries (about
-  2.0 s at worst on Python 3.11.13 here, on curly-quoted text with a
-  case-insensitive mapping). A row lists at most 50 entries, the most
+  clean. The three are sized so that, on any text and at any mapping
+  size up to the maximum of 500 entries, they take under one second
+  together on the development Mac (about 0.95 s at worst, Python 3.11.13,
+  curly-quoted text with a case-insensitive mapping) and about two
+  seconds on the slowest CI platform. Worst case at the full budgets as
+  the test suite's rate line reports it, per CI platform: macOS 3.10
+  1.42 s, macOS 3.13 1.50 s, Ubuntu 3.13 1.80 s, Windows 3.13 1.82 s,
+  Ubuntu 3.10 1.98 s, Windows 3.10 1.99 s (measured at budgets 1/0.45
+  times larger and scaled). A row lists at most 50 entries, the most
   frequent first, with its own totals complete. A second warning reads
   the file-text counts out, kept apart from the fields warning, and it
   says so when a file's whole-word count is above its wide one. A part

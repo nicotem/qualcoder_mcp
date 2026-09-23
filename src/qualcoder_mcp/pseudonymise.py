@@ -138,23 +138,32 @@ SHORT_FORM_CHARS = 4
 # Cyrillic, Japanese and accented Latin composed or decomposed, rounded
 # up to 7 (after `_strip_unseen` stopped costing 37 to 74 ms per MB). The
 # unit rate is 3.9 to 5.6 ms per MB per unit in exact mode and 4.4 to 6.0
-# in the insensitive ones, the worst 5.97 (3.11.13, curly quotes). So the
-# work budget's worst case is about 200 x 5.97 ms, 1.2 seconds, at any
-# number of forms and on any text.
+# in the insensitive ones, the worst 5.97 (3.11.13, curly quotes).
+#
+# Frozen under ruling 7 from the six CI platforms (run 35920173126 at
+# 15b0859, the rate line's worst case at the budgets of the time, 200
+# million, 60 million and 150,000): macOS 3.10 3.15 s, macOS 3.13 3.34,
+# Ubuntu 3.13 4.00, Windows 3.13 4.05, Ubuntu 3.10 4.41, Windows 3.10
+# 4.43. All three budgets were scaled by 0.45 to bring the slowest to
+# about two seconds (Windows 3.10 about 1.99 s); on the development Mac
+# the three together, with preparing a 2,000-form mapping, are under
+# one second (about 0.95 s at the worst rates measured). So the work budget's worst case here is about 90 x
+# 5.97 ms, 0.54 seconds, at any number of forms and on any text.
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
-MAX_RESIDUE_SCAN_WORK = 200_000_000
+MAX_RESIDUE_SCAN_WORK = 90_000_000
 # Ours (fix round 2, the lead's ruling on B-2). Past the work or the match
 # budget a file is asked the cheap question "does any name show here", and
 # on a file where none shows that question reads the whole text: charged
 # to this budget of its own, in the same units. It costs a little more
 # per unit than the count (three scans where the count on ASCII makes
 # two): 2.8 to 4.2 ms per MB per unit at one form, 4.5 to 6.9 at a
-# hundred, so this budget's worst case is about 60 x 6.91 ms, 0.4
-# seconds. Past it a file is not checked at all: it is listed in
+# hundred, so this budget's worst case is about 27 x 6.91 ms, 0.19
+# seconds here (scaled with the others under ruling 7, above). Past it a
+# file is not checked at all: it is listed in
 # `files_not_checked`, the warning says how to get it checked, and it is
 # never reported clean.
-MAX_RESIDUE_CHECK_WORK = 60_000_000
+MAX_RESIDUE_CHECK_WORK = 27_000_000
 # Ours (fix round 1, S-4; re-derived in fix round 2). Matches cost work
 # the character model does not see: a text that is nothing but the name
 # repeated has a match every few characters. Every match of the three
@@ -164,10 +173,11 @@ MAX_RESIDUE_CHECK_WORK = 60_000_000
 # The dearest unit measured is a first sight of a Turkish capital at 1,997
 # forms under an insensitive mode, 2.2 microseconds on 3.11.13 (the dense
 # typed run, a name inside a long run of word characters, 1.3 to 1.6), so
-# this budget's worst case is about 0.33 seconds. The three together, and
-# the 0.08 seconds a 2,000-form mapping costs to prepare once per preview,
-# are about two seconds on this measurement (ruling 7).
-MAX_RESIDUE_SCAN_MATCHES = 150_000
+# this budget's worst case is about 0.15 seconds here. The three
+# together, and the 0.08 seconds a 2,000-form mapping costs to prepare
+# once per preview, are under one second on the development Mac and
+# about two seconds on the slowest CI platform (ruling 7, above).
+MAX_RESIDUE_SCAN_MATCHES = 67_500
 # Ours (fix round 2, the re-verification's B-3). The first sight of a
 # spelling in a pass is placed (the entry it belongs to, the rewriter's
 # form, whether the reader's reading sees it) and every later sight is

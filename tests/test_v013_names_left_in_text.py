@@ -2148,9 +2148,12 @@ class TestTheBudgetsAreDeliberate:
     def test_the_values(self):
         assert P.RESIDUE_WORK_PER_CHARACTER == 3
         assert P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII == 7
-        assert P.MAX_RESIDUE_SCAN_WORK == 200_000_000
-        assert P.MAX_RESIDUE_CHECK_WORK == 60_000_000
-        assert P.MAX_RESIDUE_SCAN_MATCHES == 150_000
+        # Frozen under ruling 7 from the six CI platforms' worst case
+        # (fix round 2's 200 million, 60 million and 150,000 scaled by
+        # 0.45: about 2 s on Windows 3.10, the slowest).
+        assert P.MAX_RESIDUE_SCAN_WORK == 90_000_000
+        assert P.MAX_RESIDUE_CHECK_WORK == 27_000_000
+        assert P.MAX_RESIDUE_SCAN_MATCHES == 67_500
         assert P.RESIDUE_FIRST_SIGHT_MATCHES == 5
         assert P.MAX_RESIDUE_ENTRY_ROWS == 50
 
