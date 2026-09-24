@@ -8107,9 +8107,11 @@ class QualcoderDatabase:
         (`fulltext IS ?`), so no text is read out of a backup. No date,
         no evidence (the safe direction: a rename back is then refused).
         Each backup is opened read-only and immutable (R1-2), so no lock
-        is taken and no side file is made, a WAL backup included; the
-        scan stops at the first backup that shows an accepted name
-        (R1-4). A backup that cannot be read is skipped. Nothing is
+        is taken and no side file is made, a WAL backup included; a
+        backup with a `data.qda-journal` or `data.qda-wal` beside its
+        database is skipped (F2A-5); the scan stops at the first backup
+        that shows an accepted name (R1-4). A backup that cannot be read
+        is skipped. Nothing is
         written; only this entry's name and date are read.
         """
         if current_date is None or current_date == "":
@@ -8131,6 +8133,15 @@ class QualcoderDatabase:
             data = entry / "data.qda"
             try:
                 if not data.is_file():
+                    continue
+                # A copy taken while a writer was mid-transaction, or a
+                # WAL database with frames not yet in the main file:
+                # immutable would read the main file as it stands and
+                # count a state that was never committed, so such a
+                # backup is skipped, as mode=ro alone would have refused
+                # it (fix round 3, F2A-5).
+                if (entry / "data.qda-journal").exists() or \
+                        (entry / "data.qda-wal").exists():
                     continue
                 uri = _sqlite_ro_uri(data) + "&immutable=1"
                 with closing(sqlite3.connect(uri, uri=True)) as con:

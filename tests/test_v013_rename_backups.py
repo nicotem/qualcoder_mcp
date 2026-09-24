@@ -373,3 +373,47 @@ class TestTheDocumentsHalfAsksForTheSameText:
         assert _file(5, "legacy.txt", create_backup=False)["changed"]
         assert seen == ["SELECT name, date FROM source WHERE id = ? AND "
                         "fulltext IS ?"], seen
+
+
+class TestTheDateToTheSecondAndTheEmptyDate:
+    """Fix round 3, F2A-3 and F2A-7: the date is compared to the second,
+    not the day, and an empty date is never evidence."""
+
+    def test_two_dates_one_second_apart_on_one_day(self, setup_server,
+                                                   qualcoder_db_path):
+        project = Path(qualcoder_db_path)
+        (project / "documents").mkdir(exist_ok=True)
+        (project / "documents" / "legacy.txt").write_text("participant A")
+        _add(project, 3, "legacy.txt", "same text",
+             date="2026-09-24 10:00:00")
+        _reload()
+        assert _file(3, "P03.txt")["changed"]            # a backup
+        _exec(project, "DELETE FROM source WHERE id = 3")
+        _add(project, 3, "fresh.txt", "same text",
+             date="2026-09-24 10:00:01")
+        _reload()
+        out = _file(3, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+
+    def test_an_empty_date_is_no_evidence(self, legacy):
+        _exec(legacy, "UPDATE source SET date = '' WHERE id = 5")
+        _reload()
+        assert _file(5, "legacy2.txt")["changed"]         # backup: ''
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+
+
+class TestAHalfWrittenBackupIsSkipped:
+    """Fix round 3, F2A-5: a backup with a -journal or -wal file beside its
+    database may hold a state that was never committed; immutable would
+    read it as it stands, so it is skipped."""
+
+    @pytest.mark.parametrize("side", ["data.qda-journal", "data.qda-wal"])
+    def test_skipped(self, legacy, side):
+        assert _file(5, "legacy2.txt")["changed"]
+        [b1] = _backups(legacy)
+        (b1 / side).write_bytes(b"")
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+        (b1 / side).unlink()
+        assert _file(5, "legacy.txt", create_backup=False)["changed"]
