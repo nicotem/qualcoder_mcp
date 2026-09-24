@@ -95,14 +95,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, and the rewrite still applies to the file this call rewrites. A
   PDF source, which cannot be named for a preview, is never told to be
   previewed on its own and has a sentence of its own. The three are
-  sized so that, on any text and
-  at any mapping size up to the maximum of 500 entries, a preview's
-  file-text count takes about one second on the development Mac (0.66
-  to 0.77 s through the tool for the dearest shapes measured,
-  curly-quoted prose under a case-insensitive mapping) and about two
-  seconds on the slowest CI platform (the six platforms' rate lines
-  read 1.19 to 2.18 s at the last measurement, prose under a
-  case-insensitive mapping included). A row lists at most
+  sized so that, on any text and at any mapping size up to the maximum
+  of 500 entries, a preview's file-text count takes about one second
+  on the development Mac and about two seconds on the slowest CI
+  platform. Since everything spent is charged, the count's worst case
+  is the three budgets' cost, which each CI platform's rate line
+  prints: 1.09 to 2.18 s on the six platforms at the last measurement,
+  prose under a case-insensitive mapping included, and 0.93 to 0.96 s
+  on the development Mac. Through the tool there, the dearest shape
+  measured, which fills all three budgets, takes 0.75 to 0.84 s;
+  twelve files too dense for the match budget 0.53 to 0.58 s, and
+  forty-eight chat exports with a name on every line 0.22 s. The
+  rewrite's own plan of the file this call names is not priced by
+  the budgets (about 0.9 s for 450,000 characters at 2,000 names).
+  A row lists at most
   50 entries, the most frequent first, with its own totals complete. A
   second warning reads the file-text counts out, kept apart from the
   fields warning, and it says so when a file's whole-word count is above

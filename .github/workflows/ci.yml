@@ -59,7 +59,8 @@ jobs:
             grep -E "^(FAILED|ERROR) " pytest_output.txt | head -60
             # Ruling 7: the file-text count's rate and the worst case of
             # its three budgets on this platform, readable from the public
-            # run page without admin rights.
+            # run page without admin rights. Since fix round 5 everything
+            # a count spends is charged, so that is the count's worst case.
             grep -E "^file-text count rate: " pytest_output.txt | head -3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

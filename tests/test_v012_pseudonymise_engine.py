@@ -3376,7 +3376,12 @@ class TestTheFileTextCountStaysCheap:
 
     @staticmethod
     def line(m):
-        """The summary line, and the worst case of the three budgets."""
+        """The summary line, and the worst case of the three budgets.
+
+        Since fix round 5 every count is charged all it spent, a count
+        that stops part-way too (the lead's rule 1), so the three budgets'
+        cost is the whole file-text count's worst case: the figure the
+        report states (K3) and this line prints are the same one."""
         at_100 = m["elapsed"] * 1000 / m["megabytes"]
         at_1 = m["one_elapsed"] * 1000 / m["megabytes"]
         unit = max((at_100 - at_1) / 99, 1e-6)

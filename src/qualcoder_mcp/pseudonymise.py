@@ -145,15 +145,17 @@ SHORT_FORM_CHARS = 4
 # million, 60 million and 150,000): macOS 3.10 3.15 s, macOS 3.13 3.34,
 # Ubuntu 3.13 4.00, Windows 3.13 4.05, Ubuntu 3.10 4.41, Windows 3.10
 # 4.43. All three budgets were scaled by 0.45 to bring the slowest to
-# about two seconds (the six rate lines then read 1.51 to 1.98 s). On
-# the development Mac the dearest shapes measured through the tool take
-# 0.66 to 0.77 s (fix round 3; about one second, as the second
-# re-verification's B2-3 measured under load); the file a call names is
-# read first from the same budgets (ruling 1 as amended, fix round 4),
-# and every count is charged all it spent, one that stops part-way too
-# (fix round 5, the lead's rule 1), so nothing is spent outside them. A
-# file whose estimate passes the EMPTY budget is not counted at all, and
-# is too large for this mapping (rule 2). A run of combining marks out of
+# about two seconds (the six rate lines then read 1.51 to 1.98 s). The
+# file a call names is read first from the same budgets (ruling 1 as
+# amended, fix round 4), and every count is charged all it spent, one
+# that stops part-way too (fix round 5, the lead's rule 1), so nothing is
+# spent outside them and the worst case is the three budgets' cost, the
+# figure the rate line prints (0.93 to 0.96 s on the development Mac;
+# through the tool the dearest shape measured, filling all three, takes
+# 0.75 to 0.84 s, and twelve files too dense for the match budget 0.53
+# to 0.58 s, fix round 5's K3). A file whose estimate passes the EMPTY
+# budget is not counted at all, and is too large for this mapping (rule
+# 2). A run of combining marks out of
 # order no longer costs more than its length (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
