@@ -22,6 +22,7 @@ from mcp.server.fastmcp import Context
 
 from .database import (
     QualcoderDatabase,
+    sqlite_error_label,
     CoderVisibilityUnreadable,
     coder_is_hidden,
     DatabaseLockedError,
@@ -12802,8 +12803,11 @@ def _pseudonymise_journal_attempt(wdb, plan: Dict[str, Any],
         wdb.add_journal_entry(name=name, entry=body, owner=owner,
                               auto_commit=False)
     except (ValueError, RuntimeError) as e:
-        logger.warning(f"Could not write the pseudonymisation journal "
-                       f"entry: {e}")
+        # The class and SQLite's error name only: `add_journal_entry`
+        # puts SQLite's message into its error, and a trigger can make
+        # that a note, private part included (fix round 2, RS-3 a).
+        logger.warning("Could not write the pseudonymisation journal "
+                       "entry: %s", sqlite_error_label(e))
         return None
     return name
 

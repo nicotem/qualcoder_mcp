@@ -649,6 +649,26 @@ def position_safe(fulltext: str) -> bool:
     return "\r\n" not in fulltext and all(ord(c) <= 0xFFFF for c in fulltext)
 
 
+def sqlite_error_label(error: BaseException) -> str:
+    """A database error as a log line may carry it: the class of the
+    SQLite error and SQLite's name for it, and nothing of its message.
+
+    A trigger in the project can make an error's message whatever it
+    computes from a row, a note's private part included (Brief 2 fix
+    round 1, Security S-6), so the message is never logged by the
+    pseudonymisation run. `sqlite_errorname` exists from Python 3.11;
+    before it the class stands alone. `error` may be the SQLite error or
+    one raised while handling it, whose cause or context is then used;
+    anything else gives its own class name (fix round 2, RS-3 a).
+    """
+    for candidate in (error, error.__cause__, error.__context__):
+        if isinstance(candidate, sqlite3.Error):
+            name = getattr(candidate, "sqlite_errorname", None)
+            return (f"{type(candidate).__name__} {name}" if name
+                    else type(candidate).__name__)
+    return type(error).__name__
+
+
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
     """Convert a sqlite3 error from a query into a typed, sanitised error.
 
@@ -9928,7 +9948,12 @@ class QualcoderDatabase:
                     (new_text, fid))
                 counts = self._pseudonymise_move_rows(item, new_text, fid)
             except sqlite3.Error as e:
-                logger.error("Database error in pseudonymise_write: %s", e)
+                # The class and SQLite's error name only, as the note
+                # statements log (fix round 2, B2P-N2: a trigger on a
+                # file's text, or on a row the file rewrite moves or
+                # deletes, can make the message a note).
+                logger.error("Database error in pseudonymise_write: %s",
+                             sqlite_error_label(e))
                 raise RuntimeError(
                     "Could not rewrite this project's text; nothing was "
                     "written.") from None
@@ -10007,8 +10032,7 @@ class QualcoderDatabase:
             # row, the note's private part included (Brief 2 fix round 1,
             # Security S-6).
             logger.error("Database error in pseudonymise_write (notes): "
-                         "%s %s", type(e).__name__,
-                         getattr(e, "sqlite_errorname", ""))
+                         "%s", sqlite_error_label(e))
             raise RuntimeError(
                 "Could not rewrite this project's notes; nothing was "
                 "written.") from None

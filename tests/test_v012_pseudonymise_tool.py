@@ -30,6 +30,7 @@ suite that builds one is testing its own invention.
 import ast
 import collections
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -3183,6 +3184,42 @@ def _raise_takes_an_expression():
         con.close()
 
 
+def _sqlite_names_its_errors():
+    """Whether this Python's sqlite3 errors carry SQLite's error name
+    (`sqlite_errorname`, from Python 3.11), asked of a real error."""
+    con = sqlite3.connect(":memory:")
+    try:
+        con.execute("SELECT * FROM no_such_table")
+    except sqlite3.Error as e:
+        return bool(getattr(e, "sqlite_errorname", None))
+    finally:
+        con.close()
+    return False
+
+
+# What a trigger's RAISE gives as a log line may carry it (fix round 2).
+TRIGGER_LABEL = ("IntegrityError SQLITE_CONSTRAINT_TRIGGER"
+                 if _sqlite_names_its_errors() else "IntegrityError")
+NEEDS_RAISE_EXPRESSION = pytest.mark.skipif(
+    not _raise_takes_an_expression(),
+    reason=f"SQLite {sqlite3.sqlite_version} refuses an expression as "
+           f"RAISE's second argument; the every-platform case runs instead")
+LEAKING_NOTE = "Met Thomas.\n#####PRIVATE-SENTINEL words"
+
+
+def _no_note_in_the_log(caplog):
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    for leaked in ("PRIVATE-SENTINEL", "Met Alex", "Met Thomas"):
+        assert leaked not in logged, leaked
+
+
+def _note_error(note):
+    """The error a leaking trigger raises: its message is the note."""
+    error = sqlite3.IntegrityError(note)
+    error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+    return error
+
+
 class TestTheNoteRewriteIsWritten:
 
     @pytest.mark.parametrize("table,sql", NOTE_PLANTERS,
@@ -3552,9 +3589,9 @@ class TestTheNoteRewriteIsWritten:
             assert leaked not in logged, leaked
         line = [r.getMessage() for r in caplog.records
                 if "pseudonymise_write (notes)" in r.getMessage()]
-        assert len(line) == 1
-        assert line[0].startswith("Database error in pseudonymise_write "
-                                  "(notes): IntegrityError")
+        # The whole line (fix round 2, N-5).
+        assert line == ["Database error in pseudonymise_write (notes): "
+                        + TRIGGER_LABEL]
         assert query(project, "SELECT memo FROM source WHERE id=1"
                      )[0]["memo"].startswith("Met Thomas.")
 
@@ -3616,6 +3653,114 @@ class TestTheNoteRewriteIsWritten:
         assert query(project, "SELECT fulltext FROM source WHERE id=1"
                      ) == text
         assert server.db.read_only is True
+
+    # Fix round 2 (RS-3 a, B2P-N2): the run's two other database log
+    # lines, the file loop's and the journal write's, carry the class and
+    # SQLite's error name only. Each with Security's trigger (E2, E3)
+    # where this SQLite takes one, and with the same error raised at the
+    # statement itself everywhere.
+
+    def _file_loop_refused(self, project, caplog):
+        before = self._snapshot(project)
+        text = query(project, "SELECT fulltext FROM source WHERE id=1")
+        out = preview_of(rewrite_memos=True)
+        caplog.set_level(logging.DEBUG)
+        refused = execute_from(out)
+        assert refused["error"] == ("Could not rewrite this project's text; "
+                                    "nothing was written.")
+        _no_note_in_the_log(caplog)
+        line = [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("Database error in "
+                                             "pseudonymise_write:")]
+        assert self._snapshot(project) == before
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     ) == text
+        return line
+
+    @NEEDS_RAISE_EXPRESSION
+    def test_the_file_loop_logs_no_note_text(self, project, caplog):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    LEAKING_NOTE)
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("CREATE TRIGGER leak BEFORE UPDATE OF fulltext ON "
+                    "source BEGIN SELECT RAISE(ABORT, OLD.memo); END;")
+        con.commit()
+        con.close()
+        assert self._file_loop_refused(project, caplog) == [
+            "Database error in pseudonymise_write: " + TRIGGER_LABEL]
+
+    def test_the_file_loop_logs_no_note_text_on_any_sqlite(
+            self, project, caplog, monkeypatch):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    LEAKING_NOTE)
+
+        def raising(self, *args, **kwargs):
+            raise _note_error(LEAKING_NOTE)
+
+        # Inside the file loop's own `try`, just after its UPDATE.
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_move_rows",
+                            raising)
+        assert self._file_loop_refused(project, caplog) == [
+            "Database error in pseudonymise_write: IntegrityError "
+            "SQLITE_CONSTRAINT_TRIGGER"]
+
+    def _journal_not_written(self, project, caplog):
+        before = query(project, "SELECT COUNT(*) AS n FROM journal")
+        out = preview_of(rewrite_memos=True)
+        caplog.set_level(logging.DEBUG)
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert result.get("journal_entry") is None
+        assert query(project, "SELECT COUNT(*) AS n FROM journal") == before
+        _no_note_in_the_log(caplog)
+        return [r.getMessage() for r in caplog.records
+                if "pseudonymisation journal entry" in r.getMessage()]
+
+    @NEEDS_RAISE_EXPRESSION
+    def test_the_journal_write_logs_no_note_text(self, project, caplog):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    LEAKING_NOTE)
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("CREATE TRIGGER leak BEFORE INSERT ON journal BEGIN "
+                    "SELECT RAISE(ABORT, (SELECT memo FROM source WHERE "
+                    "id=1)); END;")
+        con.commit()
+        con.close()
+        assert self._journal_not_written(project, caplog) == [
+            "Could not write the pseudonymisation journal entry: "
+            + TRIGGER_LABEL]
+
+    def test_the_journal_write_logs_no_note_text_on_any_sqlite(
+            self, project, caplog, monkeypatch):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    LEAKING_NOTE)
+
+        class InsertRaises:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, parameters=()):
+                if sql.startswith("INSERT INTO journal"):
+                    raise _note_error("Met Alex.\n#####PRIVATE-SENTINEL")
+                return self._conn.execute(sql, parameters)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        original = QualcoderDatabase.add_journal_entry
+
+        def on_a_raising_insert(self, *args, **kwargs):
+            conn, self.conn = self.conn, InsertRaises(self.conn)
+            try:
+                return original(self, *args, **kwargs)
+            finally:
+                self.conn = conn
+
+        monkeypatch.setattr(QualcoderDatabase, "add_journal_entry",
+                            on_a_raising_insert)
+        assert self._journal_not_written(project, caplog) == [
+            "Could not write the pseudonymisation journal entry: "
+            "IntegrityError SQLITE_CONSTRAINT_TRIGGER"]
 
     def test_a_fault_after_the_note_statements_rolls_back_the_notes_too(
             self, project, monkeypatch):
