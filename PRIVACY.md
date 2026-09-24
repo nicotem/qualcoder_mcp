@@ -613,7 +613,12 @@ will ask, and the summary above depends on them:
     (`researcher_keeps_mapping`), because a typed mapping exists nowhere
     else and is half of the reverse key. A save merges with what is
     there by QualCoder's own rules, and is written only once the run has
-    committed. `get_current_project` reports whether the file is present
+    committed. A file the save creates is owner-only (0600) on macOS and
+    Linux, where QualCoder's own write would leave it readable by other
+    accounts under the usual umask: a departure, for a file of real
+    names. A file that exists keeps its own permissions, as QualCoder's
+    write keeps them, and one this account cannot write is refused, as
+    QualCoder's write would fail on it. `get_current_project` reports whether the file is present
     and how many entries it has, never a name. The names themselves
     reach the conversation only through a tool of their own,
     `read_pseudonym_list` (in the full toolset only), whose description

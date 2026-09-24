@@ -8,6 +8,7 @@ import argparse
 import shutil
 import logging
 import sqlite3
+import stat
 import tempfile
 import hashlib
 import hmac
@@ -10579,6 +10580,14 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
     existing: List[Dict[str, str]] = []
     raw: List[Any] = []
     encoding: Optional[str] = None
+    existing_mode: Optional[int] = None
+    if os.path.lexists(str(path)) and not os.access(str(path), os.W_OK):
+        # A reverse key the researcher made read-only stays so: QualCoder's
+        # own `open(path, "w")` fails on it (Security's ruling, S-1).
+        raise _SaveRefused(
+            "pseudonyms_json_read_only",
+            f"{PSEUDONYMS_JSON_NAME} in the project folder is read-only for "
+            f"this account, and QualCoder's own write would fail on it too")
     if os.path.lexists(str(path)):
         try:
             existing, encoding = read_project_pseudonyms(folder)
@@ -10596,6 +10605,7 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
             raise _SaveRefused(
                 "pseudonyms_json_unreadable",
                 f"{PSEUDONYMS_JSON_NAME} changed while it was being read")
+        existing_mode = stat.S_IMODE(os.stat(str(path)).st_mode)
     by_original = {item["original"]: item["pseudonym"] for item in existing}
     new = _pseudonyms_json_new_entries(validated)
     conflicts = sorted({index for index, original, _, _ in new
@@ -10637,6 +10647,9 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
         "already_there": bool(new) and all(
             by_original.get(original) == pseudonym
             for _, original, pseudonym, _ in new),
+        # The permission bits the file has now, kept by the save
+        # (Security's ruling, S-1); None when there is no file yet.
+        "existing_mode": existing_mode,
         "merged": list(raw) + [{"original": original, "pseudonym": pseudonym}
                                for _, original, pseudonym, _ in new],
     }
@@ -10671,7 +10684,8 @@ def _pseudonyms_json_conflict(merge: Dict[str, Any]) -> Dict[str, Any]:
         "reason": "pseudonyms_json_conflict", "nothing_changed": True}
 
 
-def _write_pseudonyms_json_tmp(folder: Path, merged: List[Any]) -> Path:
+def _write_pseudonyms_json_tmp(folder: Path, merged: List[Any],
+                               existing_mode: Optional[int] = None) -> Path:
     """The merged list, written to a temporary file beside the target.
 
     Inside the run's transaction, so the rename into place can wait for
@@ -10681,11 +10695,16 @@ def _write_pseudonyms_json_tmp(folder: Path, merged: List[Any]) -> Path:
     indent=2)` with the defaults (`pseudonyms.py:92-93`), whose ASCII
     escaping makes the bytes the same whatever the handle's encoding, so
     the handle names UTF-8 for the Windows rule and changes no byte. The
-    descriptor is owned by `os.fdopen` before anything can fault, the file
-    is fsynced, and its mode is set to the one QualCoder's own
-    `open(path, "w")` leaves (0666 under the process umask) rather than
-    mkstemp's 0600 (the lead's night ruling 4). A failure removes the
-    temporary file and raises RuntimeError, which rolls the run back.
+    descriptor is owned by `os.fdopen` before anything can fault and the
+    file is fsynced. Its mode (Security's ruling of 2026-09-24, S-1 and
+    S-3, which supersedes the lead's night ruling 4): a NEW file keeps
+    mkstemp's owner-only 0600, a named departure from QualCoder's umask
+    mode for a file of real names; an EXISTING file's permission bits
+    are put on the new one with `os.fchmod` on the open descriptor,
+    which is what QualCoder's own `open(path, "w")` keeps. No chmod by
+    path (a name swapped for a link would be followed) and no umask read.
+    A failure removes the temporary file and raises RuntimeError, which
+    rolls the run back.
     """
     tmp: Optional[Path] = None
     try:
@@ -10701,10 +10720,8 @@ def _write_pseudonyms_json_tmp(folder: Path, merged: List[Any]) -> Path:
             json.dump(merged, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        if os.name != "nt":
-            mask = os.umask(0)
-            os.umask(mask)
-            os.chmod(tmp_name, 0o666 & ~mask)
+            if existing_mode is not None and os.name != "nt":
+                os.fchmod(f.fileno(), existing_mode)
         return tmp
     except Exception as e:
         if tmp is not None:
@@ -12004,7 +12021,10 @@ def pseudonymise_source(
                  spellings become separate entries with the same
                  pseudonym, which the dialog will not add by hand. The
                  file holds the real names in plain text at the project
-                 root and travels into every backup. This argument IS
+                 root and travels into every backup; a new one is written
+                 owner-only on macOS and Linux, an existing one keeps its
+                 own permissions, and one this account cannot write is
+                 refused. This argument IS
                  bound into the token:
                  the preview must be run with it, and the execute repeats
                  it.
@@ -12475,7 +12495,7 @@ def pseudonymise_source(
                 raise RuntimeError(_pseudonyms_json_conflict(merge)["error"])
             captured["pseudonyms_json_merge"] = merge
             captured["pseudonyms_json_tmp"] = _write_pseudonyms_json_tmp(
-                folder, merge["merged"])
+                folder, merge["merged"], merge["existing_mode"])
         retention["entries_to_add"] = (
             captured["pseudonyms_json_merge"]["would_write"] if save
             else None)

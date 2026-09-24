@@ -3792,6 +3792,30 @@ class TestTheRunRecordAndTheJournalOfANoteRewrite:
         assert [(row["key"], row.get("key_withheld")) for row in rows] == [
             ("Age group", None), (None, True)]
 
+    def test_a_key_only_the_rewriter_reads_as_a_name_is_withheld(
+            self, project):
+        """QA's Q8, H.2.1: the withholding is the union of the two
+        readings, so a key that only the whole-word rule reads as carrying
+        a mapped name ("Rene" and a combining acute, when Rene is mapped)
+        is withheld as well."""
+        key = "Rene\u0301 group"
+        _plant_note(project, "INSERT INTO attribute_type (name,date,owner,"
+                             "memo,caseOrFile,valuetype) VALUES (?,'d',"
+                             "'TestCoder','Rene said so.','case',"
+                             "'character')", key)
+        mapping = [{"original": "Rene", "pseudonym": "Paul"}]
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        assert not compiled.detector.contains(key)
+        assert compiled.pattern.search(key)
+        result = execute_from(preview_of(mapping=mapping, rewrite_memos=True),
+                              mapping=mapping)
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        rows = [row for row in record["memos"]
+                if row["table"] == "attribute_type"]
+        assert [(row["key"], row.get("key_withheld")) for row in rows] == [
+            (None, True)]
+
     def test_the_project_row_carries_its_rowid(self, project):
         _plant_note(project, "UPDATE project SET memo=?", "Thomas's project.")
         record = self._record(execute_from(preview_of(rewrite_memos=True)))
@@ -4178,19 +4202,86 @@ class TestSavingTheMappingIntoPseudonymsJson:
             "replaced."]
         _house_rules(notes)
 
+    # Security's ruling of 2026-09-24 (S-1, S-3), which supersedes the
+    # lead's night ruling 4: a new file owner-only, an existing file's
+    # own bits kept by fchmod on the descriptor, a read-only one refused.
     @POSIX_ONLY
-    def test_the_file_takes_the_mode_qualcoders_own_write_leaves(
-            self, project):
-        """Parity (the lead's night ruling 4): QualCoder's `open(path,
-        "w")` leaves 0666 under the process umask, and mkstemp's 0600 is
-        widened to that before the rename, unless the Security gate rules
-        otherwise."""
-        mask = os.umask(0)
-        os.umask(mask)
-        _, result = _save_run()
+    @pytest.mark.parametrize("umask", [0o027, 0o022])
+    def test_a_new_file_is_owner_only_whatever_the_umask(self, project,
+                                                         umask):
+        previous = os.umask(umask)
+        try:
+            _, result = _save_run()
+            after = os.umask(umask)
+        finally:
+            os.umask(previous)
+        assert after == umask, "the save left the process umask changed"
         assert result["mapping_saved"] is True
         mode = stat.S_IMODE((project / "pseudonyms.json").stat().st_mode)
-        assert mode == 0o666 & ~mask
+        assert mode == 0o600
+
+    @POSIX_ONLY
+    @pytest.mark.parametrize("mode", [0o600, 0o640, 0o644])
+    def test_an_existing_file_keeps_its_own_mode(self, project, mode):
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        os.chmod(project / "pseudonyms.json", mode)
+        previous = os.umask(0o022)
+        try:
+            _, result = _save_run()
+        finally:
+            os.umask(previous)
+        assert result["mapping_saved"] is True
+        assert stat.S_IMODE((project / "pseudonyms.json").stat().st_mode) \
+            == mode
+        assert json.loads(_written(project))[0] == {"original": "Peter",
+                                                    "pseudonym": "Pat"}
+
+    @POSIX_ONLY
+    def test_a_read_only_file_is_refused_before_the_backup(self, project):
+        if os.geteuid() == 0:
+            pytest.skip("root writes a read-only file regardless")
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        os.chmod(project / "pseudonyms.json", 0o400)
+        before = _written(project)
+        out = preview_of(save_mapping_to_project=True)
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "reason"] == "pseudonyms_json_read_only"
+        refused = execute_strictly(out)
+        assert refused["reason"] == "pseudonyms_json_read_only"
+        assert refused["error"].startswith(
+            "The mapping cannot be saved into this project's pseudonyms.json: "
+            "pseudonyms.json in the project folder is read-only for this "
+            "account, and QualCoder's own write would fail on it too.")
+        assert refused["nothing_changed"] is True
+        assert backups(project) == []
+        assert _written(project) == before
+        assert stat.S_IMODE((project / "pseudonyms.json").stat().st_mode) \
+            == 0o400
+        _house_rules([refused["error"]])
+
+    def test_the_writer_sets_a_mode_on_the_descriptor_only(self):
+        """Read as syntax: no chmod by path (S-3) and no umask read."""
+        tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+        node = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "_write_pseudonyms_json_tmp")
+        called = {c.func.attr for c in ast.walk(node)
+                  if isinstance(c, ast.Call)
+                  and isinstance(c.func, ast.Attribute)}
+        assert "chmod" not in called and "umask" not in called
+        assert "fchmod" in called
+
+    def test_a_variant_the_file_already_maps_is_a_conflict(self, project):
+        """QA's Q4: QualCoder's check is on every original in the file,
+        and a variant is saved as an original."""
+        _sidecar_file(project, [{"original": "Tom", "pseudonym": "Zed"}])
+        out = preview_of(save_mapping_to_project=True)
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "conflicts"] == [0]
+        refused = execute_strictly(out)
+        assert refused["reason"] == "pseudonyms_json_conflict"
+        assert "Zed" not in json.dumps(refused)
+        assert backups(project) == []
 
     def test_pseudonyms_json_is_byte_identical_to_qualcoders_own_write(
             self, tmp_path):
@@ -7588,6 +7679,12 @@ class TestTheDocumentsTellTheTruth:
         "entries this server wrote for earlier runs",
         "This server writes it only when asked, in QualCoder's own format, "
         "and never deletes it",
+        # Brief 2 fix round 1, Security's ruling (S-1): the departure,
+        # named.
+        "A file the save creates is owner-only (0600) on macOS and Linux, "
+        "where QualCoder's own write would leave it readable by other "
+        "accounts under the usual umask: a departure, for a file of real "
+        "names.",
         "The names themselves reach the conversation only through a tool "
         "of their own, `read_pseudonym_list` (in the full toolset only), "
         "whose description says first that it sends the real names to the "
