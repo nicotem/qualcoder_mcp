@@ -352,6 +352,17 @@ and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
 normal: QualCoder rebuilds it on project open.
 
+One tool reads the backups' contents: `rename_file`, to recognise a
+rename back (a name, or an ending, the file had before). Only when one of
+its rules would refuse the new name, it opens the database of the
+project's own backups beside it, this server's `_backup_` copies and
+QualCoder's `_BKUP_` copies, newest first and at most 200, read-only and
+immutable (nothing is written into a backup, no side file is made),
+stopping at the first that shows the name. It reads only the renamed
+file's own name and creation date there, and nothing it reads is
+returned or logged: the only effect is whether the rename is accepted or
+refused.
+
 Two further rules touch files on your disk:
 
 - **Symlinks.** Unlike QualCoder's own backups, this server's backups
@@ -686,6 +697,9 @@ will ask, and the summary above depends on them:
     so do this server's pseudonymisation journal entries and run records,
     which keep a file's name as it was at the run unless that name
     carried a name from the mapping (they then name the file by its id).
+    To recognise a rename back, `rename_file` reads this file's earlier
+    name from the project's backups (see "Backups, project copies, and
+    the `ai_data/` folder").
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or

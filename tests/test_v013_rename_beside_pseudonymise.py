@@ -120,6 +120,10 @@ def test_the_guide_readme_and_changelog_name_the_tools():
     assert "**`import_text_file` shares `rename_file`'s name rules, so " \
            "some names it used to accept are refused.** Exactly these" \
            in unreleased
+    # Fix round 2, R1-7: the two corrections to the bullet.
+    assert "(only the C0 controls and DEL were refused before)" in unreleased
+    assert "differing from a file there only in letter case, Unicode form " \
+           "or a trailing dot or space" in unreleased
     # Fix round 1, QA-1 and QA-7: the bullet says there is no limit in
     # characters, and does not read as though 100 had been intended.
     assert "There is no limit in characters." in unreleased
@@ -183,3 +187,16 @@ def test_the_import_states_its_name_rules():
     assert "not a name already in the project's documents folder" in flat
     assert "The name follows `rename_file`'s rules (at most 200 bytes in " \
            "UTF-8;" in _flat("README.md")
+
+
+def test_privacy_says_rename_file_reads_the_backups():
+    """Fix round 2, R1-9."""
+    flat = _flat("PRIVACY.md")
+    assert "One tool reads the backups' contents: `rename_file`, to " \
+           "recognise a rename back" in flat
+    assert "read-only and immutable (nothing is written into a backup, no " \
+           "side file is made), stopping at the first that shows the name. " \
+           "It reads only the renamed file's own name and creation date " \
+           "there, and nothing it reads is returned or logged" in flat
+    assert "To recognise a rename back, `rename_file` reads this file's " \
+           "earlier name from the project's backups" in flat

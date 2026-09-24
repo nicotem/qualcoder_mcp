@@ -249,7 +249,7 @@ reason:
 | Empty, spaces-only and dots-only names refused | QualCoder 4.0 itself treats them as invalid and renames them `unnamed_file_<id>` at every load |
 | Control, line-separator and invisible formatting characters refused | They make a name look identical to another or break single-line display |
 | `/`, `\`, `..` and `:` refused | QualCoder joins the name into paths (delete, export, text replacement, the REFI-QDA export); `..` reaches the project database, and a drive prefix leaves the folder on Windows |
-| A name Windows cannot store refused: `<`, `>`, `\|`, `?`, `*`, `"`, a trailing dot or space, and the device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, as stems with any extension) | A project travels between machines, and QualCoder's Manage Files export opens the entry's name as a file with no handler, so on Windows such a name fails part-way through an export or writes to a device; Windows also drops a trailing dot or space, so `x.docx.` would stand for another file's `x.docx` there |
+| A name Windows cannot store refused: `<`, `>`, `\|`, `?`, `*`, `"`, a trailing dot or space, and the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `LPT0` to `LPT9`, and `COM` or `LPT` followed by a superscript 1, 2 or 3, as stems with any extension) | A project travels between machines, and QualCoder's Manage Files export opens the entry's name as a file with no handler, so on Windows such a name fails part-way through an export or writes to a device; Windows also drops a trailing dot or space, so `x.docx.` would stand for another file's `x.docx` there |
 | Over 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes (a text with no stored path is exported as `<name>.txt`), under the usual 255-byte file-name limit; and a paging cursor carrying the name stays under its 1,024-character cap. The limit is in bytes because both reasons are: there is no limit in characters |
 | A text's new name already present in `documents/` refused, compared as the strictest disk compares names (letter case folded, Unicode form and a trailing dot or space ignored), never as this server's own disk does | QualCoder finds a text's stored copy there by the entry's name and would act on that other file; a project renamed on a disk that keeps letter case may be opened on one that folds it |
 | `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
@@ -407,17 +407,19 @@ reason:
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
 - **`import_text_file` shares `rename_file`'s name rules, so some names
-  it used to accept are refused.** Exactly these, each with its reason:
-  a name over 200 bytes in UTF-8 (before, the only length check was a
-  10,000-character limit whose truncated copy was discarded, so no
+  it used to accept are refused.** Exactly these, and each refusal says
+  why: a name over 200 bytes in UTF-8 (before, the only length check was
+  a 10,000-character limit whose truncated copy was discarded, so no
   length was ever enforced); a name containing `:`; a name carrying an
   invisible formatting character (a zero-width space, a bidirectional
   control), a line or paragraph separator or a C1 control character
-  (only the C0 controls were refused before); a name that is a single
-  dot; a name Windows cannot store (`<`, `>`, `|`, `?`, `*`, `"`, a
-  trailing dot, a device name such as `CON` or `NUL.txt`); and a name
-  already present in the project's `documents/` folder,
-  which QualCoder would treat as the new text's stored copy. There is no
+  (only the C0 controls and DEL were refused before); a name that is a
+  single dot; a name Windows cannot store (`<`, `>`, `|`, `?`, `*`, `"`,
+  a trailing dot, a device name such as `CON`, `NUL.txt` or `CONIN$`);
+  and a name already present in the project's `documents/` folder, or
+  differing from a file there only in letter case, Unicode form or a
+  trailing dot or space, which QualCoder would treat as the new text's
+  stored copy on a disk that ignores those differences. There is no
   limit in characters. Every other name that imported before imports
   now.
 

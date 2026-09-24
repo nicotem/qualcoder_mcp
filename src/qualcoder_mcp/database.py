@@ -987,10 +987,12 @@ def file_name_is_invalid_upstream(name: Any) -> bool:
 # also drops a trailing dot or space from a name, so `x.docx.` would stand
 # for another file's `x.docx` there. Microsoft's reserved device names,
 # as stems with any extension, in any letter case; its list includes the
-# digit 0 and the superscript digits 1 to 3.
+# digit 0, the superscript digits 1 to 3, and the console names CONIN$
+# and CONOUT$ (fix round 2, R1-6; Python 3.13's ntpath.isreserved
+# reserves them too).
 _WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>|?*"')
 _WINDOWS_DEVICE_STEMS = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
     | {f"{port}{digit}" for port in ("COM", "LPT")
        for digit in "0123456789\u00b9\u00b2\u00b3"})
 
@@ -1007,7 +1009,8 @@ def windows_name_problem(name: str) -> Optional[str]:
                 "file).")
     if name.split('.')[0].rstrip(' ').upper() in _WINDOWS_DEVICE_STEMS:
         return ("A file name must not be a Windows device name (CON, PRN, "
-                "AUX, NUL, COM0 to COM9 or LPT0 to LPT9, with any "
+                "AUX, NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or "
+                "COM or LPT followed by a superscript 1, 2 or 3, with any "
                 "extension): Windows cannot store it as a file.")
     return None
 

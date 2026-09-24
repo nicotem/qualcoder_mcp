@@ -1059,6 +1059,8 @@ class TestNamesWindowsCannotStore:
         ("COM¹.txt", "A file name must not be a Windows device name"),
         ("LPT9.docx", "A file name must not be a Windows device name"),
         ("prn.txt", "A file name must not be a Windows device name"),
+        ("CONIN$", "A file name must not be a Windows device name"),
+        ("conout$.txt", "A file name must not be a Windows device name"),
     ])
     def test_refused_by_both_tools(self, project, name, opening):
         out = _file(1, name)
@@ -1073,6 +1075,15 @@ class TestNamesWindowsCannotStore:
     def test_names_that_merely_resemble_them_pass(self, project, name):
         assert _file(1, name, create_backup=False)["changed"] is True
         assert _file(1, "interview.txt", create_backup=False)["changed"]
+
+    def test_the_refusal_names_every_kind_it_refuses(self, project):
+        """R1-6: the superscript digits and the console names are named."""
+        out = _file(1, "COM\u00b2.txt")
+        assert out["error"] == (
+            "A file name must not be a Windows device name (CON, PRN, AUX, "
+            "NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or COM or "
+            "LPT followed by a superscript 1, 2 or 3, with any extension): "
+            "Windows cannot store it as a file.")
 
     def test_a_trailing_space_is_refused_too(self):
         from qualcoder_mcp.database import file_name_problem
