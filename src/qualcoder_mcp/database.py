@@ -9980,7 +9980,13 @@ class QualcoderDatabase:
                 totals["rows_updated"] += len(field["rows"])
                 totals["replacements"] += field["replacements"]
         except sqlite3.Error as e:
-            logger.error("Database error in pseudonymise_write: %s", e)
+            # The class and SQLite's error name only: a trigger in the
+            # project can make the message whatever it computes from the
+            # row, the note's private part included (Brief 2 fix round 1,
+            # Security S-6).
+            logger.error("Database error in pseudonymise_write (notes): "
+                         "%s %s", type(e).__name__,
+                         getattr(e, "sqlite_errorname", ""))
             raise RuntimeError(
                 "Could not rewrite this project's notes; nothing was "
                 "written.") from None

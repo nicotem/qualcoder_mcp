@@ -3457,6 +3457,35 @@ class TestTheNoteRewriteIsWritten:
             "nothing was rewritten and no backup was taken.")
         assert backups(project) == []
 
+    def test_a_failed_note_write_logs_no_note_text(self, project, caplog):
+        """Security S-6: SQLite takes `RAISE(ABORT, NEW.memo)` in a trigger,
+        so the error's message can be the note itself, its private part
+        included. The log line carries the class and SQLite's error name,
+        and the answer stays value-free."""
+        import logging
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Met Thomas.\n#####PRIVATE-SENTINEL words")
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("CREATE TRIGGER leak BEFORE UPDATE OF memo ON source "
+                    "BEGIN SELECT RAISE(ABORT, NEW.memo); END;")
+        con.commit()
+        con.close()
+        out = preview_of(rewrite_memos=True)
+        caplog.set_level(logging.DEBUG)
+        refused = execute_from(out)
+        assert refused["error"] == ("Could not rewrite this project's notes; "
+                                    "nothing was written.")
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        for leaked in ("PRIVATE-SENTINEL", "Met Alex", "Met Thomas"):
+            assert leaked not in logged, leaked
+        line = [r.getMessage() for r in caplog.records
+                if "pseudonymise_write (notes)" in r.getMessage()]
+        assert len(line) == 1
+        assert line[0].startswith("Database error in pseudonymise_write "
+                                  "(notes): IntegrityError")
+        assert query(project, "SELECT memo FROM source WHERE id=1"
+                     )[0]["memo"].startswith("Met Thomas.")
+
     def test_a_fault_after_the_note_statements_rolls_back_the_notes_too(
             self, project, monkeypatch):
         _plant_every_note(project)
