@@ -352,16 +352,23 @@ and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
 normal: QualCoder rebuilds it on project open.
 
-One tool reads the backups' contents: `rename_file`, to recognise a
+Besides `restore_backup`, which opens the backup you choose to check
+it, reads its first bytes for the preview and copies it back,
+one tool reads the backups' contents: `rename_file`, to recognise a
 rename back (a name, or an ending, the file had before). Only when one of
 its rules would refuse the new name, it opens the database of the
 project's own backups beside it, this server's `_backup_` copies and
 QualCoder's `_BKUP_` copies, newest first and at most 200, read-only and
-immutable (nothing is written into a backup, no side file is made),
-stopping at the first that shows the name. It reads only the renamed
-file's own name and creation date there, and nothing it reads is
-returned or logged: the only effect is whether the rename is accepted or
-refused.
+immutable (nothing is written into a backup, no side file is made; a
+backup with a journal or WAL file beside its database is skipped), once
+per question, stopping at the first that shows the name. It reads only
+the name and the date of the row with this file's id there; for a copy
+in the project's documents folder it also asks whether that row's text
+equals the file's current text, a comparison SQLite makes, so no text
+is read out of a backup. Taking that row for the same file is a
+heuristic: the date is set at creation and by some later QualCoder
+actions, and a rename never changes it. Nothing it reads is returned or
+logged: the only effect is whether the rename is accepted or refused.
 
 Two further rules touch files on your disk:
 
@@ -690,7 +697,8 @@ will ask, and the summary above depends on them:
     not read: the stored copy and stored path of an imported file (the
     copy in the project folder keeps the name it was imported under and,
     for a document, the original text, and QualCoder's exports ship that
-    copy), saved graph labels, and saved table displays and filters.
+    copy), saved graph labels, saved table displays and filters, and
+    QualCoder's saved SQL queries (which nothing in this server reads).
     Each rename's result counts those places for the case or file it
     renamed. Every backup, this server's session files, QualCoder's
     search index and QualCoder 4.0's AI chat keep the old name too, and

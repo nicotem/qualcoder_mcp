@@ -102,8 +102,9 @@ def test_privacy_says_what_a_rename_cannot_reach():
             "the stored copy and stored path of an imported file (the copy "
             "in the project folder keeps the name it was imported under "
             "and, for a document, the original text, and QualCoder's "
-            "exports ship that copy), saved graph labels, and saved table "
-            "displays and filters.") in flat
+            "exports ship that copy), saved graph labels, saved table "
+            "displays and filters, and QualCoder's saved SQL queries (which "
+            "nothing in this server reads).") in flat
 
 
 def test_the_guide_readme_and_changelog_name_the_tools():
@@ -192,11 +193,34 @@ def test_the_import_states_its_name_rules():
 def test_privacy_says_rename_file_reads_the_backups():
     """Fix round 2, R1-9."""
     flat = _flat("PRIVACY.md")
-    assert "One tool reads the backups' contents: `rename_file`, to " \
-           "recognise a rename back" in flat
-    assert "read-only and immutable (nothing is written into a backup, no " \
-           "side file is made), stopping at the first that shows the name. " \
-           "It reads only the renamed file's own name and creation date " \
-           "there, and nothing it reads is returned or logged" in flat
+    # Fix round 3, B-5, F2A-2, F2A-6, F2A-7, P-5.
+    assert "Besides `restore_backup`, which opens the backup you choose " \
+           "to check it, reads its first bytes for the preview and copies " \
+           "it back, one tool reads the backups' contents: `rename_file`, " \
+           "to recognise a rename back" in flat
+    assert "once per question, stopping at the first that shows the name. " \
+           "It reads only the name and the date of the row with this " \
+           "file's id there; for a copy in the project's documents folder " \
+           "it also asks whether that row's text equals the file's current " \
+           "text, a comparison SQLite makes, so no text is read out of a " \
+           "backup. Taking that row for the same file is a heuristic: the " \
+           "date is set at creation and by some later QualCoder actions, " \
+           "and a rename never changes it. Nothing it reads is returned or " \
+           "logged" in flat
     assert "To recognise a rename back, `rename_file` reads this file's " \
            "earlier name from the project's backups" in flat
+
+
+def test_the_fix_round_3_wording():
+    """Fix round 3, item 8: B-4, B-7, P-7, F2A-6."""
+    unreleased = _flat("CHANGELOG.md").split("## [0.12")[0]
+    assert "Exactly these, and each refusal names what it refuses:" \
+        in unreleased
+    assert "where Manage Files' \"Rename database entry\" selects the row " \
+           "by its name (`update source set name=? where name=?`) and this " \
+           "server by its id." in unreleased
+    assert "once per question, stopping at the first that shows the name" \
+        in unreleased
+    assert "at most once per call" not in unreleased
+    for note in (server.RENAME_CASE_NOTE, server.RENAME_FILE_NOTE):
+        assert "saved SQL queries" in note and "(not read here)" in note

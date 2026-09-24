@@ -12103,7 +12103,8 @@ RENAME_CASE_NOTE = (
     "date, notes, file links and attributes are kept. The old name stays "
     "in notes, journal entries, file text and attribute values (the "
     "pseudonymisation preview counts those); in QualCoder's saved graph "
-    "labels, table displays and filters (counted in old_name_left_in); "
+    "labels, table displays and filters (counted in old_name_left_in) "
+    "and its saved SQL queries (not read here); "
     "in the names of files named after the case (their ids are in "
     "old_name_left_in.file_ids, and rename_file renames them); in every "
     "backup, including the one just taken (list_backups lists them; "
@@ -12213,7 +12214,8 @@ RENAME_FILE_NOTE = (
     "database entry\" does: nothing on disk was renamed, and the stored "
     "path, date, notes, codings and case links are kept. Every backup, "
     "including the one just taken, keeps the old name, and so do this "
-    "server's coding-session files, and so do this server's "
+    "server's coding-session files and any of QualCoder's saved SQL "
+    "queries that name it (not read here), and so do this server's "
     "pseudonymisation journal entries and run records, which keep the "
     "file's name as it was at the run unless that name carried a name "
     "from the mapping (they then name the file by its id). A Merge "
@@ -12478,7 +12480,9 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
 
     `evidence` carries what the project's backups showed from the
     read-only pre-check into the re-check inside the transaction, so the
-    backups are read at most once per call (fix round 2, R1-4).
+    backups are read once per question in a call (fix round 2, R1-4),
+    and a carried answer counts only if it still answers the question
+    as the re-check asks it (fix round 3, F2A-1).
     """
     if evidence is None:
         evidence = {}

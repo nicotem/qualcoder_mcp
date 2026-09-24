@@ -180,10 +180,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Two write tools, in the `full` toolset only, that rename a case or a
   file's entry the way QualCoder does, so a label named after a
   participant (`Thomas_P01`, `Thomas_interview.txt`) can be changed
-  without leaving the conversation. Each writes one column of one row:
-  `UPDATE cases SET name = ? WHERE caseid = ?`, as Manage Cases does, or
-  `UPDATE source SET name = ? WHERE id = ?`, as Manage Files' "Rename
-  database entry" does. Nothing else: no date, owner or note, no other
+  without leaving the conversation. Each writes one column of one row,
+  as QualCoder does: `UPDATE cases SET name = ? WHERE caseid = ?`, Manage
+  Cases' own statement, or `UPDATE source SET name = ? WHERE id = ?`,
+  where Manage Files' "Rename database entry" selects the row by its name
+  (`update source set name=? where name=?`) and this server by its id.
+  Nothing else: no date, owner or note, no other
   table, and for a file nothing on disk and no stored path. Everything
   QualCoder keys by id (codings, annotations, case links, attributes,
   graph nodes, the transcript link) follows the new name. No approval
@@ -257,7 +259,7 @@ reason:
 | `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
 | An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`), and restoring an ending the file had before is not refused, except a transcript losing both endings or a media file its extension | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
 | The identical name answers "unchanged", before any rule | Same outcome as "This already exists", in the house shape |
-| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup`. A rename back is recognised from the project's backups (and, for an ending, from the stored file's own name), so the ending and `documents/` rules do not refuse it. A backup counts only where it shows this same entry, the same id and the same creation date, because QualCoder gives a deleted last entry's id to the next one; backups are opened read-only and immutable, only when a rule would refuse, at most once per call, stopping at the first that shows the name; when no backup shows the earlier name (a rename made with `create_backup=false`, or pruned backups), the rules apply and `restore_backup` or QualCoder's own Rename can make it |
+| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup`. A rename back is recognised from the project's backups (and, for an ending, from the stored file's own name), so the ending and `documents/` rules do not refuse it. A backup counts only where it shows this same entry, a heuristic: the same id and the same date (set at creation and by some later QualCoder actions, never by a rename), because QualCoder gives a deleted last entry's id to the next one; for the `documents/` half, the same text as well, compared inside SQLite, because QualCoder's Merge projects copies dates. Backups are opened read-only and immutable, a backup with a journal or WAL file beside its database skipped, only when a rule would refuse, once per question, stopping at the first that shows the name; when no backup shows the earlier name (a rename made with `create_backup=false`, or pruned backups), the rules apply and `restore_backup` or QualCoder's own Rename can make it |
 | QualCoder's search index is not refreshed | It belongs to QualCoder, which re-indexes on the next open with AI on; stated in the result |
 | No bulk rename | QualCoder's drops every extension and breaks transcript links; call `rename_file` per file |
 | The result reports the stored copy, transcripts, pairings and saved places | Reporting only |
@@ -409,8 +411,8 @@ reason:
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
 - **`import_text_file` shares `rename_file`'s name rules, so some names
-  it used to accept are refused.** Exactly these, and each refusal says
-  why: a name over 200 bytes in UTF-8 (before, the only length check was
+  it used to accept are refused.** Exactly these, and each refusal
+  names what it refuses: a name over 200 bytes in UTF-8 (before, the only length check was
   a 10,000-character limit whose truncated copy was discarded, so no
   length was ever enforced); a name containing `:`; a name carrying an
   invisible formatting character (a zero-width space, a bidirectional
