@@ -32,6 +32,11 @@ from .database import (
     validate_coder_name,
     validate_coder_note,
     forbidden_display_char,
+    file_name_problem,
+    file_name_is_invalid_upstream,
+    file_ending_problem,
+    documents_clash_message,
+    _detect_file_type as detect_file_type,
     validate_id,
     validate_limit,
     MAX_LIMIT,
@@ -941,7 +946,8 @@ def _category_name(db_, category_id: Optional[int]) -> Optional[str]:
 _AMBIGUITY_ID_TOOLS = {
     "code": "rename_code and merge_codes take a code id",
     "category": "rename_category and merge_category take a category id",
-    "case": "cases are renamed and merged in QualCoder, not here",
+    "case": "rename_case takes a case id; cases are merged in QualCoder, "
+            "not here",
 }
 
 
@@ -11203,7 +11209,8 @@ def pseudonymise_source(
     What this does NOT rewrite, and where the names will remain: memos,
     journal entries, case names, file names, attribute values, PDFs,
     media files, QualCoder 4.0's ai_data folder, speakers.json and
-    speaker_regex.json. The preview's `residue` block counts where the
+    speaker_regex.json. Case and file names are changed with rename_case
+    and rename_file. The preview's `residue` block counts where the
     names still occur so you can tell the user; it counts the PUBLIC part
     of memos only and never reads a '#####' private note. Its counts use
     a WIDER reading than the rewrite: any occurrence a human would see,
@@ -12067,6 +12074,462 @@ def create_case(name: str, memo: Optional[str] = None,
     result = _perform_write(_op, create_backup=create_backup,
                             backup_fail_detail="the case was not created")
     return _ai_json(result, indent=2)
+
+
+# What rename_case's result says stays behind (v0.13, rename dossier 3.2).
+RENAME_CASE_NOTE = (
+    "Only the case's name changed, as in QualCoder's Manage Cases; its "
+    "date, notes, file links and attributes are kept. The old name stays "
+    "in notes, journal entries, file text and attribute values (the "
+    "pseudonymisation preview counts those); in QualCoder's saved graph "
+    "labels, table displays and filters (counted in old_name_left_in); "
+    "in the names of files named after the case (their ids are in "
+    "old_name_left_in.file_ids, and rename_file renames them); in every "
+    "backup, including the one just taken (list_backups lists them; "
+    "prune_backups removes this server's, and QualCoder's own _BKUP_ "
+    "copies only the researcher can remove); and in QualCoder 4.0's AI "
+    "chat. A later case spreadsheet import, survey import or Merge "
+    "Projects that still uses the old label creates a case carrying it "
+    "again.")
+
+# The accepted limitation both renames carry (rename dossier 1.6), in
+# their descriptions: QualCoder 4.0 writes no lock file.
+_RENAME_QC40_PARAGRAPH = (
+    "QualCoder 4.0 writes no lock file, so this server cannot see a 4.0 "
+    "window that has the project open: a Manage {window} window opened "
+    "before the rename keeps showing the old name, and an edit there can "
+    "overwrite the rename or fail on it. Close the project in QualCoder "
+    "4.0 before renaming.")
+
+
+@mcp.tool()
+@_tool_guard
+def rename_case(case_id: int, new_name: str,
+                create_backup: bool = True) -> str:
+    """Rename a case. THIS WRITES TO THE DATABASE. Only the name changes.
+
+    As in QualCoder's Manage Cases, only the case's name is written: its
+    date, owner, notes, file links, codings and attributes are untouched
+    (they are kept by id). Whitespace runs collapse to one space, as in
+    create_case, so a name stored with extra spacing is rewritten in
+    normal form. A new name that matches ANOTHER case ignoring letter
+    case, spacing and Unicode form is refused (the result names that
+    case's id; rename that one first if the respelling is wanted); a
+    respelling of this case's own name in different letter case proceeds;
+    the identical current name answers `changed: false, reason:
+    unchanged` with nothing written and no backup made. Successful
+    renames carry `changed: true` and `old_name`, plus where the old name
+    stays: `old_name_left_in` counts QualCoder's saved graph labels,
+    table displays and filters that still contain it and lists the ids of
+    files named after it (a heuristic: "contains", ignoring letter case;
+    each count only when not zero), and `note` names the rest.
+
+    Find a case id in qualcoder://cases/list, get_case_code_matrix, a
+    create_case answer, or QualCoder's own id column.
+
+    QualCoder 4.0 writes no lock file, so this server cannot see a 4.0 window that has the project open: a Manage Cases window opened before the rename keeps showing the old name, and an edit there can overwrite the rename or fail on it. Close the project in QualCoder 4.0 before renaming.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
+
+    Args:
+        case_id: The case's id (caseid)
+        new_name: The new name (must not collide with another case,
+                  ignoring letter case, spacing and Unicode form)
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    new_name = normalize_name(new_name)
+    if not new_name:
+        return json.dumps({"error": "new_name must be a non-empty string"})
+    case_id = validate_id(case_id, "case_id")
+
+    def _precheck(rows):
+        """A result to answer without writing, or None to proceed."""
+        row = {r["id"]: r for r in rows}.get(case_id)
+        if row is None:
+            return {"error": f"Case ID {case_id} does not exist"}
+        if row["name"] == new_name:
+            return _unchanged(
+                f"Case '{row['name']}' (id {case_id}) already has that name; "
+                f"nothing was written.",
+                case={"id": case_id, "name": row["name"]})
+        return _rename_collision(rows, case_id, new_name, "case")
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    answer = _precheck(get_db().case_name_rows())
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        # SQLite's write lock first, then the re-check: the write gate is
+        # blind to QualCoder 4.0, so this re-check is the only guard
+        # against another writer, and it holds until the commit.
+        wdb.begin_immediate()
+        answer = _precheck(wdb.case_name_rows())
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        renamed = wdb.rename_case(case_id, new_name, auto_commit=False)
+        return {"success": True, "changed": True, "message": "Renamed case",
+                **renamed,
+                "old_name_left_in": wdb.old_name_left_in(
+                    "case", case_id, renamed["old_name"]),
+                "note": RENAME_CASE_NOTE}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the case was not renamed")
+    return json.dumps(result, indent=2)
+
+
+# What rename_file's result says stays behind (v0.13, rename dossier 3.3).
+RENAME_FILE_NOTE = (
+    "Only the name QualCoder shows changed, exactly as its \"Rename "
+    "database entry\" does: nothing on disk was renamed, and the stored "
+    "path, date, notes, codings and case links are kept. Every backup, "
+    "including the one just taken, keeps the old name, and so do this "
+    "server's coding-session files. A Merge Projects with a copy of the "
+    "project that still has the old name brings the file in as a second "
+    "file.")
+RENAME_FILE_SEARCH_INDEX_NOTE = (
+    "QualCoder's AI search index lists the file under its old name until "
+    "QualCoder next opens the project with AI enabled.")
+
+_IN_PROJECT_PREFIXES = ("/docs/", "/images/", "/audio/", "/video/")
+_LINKED_PREFIXES = ("docs:", "images:", "audio:", "video:")
+
+
+def _stored_copy_block(db, mediapath: Optional[str],
+                       old: Optional[str]) -> Dict[str, Any]:
+    """What keeps the old name on disk, by how the file is stored
+    (rename dossier 1.4 and 3.3). Read before the rename; nothing on disk
+    is touched."""
+    later_import = ("A later QualCoder import of a file called '{0}' will "
+                    "overwrite this stored copy, and may then delete it.")
+    if mediapath and mediapath.startswith(_IN_PROJECT_PREFIXES):
+        stored = mediapath.split("/", 2)[2]
+        note = (f"The stored copy in the project folder and the stored path "
+                f"keep the name '{stored}'.")
+        if mediapath.startswith("/docs/"):
+            note += (" The copy also holds the original text, as it was "
+                     "imported, whatever has been rewritten here since. "
+                     "QualCoder's exports ship that copy: QualCoder 4.0's "
+                     "Manage Files export under its stored name, and the "
+                     "REFI-QDA export inside the .qdpx. In QualCoder 3.8.2, "
+                     "Delete leaves it behind and Export writes nothing "
+                     "after a rename.")
+        return {"kind": "in_project_folder", "stored_name": stored,
+                "note": note + " " + later_import.format(stored)}
+    if mediapath and mediapath.startswith(_LINKED_PREFIXES):
+        linked = re.split(r"[\\/]", mediapath.split(":", 1)[1])[-1]
+        return {"kind": "linked_outside_project", "stored_name": linked,
+                "note": (f"The linked file outside the project keeps its "
+                         f"name, '{linked}'. For a linked document, "
+                         f"QualCoder's \"Import linked file\" copies it into "
+                         f"the project's documents folder under that name, "
+                         f"where QualCoder, looking by this entry's name, "
+                         f"will not find it.")}
+    if mediapath:
+        return {"kind": "unrecognised",
+                "note": "The stored path has a form this server does not "
+                        "recognise; whatever it points at keeps its name."}
+    folder = Path(db.db_path).parent / "documents"
+    for candidate in ([old, f"{old}.txt"] if isinstance(old, str) else []):
+        # Only a plain name is looked up: a legacy name carrying a path
+        # character must not lead the lookup out of the folder.
+        if candidate in ("", ".", "..") or any(
+                ch in candidate for ch in "/\\:\0"):
+            continue
+        try:
+            if os.path.lexists(folder / candidate):
+                return {"kind": "found_by_name", "stored_name": candidate,
+                        "note": (f"The project's documents folder holds "
+                                 f"'{candidate}', which QualCoder finds by "
+                                 f"this entry's name; after the rename it "
+                                 f"will no longer find it, and that file "
+                                 f"keeps the old name. "
+                                 + later_import.format(candidate))}
+        except OSError:
+            continue
+    return {"kind": "none",
+            "note": "This text is kept only in the database; nothing on "
+                    "disk carries its name."}
+
+
+_TRANSCRIPT_ENDINGS = (".txt", ".transcribed")
+
+
+def _transcript_blocks(rows, file_id: int, old: Optional[str],
+                       new: str) -> Dict[str, Any]:
+    """The transcript links and the pairings QualCoder makes by name,
+    after a rename (rename dossier 1.5 and 3.3).
+
+    QualCoder links a recording to its transcript by id (av_text_id).
+    When that link is missing or points nowhere (both trees), or in 4.0
+    points at an entry whose name no longer ends in '.txt' or
+    '.transcribed' (case-sensitive; master view_av.py:189-227), it
+    relinks by name to an entry called '<recording>.txt' or
+    '<recording>.transcribed'. Its REFI-QDA export and file summary pair
+    a recording with '<recording>.transcribed' by name alone.
+    """
+    names = {r["id"]: (new if r["id"] == file_id else r["name"])
+             for r in rows}
+    by_name: Dict[str, int] = {}
+    for r in rows:
+        if isinstance(names[r["id"]], str):
+            by_name.setdefault(names[r["id"]], r["id"])
+    recordings = [r for r in rows
+                  if detect_file_type(r["mediapath"] or "") in ("audio", "video")]
+    out: Dict[str, Any] = {}
+    pairing: List[str] = []
+
+    this = next(r for r in rows if r["id"] == file_id)
+    target = this["av_text_id"]
+    if target is not None and target in names and target != file_id:
+        note = ("This recording's transcript keeps its own name; the link "
+                "between them is by id and is kept. rename_file can rename "
+                "the transcript separately, keeping its ending.")
+        if names[target] == f"{old}.transcribed":
+            note += (f" QualCoder's REFI-QDA export and file summary pair a "
+                     f"recording with '<name>.transcribed' by name, so "
+                     f"rename the transcript '{new}.transcribed' to keep "
+                     f"that pairing.")
+        if names[target] == f"{old}.txt":
+            note += (f" A later QualCoder import of a recording called "
+                     f"'{old}' would stop when it creates that recording's "
+                     f"transcript, because an entry called '{old}.txt' "
+                     f"exists.")
+        out["linked_transcript"] = {"file_id": target,
+                                    "name": names[target], "note": note}
+    owners = [r for r in rows
+              if r["av_text_id"] == file_id and r["id"] != file_id]
+    if owners:
+        out["transcript_of"] = {
+            "file_id": owners[0]["id"], "name": owners[0]["name"],
+            "note": ("This file is that recording's transcript; the link "
+                     "between them is by id and is kept, and the recording "
+                     "keeps its name.")}
+        if len(owners) > 1:
+            out["transcript_of"]["other_recording_ids"] = [
+                r["id"] for r in owners[1:]]
+
+    def link_state(rec) -> Optional[str]:
+        target = rec["av_text_id"]
+        if target is None:
+            return "missing"
+        if target not in names:
+            return "broken"
+        if not (isinstance(names[target], str)
+                and names[target].endswith(_TRANSCRIPT_ENDINGS)):
+            return "stale in QualCoder 4.0"
+        return None
+
+    for rec in recordings:
+        state = link_state(rec)
+        rec_name = names[rec["id"]]
+        if state is None or not isinstance(rec_name, str):
+            continue
+        for ending in _TRANSCRIPT_ENDINGS:
+            target = by_name.get(rec_name + ending)
+            if target is not None and file_id in (target, rec["id"]):
+                pairing.append(
+                    f"QualCoder may adopt file id {target} "
+                    f"('{rec_name + ending}') as the transcript of recording "
+                    f"id {rec['id']} ('{rec_name}') the next time that "
+                    f"recording is opened: its transcript link is {state}, "
+                    f"and QualCoder then looks for an entry called "
+                    f"'<recording>.txt' or '<recording>.transcribed'.")
+                break
+
+    # Pairing by name alone ('<recording>.transcribed'), before and after.
+    def paired(name) -> Optional[int]:
+        if not (isinstance(name, str) and name.endswith(".transcribed")):
+            return None
+        base = name[:-len(".transcribed")]
+        return next((rec["id"] for rec in recordings
+                     if names[rec["id"]] == base and rec["id"] != file_id),
+                    None)
+    before, after = paired(old), paired(new)
+    if before != after:
+        if after is not None:
+            pairing.append(
+                f"QualCoder's REFI-QDA export and file summary will pair "
+                f"this entry with recording id {after} by name, as that "
+                f"recording's transcript.")
+        if before is not None:
+            pairing.append(
+                f"QualCoder's REFI-QDA export and file summary paired this "
+                f"entry with recording id {before} by name; they no longer "
+                f"do, and unless the name extends a recording's name, the "
+                f"REFI-QDA export leaves this entry out.")
+    if file_id in {rec["id"] for rec in recordings} and \
+            isinstance(new, str):
+        target = by_name.get(new + ".transcribed")
+        linked = next(r["av_text_id"] for r in rows if r["id"] == file_id)
+        if target is not None and target != linked:
+            pairing.append(
+                f"QualCoder's REFI-QDA export and file summary pair a "
+                f"recording with '<name>.transcribed' by name, so file id "
+                f"{target} will be exported as this recording's "
+                f"transcript.")
+    if pairing:
+        out["transcript_pairing"] = pairing
+    return out
+
+
+def _file_rename_precheck(db, file_id: int, candidate: str):
+    """A result to answer without writing, or None to proceed.
+
+    In order: the unknown id; the identical name, answered unchanged
+    BEFORE any rule (so a stored name the rules would refuse is still
+    "unchanged"); the name rules; a clash with another file after NFC on
+    both sides (exact otherwise, as QualCoder's dialog and unique(name)
+    compare); a text document's documents/ clash; the ending rule; and
+    master's `unnamed_file_<n>` for a file n it would auto-rename.
+    """
+    rows = db.file_name_rows()
+    by_id = {r["id"]: r for r in rows}
+    row = by_id.get(file_id)
+    if row is None:
+        return {"error": f"File ID {file_id} does not exist"}
+    old = row["name"]
+    if candidate == old:
+        return _unchanged(
+            f"File '{old}' (id {file_id}) already has that name; nothing "
+            f"was written.", file={"id": file_id, "name": old})
+    problem = file_name_problem(candidate)
+    if problem is not None:
+        return {"error": problem}
+    others = [r for r in rows if r["id"] != file_id
+              and isinstance(r["name"], str)
+              and unicodedata.normalize("NFC", r["name"]) == candidate]
+    if others:
+        ids = ", ".join(str(r["id"]) for r in others)
+        return {"error": f"Another file already uses the name "
+                         f"'{others[0]['name']}' "
+                         f"({'id' if len(others) == 1 else 'ids'} {ids}).",
+                "candidates": [{"id": r["id"], "name": r["name"]}
+                               for r in others]}
+    mediapath = row["mediapath"]
+    if not mediapath or mediapath.startswith(("/docs/", "docs:")):
+        own = db.own_stored_copy(mediapath, old) \
+            if isinstance(old, str) else None
+        if db.documents_name_taken(candidate, own=own):
+            return {"error": documents_clash_message(candidate)}
+    recordings = [r["name"] for r in rows
+                  if r["av_text_id"] == file_id and r["id"] != file_id]
+    ending = file_ending_problem(old if isinstance(old, str) else "",
+                                 candidate, mediapath, recordings)
+    if ending is not None:
+        return {"error": ending}
+    for other in rows:
+        if other["id"] != file_id and \
+                file_name_is_invalid_upstream(other["name"]) and \
+                candidate == f"unnamed_file_{other['id']}":
+            return {"error": (
+                f"File id {other['id']} has an empty, spaces-only or "
+                f"dots-only name, which QualCoder 4.0's Manage Files renames "
+                f"'{candidate}' every time it opens; with that name taken "
+                f"the automatic rename fails and Manage Files cannot open. "
+                f"Choose another name, or rename file id {other['id']} "
+                f"first.")}
+    return None
+
+
+@mcp.tool()
+@_tool_guard
+def rename_file(file_id: int, new_name: str,
+                create_backup: bool = True) -> str:
+    """Rename a file's entry. THIS WRITES TO THE DATABASE. Only the name.
+
+    Exactly as QualCoder's Manage Files "Rename database entry": only the
+    name QualCoder shows is written. Nothing on disk is renamed, and the
+    stored path, date, notes, codings, case links and transcript link are
+    kept (they are by id). The name is trimmed at both ends and
+    normalised to Unicode NFC. The identical current name answers
+    `changed: false, reason: unchanged` before any rule, with nothing
+    written and no backup made.
+
+    Refused, each with its reason: an empty, spaces-only or dots-only
+    name; control, line-separator or invisible formatting characters;
+    '/', '\\', '..' or ':'; over 100 characters or 200 bytes in UTF-8;
+    another file's name (exactly, after NFC; a name differing from
+    another only in letter case is allowed, as in QualCoder); for a text
+    document, a name already present in the project's documents folder;
+    'unnamed_file_<n>' while file n has an invalid name. Endings are
+    refused only where QualCoder acts on them: a transcript keeps '.txt'
+    or '.transcribed' exactly; '.pdf' is neither gained nor lost;
+    '.transcribed' is not gained; an image, audio or video file keeps its
+    stored file's extension; a text with no stored file whose name ends
+    in '.txt' or has no dot keeps it that way. QualCoder's own Rename can
+    still make those changes. Any other name changes freely
+    ('Thomas.Jones' to 'P01').
+
+    The result carries `changed: true`, `old_name`, `file_type`, and
+    what kept the old name: `stored_copy` (an imported file's copy in the
+    project folder and its stored path keep it, and for a document the
+    copy holds the original text), `linked_transcript` or
+    `transcript_of`, `transcript_pairing` (pairings QualCoder makes by
+    name), `old_name_left_in` (saved graph labels, table displays and
+    filters containing it, and ids of other files named after it; a
+    heuristic, each count only when not zero), `search_index_note` and
+    `note`.
+
+    Find a file id in qualcoder://files/list or search_files.
+
+    QualCoder 4.0 writes no lock file, so this server cannot see a 4.0 window that has the project open: a Manage Files window opened before the rename keeps showing the old name, and an edit there can overwrite the rename or fail on it. Close the project in QualCoder 4.0 before renaming.
+
+    Refused while QualCoder has the project open (heartbeat lock): ask
+    the user to close the project in QualCoder, re-check with
+    get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
+
+    Args:
+        file_id: The file's id
+        new_name: The new name
+        create_backup: Create a timestamped backup before writing (default True)
+    """
+    file_id = validate_id(file_id, "file_id")
+    if not isinstance(new_name, str):
+        return json.dumps({"error": "new_name must be a string"})
+    candidate = unicodedata.normalize("NFC", new_name.strip())
+
+    gate = _write_gate_error()
+    if gate is not None:
+        return json.dumps(gate)
+    db = get_db()
+    answer = _file_rename_precheck(db, file_id, candidate)
+    if answer is not None:
+        return json.dumps(answer, indent=2)
+
+    def _op(wdb):
+        # SQLite's write lock first, then the re-check (as rename_case).
+        wdb.begin_immediate()
+        answer = _file_rename_precheck(wdb, file_id, candidate)
+        if answer is not None:
+            if "error" in answer:
+                raise ValueError(answer["error"])
+            return answer
+        rows = wdb.file_name_rows()
+        row = next(r for r in rows if r["id"] == file_id)
+        stored = _stored_copy_block(wdb, row["mediapath"], row["name"])
+        renamed = wdb.rename_file(file_id, candidate, auto_commit=False)
+        old = renamed["old_name"]
+        return {"success": True, "changed": True, "message": "Renamed file",
+                **renamed,
+                "file_type": detect_file_type(row["mediapath"] or ""),
+                "stored_copy": stored,
+                **_transcript_blocks(rows, file_id, old, candidate),
+                "old_name_left_in": wdb.old_name_left_in(
+                    "file", file_id, old),
+                "search_index_note": RENAME_FILE_SEARCH_INDEX_NOTE,
+                "note": RENAME_FILE_NOTE}
+
+    result = _perform_write(_op, create_backup=create_backup,
+                            backup_fail_detail="the file was not renamed")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -13128,7 +13591,7 @@ Ground the profile in verbatim quotes from this case's segments, and keep what t
 # Toolset modes (EXPERIMENTAL): QUALCODER_MCP_TOOLSET=core|full
 # ============================================================================
 # Local models break on large tool surfaces long before frontier models do:
-# tool-selection accuracy collapses as the menu grows, and the full 67-tool
+# tool-selection accuracy collapses as the menu grows, and the full tool
 # schema payload alone exceeds default local context windows (see the
 # multi-host research dossiers). QUALCODER_MCP_TOOLSET=core registers only
 # the supervised-coding-loop subset below; the default remains the full

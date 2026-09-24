@@ -605,7 +605,9 @@ will ask, and the summary above depends on them:
   - **Memos (twelve fields, the audio/video and image coding memos
     included), journal entries and their names, case names, file names,
     code names, category names, attribute-type names and attribute
-    values.** Scanned and counted, never rewritten. The count is in the
+    values.** Scanned and counted, never rewritten by the
+    pseudonymisation tool (a case or file name is renamed with
+    `rename_case` or `rename_file`, below). The count is in the
     preview's `residue` block, and a name that occurs only in a
     `#####` private note is neither read nor counted. Those counts are a
     heuristic that reads wider than the rewrite does: the rewrite
@@ -669,6 +671,18 @@ will ask, and the summary above depends on them:
     where a run of letters is a clause rather than a word; anything else
     is counted and not listed, and every list in one preview shares a
     budget of 4,000 characters.
+  - **Case and file names, and what a rename cannot reach.** Since
+    v0.13, `rename_case` and `rename_file` rename a case label such as
+    `Thomas_P01` or a file called `Thomas_interview.txt` the way
+    QualCoder's Manage Cases and Manage Files do: the name changes and
+    nothing else. A rename cannot reach, and the preview's count does
+    not read: the stored copy and stored path of an imported file (the
+    copy in the project folder keeps the name it was imported under and,
+    for a document, the original text, and QualCoder's exports ship that
+    copy), saved graph labels, and saved table displays and filters.
+    Each rename's result counts those places for the case or file it
+    renamed. Every backup, this server's session files, QualCoder's
+    search index and QualCoder 4.0's AI chat keep the old name too.
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or

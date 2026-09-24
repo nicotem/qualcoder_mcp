@@ -68,7 +68,7 @@ EXPECTED_TOOLS = {
     "prune_backups",
     # annotations, category merge, cases (v0.8 phase D1)
     "add_annotation", "update_annotation", "delete_annotation",
-    "merge_category", "create_case",
+    "merge_category", "create_case", "rename_case", "rename_file",
     # inductive / open coding (v0.8 phase A)
     "propose_codes", "review_proposals", "update_proposal",
     "merge_proposals", "update_proposal_status", "create_proposed_codes",
@@ -104,7 +104,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 70
+        assert len(names) == 72
 
 
 class TestEndToEndLoop:

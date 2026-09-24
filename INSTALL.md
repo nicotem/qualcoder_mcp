@@ -280,7 +280,7 @@ variable is optional.
   If the path does not exist the server refuses to start and prints
   "Error: Database file not found: <path>" to stderr. Without it, select
   a project with the tools (Option A).
-- `QUALCODER_MCP_TOOLSET`: `full` (default) registers all 70 tools;
+- `QUALCODER_MCP_TOOLSET`: `full` (default) registers all 72 tools;
   `core` registers the 21-tool supervised coding set for local models
   (see the LM Studio recipe). Any other value stops the server at
   start-up with an error naming the valid values. Resources and prompts
@@ -441,9 +441,9 @@ parameters. We have not evaluated specific models with this server;
 that evaluation is planned, which is one reason this recipe is marked
 Experimental.
 
-**Step 3. Use the core toolset.** This server exposes 70 tools by
+**Step 3. Use the core toolset.** This server exposes 72 tools by
 default, and the serialised tool definitions alone measure about
-157,000 characters, roughly 39k tokens (measured for 0.13 under
+163,000 characters, roughly 41k tokens (measured for 0.13 under
 Python 3.13.5 with mcp 1.30.0, in the
 repository's own `venv/`; `pseudonymise_source`, the 0.12 flagship,
 accounts for about 13,000 characters of that on its own, because a tool
@@ -466,7 +466,7 @@ coding set, measured at about 56,000 characters, roughly 14k tokens.
 model, set the context length to at least 32k for the core toolset
 (that leaves about 18k tokens for your transcript excerpts and
 conversation; 16k would leave barely 2k and is not workable), or 64k if
-you must run the full surface (its schema alone is about 39k tokens).
+you must run the full surface (its schema alone is about 41k tokens).
 Use the model load settings dialog or a per-model default
 (<https://lmstudio.ai/docs/app/advanced/per-model>).
 

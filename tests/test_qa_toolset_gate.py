@@ -128,7 +128,7 @@ class TestSubprocessBehavior:
         full_dir.mkdir()
         names_full, _, _ = _session_lists(full_dir, "full")
         assert names_unset == names_full
-        assert len(names_full) == 70
+        assert len(names_full) == 72
 
 
 class TestRegistryIsolation:
@@ -138,7 +138,7 @@ class TestRegistryIsolation:
         and confirm the registry returns to the identical 67-tool state
         (same objects, not lookalikes)."""
         before = dict(server.mcp._tool_manager._tools)
-        assert len(before) == 70
+        assert len(before) == 72
 
         for _ in range(2):
             removed = server._apply_toolset("core")
@@ -159,6 +159,6 @@ class TestRegistryIsolation:
         """Importing the module must never shrink the surface — the filter
         runs only in main(). (A regression here would contaminate every
         in-process consumer, including the whole test suite.)"""
-        assert len(server.mcp._tool_manager._tools) == 70
+        assert len(server.mcp._tool_manager._tools) == 72
         # and CORE_TOOLSET stays a strict subset of the live surface
         assert server.CORE_TOOLSET < set(server.mcp._tool_manager._tools)

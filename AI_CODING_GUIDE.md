@@ -196,7 +196,10 @@ and a mandatory backup. Memos, journal entries, labels and attribute
 values are scanned and counted, never rewritten, PDFs are counted and
 never rewritten, and media files and `ai_data/` are out of scope; the preview's residue report says
 where names remain, in the notes, the labels, the attribute values and
-the text of every file, each count as two readings. Pseudonymised data is still personal data: read
+the text of every file, each count as two readings. A case or file
+label such as `Thomas_P01` is renamed with `rename_case` or
+`rename_file`; an imported file's stored copy keeps its original name
+and text. Pseudonymised data is still personal data: read
 PRIVACY.md before sending it anywhere.
 
 **What happens to my original project?** Nothing, if you follow the

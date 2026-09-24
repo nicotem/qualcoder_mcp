@@ -8,16 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,620 characters (about 39.4k tokens at
-  chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
+  below included: full = 163,464 characters (about 40.9k tokens at
+  chars/4) over 72 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
-  because neither the six token-gated tools nor `pseudonymise_source`
-  is in it. Measured exactly as the 0.12 figures were, on the final tree
+  because neither the six token-gated tools, nor `pseudonymise_source`,
+  nor the two rename tools is in it. Measured exactly as the 0.12 figures were, on the final tree
   through the toolset gate, as the `tools/list` payload carries them:
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,660 and
+  in the repository's `.venv/`, the same definitions measure 171,776 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -175,6 +175,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the public API returns without signing in, so the budgets can be
   checked on every platform.
 
+### Added: `rename_case` and `rename_file`
+
+- Two write tools, in the `full` toolset only, that rename a case or a
+  file's entry the way QualCoder does, so a label named after a
+  participant (`Thomas_P01`, `Thomas_interview.txt`) can be changed
+  without leaving the conversation. Each writes one column of one row:
+  `UPDATE cases SET name = ? WHERE caseid = ?`, as Manage Cases does, or
+  `UPDATE source SET name = ? WHERE id = ?`, as Manage Files' "Rename
+  database entry" does. Nothing else: no date, owner or note, no other
+  table, and for a file nothing on disk and no stored path. Everything
+  QualCoder keys by id (codings, annotations, case links, attributes,
+  graph nodes, the transcript link) follows the new name. No approval
+  token, as for `rename_code`: nothing is lost, a backup is taken by
+  default, and the old name is in the result.
+- Both follow `rename_code`'s write discipline: the write gate first,
+  then a read-only pre-check that answers an unknown id, the identical
+  name (`changed: false, reason: unchanged`), a refusal or a clash with
+  no lock and no backup, then the write, which takes SQLite's write
+  lock (`BEGIN IMMEDIATE`) before re-checking inside the transaction,
+  because the write gate cannot see QualCoder 4.0.
+- The log line carries the id only ("Renamed case 3"): the host keeps
+  this server's log on disk, and removing a participant's name is why
+  these tools exist. `rename_code` and `rename_category` now log their
+  ids only as well; until now they logged both names.
+- Each result says where the old name stays. `old_name_left_in` counts
+  QualCoder's saved graph labels, saved table displays and saved filters
+  that still contain it and lists the ids of files named after it (a
+  heuristic: "contains", ignoring letter case; each count only when it
+  is not zero). `rename_file` adds `stored_copy` (an imported file's copy
+  in the project folder and its stored path keep the old name, and a
+  document's copy keeps the original text, which QualCoder's exports
+  ship), `linked_transcript` or `transcript_of`, `transcript_pairing`
+  (where QualCoder would pair a recording with a transcript by name) and
+  `search_index_note`. A `note` names the rest: backups, session files,
+  QualCoder 4.0's AI chat, and imports and merges that bring an old name
+  back.
+- QualCoder 4.0 writes no lock file, so a Manage Cases or Manage Files
+  window opened before a rename keeps the old name and can overwrite the
+  rename or fail on it. Both descriptions say so; close the project in
+  QualCoder 4.0 first. QualCoder 3.x's lock refuses the rename as it
+  refuses every write.
+- The pseudonymisation preview's notes and PRIVACY.md name the two tools
+  where they used to say a case label is "renamed by hand", and say
+  which places a rename cannot reach and the preview does not read: an
+  imported file's stored copy and stored path, saved graph labels, and
+  saved table displays and filters. The case ambiguity hint now names
+  `rename_case`.
+
+Departures from QualCoder's Manage Cases, each with its reason:
+
+| Departure | Reason |
+|---|---|
+| Runs of spaces inside a name collapse to one (QualCoder strips the ends only) | The duplicate-names rule took QualCoder 4.0's name normalisation; `create_case` already applies it |
+| A name matching ANOTHER case ignoring letter case, spacing and Unicode form is refused (QualCoder refuses exact matches only) | The duplicate-names rule for renames; without it `create_case` meets twins and the case lookups by name pick one |
+| A pre-existing letter-case twin blocks a respelling | The same rule; the refusal names the other case's id |
+| Refusals and the identical name are answered (QualCoder silently restores the cell) | A tool has no cell to restore |
+| A backup before the write | The house write discipline; QualCoder relies on its open-time backup |
+| The result reports where the old name stays | Reporting only; QualCoder says nothing |
+
+Departures from Manage Files' "Rename database entry", each with its
+reason:
+
+| Departure | Reason |
+|---|---|
+| The file is chosen by id | Equivalent under `unique(name)`; ids are how every tool here names a file |
+| Ends trimmed, Unicode NFC applied, a clash compared after NFC on both sides | As `import_text_file` does: two names that look identical are refused |
+| Empty, spaces-only and dots-only names refused | QualCoder 4.0 itself treats them as invalid and renames them `unnamed_file_<id>` at every load |
+| Control, line-separator and invisible formatting characters refused | They make a name look identical to another or break single-line display |
+| `/`, `\`, `..` and `:` refused | QualCoder joins the name into paths (delete, export, text replacement, the REFI-QDA export); `..` reaches the project database, and a drive prefix leaves the folder on Windows |
+| Over 100 characters or 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes; the limit also keeps a paging cursor carrying the name under its cap |
+| A text's new name already present in `documents/` refused | QualCoder finds a text's stored copy there by the entry's name and would act on that other file |
+| `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
+| An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`) | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
+| The identical name answers "unchanged", before any rule | Same outcome as "This already exists", in the house shape |
+| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup` |
+| QualCoder's search index is not refreshed | It belongs to QualCoder, which re-indexes on the next open with AI on; stated in the result |
+| No bulk rename | QualCoder's drops every extension and breaks transcript links; call `rename_file` per file |
+| The result reports the stored copy, transcripts, pairings and saved places | Reporting only |
+
 ### Changed: `pseudonymise_source` rewrites one file per call
 
 - `file_ids` (an optional list; omit it for every eligible text source)
@@ -321,6 +400,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pseudonym there, in the preview on the `use_project_pseudonyms` path,
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
+- **`import_text_file` shares `rename_file`'s name rules, and refuses
+  four names it used to accept.** A name over 100 characters or 200
+  bytes in UTF-8 is refused (its length check was meant to apply and did
+  not: the limit truncated a copy and the copy was discarded); so is a
+  name containing `:`; so is a name carrying an invisible formatting
+  character (a zero-width space, a bidirectional control), a line or
+  paragraph separator or a C1 control character, where only the C0
+  controls were refused before; and so is a name already present in the
+  project's `documents/` folder, which QualCoder would treat as the new
+  text's stored copy. A name that is a single dot is refused too. Every
+  other name that imported before imports now.
 
 ## [0.12.1-alpha] - 2026-09-21
 
