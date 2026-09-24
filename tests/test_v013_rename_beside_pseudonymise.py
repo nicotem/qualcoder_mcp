@@ -171,3 +171,15 @@ def test_the_records_this_server_keeps_are_named():
     assert "so do this server's pseudonymisation journal entries and run " \
            "records, which keep a file's name as it was at the run" \
            in _flat("PRIVACY.md")
+
+
+def test_the_import_states_its_name_rules():
+    """Fix round 1, QA-7: import_text_file's description and README say
+    the name rules it now shares, so a host meets them before a
+    refusal."""
+    flat = " ".join(server.import_text_file.__doc__.split())
+    assert "The name rules rename_file applies: at most 200 bytes in " \
+           "UTF-8;" in flat
+    assert "not a name already in the project's documents folder" in flat
+    assert "The name follows `rename_file`'s rules (at most 200 bytes in " \
+           "UTF-8;" in _flat("README.md")

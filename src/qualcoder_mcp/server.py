@@ -6532,7 +6532,15 @@ def import_text_file(
     Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
     Args:
-        filename: Name for the new file (must include extension, e.g., "interview_04.txt")
+        filename: Name for the new file (must include extension, e.g., "interview_04.txt").
+                  The name rules rename_file applies: at most 200 bytes
+                  in UTF-8; no control, line-separator or invisible
+                  formatting characters; no '/', '\\', '..' or ':'; no
+                  name Windows cannot store (< > | ? * ", a trailing dot
+                  or space, a device name such as CON or NUL.txt); and
+                  not a name already in the project's documents folder
+                  (compared ignoring letter case), which QualCoder would
+                  take for this text's stored copy
         content: The full text content of the file
         memo: Optional memo/description for the file
         owner: Deprecated since v0.12 and kept in the signature for
