@@ -518,6 +518,24 @@ class TestTheWorkBudget:
             "files_too_large_for_this_mapping). See residue.file_text, "
             "which names the files.")
 
+    def test_the_other_files_take_what_the_named_file_leaves(
+            self, project, monkeypatch):
+        """Ruling 1 as amended (fix round 4): the file this call names is
+        counted first from the shared budget, and the others take what
+        it leaves. A budget of the named file's work and file 2's: file 2
+        is counted, and file 4, which would fit the budget alone and
+        after file 2 alone, is past it."""
+        self._several(project)
+        named = _work_of(_after(project))
+        work = {2: _work_of("extracted page text"),
+                4: _work_of("THOMAS in four.")}
+        assert work[2] + work[4] <= named
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", named + work[2])
+        block = _block(preview_of(residue_detail="project"))
+        assert block["files_counted"] == 2                  # 1 and 2
+        assert block["files_not_counted"] == [4, 5, 6, 7]
+        assert block["files_too_large_for_this_mapping"] == []
+
     def test_within_the_budget_there_is_no_note(self, project):
         self._several(project)
         block = _block(preview_of())
