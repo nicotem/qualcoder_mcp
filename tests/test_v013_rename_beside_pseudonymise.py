@@ -117,8 +117,14 @@ def test_the_guide_readme_and_changelog_name_the_tools():
            "TO DATABASE**" in readme
     unreleased = _flat("CHANGELOG.md").split("## [0.12")[0]
     assert "### Added: `rename_case` and `rename_file`" in unreleased
-    assert "**`import_text_file` shares `rename_file`'s name rules, and " \
-           "refuses four names it used to accept.**" in unreleased
+    assert "**`import_text_file` shares `rename_file`'s name rules, so " \
+           "some names it used to accept are refused.** Exactly these" \
+           in unreleased
+    # Fix round 1, QA-1 and QA-7: the bullet says there is no limit in
+    # characters, and does not read as though 100 had been intended.
+    assert "There is no limit in characters." in unreleased
+    assert "100 characters" not in unreleased.split(
+        "### Added: `rename_case` and `rename_file`")[1]
 
 
 def test_the_documents_count_the_tools_the_server_registers():
@@ -142,7 +148,7 @@ def test_every_rename_text_keeps_the_house_rules():
              server.RENAME_FILE_SEARCH_INDEX_NOTE,
              server._RENAME_QC40_PARAGRAPH, D.documents_clash_message("x")]
     texts += [D.file_name_problem(n) for n in
-              ("", "a​b", "\ud800", "a:b", "x" * 101,
+              ("", "a​b", "\ud800", "a:b", "x" * 201,
                "\U0001d49c" * 51)]
     texts += [D.file_ending_problem(o, n, m, r) for o, n, m, r in (
         ("a.txt", "a", None, ["a"]), ("a.pdf", "a", "/docs/a.pdf", []),

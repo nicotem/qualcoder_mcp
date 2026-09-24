@@ -448,7 +448,7 @@ FILE_INPUTS = [
     (None, "a/b.txt", "A file name must not contain path separators"),
     (None, "..\\x.txt", "A file name must not contain path separators"),
     (None, "D:x.txt", "A file name must not contain path separators"),
-    (None, "x" * 97 + ".txt", "A file name must be at most 100 characters"),
+    (None, "x" * 197 + ".txt", "A file name must be at most 200 bytes"),
     (None, "\U0001d49c" * 50 + ".txt", "A file name must be at most 200 "
                                        "bytes"),
     (None, "a​b.txt", "A file name must not contain invisible"),
@@ -544,22 +544,26 @@ class TestRenameFile:
 
     def test_unchanged_comes_before_every_rule(self, project):
         for fid, stored in ((5, "no extension"), (6, "a..b.txt"),
-                            (7, "x" * 150 + ".txt")):
+                            (7, "x" * 250 + ".txt")):
             _add_file(project, fid, stored)
         _reload()
         for fid, typed in ((5, " no extension "), (6, "a..b.txt"),
-                           (7, "x" * 150 + ".txt")):
+                           (7, "x" * 250 + ".txt")):
             out = _file(fid, typed)
             assert out["changed"] is False and out["reason"] == "unchanged"
             assert out["file"]["id"] == fid
         assert _backups(project) == []
 
     @pytest.mark.parametrize("typed, error", [
-        ("x" * 96 + ".txt", None),
-        ("x" * 97 + ".txt", "A file name must be at most 100 characters "
-                            "(this one has 101)."),
-        ("é" * 98 + ".txt", "A file name must be at most 100 "
-                                 "characters (this one has 102)."),
+        # No limit in characters (fix round 1, QA-1): 101 and 196 ASCII
+        # characters, and 98 two-byte letters, are all within 200 bytes.
+        ("x" * 97 + ".txt", None),
+        ("x" * 196 + ".txt", None),                        # 200 bytes
+        ("x" * 197 + ".txt", "A file name must be at most 200 bytes in "
+                             "UTF-8 (this one has 201)."),
+        ("\u00e9" * 98 + ".txt", None),                   # 200 bytes
+        ("\u00e9" * 99 + ".txt", "A file name must be at most 200 bytes "
+                                 "in UTF-8 (this one has 202)."),
         ("\U0001d49c" * 49 + ".txt", None),                # 200 bytes
         ("\U0001d49c" * 49 + "a.txt", "A file name must be at most 200 "
                                       "bytes in UTF-8 (this one has 201)."),
@@ -740,7 +744,7 @@ class TestTheDocumentsFolderRule:
         for name, opening in (
                 ("orphan.txt", "The project's documents folder"),
                 ("a:b.txt", "A file name must not contain path"),
-                ("x" * 97 + ".txt", "A file name must be at most 100"),
+                ("x" * 197 + ".txt", "A file name must be at most 200"),
                 ("a\u200bb.txt", "A file name must not contain invisible"),
                 (".", "A file name must not be empty")):
             out = json.loads(server.import_text_file(name, "Some text."))
@@ -953,7 +957,7 @@ class TestTheDatabaseHalf:
             wdb.rename_file(1, "notes.txt")
 
     @pytest.mark.parametrize("name", ["", "a/b.txt", "a​b.txt",
-                                      "x" * 101])
+                                      "x" * 201])
     def test_rename_file_applies_the_name_rules_itself(self, wdb, name):
         with pytest.raises(ValueError, match="^A file name must"):
             wdb.rename_file(1, name)

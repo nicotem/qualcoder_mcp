@@ -954,10 +954,14 @@ def _forbidden_coder_name_char(name: str) -> Optional[str]:
 # not exactly an existing one (add_item_name.py:72-82 at 9bddf17; :74-84
 # at 3.8.2), but QualCoder then joins the name into paths (delete, export,
 # text replacement, the REFI-QDA export) and writes it as a file name on
-# export, with suffixes. 100 characters and 200 bytes in UTF-8 leave room
-# for those suffixes under the usual 255-byte file-name limit, and keep a
-# paging cursor that carries the name under its 1,024-character cap.
-MAX_FILE_NAME_CHARS = 100
+# export, with suffixes (a text with no stored path is exported as
+# '<name>.txt'). 200 bytes in UTF-8 leaves room for those suffixes under
+# the usual 255-byte file-name limit, and keeps a paging cursor that
+# carries the name under its 1,024-character cap: the cursor's worst case
+# comes from two-byte and four-byte letters, which reach 200 bytes at or
+# under 100 characters, so a limit in characters would add nothing to
+# either reason (fix round 1, QA-1: 200 ASCII characters make a
+# 393-character cursor). There is no limit in characters.
 MAX_FILE_NAME_BYTES = 200
 
 
@@ -982,9 +986,8 @@ def file_name_problem(name: str) -> Optional[str]:
     control, line or paragraph separator and invisible format characters
     (forbidden_display_char, with its two orthographic exceptions); an
     unpaired surrogate, which SQLite cannot store as text; the path
-    characters '/', '\\', '..' and ':'; over MAX_FILE_NAME_CHARS
-    characters or MAX_FILE_NAME_BYTES bytes in UTF-8. Refused, never
-    truncated.
+    characters '/', '\\', '..' and ':'; over MAX_FILE_NAME_BYTES bytes in
+    UTF-8. Refused, never truncated.
     """
     if file_name_is_invalid_upstream(name):
         return ("A file name must not be empty, spaces only or dots only "
@@ -999,9 +1002,6 @@ def file_name_problem(name: str) -> Optional[str]:
         return ("A file name must not contain path separators ('/' or "
                 "'\\'), '..' or ':', because QualCoder joins the name into "
                 "file paths.")
-    if len(name) > MAX_FILE_NAME_CHARS:
-        return (f"A file name must be at most {MAX_FILE_NAME_CHARS} "
-                f"characters (this one has {len(name)}).")
     size = len(name.encode("utf-8"))
     if size > MAX_FILE_NAME_BYTES:
         return (f"A file name must be at most {MAX_FILE_NAME_BYTES} bytes "

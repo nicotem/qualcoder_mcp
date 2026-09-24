@@ -12455,7 +12455,7 @@ def rename_file(file_id: int, new_name: str,
 
     Refused, each with its reason: an empty, spaces-only or dots-only
     name; control, line-separator or invisible formatting characters;
-    '/', '\\', '..' or ':'; over 100 characters or 200 bytes in UTF-8;
+    '/', '\\', '..' or ':'; over 200 bytes in UTF-8;
     another file's name (exactly, after NFC; a name differing from
     another only in letter case is allowed, as in QualCoder); for a text
     document, a name already present in the project's documents folder;

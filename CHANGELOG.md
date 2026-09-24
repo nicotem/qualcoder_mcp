@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 163,464 characters (about 40.9k tokens at
+  below included: full = 163,446 characters (about 40.9k tokens at
   chars/4) over 72 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools, nor `pseudonymise_source`,
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 171,776 and
+  in the repository's `.venv/`, the same definitions measure 171,758 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -244,7 +244,7 @@ reason:
 | Empty, spaces-only and dots-only names refused | QualCoder 4.0 itself treats them as invalid and renames them `unnamed_file_<id>` at every load |
 | Control, line-separator and invisible formatting characters refused | They make a name look identical to another or break single-line display |
 | `/`, `\`, `..` and `:` refused | QualCoder joins the name into paths (delete, export, text replacement, the REFI-QDA export); `..` reaches the project database, and a drive prefix leaves the folder on Windows |
-| Over 100 characters or 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes; the limit also keeps a paging cursor carrying the name under its cap |
+| Over 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes (a text with no stored path is exported as `<name>.txt`), under the usual 255-byte file-name limit; and a paging cursor carrying the name stays under its 1,024-character cap. The limit is in bytes because both reasons are: there is no limit in characters |
 | A text's new name already present in `documents/` refused | QualCoder finds a text's stored copy there by the entry's name and would act on that other file |
 | `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
 | An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`) | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
@@ -400,17 +400,18 @@ reason:
   pseudonym there, in the preview on the `use_project_pseudonyms` path,
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
-- **`import_text_file` shares `rename_file`'s name rules, and refuses
-  four names it used to accept.** A name over 100 characters or 200
-  bytes in UTF-8 is refused (its length check was meant to apply and did
-  not: the limit truncated a copy and the copy was discarded); so is a
-  name containing `:`; so is a name carrying an invisible formatting
-  character (a zero-width space, a bidirectional control), a line or
-  paragraph separator or a C1 control character, where only the C0
-  controls were refused before; and so is a name already present in the
-  project's `documents/` folder, which QualCoder would treat as the new
-  text's stored copy. A name that is a single dot is refused too. Every
-  other name that imported before imports now.
+- **`import_text_file` shares `rename_file`'s name rules, so some names
+  it used to accept are refused.** Exactly these, each with its reason:
+  a name over 200 bytes in UTF-8 (before, the only length check was a
+  10,000-character limit whose truncated copy was discarded, so no
+  length was ever enforced); a name containing `:`; a name carrying an
+  invisible formatting character (a zero-width space, a bidirectional
+  control), a line or paragraph separator or a C1 control character
+  (only the C0 controls were refused before); a name that is a single
+  dot; and a name already present in the project's `documents/` folder,
+  which QualCoder would treat as the new text's stored copy. There is no
+  limit in characters. Every other name that imported before imports
+  now.
 
 ## [0.12.1-alpha] - 2026-09-21
 
