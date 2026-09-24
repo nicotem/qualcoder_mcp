@@ -35,6 +35,9 @@ EXPECTED_TOOLS = {
     # project management (5)
     "list_available_projects", "select_project", "get_current_project",
     "copy_project_to_workspace",
+    # v0.13 Brief 2 fix round 1 (the owner's ruling): the project's
+    # pseudonym list, a tool of its own, full toolset only
+    "read_pseudonym_list",
     # v0.12 B1: the project's AI coder name, asked for once and stored
     # beside data.qda
     "set_project_ai_coder_name",
@@ -104,7 +107,7 @@ class TestToolSurfaceRegistration:
         tools = asyncio.run(server.mcp.list_tools())
         names = {t.name for t in tools}
         assert names == EXPECTED_TOOLS
-        assert len(names) == 70
+        assert len(names) == 71
 
 
 class TestEndToEndLoop:

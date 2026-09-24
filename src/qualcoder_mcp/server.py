@@ -2855,47 +2855,56 @@ def _set_name_warnings(ro, state, name: str,
             "Unchanged; recorded again.")
     return warnings
 
-def _pseudonyms_json_report(include: bool) -> Dict[str, Any]:
-    """The two inspection routes of ruling 14b.
+def _pseudonyms_json_read() -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
+    """One read of the project's pseudonyms.json, for the two routes.
 
-    By default no name enters the conversation: whether the file is
-    present, how many entries it has, which encoding it read as, and a
-    pointer to QualCoder's Pseudonyms dialog (the button in Manage Files,
-    `manage_files.py:285`, `:733-743` at the pin), where the human sees
-    the list. With `include`, the entries themselves, which the argument's
-    description says plainly sends the real names to the AI provider. An
-    unreadable file is reported with the reader's own value-free message.
+    Returns (block, entries): `entries` is None when the file is absent
+    (`{"present": False}`) or unreadable (`entries: null` and the
+    reader's own value-free message); otherwise the block carries the
+    count and the encoding and `entries` the file's pairs.
     """
     folder = _current_project_folder()
     if not os.path.lexists(str(folder / PSEUDONYMS_JSON_NAME)):
-        return {"present": False}
+        return {"present": False}, None
     try:
         entries, encoding = read_project_pseudonyms(folder)
     except (ValueError, OSError) as e:
         return {"present": True, "entries": None,
                 "error": (str(e) if isinstance(e, ValueError) else
                           f"{PSEUDONYMS_JSON_NAME} could not be read "
-                          f"({type(e).__name__}).")}
-    block: Dict[str, Any] = {
-        "present": True, "entries": len(entries), "encoding": encoding,
+                          f"({type(e).__name__}).")}, None
+    return {"present": True, "entries": len(entries),
+            "encoding": encoding}, entries
+
+
+def _pseudonyms_json_report() -> Dict[str, Any]:
+    """`get_current_project`'s report of the project's pseudonyms.json.
+
+    No name enters the conversation by this route (ruling 14b, and the
+    owner's ruling of 2026-09-24 that the list itself has a tool of its
+    own, `read_pseudonym_list`): whether the file is present, how many
+    entries it has, which encoding it read as, and a pointer to
+    QualCoder's Pseudonyms dialog (the button in Manage Files,
+    `manage_files.py:285`, `:733-743` at the pin), where the human sees
+    the list. It does not invite the call that returns the names. An
+    unreadable file is reported with the reader's own value-free message.
+    """
+    block, entries = _pseudonyms_json_read()
+    if entries is None:
+        return block
+    return {
+        **block,
         "note": (
             f"The project's own pseudonyms.json (QualCoder's import-time "
-            f"list) is present with {len(entries)} entries. Its contents are "
-            f"the researcher's reverse key and are not returned by default: "
-            f"to see or change them, open QualCoder's Pseudonyms dialog (the "
-            f"button in Manage Files), or call get_current_project with "
-            f"include_pseudonyms=true, which sends the real names to the AI "
-            f"provider.")}
-    if include:
-        block["entries_list"] = [{"original": item["original"],
-                                  "pseudonym": item["pseudonym"]}
-                                 for item in entries]
-    return block
+            f"list) is present with {len(entries)} entr(ies). Its contents "
+            f"are the researcher's reverse key and are not returned here; "
+            f"QualCoder's Pseudonyms dialog (the button in Manage Files) "
+            f"shows them to the researcher.")}
 
 
 @mcp.tool()
 @_tool_guard
-def get_current_project(include_pseudonyms: bool = False) -> str:
+def get_current_project() -> str:
     """Get information about the currently open project.
 
     Also reports whether QualCoder currently has this project open, with
@@ -2921,17 +2930,6 @@ def get_current_project(include_pseudonyms: bool = False) -> str:
     import-time list, the researcher's reverse key) as `pseudonyms_json`:
     whether it is present, how many entries it has and which encoding it
     read as, with no name in it.
-
-    Args:
-        include_pseudonyms: Also return the file's entries, as
-                 pseudonyms_json.entries_list. This returns every original
-                 name in the file and its pseudonym into the conversation,
-                 which sends the real names to the AI provider. Use it only
-                 when the researcher has asked to see or check the list;
-                 the default report says whether the file exists and how
-                 many entries it has without that. The transport turns
-                 1, "1", "true", "yes", "on", "t" and "y" into true before
-                 this tool runs.
 
     Returns:
         JSON with current project path, basic metadata, the schema report
@@ -2962,8 +2960,7 @@ def get_current_project(include_pseudonyms: bool = False) -> str:
         result.update(_ai_coder_name_report())
         # The project's own pseudonyms.json (v0.13, Brief 2, ruling 14b):
         # presence and count by default, the list only when asked.
-        result["pseudonyms_json"] = _pseudonyms_json_report(
-            bool(include_pseudonyms))
+        result["pseudonyms_json"] = _pseudonyms_json_report()
 
         # QualCoder-open state, cheap to re-check after the user says
         # they have closed it (heartbeat refreshes every 5 s, stale > 30 s)
@@ -3007,6 +3004,45 @@ def get_current_project(include_pseudonyms: bool = False) -> str:
         raise
     except Exception as e:
         return json.dumps({"error": f"Failed to get project info: {str(e)}"})
+
+
+@mcp.tool()
+@_tool_guard
+def read_pseudonym_list() -> str:
+    """This sends every real name in the project's pseudonyms.json, with its pseudonym, to the AI provider.
+
+    Call it only when the researcher has asked, in this conversation, to
+    see or check the project's pseudonym list. QualCoder's Pseudonyms
+    dialog (the button in Manage Files) shows the same list without
+    sending it anywhere, and get_current_project says whether the file
+    exists and how many entries it has without any name.
+
+    The list is the project's own pseudonyms.json: QualCoder's import-time
+    list, and the researcher's reverse key. Each call that returns it
+    writes one line to this server's log saying that the list was
+    returned and how many entries it had, with no name in it, so the
+    host's log shows every time the list left the project.
+
+    Returns:
+        JSON: `pseudonyms_json` with `present`, `entries` (the count),
+        `encoding` and `entries_list` (`{original, pseudonym}` objects);
+        `present` false when the project has no such file; an error, with
+        the reader's value-free message, when it cannot be read.
+    """
+    if current_project_path is None:
+        return json.dumps({"error": _no_project_message()}, indent=2)
+    report, entries = _pseudonyms_json_read()
+    if entries is None:
+        return json.dumps({"pseudonyms_json": report}, indent=2)
+    report["entries_list"] = [{"original": item["original"],
+                               "pseudonym": item["pseudonym"]}
+                              for item in entries]
+    # The owner's ruling of 2026-09-24: every return of the list leaves
+    # one line in the host's log, a count and nothing else.
+    logger.info("read_pseudonym_list returned the project's "
+                "pseudonyms.json list (%d entries) to the conversation.",
+                len(entries))
+    return json.dumps({"pseudonyms_json": report}, indent=2)
 
 
 @mcp.tool()

@@ -4434,6 +4434,12 @@ class TestSavingTheMappingIntoPseudonymsJson:
 # =============================================================================
 
 class TestTheInspectionRoutes:
+    """Ruling 14b, and the owner's ruling of 2026-09-24 (Brief 2 fix round
+    1): get_current_project reports the count and never a name, and does
+    not invite the call that returns them; the list has a tool of its
+    own, read_pseudonym_list, whose description says first that it sends
+    the real names to the AI provider, which is in the full toolset only,
+    and which leaves one value-free line in the log each time."""
 
     ENTRIES = [{"original": "Thomas", "pseudonym": "Alex"},
                {"original": "Mary Ann", "pseudonym": "Sam"}]
@@ -4441,6 +4447,10 @@ class TestTheInspectionRoutes:
     @staticmethod
     def _report(**kwargs):
         return json.loads(server.get_current_project(**kwargs))
+
+    @staticmethod
+    def _list():
+        return json.loads(server.read_pseudonym_list())
 
     def test_get_current_project_reports_presence_and_count_without_a_name(
             self, project):
@@ -4450,48 +4460,76 @@ class TestTheInspectionRoutes:
             "present": True, "entries": 2, "encoding": "utf-8",
             "note": (
                 "The project's own pseudonyms.json (QualCoder's import-time "
-                "list) is present with 2 entries. Its contents are the "
-                "researcher's reverse key and are not returned by default: "
-                "to see or change them, open QualCoder's Pseudonyms dialog "
-                "(the button in Manage Files), or call get_current_project "
-                "with include_pseudonyms=true, which sends the real names to "
-                "the AI provider.")}
+                "list) is present with 2 entr(ies). Its contents are the "
+                "researcher's reverse key and are not returned here; "
+                "QualCoder's Pseudonyms dialog (the button in Manage Files) "
+                "shows them to the researcher.")}
         serialised = json.dumps(out)
         for name in ("Thomas", "Mary Ann", "Alex", "Sam"):
             assert name not in serialised, name
+        # It does not invite the call that returns the names.
+        assert "read_pseudonym_list" not in serialised
+        assert "include_pseudonyms" not in serialised
         _house_rules([out["pseudonyms_json"]["note"]])
+
+    def test_get_current_project_takes_no_argument_and_its_description_invites_nothing(
+            self):
+        tool = server.mcp._tool_manager._tools["get_current_project"]
+        assert tool.parameters["properties"] == {}
+        assert "read_pseudonym_list" not in tool.description
+        assert "include_pseudonyms" not in tool.description
 
     def test_it_reports_absence(self, project):
         assert self._report()["pseudonyms_json"] == {"present": False}
+        assert self._list() == {"pseudonyms_json": {"present": False}}
 
     def test_it_reports_an_unreadable_file_value_free(self, project):
         (project / "pseudonyms.json").write_text(
             '{"Thomas": "Alex"}', encoding="utf-8")
-        block = self._report()["pseudonyms_json"]
-        assert block == {"present": True, "entries": None, "error": (
+        expected = {"present": True, "entries": None, "error": (
             "pseudonyms.json could not be parsed as QualCoder's list of "
             "{original, pseudonym} entries: the file holds a dict, not a "
             "list.")}
+        assert self._report()["pseudonyms_json"] == expected
+        assert self._list() == {"pseudonyms_json": expected}
 
-    def test_include_pseudonyms_returns_the_list_and_the_description_says_so(
-            self, project):
+    def test_read_pseudonym_list_returns_the_list_and_logs_a_count(
+            self, project, caplog):
+        import logging
         _sidecar_file(project, self.ENTRIES)
-        block = self._report(include_pseudonyms=True)["pseudonyms_json"]
-        assert block["entries_list"] == self.ENTRIES
-        assert block["entries"] == 2
-        description = " ".join(
-            server.mcp._tool_manager._tools["get_current_project"]
-            .description.split())
-        assert ("This returns every original name in the file and its "
-                "pseudonym into the conversation, which sends the real names "
-                "to the AI provider. Use it only when the researcher has "
-                "asked to see or check the list; the default report says "
-                "whether the file exists and how many entries it has without "
-                "that." in description)
-        # Absent, the switch adds nothing.
-        (project / "pseudonyms.json").unlink()
-        assert self._report(include_pseudonyms=True)["pseudonyms_json"] == {
-            "present": False}
+        caplog.set_level(logging.DEBUG)
+        out = self._list()
+        assert out == {"pseudonyms_json": {
+            "present": True, "entries": 2, "encoding": "utf-8",
+            "entries_list": self.ENTRIES}}
+        lines = [r for r in caplog.records
+                 if "pseudonyms.json list" in r.getMessage()]
+        assert [(r.levelname, r.getMessage()) for r in lines] == [
+            ("INFO", "read_pseudonym_list returned the project's "
+                     "pseudonyms.json list (2 entries) to the "
+                     "conversation.")]
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        for name in ("Thomas", "Mary Ann", "Alex", "Sam", "study"):
+            assert name not in logged, name
+
+    def test_its_description_says_first_that_it_sends_the_names(self):
+        tool = server.mcp._tool_manager._tools["read_pseudonym_list"]
+        assert tool.description.split("\n")[0] == (
+            "This sends every real name in the project's pseudonyms.json, "
+            "with its pseudonym, to the AI provider.")
+        flat = " ".join(tool.description.split())
+        assert ("Call it only when the researcher has asked, in this "
+                "conversation, to see or check the project's pseudonym "
+                "list." in flat)
+        _house_rules([tool.description])
+
+    def test_it_is_in_the_full_toolset_only(self):
+        assert "read_pseudonym_list" not in server.CORE_TOOLSET
+        assert "read_pseudonym_list" in server.mcp._tool_manager._tools
+
+    def test_it_needs_an_open_project(self, project):
+        server.current_project_path = None
+        assert "error" in self._list()
 
 
 class TestTheSafeNameHelperOnWhatIsNotAName:
@@ -7206,8 +7244,11 @@ class TestTheDocumentsTellTheTruth:
         "`pseudonyms.json` in QualCoder's own format",
         "an audit record of which rows the run changed and not a way back "
         "(the backup is)",
-        "`include_pseudonyms=true` returns the entries themselves, which "
-        "sends the real names to the AI provider",
+        # Brief 2 fix round 1, the owner's ruling: the list has a tool of
+        # its own.
+        "`read_pseudonym_list()` - **Sends real names to the AI "
+        "provider**: returns the entries of the project's own "
+        "`pseudonyms.json`",
         "`qualcoder_edit_parity` reproduces the walk QualCoder's "
         "coding-view editor applies, fed this tool's exact edit list (the "
         "editor's own diff may factor a shared prefix or suffix out of a "
@@ -7289,8 +7330,10 @@ class TestTheDocumentsTellTheTruth:
         "entries this server wrote for earlier runs",
         "This server writes it only when asked, in QualCoder's own format, "
         "and never deletes it",
-        "with `include_pseudonyms=true` it returns the entries themselves, "
-        "which sends the real names to the AI provider",
+        "The names themselves reach the conversation only through a tool "
+        "of their own, `read_pseudonym_list` (in the full toolset only), "
+        "whose description says first that it sends the real names to the "
+        "AI provider",
         "each is an audit record of which rows a run changed and where the "
         "pseudonyms now sit, kept so a run can be accounted for afterwards. "
         "It is not a way back; the backup taken before the run is.",

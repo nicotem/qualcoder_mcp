@@ -8,18 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 161,921 characters (about 40.5k tokens at
-  chars/4) over 70 tools, core = 57,266 (about 14.3k) over 21. `core`
-  moved only with `get_current_project`, which gained an argument and
-  its report of the project's own `pseudonyms.json`; neither the six
+  below included: full = 162,406 characters (about 40.6k tokens at
+  chars/4) over 71 tools, core = 56,568 (about 14.1k) over 21. `core`
+  moved only with `get_current_project`, which gained its report of
+  the project's own `pseudonyms.json`; neither the six
   token-gated tools nor `pseudonymise_source` is in it. Measured
   exactly as the 0.12 figures were, on the final tree through the
   toolset gate, as the `tools/list` payload carries them:
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 170,209 and
-  60,258, because 3.10 to 3.12 keep the docstring indentation 3.13
+  in the repository's `.venv/`, the same definitions measure 170,718 and
+  59,520, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
 ### Added: `pseudonymise_source` reports every residue count as two readings
@@ -226,9 +226,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run has committed; the result says `mapping_saved`, and the run
   record and the journal entry say "requested".
 - `get_current_project` reports `pseudonyms_json` (present, how many
-  entries, which encoding) without a name, and returns the entries
-  with `include_pseudonyms=true`, whose description says that this
-  sends the real names to the AI provider.
+  entries, which encoding) without a name. A new tool,
+  `read_pseudonym_list`, in the full toolset only, returns the entries
+  themselves; its description says first that this sends the real names
+  to the AI provider, and each call writes one log line with the count
+  and no name.
 
 ### Changed: the run record is format 2
 
@@ -396,10 +398,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as well as the execute, because the token binds it; adding it only
   on the execute is refused as another operation. `rewrite_memos` is
   bound the same way. The run record is now `"format": 2`.
-- **`get_current_project` gains `pseudonyms_json` and an argument,
-  `include_pseudonyms`.** A caller that compares the whole result
-  shape sees a new key; the entries themselves are returned only when
-  the argument is true.
+- **`get_current_project` gains `pseudonyms_json`.** A caller that
+  compares the whole result shape sees a new key. The names in the
+  file are returned only by the new `read_pseudonym_list`.
 
 ## [0.12.1-alpha] - 2026-09-21
 

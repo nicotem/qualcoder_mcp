@@ -614,10 +614,13 @@ will ask, and the summary above depends on them:
     else and is half of the reverse key. A save merges with what is
     there by QualCoder's own rules, and is written only once the run has
     committed. `get_current_project` reports whether the file is present
-    and how many entries it has, never a name; with
-    `include_pseudonyms=true` it returns the entries themselves, which
-    sends the real names to the AI provider, and its description says
-    so. QualCoder's own
+    and how many entries it has, never a name. The names themselves
+    reach the conversation only through a tool of their own,
+    `read_pseudonym_list` (in the full toolset only), whose description
+    says first that it sends the real names to the AI provider, so a
+    host asks the researcher's approval for it apart from everyday
+    reads; each call writes one line to this server's log with the
+    count and no name. QualCoder's own
     guidance is to remove it and store it securely once the import is
     done (`manage_files.py` at the 9bddf17 pin), and that applies here
     too. `speakers.json` and `speaker_regex.json` can hold names as

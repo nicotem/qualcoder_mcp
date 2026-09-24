@@ -194,14 +194,6 @@ class TestTheTransportCoercesTheNewSwitches:
                 {"mapping": MAPPING, "file_id": 1, argument: sent}))
         assert argument in str(refused.value)
 
-    def test_include_pseudonyms_takes_yes_for_true(self, project):
-        (project / "pseudonyms.json").write_text(json.dumps(
-            [{"original": "Thomas", "pseudonym": "Alex"}]), encoding="utf-8")
-        for sent, listed in (("yes", True), ("on", True), ("no", False)):
-            answer = _preview_body(asyncio.run(server.mcp.call_tool(
-                "get_current_project", {"include_pseudonyms": sent})))
-            assert ("entries_list" in answer["pseudonyms_json"]) is listed
-
 
 # =============================================================================
 # THE REFUSALS THAT REPLACE `skipped_files`

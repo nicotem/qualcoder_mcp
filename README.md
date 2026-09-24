@@ -805,7 +805,7 @@ The MCP server exposes these resources (read-only data):
 ## Available Tools
 
 Claude can use these tools to analyse your data. The full toolset
-(the default, `QUALCODER_MCP_TOOLSET=full`) registers 70 tools; the
+(the default, `QUALCODER_MCP_TOOLSET=full`) registers 71 tools; the
 argument lists below are abbreviated, and each tool's own description
 carries the complete list.
 
@@ -824,8 +824,8 @@ carries the complete list.
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 161,000 characters for `full`, roughly 40k
-> tokens at four characters per token, and about 57,000 characters for
+> definitions run to about 162,000 characters for `full`, roughly 40k
+> tokens at four characters per token, and about 56,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those
 > interpreters keep the docstring indentation that 3.13 strips. See the
@@ -835,7 +835,8 @@ carries the complete list.
 **Project Management:**
 - `list_available_projects(search_directories)` - Discover Qualcoder projects on your system
 - `select_project(project_path)` - Open/switch to a different project (reports `qualcoder_gui_signals` and remembers the selection for the recovery hint)
-- `get_current_project(include_pseudonyms)` - Show which project is open, whether a released QualCoder has it open (`qualcoder_open`), and the 4.0 heuristics (`qualcoder_gui_signals`); `pseudonyms_json` says whether the project's own `pseudonyms.json` is present and how many entries it has, never a name, and `include_pseudonyms=true` returns the entries themselves, which sends the real names to the AI provider
+- `get_current_project()` - Show which project is open, whether a released QualCoder has it open (`qualcoder_open`), and the 4.0 heuristics (`qualcoder_gui_signals`); `pseudonyms_json` says whether the project's own `pseudonyms.json` is present and how many entries it has, never a name
+- `read_pseudonym_list()` - **Sends real names to the AI provider**: returns the entries of the project's own `pseudonyms.json` (the researcher's reverse key), for use only when the researcher asks to see or check the list; each call writes one log line with the count and no name. In the full toolset only. QualCoder's Pseudonyms dialog (the button in Manage Files) shows the same list without sending it anywhere
 
 **Core Data Analysis:**
 - `search_files(pattern, search_filename, search_content, search_memo, limit, exclude_code_ids, cursor, max_matches_per_file)` - Find files by name, content, or memo with smart clarification workflow; `exclude_code_ids` hides content matches that are already coded under those codes, and `cursor` walks the results page by page
