@@ -991,7 +991,7 @@ _WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>|?*"')
 _WINDOWS_DEVICE_STEMS = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"{port}{digit}" for port in ("COM", "LPT")
-       for digit in "0123456789¹²³"})
+       for digit in "0123456789\u00b9\u00b2\u00b3"})
 
 
 def windows_name_problem(name: str) -> Optional[str]:
