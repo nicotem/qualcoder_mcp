@@ -2768,21 +2768,92 @@ class TestNamesLeftInText:
         assert P.names_left_in_text(compiled(), text, True, False,
                                     max_matches=8) is None
 
-    def test_the_count_says_which_allowance_stopped_it(self):
-        """Fix round 3: so the caller can tell a file too large for a
-        budget on its own from one the files before it left no room for,
-        the count says whether it passed the matches or the work."""
-        compiled = P.Compiled(P.validate_mapping(
-            [{"original": "Rene", "pseudonym": "Alex"}]))
-        stopped = []
-        assert P.names_left_in_text(compiled, "Rene " * 10, True, False,
-                                    max_matches=3, stopped=stopped) is None
-        assert stopped == ["matches"]
-        stopped = []
+    def test_a_stop_says_what_it_spent_and_what_it_found(self):
+        """Fix round 5, the lead's rules 1 and 3: a count that stops tells
+        the caller what it spent, so it is charged like any other, and how
+        many occurrences it had found, a lower bound of at least one,
+        whichever pass it stopped in."""
+        rene = [{"original": "Rene", "pseudonym": "Alex"}]
+        stop = {}
+        # The direct pass: the first sight, charged 5, passes 3.
         assert P.names_left_in_text(
-            P.Compiled(compiled.mapping), "Later Rene\u0316\u0301 arrived.",
-            True, False, max_extra_work=0, stopped=stopped) is None
-        assert stopped == ["work"]
+            P.Compiled(P.validate_mapping(rene)), "Rene " * 10, True, False,
+            max_matches=3, stopped=stop) is None
+        assert stop == {"cause": "matches", "matches": 5, "extra_work": 0,
+                        "at_least": 1}
+        # The whole-word pass's question about a name before a composing
+        # mark, past the work allowance: its work is charged.
+        stop = {}
+        assert P.names_left_in_text(
+            P.Compiled(P.validate_mapping(rene)),
+            "Later Rene\u0316\u0301 arrived.", True, False,
+            max_extra_work=0, stopped=stop) is None
+        compiled = P.Compiled(P.validate_mapping(rene))
+        assert stop == {"cause": "work", "matches": 6,
+                        "extra_work": P.residue_work(
+                            compiled, "Rene\u0316\u0301"),
+                        "at_least": 1}
+        # The folded pass alone finds "STRASSE" for "Straße": no direct
+        # match, three folded ones when it stops (5 + 1 + 1 past 6).
+        stop = {}
+        assert P.names_left_in_text(
+            P.Compiled(P.validate_mapping(
+                [{"original": "Straße", "pseudonym": "Alex"}])),
+            "STRASSE " * 10, True, False, max_matches=6,
+            stopped=stop) is None
+        assert stop == {"cause": "matches", "matches": 7, "extra_work": 0,
+                        "at_least": 3}
+        # The whole-word pass alone finds "Thomas" before a composing
+        # mark: neither reading pass does, and the bound is still one.
+        stop = {}
+        assert P.names_left_in_text(
+            P.Compiled(P.validate_mapping(
+                [{"original": "Thomas", "pseudonym": "Alex"}])),
+            "Thomas\u0301 said.", True, False, max_matches=0,
+            stopped=stop) is None
+        assert stop == {"cause": "matches", "matches": 5, "extra_work": 0,
+                        "at_least": 1}
+
+    # (mapping, text): the stop in every pass, the folded pass alone, the
+    # whole-word pass alone, a name of two words the two readings divide
+    # differently (QA-7), and Turkish capitals under an insensitive mode.
+    BOUND_SHAPES = [
+        ([{"original": "Thomas", "pseudonym": "Alex", "variants": ["Tom"]}],
+         "exact", "Thomas said Thomasson, THOMAS and Tom. " * 4),
+        ([{"original": "Straße", "pseudonym": "Alex"}], "insensitive",
+         "STRASSE and Straße and STRAẞE. " * 3),
+        ([{"original": "Thomas", "pseudonym": "Alex"}], "exact",
+         "Thomas\u0301 said, Thomas\u0308 too, and Thomas. " * 3),
+        ([{"original": "Mary", "pseudonym": "Alice"},
+          {"original": "Ann", "pseudonym": "Beth"},
+          {"original": "Mary Ann", "pseudonym": "Carla"}], "exact",
+         "Mary, Ann and Mary Ann. " * 3),
+        ([{"original": "İsmail", "pseudonym": "Alex"},
+          {"original": "Işık", "pseudonym": "Bob"}], "insensitive",
+         "İSMAİL and ISIK and ismail and ışık. " * 3),
+    ]
+
+    @pytest.mark.parametrize("index", range(5))
+    def test_the_lower_bound_holds_at_every_limit(self, index):
+        """At every match allowance below what the full count spends, the
+        count stops, and what it says it found is at least one and at most
+        the larger of the full count's two readings."""
+        mapping, mode, text = self.BOUND_SHAPES[index]
+        def compiled():
+            return P.Compiled(P.validate_mapping(mapping, mode))
+        full = P.names_left_in_text(compiled(), text, True, False)
+        most = max(full["occurrences"].values())
+        assert most >= 1
+        for limit in range(full["matches"]):
+            stop = {}
+            assert P.names_left_in_text(compiled(), text, True, False,
+                                        max_matches=limit,
+                                        stopped=stop) is None, limit
+            assert stop["cause"] == "matches"
+            assert 1 <= stop["at_least"] <= most, (limit, stop)
+            assert limit < stop["matches"] <= full["matches"], limit
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=full["matches"]) == full
 
     def test_a_first_sight_is_charged_per_candidate(self):
         """The second re-verification's PN-6 (FD2-1): a first sight is

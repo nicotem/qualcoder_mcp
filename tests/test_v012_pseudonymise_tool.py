@@ -4971,14 +4971,16 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "ids. \"project\": full detail for up to 200 files and one such row "
          "for up to 1,000 more; on a large mapping over many files that is "
          "megabytes. The totals and the warnings are the same either way."),
-        ("the_file_text_budgets",                        # fix round 2, B-2
-         "The file-text count has fixed budgets: past them a file is only "
-         "asked whether a name shows, and past a budget for that question "
-         "it is not checked, and the warning names it."),
-        ("the_named_file_and_the_too_large",             # fix round 3, H1
+        ("the_file_text_budgets",                        # fix rounds 2, 5
+         "The file-text count has fixed budgets, and all it spends is "
+         "charged to them: past them a file is only asked whether a name "
+         "shows, and past a budget for that question it is not checked, "
+         "and the warning names it."),
+        ("the_named_file_and_the_too_large",             # fix rounds 3, 5
          "The file this call names is read first, with the first claim on "
-         "the budgets; a file too large to count with this many names on its "
-         "own is said to be, and fewer names would let it be counted."),
+         "the budgets. A count that stops part-way found a name and gives a "
+         "lower bound; a file too large to count with this many names is "
+         "said to be, and fewer names would let it be counted."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "

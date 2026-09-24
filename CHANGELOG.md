@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,430 characters (about 39.3k tokens at
+  below included: full = 157,551 characters (about 39.4k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,458 and
+  in the repository's `.venv/`, the same definitions measure 165,587 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -76,19 +76,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `use_project_pseudonyms` path no longer word and no form is returned.
   The count has fixed budgets, for its work (characters times names,
   and a little more for every character, more again in text that is not
-  plain ASCII) and for the number of matches; past them a file is only
-  asked whether any name shows, is listed in `files_not_counted`, and
-  the preview says so. That question has a budget of its own, because on
-  a file where no name shows it reads as much as a count: past it a file
-  is not checked at all, is listed in `files_not_checked`, the warning
-  names it and says to preview such files one at a time, and it is never
-  reported clean. The file this call rewrites is read first, with the
-  first claim on the budgets. A file too large to count with this many
-  names on its own (at 1,000 names, an interview of about 90,000
-  characters) is told apart, in `files_too_large_for_this_mapping` and
-  in the warning, whose remedy for it is fewer names; it never closes a
-  budget for the files after it, and the rewrite still applies to the
-  file this call rewrites. The three are sized so that, on any text and
+  plain ASCII) and for the number of matches, and everything a count
+  spends is charged to them, a count that stops part-way too. Past them
+  a file is only asked whether any name shows, is listed in
+  `files_not_counted`, and the preview says so. That question has a
+  budget of its own, because on a file where no name shows it reads as
+  much as a count: past it a file is not checked at all, is listed in
+  `files_not_checked`, the warning names it and says to preview such
+  files one at a time, and it is never reported clean. The file this
+  call rewrites is read first, with the first claim on the budgets. A
+  count that stops part-way has found a name: the file is listed in
+  `files_counted_in_part`, with a lower bound on its occurrences. A file
+  too large to count with this many names (at 1,000 names, an interview
+  of about 90,000 characters) is told apart before anything is counted,
+  by its estimated cost against the whole budget, in
+  `files_too_large_for_this_mapping` and in the warning, whose remedy
+  for it is fewer names; it never closes a budget for the files after
+  it, and the rewrite still applies to the file this call rewrites. A
+  PDF source, which cannot be named for a preview, is never told to be
+  previewed on its own and has a sentence of its own. The three are
+  sized so that, on any text and
   at any mapping size up to the maximum of 500 entries, a preview's
   file-text count takes about one second on the development Mac (0.66
   to 0.77 s through the tool for the dearest shapes measured,

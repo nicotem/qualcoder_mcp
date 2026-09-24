@@ -8432,6 +8432,16 @@ class QualcoderDatabase:
         "totals and the warnings cover every file either way. Call again "
         "with residue_detail=\"project\" for the full detail of up to "
         "{full} files and one such row for up to {compact} more.")
+    PSEUDONYMISE_IN_PART_NOTE = (
+        "{count} file(s) were counted in part: each count stopped at this "
+        "preview's budget (the number of matches, or the work of the "
+        "questions a count asks about a name before a composing mark) after "
+        "it had found a name, so a name certainly shows in each. Each is "
+        "listed in files_counted_in_part, with shows_a_name true and "
+        "occurrences_at_least, the occurrences found before it stopped, a "
+        "lower bound ({at_least} in all). A count that stops is charged all "
+        "it spent, like any other, so the files after it are past the "
+        "budget.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full, because the files read "
         "before them had spent one of this preview's two budgets: the work "
@@ -8441,25 +8451,37 @@ class QualcoderDatabase:
         "still asked whether any name shows in it, and every one that does "
         "is in the totals and the warnings. Preview them one at a time: the "
         "file a call names is read first, with the first claim on the "
-        "budgets.")
+        "budgets, and none of these is too large to be counted there.")
     PSEUDONYMISE_NOT_CHECKED_NOTE = (
         "{count} file(s) were not checked at all: the files read before "
-        "them had spent this preview's budget for asking whether a name "
-        "shows, which costs as much as a count on a file where no name "
-        "shows, or the question alone was larger than that budget. They "
-        "are listed in files_not_checked and are not reported clean: "
-        "preview them one at a time, or use fewer names, to check them.")
+        "them had spent this preview's budget for counting, and then its "
+        "budget for asking whether a name shows (which costs as much as a "
+        "count on a file where no name shows), or the question alone was "
+        "larger than that budget. They are listed in files_not_checked and "
+        "are not reported clean: preview them one at a time, or use fewer "
+        "names, to check them. The file a call names is read first, and "
+        "none of these is too large to be counted there.")
+    PSEUDONYMISE_PDF_NOTE = (
+        "{count} PDF source(s) were not counted in full, because the files "
+        "read before them had spent this preview's budget. Each is listed "
+        "in files_not_counted (asked whether any name shows) or in "
+        "files_not_checked, and none is reported clean. A PDF source cannot "
+        "be named for a preview (this tool rewrites text sources only), so "
+        "it cannot be previewed on its own; only a preview with fewer "
+        "names, which costs less for every file, can reach further.")
     PSEUDONYMISE_TOO_LARGE_NOTE = (
         "{count} file(s) are too large to count in full with this many "
-        "names: counting one on its own passes this preview's budget "
-        "({budget} units, its characters times the surface forms and a "
-        "little more for every character), so no order of the files could "
-        "make room for it. Each is listed in "
-        "files_too_large_for_this_mapping and none is reported clean. Each "
-        "is still asked whether any name shows when that question fits its "
-        "own budget, and is otherwise listed in files_not_checked. The "
-        "rewrite applies to the file this call rewrites either way. Fewer "
-        "names (the mapping split in two) would let them be counted.")
+        "names: each one's estimated cost, its characters times the surface "
+        "forms and a little more for every character, is more than this "
+        "preview's whole budget ({budget} units), so it is not counted, "
+        "whatever the order of the files. This is decided before any file "
+        "is read, and closes nothing for the files after it. Each is listed "
+        "in files_too_large_for_this_mapping and none is reported clean: "
+        "each is asked whether any name shows only when that question fits "
+        "its own budget ({check} units), and is otherwise listed in "
+        "files_not_checked. The rewrite applies to the file this call "
+        "rewrites either way. Fewer names (the mapping split in two) would "
+        "let them be counted.")
 
     @staticmethod
     def _pseudonymise_spend_words(entries: Sequence[Dict[str, Any]],
@@ -8526,15 +8548,21 @@ class QualcoderDatabase:
         every other file, so it has the first claim on them (the lead's
         ruling 1 as amended, fix round 4); every other file then spends
         what it leaves, in `source.id` order: the work, characters times
-        (surface forms plus a per-character term), and the matches. Past either, a file
-        gets the cheap question only, "does any name show here", charged
-        to a budget of its own, and is listed in `files_not_counted`, and
-        so does every file after it; past the question's budget a file is
-        listed in `files_not_checked`. A file too large for a budget on
-        its own is listed in `files_too_large_for_this_mapping` and never
-        closes a budget for the files after it (ruling 2). No file is
-        omitted for want of budget and none is reported clean when it is
-        not.
+        (surface forms plus a per-character term), and the matches. The
+        lead's four rules (fix round 5): everything a count spends is
+        charged, a count that stops part-way too, so the time is bounded
+        by the budgets alone; a file whose estimate passes the EMPTY work
+        budget is too large for this mapping, decided before counting,
+        listed in `files_too_large_for_this_mapping` and closing nothing;
+        a count that stops part-way certainly found a name and is listed
+        in `files_counted_in_part` with a lower bound; a PDF source, which
+        cannot be named, gets its own note and sentence. Past the work or
+        the matches, a file gets the cheap question only, "does any name
+        show here", charged to a budget of its own and decided the same
+        way, and is listed in `files_not_counted`, and so does every file
+        after it; past the question's budget, or too large for it, a file
+        is listed in `files_not_checked`. No file is omitted for want of
+        budget and none is reported clean when it is not.
 
         Compact by default (the owner's ruling of 2026-09-23): full detail
         for the file this call names; for every other file one row per
@@ -8596,6 +8624,10 @@ class QualcoderDatabase:
         not_counted: List[int] = []
         not_checked: List[int] = []
         too_large_ids: List[int] = []
+        in_part: List[int] = []
+        at_least_total = 0
+        pdf_past_showing = 0
+        pdf_past_unchecked = 0
         too_large_showing = 0
         too_large_not_checked = 0
         named_too_large = False
@@ -8618,19 +8650,25 @@ class QualcoderDatabase:
                     head["file_not_rewritten_because"] = reason
             work = engine.residue_work(compiled, text)
             named = fid == chosen
+            pdf = reason == "pdf_source"
             found = None
-            # Too large to count with this many names: past a budget on
-            # its own, so no other file's count could have made room.
-            # The lead's ruling 1, amended (fix round 4): the file this call
-            # names is read first, from the same shared budgets, so it
-            # has the first claim on them and no allowance of its own;
-            # the other files take what it leaves.
-            too_large = False
-            if work > engine.MAX_RESIDUE_SCAN_WORK:
-                too_large = True
-            elif not past_budget and work_done + work <= \
-                    engine.MAX_RESIDUE_SCAN_WORK:
-                stopped: List[str] = []
+            stop: Dict[str, Any] = {}
+            # The lead's four rules (fix round 5). Too large for this
+            # mapping is decided before counting, by the estimate against
+            # an EMPTY budget (rule 2), so it depends on the file alone and
+            # closes nothing for the files after it. Otherwise a file is
+            # counted from what the files before it left (the file this
+            # call names first, with the first claim, ruling 1 as
+            # amended), or is past the budget once they have spent it;
+            # passed, the budget stays passed, so which files are counted
+            # depends on the order and the sizes alone.
+            too_large = work > engine.MAX_RESIDUE_SCAN_WORK
+            if too_large:
+                pass
+            elif (past_budget or matches_left <= 0
+                  or work_done + work > engine.MAX_RESIDUE_SCAN_WORK):
+                past_budget = True
+            else:
                 found = engine.names_left_in_text(
                     compiled, text,
                     list_longer_words=may_echo_names and full,
@@ -8638,18 +8676,14 @@ class QualcoderDatabase:
                     max_matches=matches_left,
                     max_extra_work=(engine.MAX_RESIDUE_SCAN_WORK
                                     - work_done - work),
-                    stopped=stopped)
-                # Past the matches with none spent before it, or past the
-                # work (its questions') with none spent before it: too
-                # large for that budget on its own.
-                too_large = found is None and (
-                    (stopped == ["matches"] and matches_left
-                     == engine.MAX_RESIDUE_SCAN_MATCHES)
-                    or (stopped == ["work"] and work_done == 0))
+                    stopped=stop)
+                # Everything spent is charged (rule 1), a count that
+                # stopped part-way as fully as one that finished.
+                spent = found if found is not None else stop
+                work_done += work + spent["extra_work"]
+                matches_left -= spent["matches"]
             compact: Optional[Dict[str, Any]] = None
             if found is not None:
-                work_done += work + found["extra_work"]
-                matches_left -= found["matches"]
                 counted += 1
                 occurrences = found["occurrences"]
                 wide_total += occurrences["wide"]
@@ -8687,37 +8721,52 @@ class QualcoderDatabase:
                     self._pseudonymise_capped(
                         spellings, "normalisation_variants_seen", row_out,
                         "normalisation_variants_seen_truncated")
+            elif stop:
+                # Stopped part-way at a budget (rule 3): every stop comes
+                # on a match, so a name certainly shows, and the count is
+                # a lower bound. No remedy is given: none is needed to
+                # know that a name shows, and for a file dense enough to
+                # pass the match budget alone none would work.
+                in_part.append(fid)
+                at_least_total += stop["at_least"]
+                shows = True
+                compact = {**base, "counted": False,
+                           "occurrences_at_least": stop["at_least"]}
+                row_out = {**head, "counted": False, "counted_in_part": True,
+                           "occurrences_at_least": stop["at_least"]}
+                if full:
+                    row_out["shows_a_name"] = True
             else:
-                # Not counted. Once a budget is passed by what the files
-                # before spent it stays passed, so which files are counted,
-                # checked or neither depends on the order and the sizes
-                # alone and is the same on every preview; a file too large
-                # for a budget on its own never closes it for the files
-                # after it (the lead's ruling 2, fix round 3).
+                # Not counted: too large for this mapping, or past the
+                # budget. The file this call names is never past it (it
+                # is read first), so here it is too large. The cheap
+                # question, "does any name show here", has a budget of its
+                # own (fix round 2, the lead's ruling on B-2), decided the
+                # same way (rule 2): a question too large for that budget
+                # alone is not asked and closes nothing; otherwise it is
+                # asked from what the files before left, and once passed
+                # the budget stays passed.
                 if too_large:
                     too_large_ids.append(fid)
-                else:
-                    past_budget = True
-                if not past_check and check_done + work <= \
+                if work > engine.MAX_RESIDUE_CHECK_WORK:
+                    ask = False
+                elif past_check or check_done + work > \
                         engine.MAX_RESIDUE_CHECK_WORK:
-                    # The cheap question, charged to a budget of its own
-                    # (fix round 2, the lead's ruling on B-2), the named
-                    # file's too (ruling 1, amended).
+                    ask = False
+                    past_check = True
+                else:
                     ask = True
                     check_done += work
-                else:
-                    ask = False
-                    if work <= engine.MAX_RESIDUE_CHECK_WORK:
-                        past_check = True
                 if ask:
                     not_counted.append(fid)
                     shows = compiled.carries_a_name(text)
                     if named:
-                        named_too_large = True     # first: never "past"
+                        named_too_large = True
                         named_shows = shows
                     if shows:
                         showing_not_counted += 1
                         too_large_showing += too_large
+                        pdf_past_showing += pdf and not too_large
                         compact = {**base, "counted": False}
                     elif not full:
                         continue
@@ -8730,6 +8779,7 @@ class QualcoderDatabase:
                     # says so where the detail asks for one.
                     not_checked.append(fid)
                     too_large_not_checked += too_large
+                    pdf_past_unchecked += pdf and not too_large
                     if named:
                         named_too_large = True
                         named_shows = None       # not checked either
@@ -8775,11 +8825,18 @@ class QualcoderDatabase:
                            len(too_large_ids),
                        "files_too_large_showing_a_name": too_large_showing,
                        "files_too_large_not_checked": too_large_not_checked,
+                       "files_counted_in_part": len(in_part),
+                       "occurrences_at_least": at_least_total,
+                       "pdf_sources_past_the_budget_showing_a_name":
+                           pdf_past_showing,
+                       "pdf_sources_past_the_budget_not_checked":
+                           pdf_past_unchecked,
                        "named_file_too_large": named_too_large,
                        "files_whole_word_above_wide": whole_word_above_wide,
                        "by_reason": by_reason},
             "files": listed,
             "files_counted": counted,
+            "files_counted_in_part": in_part,
             "files_not_counted": not_counted,
             "files_not_checked": not_checked,
             "files_too_large_for_this_mapping": too_large_ids,
@@ -8797,23 +8854,38 @@ class QualcoderDatabase:
                     budget=f"{engine.MAX_LONGER_WORDS_TOTAL_CHARS:,}")
         if named_too_large:
             block["totals"]["named_file_shows_a_name"] = named_shows
-        # Each note speaks of its own cause (the lead's ruling 3): past the
-        # budget because the files before spent it, or too large for this
-        # mapping on its own.
+        # Each note speaks of its own cause and its own remedy (fix round
+        # 5, the lead's four rules): counted in part; past the budget
+        # because the files before spent it; the same for a PDF source,
+        # which cannot be previewed on its own; too large for this mapping.
         large = set(too_large_ids)
-        past_counted = sum(1 for fid in not_counted if fid not in large)
-        past_checked = sum(1 for fid in not_checked if fid not in large)
+        pdfs = {source[0] for source in sources
+                if source[3] == "pdf_source"} - large
+        past_counted = sum(1 for fid in not_counted
+                           if fid not in large and fid not in pdfs)
+        past_checked = sum(1 for fid in not_checked
+                           if fid not in large and fid not in pdfs)
+        pdf_past = sum(1 for fid in not_counted + not_checked
+                       if fid in pdfs)
+        if in_part:
+            block["files_counted_in_part_note"] = \
+                self.PSEUDONYMISE_IN_PART_NOTE.format(
+                    count=len(in_part), at_least=at_least_total)
         if past_counted:
             block["files_not_counted_note"] = \
                 self.PSEUDONYMISE_NOT_COUNTED_NOTE.format(count=past_counted)
         if past_checked:
             block["files_not_checked_note"] = \
                 self.PSEUDONYMISE_NOT_CHECKED_NOTE.format(count=past_checked)
+        if pdf_past:
+            block["pdf_sources_not_counted_note"] = \
+                self.PSEUDONYMISE_PDF_NOTE.format(count=pdf_past)
         if too_large_ids:
             block["files_too_large_note"] = \
                 self.PSEUDONYMISE_TOO_LARGE_NOTE.format(
                     count=len(too_large_ids),
-                    budget=f"{engine.MAX_RESIDUE_SCAN_WORK:,}")
+                    budget=f"{engine.MAX_RESIDUE_SCAN_WORK:,}",
+                    check=f"{engine.MAX_RESIDUE_CHECK_WORK:,}")
         return block
 
     def pseudonymise_residue(self, compiled,

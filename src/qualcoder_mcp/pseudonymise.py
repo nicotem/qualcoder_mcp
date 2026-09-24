@@ -150,7 +150,10 @@ SHORT_FORM_CHARS = 4
 # 0.66 to 0.77 s (fix round 3; about one second, as the second
 # re-verification's B2-3 measured under load); the file a call names is
 # read first from the same budgets (ruling 1 as amended, fix round 4),
-# so nothing is spent outside them. A run of combining marks out of
+# and every count is charged all it spent, one that stops part-way too
+# (fix round 5, the lead's rule 1), so nothing is spent outside them. A
+# file whose estimate passes the EMPTY budget is not counted at all, and
+# is too large for this mapping (rule 2). A run of combining marks out of
 # order no longer costs more than its length (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
@@ -162,8 +165,9 @@ MAX_RESIDUE_SCAN_WORK = 90_000_000
 # per unit than the count (three scans where the count on ASCII makes
 # two): 2.8 to 4.2 ms per MB per unit at one form, 4.5 to 6.9 at a
 # hundred, so this budget's worst case is about 27 x 6.91 ms, 0.19
-# seconds here (scaled with the others under ruling 7, above). Past it a
-# file is not checked at all: it is listed in
+# seconds here (scaled with the others under ruling 7, above). A file
+# whose question passes this budget on its own is not asked and closes
+# nothing (rule 2); past it a file is not checked at all: it is listed in
 # `files_not_checked`, the warning says how to get it checked, and it is
 # never reported clean.
 MAX_RESIDUE_CHECK_WORK = 27_000_000
@@ -171,8 +175,10 @@ MAX_RESIDUE_CHECK_WORK = 27_000_000
 # the character model does not see: a text that is nothing but the name
 # repeated has a match every few characters. Every match of the three
 # passes counts against this budget, a first sight of a spelling as
-# `RESIDUE_FIRST_SIGHT_MATCHES`; past it a file drops to the cheap
-# question too, and so does every file after it, as with the work budget.
+# `RESIDUE_FIRST_SIGHT_MATCHES`. A count that passes it stops, is charged
+# what it spent, and is reported counted in part, with a lower bound: a
+# name certainly shows (fix round 5, the lead's rule 3). Every file after
+# it drops to the cheap question, as past the work budget.
 # The dearest unit measured is a first sight of a Turkish capital at 1,997
 # forms under an insensitive mode, 2.2 microseconds on 3.11.13 (the dense
 # typed run, a name inside a long run of word characters, 1.3 to 1.6), so
@@ -1901,7 +1907,7 @@ def names_left_in_text(compiled: "Compiled", text: str,
                        rewritten_by_this_run: bool,
                        max_matches: Optional[int] = None,
                        max_extra_work: Optional[int] = None,
-                       stopped: Optional[List[str]] = None
+                       stopped: Optional[Dict[str, Any]] = None
                        ) -> Optional[TextResidue]:
     """Where this mapping's names are left in one file's text.
 
@@ -1960,9 +1966,17 @@ def names_left_in_text(compiled: "Compiled", text: str,
     its marks, and one match; past the allowance the
     function returns None, as past the match budget. The result's
     `extra_work` is what it charged. When the count stops, `stopped` (a
-    list, if given) is told which allowance it passed, "matches" or
-    "work", so the caller can tell a file too large for a budget on its
-    own from one the files before it left no room for (fix round 3).
+    dict, if given) is told what the count had spent, so the caller can
+    charge it (fix round 5, the lead's rule 1: everything spent is
+    charged): `cause` ("matches" or "work", the allowance it passed),
+    `matches` and `extra_work` as the result would give them, and
+    `at_least`, how many occurrences the count had found by then (rule
+    3). Every stop comes on a match or on a question about one, so
+    `at_least` is 1 or more and the file certainly shows a name. It is a
+    lower bound on the larger of the two readings: the wide count is
+    exactly the larger of the direct and folded passes' matches plus the
+    whole words only the rewriter sees, so each pass's matches so far
+    bound it, and the whole words so far bound the whole-word count.
     """
     lookup = compiled.text_lookup()
     spent = 0
@@ -1971,6 +1985,17 @@ def names_left_in_text(compiled: "Compiled", text: str,
     extra_limit = max_extra_work if max_extra_work is not None else -1
     seen = _reader_sees(text)
     rows: Dict[Tuple[int, str], Dict[str, Any]] = {}
+    direct_total = 0
+    folded_seen = 0
+    whole_word_total = 0
+    only_seen = 0
+
+    def stop(cause: str) -> None:
+        if stopped is not None:
+            stopped.update(
+                cause=cause, matches=spent, extra_work=extra_work,
+                at_least=max(max(direct_total, folded_seen) + only_seen,
+                             whole_word_total))
 
     def row_for(key: Tuple[int, str]) -> Dict[str, Any]:
         row = rows.get(key)
@@ -1983,15 +2008,13 @@ def names_left_in_text(compiled: "Compiled", text: str,
         return row
 
     unattributed = 0
-    direct_total = 0
     exact_mode = compiled.case_mode == "exact"
     for match, candidate, charge in _attributed(
             compiled.detector._direct.finditer(seen), lookup.direct):
         direct_total += 1
         spent += charge
         if spent > limit >= 0:
-            if stopped is not None:
-                stopped.append("matches")
+            stop("matches")
             return None
         if candidate is None:
             unattributed += 1
@@ -2044,10 +2067,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
         for _match, candidate, charge in _attributed(
                 compiled.detector._folded.finditer(_fold(seen)),
                 lookup.folded, key=_folded_key):
+            folded_seen += 1
             spent += charge
             if spent > limit >= 0:
-                if stopped is not None:
-                    stopped.append("matches")
+                stop("matches")
                 return None
             if candidate is None:
                 folded_unattributed += 1
@@ -2079,15 +2102,13 @@ def names_left_in_text(compiled: "Compiled", text: str,
     # it in all but the composing-mark case, then, only when they do not,
     # of the whole detector, whose cost is charged (`max_extra_work`).
     detector_sees = lookup.seen_alone
-    whole_word_total = 0
     for match in compiled.pattern.finditer(text):
         whole_word_total += 1
         matched = match.group(0)
         spent += (1 if matched in lookup.rewriter_form
                   else RESIDUE_FIRST_SIGHT_MATCHES)
         if spent > limit >= 0:
-            if stopped is not None:
-                stopped.append("matches")
+            stop("matches")
             return None
         key = _rewriter_form(compiled, lookup, matched)
         row = row_for(key)
@@ -2104,14 +2125,13 @@ def names_left_in_text(compiled: "Compiled", text: str,
                 extra_work += residue_work(compiled, snippet)
                 if spent > limit >= 0 or (
                         extra_limit >= 0 and extra_work > extra_limit):
-                    if stopped is not None:
-                        stopped.append("matches" if spent > limit >= 0
-                                       else "work")
+                    stop("matches" if spent > limit >= 0 else "work")
                     return None
                 seen_alone = compiled.detector.contains(snippet)
             detector_sees[snippet] = seen_alone
         if not seen_alone:
             row["rewriter_only"] += 1
+            only_seen += 1
 
     entries: Dict[int, Dict[str, Any]] = {}
     case_variants: List[Dict[str, Any]] = []

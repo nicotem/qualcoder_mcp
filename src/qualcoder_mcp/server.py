@@ -10459,8 +10459,9 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
     whole_word = occurrences.get("whole_word", 0)
     reasons = totals.get("by_reason") or {}
     uncounted_showing = totals.get("files_showing_a_name_not_counted", 0)
+    in_part = totals.get("files_counted_in_part", 0)
     counted_showing = totals.get("files_showing_a_name", 0) \
-        - uncounted_showing
+        - uncounted_showing - in_part
     above = totals.get("files_whole_word_above_wide", 0)
     unchecked = totals.get("files_not_checked", 0)
     sentences: List[str] = []
@@ -10514,13 +10515,25 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"would still match {whole_word} occurrence(s) of these names "
             f"in the text of {counted_showing} file(s), which the wide "
             f"reading did not count.")
-    # Fix rounds 3 and 4, the lead's rulings 1 (amended) to 3: a file too
-    # large to count with this many names is told apart from one passed
-    # over because the files before it spent the budget, each with its
-    # own remedy.
+    # Fix round 5, the lead's four rules: files whose count stopped
+    # part-way (a name certainly shows; a lower bound, and no remedy);
+    # the file this call rewrites, too large for this mapping; files past
+    # the budget, to be previewed one at a time, except PDF sources,
+    # which cannot be and have a sentence of their own; the other files
+    # too large for this mapping, whose one remedy is fewer names.
+    if in_part:
+        sentences.append(
+            f"{'Warning: after this run, ' if not sentences else ''}"
+            f"{in_part} {'further ' if (wide or whole_word) else ''}file(s) "
+            f"would still show at least "
+            f"{totals.get('occurrences_at_least', 0)} occurrence(s) of "
+            f"these names in their text, found before counting them "
+            f"stopped at this preview's budget (see files_counted_in_part).")
     large = totals.get("files_too_large_for_this_mapping", 0)
     large_showing = totals.get("files_too_large_showing_a_name", 0)
     large_unchecked = totals.get("files_too_large_not_checked", 0)
+    pdf_showing = totals.get("pdf_sources_past_the_budget_showing_a_name", 0)
+    pdf_unchecked = totals.get("pdf_sources_past_the_budget_not_checked", 0)
     named_large = bool(totals.get("named_file_too_large"))
     # True, False, or None when it was too large to check as well.
     named_shows = totals.get("named_file_shows_a_name")
@@ -10536,16 +10549,35 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"with this many names, {shown}. The rewrite still applies to "
             f"it, and fewer names would let it be counted (see "
             f"files_too_large_for_this_mapping).")
-    past_showing = uncounted_showing - large_showing
+    past_showing = uncounted_showing - large_showing - pdf_showing
     if past_showing:
+        further = wide or whole_word or in_part
         sentences.append(
             f"{'Warning: after this run, ' if not sentences else ''}"
-            f"{past_showing} "
-            f"{'further ' if (wide or whole_word) else ''}file(s) "
+            f"{past_showing} {'further ' if further else ''}file(s) "
             f"would still show one of these names in their text, and "
             f"were not counted in full because the files before them spent "
             f"this preview's budget; preview them one at a time to count "
             f"them (see files_not_counted).")
+    if pdf_showing or pdf_unchecked:
+        parts = []
+        if pdf_showing:
+            parts.append(f"{pdf_showing} PDF source(s) would still show one "
+                         f"of these names in their text")
+        if pdf_unchecked:
+            parts.append(f"{pdf_unchecked} "
+                         f"{'' if pdf_showing else 'PDF source(s) '}"
+                         f"were not checked")
+        see = " and ".join(
+            name for name, count in (("files_not_counted", pdf_showing),
+                                     ("files_not_checked", pdf_unchecked))
+            if count)
+        sentences.append(
+            f"{'Warning: ' if not sentences else ''}"
+            f"{' and '.join(parts)}, because the files before them spent "
+            f"this preview's budget; a PDF source cannot be named for a "
+            f"preview, so only a preview with fewer names, which costs less "
+            f"for every file, could reach them (see {see}).")
     others = large - named_large
     if others:
         others_showing = large_showing - (named_large and named_shows is True)
@@ -10562,9 +10594,9 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"{'Warning: ' if not sentences else ''}"
             f"{others} {'other ' if named_large else ''}file(s) are too "
             f"large to count in full with this many names{detail}; fewer "
-            f"names would let them be counted, and previewing one on its "
-            f"own checks it (see files_too_large_for_this_mapping).")
-    past_unchecked = unchecked - large_unchecked
+            f"names would let them be counted (see "
+            f"files_too_large_for_this_mapping).")
+    past_unchecked = unchecked - large_unchecked - pdf_unchecked
     if past_unchecked:
         # The lead's ruling on B-2, in its own words.
         sentences.append(
@@ -11220,13 +11252,15 @@ def pseudonymise_source(
                  and attribute values, and in the text of every file
                  after the run (default true). Both readings, wide and
                  whole-word, for every count. The file-text count has
-                 fixed budgets: past them a file is only asked whether a
-                 name shows, and past a budget for that question it is
-                 not checked, and the warning names it. The file this
-                 call names is read first, with the first claim on the
-                 budgets; a file too large to count with this many names
-                 on its own is said to be, and fewer names would let it
-                 be counted.
+                 fixed budgets, and all it spends is charged to them:
+                 past them a file is only asked whether a name shows,
+                 and past a budget for that question it is not checked,
+                 and the warning names it. The file this call names is
+                 read first, with the first claim on the budgets. A
+                 count that stops part-way found a name and gives a
+                 lower bound; a file too large to count with this many
+                 names is said to be, and fewer names would let it be
+                 counted.
         residue_detail: "file" (default): full detail for the file this
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;
