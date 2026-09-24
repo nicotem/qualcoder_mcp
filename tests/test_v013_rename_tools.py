@@ -1474,6 +1474,11 @@ class TestSavedDisplaysAndFiltersByTheirValues:
         assert out["old_name_left_in"] == {
             "saved_table_displays": 1, "saved_filters": 1}
 
+    def test_the_note_says_so(self):
+        assert "in saved table displays and filters it reads only the " \
+               "values they filter on, not QualCoder's own words such as " \
+               "BOOLEAN_OR or like." in server.OLD_NAME_LEFT_IN_NOTE
+
     def test_a_text_in_no_saved_shape_is_read_whole(self):
         from qualcoder_mcp.database import (saved_display_values,
                                             saved_filter_values)
