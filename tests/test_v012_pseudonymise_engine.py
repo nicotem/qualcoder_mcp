@@ -2686,8 +2686,17 @@ class TestNamesLeftInText:
         "a" + "\U0001d16d\U0001d165" * 16,          # astral non-starters
         "a" + "\U0001f600" * 40 + "\u0315\u0316" * 16,  # astral starters
         "a" + ("\u0315\u0316" * 16 + "\u200d") * 3,      # joiners between
+        # Fix round 5 (CORR3-5): two marks of one class in a telling order,
+        # which a sort that does not keep ties in place reverses; and a
+        # character whose own class (0) is not its decomposition's (8),
+        # beside a mark of that class, which a sort on the characters as
+        # they stand, not decomposed, puts in the wrong place.
+        "Rene\u0301\u0300" + "\u0316" * 29,
+        "\u30ab\u30ab\u3099\uff9f" + "\u0301" * 29,
+        "\u30ab\u30ab\u309a\uff9e" + "\u0301" * 29,
     ], ids=["out-of-order", "in-order", "composes-across", "starter-marks",
-            "halfwidth", "astral-marks", "emoji", "zwj"])
+            "halfwidth", "astral-marks", "emoji", "zwj", "ties-in-place",
+            "decomposed-class", "decomposed-class-other-way"])
     def test_ordering_a_long_run_changes_nothing_nfkc_reads(self, text):
         """Exact: NFKC of the text with its long runs put in order is
         NFKC of the text, character for character; only the cost moves."""
@@ -2696,6 +2705,24 @@ class TestNamesLeftInText:
             unicodedata.normalize("NFKC", text)
         assert P._reader_sees(text) == P._strip_unseen(
             unicodedata.normalize("NFKC", text))
+
+    @pytest.mark.parametrize("original,text,wide", [
+        ("Ren\u00e9", "Rene\u0301\u0300" + "\u0316" * 29, 1),
+        ("\u30ab\u30ac", "\u30ab\u30ab\u3099\uff9f" + "\u0301" * 29, 1),
+        ("\u30ab\u30ac", "\u30ab\u30ab\u309a\uff9e" + "\u0301" * 29, 0),
+    ], ids=["rene", "ka-ga", "ka-ka-semi-voiced"])
+    def test_a_reordered_run_is_counted_as_nfkc_reads_it(
+            self, original, text, wide):
+        """The third correctness lane's CORR3-5: the counts on the two
+        telling runs above. NFKC composes the acute onto "Rene" and the
+        voiced mark onto the second KA; a reordering that moved either
+        would report the file clean (or find a name that is not there)."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": original, "pseudonym": "Alex"}]))
+        assert P._ordered_runs(text) != text           # the run is touched
+        found = P.names_left_in_text(compiled, text, True, False)
+        assert found["occurrences"] == {"wide": wide, "whole_word": 0}
+        assert compiled.carries_a_name(text) is bool(wide)
 
     def test_only_a_long_run_out_of_nfkd_is_touched(self):
         in_order = "a" + "\u0316" * 40 + "\u0301"   # already NFKD

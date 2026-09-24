@@ -2946,3 +2946,127 @@ class TestTheWarningsGrammar:
             "still match 2 occurrence(s) of these names in the text of 1 "
             "file(s), which the wide reading did not count. See "
             "residue.file_text, which names the files.")
+
+class TestTheBoundsLanesPins:
+    """The third bounds lane's candidate pins (its probes/test_zz_b3_pins.py),
+    taken in by fix round 5 where they still apply after the lead's four
+    rules: FC1 and TC3 as they were; FC3, FC4 and TC2 re-shaped, since a
+    count that stops part-way is now counted in part (it has found a name)
+    rather than past the budget or too large; TC1 is
+    TestTheMatchBudgetAcrossFiles, re-shaped the same way."""
+
+    def test_the_named_file_claims_first_whatever_its_id(self, project):
+        """FC1, FC2. At the real budgets, 100 forms: file 100 is about 75
+        million units, file 101 about 20 million, each fitting alone and
+        not together. Naming file 101, a higher id, counts it first; file
+        100 is then past the work budget (not too large: it fits alone)
+        and too large for the question on its own, so it is not checked
+        and closes nothing."""
+        mapping = _name_mapping(100)
+        form = mapping[0]["original"]
+        per = 100 + P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII
+        _set_text(project, 100, _documents_prose(75_000_000 // per - 40)
+                  + f" {form}son said. ", name="big_100.txt")
+        _set_text(project, 101, _documents_prose(20_000_000 // per - 40)
+                  + f" {form}son said. ", name="mid_101.txt")
+        out = preview_of(mapping=mapping, case_mode="insensitive",
+                         file_id=101, residue_detail="project")
+        block = _block(out)
+        assert block["files"][0]["file_id"] == 101          # read first
+        assert _rows(out)[101]["counted"] is True
+        assert block["files_not_checked"] == [100]
+        assert block["files_too_large_for_this_mapping"] == []
+
+    def test_a_count_stopped_on_its_questions_work_closes_the_tier(
+            self, project, monkeypatch):
+        """TC2, re-shaped. PN-3's shape: file 4's count asks the whole
+        detector once. A work budget of every file's work before it, its
+        own, and that question's less one: file 4's count stops on the
+        work, is charged all it spent, the question too, and counted in
+        part (a name shows); the budget has run out, so file 5, small
+        enough for what would be left were the question not charged, is
+        past it."""
+        mapping = [{"original": "Rene", "pseudonym": "Alex"}]
+        nfd = "Later Rene\u0301\u0316 arrived."
+        _set_text(project, 1, "Rene met.")
+        _set_text(project, 4, nfd)
+        _set_text(project, 5, "Rene came.", name="five.txt")
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        extra = P.names_left_in_text(compiled, nfd, True, False)["extra_work"]
+        assert 0 < _work_of("Rene came.", mapping) <= extra - 1
+        shared = sum(_work_of(text, mapping) for text in (
+            "Alex met.", "extracted page text"))
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            shared + _work_of(nfd, mapping) + extra - 1)
+        out = preview_of(mapping=mapping, residue_detail="project")
+        block = _block(out)
+        assert block["files_counted_in_part"] == [4]
+        assert block["files_not_counted"] == [5]
+        assert block["files_too_large_for_this_mapping"] == []
+        assert _rows(out)[4]["occurrences_at_least"] == 1
+
+    def test_the_count_tier_is_sticky(self, project, monkeypatch):
+        """TC3. File 4 fits the work budget alone but not after files 1
+        and 2; file 5 after it would fit what is left, and is not counted:
+        once passed by what the files before spent, the budget stays
+        passed."""
+        _set_text(project, 1, "Thomas left.")
+        big = "THOMAS in four, with a good many more words here."
+        _set_text(project, 4, big)
+        _set_text(project, 5, "ok.", name="five.txt")
+        before = _work_of(_after(project)) + _work_of("extracted page text")
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            before + _work_of(big) - 1)
+        assert _work_of(big) <= P.MAX_RESIDUE_SCAN_WORK
+        assert _work_of("ok.") <= _work_of(big) - 1
+        block = _block(preview_of(residue_detail="project"))
+        assert block["files_not_counted"] == [4, 5]
+        assert block["files_too_large_for_this_mapping"] == []
+
+    def test_the_named_files_questions_are_charged_to_the_shared_budget(
+            self, project, monkeypatch):
+        """FC4, re-shaped. A pseudonym that puts a name back before a
+        composing mark makes the named file's count ask the whole detector.
+        One unit short of its work and its questions', its count stops on
+        the work: it is counted in part, never too large (its estimate
+        fits); at exactly that budget it is counted in full."""
+        import itertools
+        mapping = [{"original": "Rene", "pseudonym": "Jones"},
+                   {"original": "Thomas Rene", "pseudonym": "Alex Rene"}]
+        marks = ["\u0300", "\u0302", "\u0308"]
+        text = "".join(f"Thomas Rene\u0301{''.join(c)} said. "
+                       for c in itertools.product(marks, repeat=2))
+        _set_text(project, 1, text)
+        compiled = P.Compiled(P.validate_mapping(mapping))
+        after = P.apply_replacements(text, P.find_replacements(compiled, text))
+        found = P.names_left_in_text(compiled, after, True, True)
+        assert found["extra_work"] > 0
+        whole = P.residue_work(compiled, after) + found["extra_work"]
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", whole - 1)
+        block = _block(preview_of(mapping=mapping, residue_detail="project"))
+        assert block["files_counted_in_part"][:1] == [1]
+        assert 1 not in block["files_too_large_for_this_mapping"]
+        assert block["totals"]["named_file_too_large"] is False
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", whole)
+        out = preview_of(mapping=mapping, residue_detail="project")
+        assert _rows(out)[1]["counted"] is True
+        assert _block(out)["files_counted_in_part"] == []
+
+    def test_the_named_files_matches_are_charged_to_the_shared_budget(
+            self, project, monkeypatch):
+        """FC3, re-shaped. The named file leaves names inside longer words,
+        so its count spends matches; file 5 spends 28 on its own. A match
+        budget of the named file's matches and 27: file 5 fits it alone,
+        not after the named file, so its count stops part-way."""
+        text = "Thomas said Thomasson, Thomasson and Thomasson."
+        _set_text(project, 1, text)
+        _set_text(project, 5, "Thomas " * 10, name="five.txt")
+        compiled = P.Compiled(P.validate_mapping(MAPPING))
+        after = P.apply_replacements(text, P.find_replacements(compiled, text))
+        named = P.names_left_in_text(compiled, after, True, True)["matches"]
+        assert named > 0
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", named + 27)
+        block = _block(preview_of(residue_detail="project"))
+        assert block["files_counted_in_part"] == [5]
+        assert block["files_not_counted"] == []
+        assert block["files_too_large_for_this_mapping"] == []
