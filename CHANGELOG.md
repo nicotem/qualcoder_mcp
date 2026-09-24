@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 163,446 characters (about 40.9k tokens at
+  below included: full = 163,555 characters (about 40.9k tokens at
   chars/4) over 72 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools, nor `pseudonymise_source`,
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 171,758 and
+  in the repository's `.venv/`, the same definitions measure 171,875 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -244,6 +244,7 @@ reason:
 | Empty, spaces-only and dots-only names refused | QualCoder 4.0 itself treats them as invalid and renames them `unnamed_file_<id>` at every load |
 | Control, line-separator and invisible formatting characters refused | They make a name look identical to another or break single-line display |
 | `/`, `\`, `..` and `:` refused | QualCoder joins the name into paths (delete, export, text replacement, the REFI-QDA export); `..` reaches the project database, and a drive prefix leaves the folder on Windows |
+| A name Windows cannot store refused: `<`, `>`, `\|`, `?`, `*`, `"`, a trailing dot or space, and the device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, as stems with any extension) | A project travels between machines, and QualCoder's Manage Files export opens the entry's name as a file with no handler, so on Windows such a name fails part-way through an export or writes to a device; Windows also drops a trailing dot or space, so `x.docx.` would stand for another file's `x.docx` there |
 | Over 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes (a text with no stored path is exported as `<name>.txt`), under the usual 255-byte file-name limit; and a paging cursor carrying the name stays under its 1,024-character cap. The limit is in bytes because both reasons are: there is no limit in characters |
 | A text's new name already present in `documents/` refused | QualCoder finds a text's stored copy there by the entry's name and would act on that other file |
 | `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
@@ -408,7 +409,9 @@ reason:
   invisible formatting character (a zero-width space, a bidirectional
   control), a line or paragraph separator or a C1 control character
   (only the C0 controls were refused before); a name that is a single
-  dot; and a name already present in the project's `documents/` folder,
+  dot; a name Windows cannot store (`<`, `>`, `|`, `?`, `*`, `"`, a
+  trailing dot, a device name such as `CON` or `NUL.txt`); and a name
+  already present in the project's `documents/` folder,
   which QualCoder would treat as the new text's stored copy. There is no
   limit in characters. Every other name that imported before imports
   now.

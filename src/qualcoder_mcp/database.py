@@ -977,6 +977,39 @@ def file_name_is_invalid_upstream(name: Any) -> bool:
     return name.strip('.') == '' or name.strip() == ''
 
 
+# Names Windows cannot store as a file (fix round 1, S-2 and S-1): a
+# project travels between machines, and QualCoder's Manage Files export
+# opens `<export folder>/<entry name>` with no handler (master
+# manage_files.py:3484-3549), so on Windows such a name fails part-way
+# through an export or, for a device name, writes to the device. Win32
+# also drops a trailing dot or space from a name, so `x.docx.` would stand
+# for another file's `x.docx` there. Microsoft's reserved device names,
+# as stems with any extension, in any letter case; its list includes the
+# digit 0 and the superscript digits 1 to 3.
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>|?*"')
+_WINDOWS_DEVICE_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{port}{digit}" for port in ("COM", "LPT")
+       for digit in "0123456789¹²³"})
+
+
+def windows_name_problem(name: str) -> Optional[str]:
+    """Why Windows cannot store `name` as a file, or None."""
+    if any(ch in _WINDOWS_FORBIDDEN_CHARACTERS for ch in name):
+        return ("A file name must not contain < > | ? * or \" (Windows "
+                "cannot store them, and QualCoder's export writes the name "
+                "as a file).")
+    if name.endswith(('.', ' ')):
+        return ("A file name must not end with a dot or a space (Windows "
+                "drops them, so there the name would stand for another "
+                "file).")
+    if name.split('.')[0].rstrip(' ').upper() in _WINDOWS_DEVICE_STEMS:
+        return ("A file name must not be a Windows device name (CON, PRN, "
+                "AUX, NUL, COM0 to COM9 or LPT0 to LPT9, with any "
+                "extension): Windows cannot store it as a file.")
+    return None
+
+
 def file_name_problem(name: str) -> Optional[str]:
     """The first reason `name` may not be a file name, or None.
 
@@ -986,8 +1019,10 @@ def file_name_problem(name: str) -> Optional[str]:
     control, line or paragraph separator and invisible format characters
     (forbidden_display_char, with its two orthographic exceptions); an
     unpaired surrogate, which SQLite cannot store as text; the path
-    characters '/', '\\', '..' and ':'; over MAX_FILE_NAME_BYTES bytes in
-    UTF-8. Refused, never truncated.
+    characters '/', '\\', '..' and ':'; a name Windows cannot store
+    (windows_name_problem: < > | ? * ", a trailing dot or space, a device
+    name); over MAX_FILE_NAME_BYTES bytes in UTF-8. Refused, never
+    truncated.
     """
     if file_name_is_invalid_upstream(name):
         return ("A file name must not be empty, spaces only or dots only "
@@ -1002,6 +1037,9 @@ def file_name_problem(name: str) -> Optional[str]:
         return ("A file name must not contain path separators ('/' or "
                 "'\\'), '..' or ':', because QualCoder joins the name into "
                 "file paths.")
+    windows = windows_name_problem(name)
+    if windows is not None:
+        return windows
     size = len(name.encode("utf-8"))
     if size > MAX_FILE_NAME_BYTES:
         return (f"A file name must be at most {MAX_FILE_NAME_BYTES} bytes "
@@ -1091,12 +1129,11 @@ def file_ending_problem(old: str, new: str, mediapath: Optional[str],
         before = refi_declared_text_type(old)
         after = refi_declared_text_type(new)
         if before.lower() == 'txt' and after.lower() != 'txt':
-            shown = f"a '{after}'" if after else "a typeless"
             return (f"This text has no stored file, and QualCoder's REFI-QDA "
                     f"export declares its file type from the name: it is "
                     f"declared plain text now, and '{new}' would declare it "
-                    f"{shown} file. Keep the ending '.txt', or no dot at "
-                    f"all." + _ENDING_STILL_POSSIBLE)
+                    f"a '{after}' file. Keep the ending '.txt', or no dot "
+                    f"at all." + _ENDING_STILL_POSSIBLE)
     return None
 
 

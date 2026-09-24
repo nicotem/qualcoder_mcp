@@ -453,6 +453,9 @@ FILE_INPUTS = [
                                        "bytes"),
     (None, "a​b.txt", "A file name must not contain invisible"),
     (None, "a\nb.txt", "A file name must not contain control"),
+    (None, "a?b.txt", "A file name must not contain < > | ? *"),
+    (None, "P01.txt.", "A file name must not end with a dot"),
+    (None, "nul.txt", "A file name must not be a Windows device name"),
     (None, "notes.txt", "Another file already uses the name"),
     (None, "Notes.txt", None), (None, "interview.txt", None),
     (None, "P01", None),
@@ -470,7 +473,11 @@ FILE_DEPARTURES = {
     "A file name must not be empty": "empty, spaces-only, dots-only",
     "A file name must not contain path separators": "path characters",
     "A file name must be at most": "length",
-    "A file name must not contain": "invisible or control characters",
+    "A file name must not contain": "invisible or control characters, "
+                                    "or characters Windows cannot store",
+    "A file name must not end with a dot": "a name Windows cannot store",
+    "A file name must not be a Windows device name":
+        "a name Windows cannot store",
     "Another file already uses the name": "collision after NFC",
     "This text has no stored file": "ending rule",
     "The name would gain the ending": "ending rule",
@@ -681,7 +688,7 @@ class TestTheEndingRule:
         # A text with no stored file keeps a plain-text declared type.
         (2, "notes.docx", "This text has no stored file"),
         (2, "Dr. P notes", "This text has no stored file"),
-        (2, "notes.", "This text has no stored file"),
+        (2, "notes. .x", "This text has no stored file"),
     ])
     def test_refused_with_why_and_that_qualcoder_can(self, media, fid,
                                                       typed, opening):
@@ -971,3 +978,47 @@ class TestTheDatabaseHalf:
                               "source WHERE id = 5") == [
             {"name": "b.png", "mediapath": "/images/a.png",
              "owner": "gui_user", "date": "2024-01-15"}]
+
+
+class TestNamesWindowsCannotStore:
+    """Fix round 1, S-2 (and S-1's trailing dot): both tools refuse a
+    name Windows cannot store, a named departure from QualCoder's own
+    Rename, whose export opens the name as a file with no handler."""
+
+    @pytest.mark.parametrize("name, opening", [
+        ("a<b.txt", "A file name must not contain < > | ? * or \""),
+        ("a>b.txt", "A file name must not contain < > | ? * or \""),
+        ("a|b.txt", "A file name must not contain < > | ? * or \""),
+        ("a?.txt", "A file name must not contain < > | ? * or \""),
+        ("a*.txt", "A file name must not contain < > | ? * or \""),
+        ("a\"b.txt", "A file name must not contain < > | ? * or \""),
+        ("P01.txt.", "A file name must not end with a dot or a space"),
+        ("P01.txt. .", "A file name must not end with a dot or a space"),
+        ("CON", "A file name must not be a Windows device name"),
+        ("con.txt", "A file name must not be a Windows device name"),
+        ("NUL.tar.gz", "A file name must not be a Windows device name"),
+        ("Aux .txt", "A file name must not be a Windows device name"),
+        ("COM1.txt", "A file name must not be a Windows device name"),
+        ("com0.txt", "A file name must not be a Windows device name"),
+        ("COM¹.txt", "A file name must not be a Windows device name"),
+        ("LPT9.docx", "A file name must not be a Windows device name"),
+        ("prn.txt", "A file name must not be a Windows device name"),
+    ])
+    def test_refused_by_both_tools(self, project, name, opening):
+        out = _file(1, name)
+        assert out["error"].startswith(opening), out
+        out = json.loads(server.import_text_file(name, "Some text."))
+        assert out["error"].startswith(opening), out
+        assert _backups(project) == []
+
+    @pytest.mark.parametrize("name", [
+        "CONSENT.txt", "console notes.txt", "COM10.txt", "LPT.txt",
+        "my NUL.txt", "a.CON.txt", "P01 notes.txt"])
+    def test_names_that_merely_resemble_them_pass(self, project, name):
+        assert _file(1, name, create_backup=False)["changed"] is True
+        assert _file(1, "interview.txt", create_backup=False)["changed"]
+
+    def test_a_trailing_space_is_refused_too(self):
+        from qualcoder_mcp.database import file_name_problem
+        assert file_name_problem("P01.txt ").startswith(
+            "A file name must not end with a dot or a space")

@@ -443,7 +443,7 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 72 tools by
 default, and the serialised tool definitions alone measure about
-163,000 characters, roughly 41k tokens (measured for 0.13 under
+164,000 characters, roughly 41k tokens (measured for 0.13 under
 Python 3.13.5 with mcp 1.30.0, in the
 repository's own `venv/`; `pseudonymise_source`, the 0.12 flagship,
 accounts for about 13,000 characters of that on its own, because a tool
