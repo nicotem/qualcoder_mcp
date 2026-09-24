@@ -3179,6 +3179,36 @@ class TestTheNoteRewriteIsWritten:
                       if not v.startswith("Pseudonymisation run, ")]
         assert values == ["Interviewed Alex at home."], (table, values)
 
+    def test_the_memo_plan_is_project_wide_whatever_file_id_says(
+            self, project):
+        """Test 12: a run on file 1 rewrites a coding's note on file 4, a
+        file it does not rewrite, and the media codings' notes, whose
+        files carry no text at all."""
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext=? WHERE id=4",
+                    ("nothing to see here, twice over",))
+        con.execute("INSERT INTO code_text (ctid,cid,fid,seltext,pos0,pos1,"
+                    "owner,date,memo,important) VALUES (40,1,4,'nothing',0,"
+                    "7,'TestCoder','d','Thomas said this.',0)")
+        con.execute("INSERT INTO code_av (avid,id,pos0,pos1,cid,memo,date,"
+                    "owner,important) VALUES (1,3,0,10,1,'Tom, on tape.','d',"
+                    "'TestCoder',0)")
+        con.execute("INSERT INTO code_image (imid,id,x1,y1,width,height,cid,"
+                    "memo,date,owner,important) VALUES (1,2,0,0,10,10,1,"
+                    "'Mary Ann in the photo.','d','TestCoder',0)")
+        con.commit()
+        con.close()
+        result = execute_from(preview_of(rewrite_memos=True, file_id=1))
+        assert result.get("success") is True, result
+        assert query(project, "SELECT memo FROM code_text WHERE ctid=40"
+                     )[0]["memo"] == "Alex said this."
+        assert query(project, "SELECT memo FROM code_av WHERE avid=1"
+                     )[0]["memo"] == "Alex, on tape."
+        assert query(project, "SELECT memo FROM code_image WHERE imid=1"
+                     )[0]["memo"] == "Sam in the photo."
+        assert query(project, "SELECT fulltext FROM source WHERE id=4"
+                     )[0]["fulltext"] == "nothing to see here, twice over"
+
     def test_a_name_only_in_a_private_part_is_neither_rewritten_nor_counted(
             self, project):
         note = "Clean public part.\n\n#####Thomas, and Tom, privately."
