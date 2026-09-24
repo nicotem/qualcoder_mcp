@@ -144,12 +144,17 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     summary every CI log carries, with the platform and the interpreter
     it was measured on; the CI workflow copies it into the step summary.
     """
+    # v0.13 Brief 2 (the lead's third answer to its hand-off note): the
+    # note pass is outside the budgets and its rate is published the same
+    # way, under its own prefix.
+    prefixes = {"file_text_rate": "file-text count rate",
+                "note_pass_rate": "note pass rate"}
     for key in ("passed", "failed"):
         for report in terminalreporter.stats.get(key, []):
             for name, value in getattr(report, "user_properties", []):
-                if name == "file_text_rate":
+                if name in prefixes:
                     terminalreporter.write_line(
-                        f"file-text count rate: {value} ({sys.platform}, "
+                        f"{prefixes[name]}: {value} ({sys.platform}, "
                         f"Python {sys.version_info[0]}."
                         f"{sys.version_info[1]}.{sys.version_info[2]}, "
                         f"test {key})")

@@ -10284,6 +10284,13 @@ def merge_category(from_category_id: int,
 # behind a per-file fingerprint check that nothing has moved.
 
 PSEUDONYMISATION_DIRNAME = "pseudonymisation"
+# The run record's one fixed sentence (v0.13, ruling 2): what it is for,
+# and that it is not a way back.
+PSEUDONYMISE_RECORD_NOTE = (
+    "An audit record of this run: which rows it changed and where the "
+    "pseudonyms now sit. It is not an input to any undo. The backup taken "
+    "before the run is the way back; the mapping is the researcher's and is "
+    "not stored here.")
 # Upstream gives up after fifty tries at a unique journal name
 # (code_pdf.py:6047); so does this.
 JOURNAL_NAME_ATTEMPTS = 50
@@ -10917,26 +10924,48 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"makes the file-text counts generous too; the whole-word "
             f"number beside each wide one shows how far.")
     if not totals.get("replacements"):
-        warnings.append(
-            "None of the names in this mapping occurs in this file, so an "
-            "execute would rewrite nothing.")
+        # Three forms (Brief 2, 4.8): the switch off; on, with notes to
+        # rewrite; on, with nothing anywhere.
+        note_rows = (memo_block or {}).get("totals", {}).get("rows", 0)
+        if memo_block is None:
+            warnings.append(
+                "None of the names in this mapping occurs in this file, so "
+                "an execute would rewrite nothing.")
+        elif note_rows:
+            warnings.append(
+                f"None of the names in this mapping occurs in this file; "
+                f"with rewrite_memos on, an execute would rewrite "
+                f"{note_rows} note(s) or journal entr(ies) and nothing in "
+                f"the file text.")
+        else:
+            warnings.append(
+                "None of the names in this mapping occurs in this file or "
+                "in any note or journal entry, so an execute would rewrite "
+                "nothing.")
     return warnings
 
 
-def _pseudonymise_notes(backup_name: Optional[str]) -> List[str]:
+def _pseudonymise_notes(backup_name: Optional[str],
+                        file_rewritten: bool = True) -> List[str]:
     """What is true after a run, whether or not anyone asks (D1 3.5).
 
     The backup is named rather than merely alluded to: a note that
     says "the backup holds the real names" is only actionable if the
     reader can tell which folder that is.
+
+    The positions note is said only when the file's text was rewritten:
+    a run that rewrote notes and no file text (rewrite_memos on, no
+    match in the file) moved no position (Brief 2, 4.8).
     """
     backup = (f"The backup taken before this run ({backup_name}) contains"
               if backup_name else "The backup taken before this run "
                                    "contains")
-    return [
+    positions = [
         "Positions after the first replacement in this file have "
         "changed: re-read it before any further coding, and treat any "
-        "pending coding suggestion for it as stale.",
+        "pending coding suggestion for it as stale."] if file_rewritten \
+        else []
+    return positions + [
         f"{backup} the pre-pseudonymisation text and, if the researcher "
         f"keeps one, pseudonyms.json; both hold the real names. Secure or "
         f"prune it with prune_backups once the run is verified.",
@@ -11010,6 +11039,10 @@ def _pseudonymise_journal_name(files: Sequence[Dict[str, Any]],
     list that made one possible.
     """
     stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
+    if not files:
+        # A run that rewrote notes and no file text (rewrite_memos on,
+        # no match in the file; Brief 2, 4.8) is named for what it did.
+        return f"Pseudonymisation notes {stamp}"
     label = _pseudonymise_safe_name(files[0].get("name"), compiled)
     if label is None:
         label = f"file {files[0]['file_id']}"
@@ -11065,6 +11098,30 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
             f"{report['annotations_updated']} annotation(s) moved, "
             f"{report['case_links_updated']} case link(s) moved, "
             f"{report['codings_deleted']} coding(s) deleted.")
+    memos = written.get("memos")
+    if memos is not None:
+        # v0.13, Brief 2, 5.8: counts and field names only, never a key,
+        # an original or note text, and the marker never spelled (this
+        # entry is itself a note, reduced to its public part when read).
+        totals = memos["totals"]
+        per_field = ", ".join(f"{table} {count['rows_updated']}"
+                              for table, count in memos["fields"].items()
+                              if count["rows_updated"])
+        lines.append(
+            f"Notes rewritten: {totals['rows_updated']}"
+            + (f" ({per_field})" if per_field else "")
+            + f"; replacements: {totals['replacements']}.")
+        lines.append(
+            f"Notes with a private part whose public part was rewritten: "
+            f"{totals['rewritten_with_private_part']}. Notes left as they "
+            f"were because a rewrite would have formed a private-part "
+            f"marker: {totals['not_rewritten_marker_risk']}.")
+        lines.append(
+            f"Journal entries rewritten that were this server's own "
+            f"records of earlier runs: "
+            f"{totals['journal_entries_from_earlier_runs']}.")
+        lines.append("This entry was written after the rewrite and was not "
+                     "itself rewritten.")
     if per_entry:
         applied = ", ".join(
             (f"entry {index}, withheld ({count})" if index in withheld
@@ -11084,7 +11141,10 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     lines.append(f"Run manifest: {manifest_name}.")
     lines.append(
         "The names replaced are not recorded here. Positions after the "
-        "first replacement in this file have changed.")
+        "first replacement in this file have changed."
+        if written["files"] else
+        "The names replaced are not recorded here. No file text was "
+        "rewritten, so no position has changed.")
     return "\n".join(lines)
 
 
@@ -11092,17 +11152,28 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            compiled, bind: str, backup_path: Optional[str],
                            journal_entry: Optional[str],
                            when: datetime, secret: str,
-                           project_path_at_start: str) -> Dict[str, Any]:
-    """The run record kept in the state home (D1 3.2).
+                           project_path_at_start: str,
+                           rewrite_memos: bool = False) -> Dict[str, Any]:
+    """The run record kept in the state home (D1 3.2), format 2.
 
-    Spans in the NEW text plus row ids and old and new offsets: enough
-    for a later release to reverse the run exactly, over spans rather
-    than by matching text, so a pseudonym that also occurred naturally is
-    never reversed by mistake. Not enough to reconstruct a name: the
-    originals, the old text and the old stored quotes are all absent, and
-    the researcher's own copy of the mapping is the other half a reversal
-    needs. That split is deliberate (owner ruling Q2): the reverse key
-    belongs to the researcher, not to this server's state folder.
+    An audit record: which rows this run changed and where the
+    pseudonyms now sit, spans in the NEW text plus row ids and old and
+    new offsets, kept so a researcher can account for a run afterwards.
+    It is not an input to any undo (ruling C drops undoing a run; the
+    backup taken before the run is the way back). Not enough to
+    reconstruct a name: the originals, the old text and the old stored
+    quotes are all absent, and the mapping is the researcher's, not this
+    server's state folder's (owner ruling Q2).
+
+    Format 2 (v0.13, ruling 2) adds `rewrite_memos` and `record_note`
+    always, and, when the notes were rewritten, `memos` (one object per
+    note the run rewrote: table, column, key, the private-part flag,
+    the public length before and after, and each replacement's entry
+    and span in the rewritten public part, nothing else) and the
+    marker-risk count with its note. An attribute type is keyed by its
+    own name, which can carry a participant's name: where a reader would
+    see one, the key is withheld (`key_withheld`), by the rule
+    `_pseudonymise_safe_name` applies to file names.
     """
     entries = compiled.mapping.entries
     withheld = set(pseudo.pseudonyms_withheld(compiled))
@@ -11157,7 +11228,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     project_path = _pseudonymise_safe_name(project_path_at_start, compiled)
     safe_backup_path = _pseudonymise_safe_name(backup_path, compiled)
     manifest = {
-        "format": 1,
+        "format": 2,
         "created": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "project_path": project_path,
         "token_bind": bind,
@@ -11165,6 +11236,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         "journal_entry": journal_entry,
         "case_mode": plan["case_mode"],
         "overlap_policy": plan["overlap_policy"],
+        "rewrite_memos": bool(rewrite_memos),
         # The mapping itself is never stored; this is only enough to
         # tell whether a later reversal was given the same one. Keyed
         # with the per-user token secret rather than a plain digest,
@@ -11190,6 +11262,26 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     if withheld:
         manifest["pseudonyms_withheld"] = len(withheld)
         manifest["pseudonyms_withheld_note"] = pseudo.PSEUDONYMS_WITHHELD_NOTE
+    memos = written.get("memos")
+    if rewrite_memos and memos is not None:
+        # Present exactly when the switch was on, an empty list when it
+        # was on and no note changed, so the record tells "not asked"
+        # from "asked, nothing to do".
+        rows = []
+        for row in memos["rows"]:
+            entry = dict(row)
+            if row["table"] == "attribute_type" and \
+                    _pseudonymise_safe_name(row["key"], compiled) is None:
+                entry["key"] = None
+                entry["key_withheld"] = True
+            rows.append(entry)
+        manifest["memos"] = rows
+        manifest["memos_not_rewritten_marker_risk"] = \
+            memos["totals"]["not_rewritten_marker_risk"]
+        manifest["memos_not_rewritten_marker_risk_note"] = (
+            QualcoderDatabase.PSEUDONYMISE_MEMO_MARKER_RISK_NOTE
+            + " They are not in the memos list above.")
+    manifest["record_note"] = PSEUDONYMISE_RECORD_NOTE
     if project_path is None or (backup_path and safe_backup_path is None):
         manifest["paths_withheld"] = (
             "The project path and the backup path are not recorded here: "
@@ -11583,14 +11675,23 @@ def pseudonymise_source(
                 "reason": "unique_constraint_collision",
                 "nothing_changed": True,
             }
-        if not preview.get("totals", {}).get("replacements"):
+        note_replacements = ((preview.get("memo_rewrites") or {})
+                             .get("totals", {}).get("replacements", 0))
+        if not preview.get("totals", {}).get("replacements") and \
+                not note_replacements:
             # A run with nothing to do is answered rather than performed:
             # a whole-tree backup for a no-op helps nobody, and the
-            # token stays valid until it expires (D3 3.2).
+            # token stays valid until it expires (D3 3.2). With
+            # rewrite_memos on, a run with no match in the file and a
+            # match in a note has something to do (Brief 2, 4.8).
             return {
                 "success": True,
                 "nothing_changed": True,
                 "message": (
+                    "None of the names in this mapping occurs in this "
+                    "file or in any note or journal entry, so nothing was "
+                    "rewritten and no backup was taken."
+                    if rewrite_memos else
                     "None of the names in this mapping occurs in this "
                     "file, so nothing was rewritten and no backup was "
                     "taken."),
@@ -11693,7 +11794,13 @@ def pseudonymise_source(
         preview_fingerprints = {
             item["file_id"]: item["old_fingerprint"]
             for item in read_phase["plan"]["files"]}
-        written = wdb.pseudonymise_write(plan, preview_fingerprints)
+        # The note plan the state check built on this connection, in
+        # this transaction: the notes are rewritten here, before the
+        # journal entry below is written, so the run never reads or
+        # rewrites its own audit entry (Brief 2, 4.7).
+        memo_plan = captured.get("write_memo_plan") if rewrite_memos else None
+        written = wdb.pseudonymise_write(plan, preview_fingerprints,
+                                         memo_plan=memo_plan)
         hidden_updated = 0
         for item in plan["files"]:
             hidden = wdb.pseudonymise_hidden_rows(item)
@@ -11711,14 +11818,24 @@ def pseudonymise_source(
         captured["journal_entry"] = journal_entry
         unsafe = [report["file_id"] for report in written["files"]
                   if not report["position_safe"]]
+        message = f"Pseudonymised {len(written['files'])} file(s)"
+        memos = written.get("memos")
+        if memos is not None:
+            message += (f" and {memos['totals']['rows_updated']} note(s) or "
+                        f"journal entr(ies)")
         result = {
             "success": True,
-            "message": (f"Pseudonymised {len(written['files'])} file(s)"),
+            "message": message,
             "preview_verified": True,
             "files": written["files"],
             "hidden_coder_rows_updated": hidden_updated,
             "journal_entry": journal_entry,
         }
+        if memos is not None:
+            # Counts only: the per-row list goes to the run record, where
+            # a key that carries a name is withheld.
+            result["memos"] = {"fields": memos["fields"],
+                               "totals": memos["totals"]}
         if unsafe:
             result["position_safety_warning"] = (
                 f"File(s) {unsafe} contain \\r\\n sequences or characters "
@@ -11810,7 +11927,8 @@ def pseudonymise_source(
     backup_path = result.get("backup_path")
     manifest = _pseudonymise_manifest(
         captured["plan"], captured["written"], compiled, bind, backup_path,
-        captured.get("journal_entry"), when, secret, project_path_at_start)
+        captured.get("journal_entry"), when, secret, project_path_at_start,
+        rewrite_memos=rewrite_memos)
     written_to = _write_run_manifest(manifest, manifest_name)
     if written_to is None:
         result["manifest_path"] = None
@@ -11823,7 +11941,15 @@ def pseudonymise_source(
     result["stale_sessions"] = _stale_sessions_for(
         [item["file_id"] for item in captured["written"]["files"]])
     result["notes"] = _pseudonymise_notes(
-        Path(backup_path).name if backup_path else None)
+        Path(backup_path).name if backup_path else None,
+        file_rewritten=bool(captured["written"]["files"]))
+    memos = captured["written"].get("memos")
+    if memos is not None:
+        result["notes"].append(
+            f"The public part of {memos['totals']['rows_updated']} note(s) "
+            f"and journal entr(ies) was rewritten across the whole project, "
+            f"not only in this file; every private part was carried across "
+            f"unread. Re-read a note before quoting it.")
     return json.dumps(result, indent=2)
 
 

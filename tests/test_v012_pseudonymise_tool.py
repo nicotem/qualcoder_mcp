@@ -1569,12 +1569,19 @@ class TestManifest:
             assert forbidden not in body, forbidden
         assert "Alex" in body and "Sam" in body
 
-    def test_the_manifest_records_the_spans_a_reversal_would_need(
+    def test_the_manifest_records_the_spans_as_an_audit_record(
             self, project):
+        """The spans say where the pseudonyms now sit, so a run can be
+        accounted for afterwards; they are not an input to any undo
+        (ruling C dropped undoing a run, and ruling 2 versioned the
+        record as an audit record: format 2, v0.13 Brief 2, 4.9)."""
         result = execute_from(preview_of())
         manifest = json.loads(
             Path(result["manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["format"] == 1
+        assert manifest["format"] == 2
+        assert manifest["rewrite_memos"] is False
+        assert "memos" not in manifest
+        assert "memos_not_rewritten_marker_risk" not in manifest
         item = manifest["files"][0]
         text = query(project, "SELECT fulltext FROM source WHERE id=1"
                      )[0]["fulltext"]
@@ -3122,6 +3129,551 @@ class TestTheNoteWarnings:
         assert clause not in off[0]
         assert on[0].replace(" " + clause, "") == off[0]
         _house_rules(on)
+
+
+# =============================================================================
+# v0.13 Brief 2: the note rewrite written (sections 4.7 and 4.8; tests 6 to
+# 9 and 27 to 33)
+# =============================================================================
+
+def _note_of(project, table, column="memo"):
+    key = QualcoderDatabase.PSEUDONYMISE_MEMO_KEYS[table]
+    return query(project, f"SELECT {key} AS k, {column} AS v, * FROM "
+                          f"{table} ORDER BY {key}")
+
+
+class TestTheNoteRewriteIsWritten:
+
+    @pytest.mark.parametrize("table,sql", NOTE_PLANTERS,
+                             ids=[t for t, _ in NOTE_PLANTERS])
+    def test_each_field_is_rewritten_on_its_own(self, project, table, sql):
+        _plant_note(project, sql, "Interviewed Thomas at home.")
+        column = dict(QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS)[table]
+        out = preview_of(rewrite_memos=True)
+        assert out["preview"]["memo_rewrites"]["fields"][table] == {
+            "rows": 1, "replacements": 1}
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert result["memos"]["fields"][table] == {"rows_updated": 1,
+                                                    "replacements": 1}
+        assert result["memos"]["totals"]["rows_updated"] == 1
+        assert result["message"] == (
+            "Pseudonymised 1 file(s) and 1 note(s) or journal entr(ies)")
+        values = [row["v"] for row in _note_of(project, table, column)
+                  if row["v"]]
+        if table == "journal":
+            # The run's own entry is the other one.
+            values = [v for v in values
+                      if not v.startswith("Pseudonymisation run, ")]
+        assert values == ["Interviewed Alex at home."], (table, values)
+
+    def test_a_name_only_in_a_private_part_is_neither_rewritten_nor_counted(
+            self, project):
+        note = "Clean public part.\n\n#####Thomas, and Tom, privately."
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1", note)
+        out = preview_of(rewrite_memos=True)
+        assert out["preview"]["memo_rewrites"]["totals"]["rows"] == 0
+        assert out["preview"]["residue"]["memos"]["source"] == {
+            "wide": 0, "whole_word": 0, "wide_after_rewrite": 0}
+        execute_from(out)
+        assert query(project, "SELECT memo FROM source WHERE id=1"
+                     )[0]["memo"] == note
+
+    def test_a_note_with_a_private_part_is_rewritten_in_its_public_part_only(
+            self, project):
+        private = "#####Thomas, privately.\n\n#####And more."
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Thomas said so.\n\n" + private)
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Tom again, and no private part.")
+        out = preview_of(rewrite_memos=True)
+        block = out["preview"]["memo_rewrites"]
+        assert block["totals"]["rows"] == 2
+        assert block["memos_rewritten_with_private_part"] == 1
+        assert execute_from(out)["success"] is True
+        stored = query(project, "SELECT memo FROM source WHERE id=1"
+                       )[0]["memo"]
+        assert stored == "Alex said so.\n\n" + private      # byte for byte
+        assert query(project, "SELECT memo FROM cases WHERE caseid=1"
+                     )[0]["memo"] == "Alex again, and no private part."
+
+    def test_the_marker_risk_row_is_counted_not_written(self, project,
+                                                        monkeypatch):
+        mapping = [{"original": "Thomas", "pseudonym": "#X#"}]
+        note = "####Thomas and more"
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1", note)
+        seen = _signed_parts(monkeypatch)
+        out = preview_of(mapping=mapping, rewrite_memos=True)
+        assert seen["effects"][-1]["memo_rewrites"][
+            "not_rewritten_marker_risk"] == 1
+        assert out["preview"]["memo_rewrites"][
+            "memos_not_rewritten_marker_risk"] == 1
+        result = execute_from(out, mapping=mapping)
+        assert result.get("success") is True, result
+        assert query(project, "SELECT memo FROM source WHERE id=1"
+                     )[0]["memo"] == note
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["memos_not_rewritten_marker_risk"] == 1
+        assert record["memos"] == []
+        assert record["memos_not_rewritten_marker_risk_note"].endswith(
+            "They are not in the memos list above.")
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert ("Notes left as they were because a rewrite would have "
+                "formed a private-part marker: 1." in body)
+        assert result["memos"]["totals"]["not_rewritten_marker_risk"] == 1
+
+    @staticmethod
+    def _snapshot(project):
+        """Every column of every row of the twelve tables, by table."""
+        return {table: _note_of(project, table, column)
+                for table, column in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
+
+    def test_the_twelve_statements_touch_only_the_named_columns(self,
+                                                                project):
+        _plant_every_note(project)
+        before = self._snapshot(project)
+        # File 4 has no match: a run of the note statements alone.
+        assert execute_from(preview_of(rewrite_memos=True, file_id=4),
+                            record_in_journal=False)["success"] is True
+        after = self._snapshot(project)
+        for table, column in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS:
+            dated = table in ("annotation", "journal")
+            allowed = {column, "v"} | ({"date"} if dated else set())
+            assert len(before[table]) == len(after[table]), table
+            for old, new in zip(before[table], after[table]):
+                changed = {k for k in old if old[k] != new[k]}
+                assert changed <= allowed, (table, changed)
+                if old["v"] == NOTE_BODIES[table]:
+                    assert column in changed, table
+                    assert ("date" in changed) is dated, table
+
+    def test_annotation_and_journal_dates_are_stamped_and_the_other_ten_are_not(
+            self, project):
+        _plant_every_note(project)
+        con = sqlite3.connect(str(project / "data.qda"))
+        for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS:
+            try:
+                con.execute(f"UPDATE {table} SET date = 'old'")
+            except sqlite3.OperationalError:
+                pass                              # a table with no date
+        con.commit()
+        con.close()
+        # File 4 has no match: a run of the note statements alone.
+        assert execute_from(preview_of(rewrite_memos=True, file_id=4),
+                            record_in_journal=False)["success"] is True
+        stamped = []
+        for table, column in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS:
+            for row in _note_of(project, table, column):
+                if "date" in row and row["v"] == \
+                        NOTE_BODIES[table].replace("Thomas", "Alex"):
+                    if row["date"] != "old":
+                        assert re.fullmatch(
+                            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}",
+                            row["date"]), (table, row["date"])
+                        stamped.append(table)
+        assert sorted(stamped) == ["annotation", "journal"]
+
+    def test_no_note_row_is_ever_deleted(self, project):
+        _plant_every_note(project)
+        # A note whose public part is exactly one name: rewritten, never
+        # taken for "cleared" and deleted as update_annotation would.
+        _plant_note(project, "UPDATE annotation SET memo=? WHERE anid=1",
+                    "Thomas")
+        counts = {table: len(query(project, f"SELECT * FROM {table}"))
+                  for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
+        # File 4 has no match: a run of the note statements alone.
+        assert execute_from(preview_of(rewrite_memos=True, file_id=4),
+                            record_in_journal=False)["success"] is True
+        assert counts == {
+            table: len(query(project, f"SELECT * FROM {table}"))
+            for table, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS}
+        assert query(project, "SELECT memo FROM annotation WHERE anid=1"
+                     )[0]["memo"] == "Alex"
+
+    def test_the_note_rewrite_runs_before_the_journal_entry_is_written(
+            self, project, monkeypatch):
+        _plant_every_note(project)
+        order = []
+        write_original = QualcoderDatabase._pseudonymise_write_memos
+        journal_original = QualcoderDatabase.add_journal_entry
+
+        def notes(self, *args, **kwargs):
+            order.append("notes")
+            return write_original(self, *args, **kwargs)
+
+        def journal(self, *args, **kwargs):
+            order.append("journal")
+            return journal_original(self, *args, **kwargs)
+
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_write_memos",
+                            notes)
+        monkeypatch.setattr(QualcoderDatabase, "add_journal_entry", journal)
+        result = execute_from(preview_of(rewrite_memos=True))
+        assert result["success"] is True
+        assert order == ["notes", "journal"]
+        entry = query(project, "SELECT jentry FROM journal WHERE name=?",
+                      (result["journal_entry"],))[0]["jentry"]
+        assert entry.startswith("Pseudonymisation run, ")
+        assert ("This entry was written after the rewrite and was not "
+                "itself rewritten." in entry)
+
+    def test_a_same_length_edit_of_a_matched_note_is_not_caught(
+            self, project, monkeypatch):
+        """Documented, not a defect: ruling 4 signs a note's identity, its
+        private-part flag and the length of its public part, never its
+        text. A note edited to the same length that keeps its match is
+        the same row to the token, and the run rewrites the names in the
+        text as it now stands. The development report says so, and the
+        Security gate is asked to confirm the ruling's choice."""
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Interviewed Thomas at home.")
+        out = preview_of(rewrite_memos=True)
+        fired = TestTheNoteRewriteIsSignedAndShown._race(
+            project, monkeypatch, "UPDATE source SET memo=? WHERE id=1",
+            ("Interviewed Thomas at work.",))
+        result = execute_from(out)
+        assert fired, "the race never happened; the test proves nothing"
+        assert result.get("success") is True, result
+        assert query(project, "SELECT memo FROM source WHERE id=1"
+                     )[0]["memo"] == "Interviewed Alex at work."
+
+    def test_a_note_only_run_takes_a_backup_and_proceeds(self, project):
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Thomas and Mary Ann.")
+        out = preview_of(rewrite_memos=True, file_id=4)
+        assert out["preview"]["totals"]["replacements"] == 0
+        assert ("None of the names in this mapping occurs in this file; "
+                "with rewrite_memos on, an execute would rewrite 1 note(s) "
+                "or journal entr(ies) and nothing in the file text."
+                in out["warnings"])
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert "nothing_changed" not in result
+        assert len(backups(project)) == 1
+        assert result["message"] == (
+            "Pseudonymised 0 file(s) and 1 note(s) or journal entr(ies)")
+        assert query(project, "SELECT memo FROM cases WHERE caseid=1"
+                     )[0]["memo"] == "Alex and Sam."
+        assert result["journal_entry"].startswith("Pseudonymisation notes ")
+        assert not any(note.startswith("Positions after the first")
+                       for note in result["notes"])
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert body.endswith("No file text was rewritten, so no position "
+                             "has changed.")
+
+    @pytest.mark.parametrize("switch,expected", [
+        (False, "None of the names in this mapping occurs in this "
+                       "file, so an execute would rewrite nothing."),
+        (True, "None of the names in this mapping occurs in this "
+                      "file or in any note or journal entry, so an execute "
+                      "would rewrite nothing."),
+    ], ids=["switch-off", "switch-on-nothing-anywhere"])
+    def test_the_rewrite_nothing_forms(self, project, switch,
+                                       expected):
+        out = preview_of(rewrite_memos=switch, file_id=4)
+        assert expected in out["warnings"]
+        others = [w for w in out["warnings"]
+                  if w.startswith("None of the names") and w != expected]
+        assert others == []
+        answered = execute_from(out)
+        assert answered["nothing_changed"] is True
+        assert answered["message"] == (
+            "None of the names in this mapping occurs in this file or in "
+            "any note or journal entry, so nothing was rewritten and no "
+            "backup was taken." if switch else
+            "None of the names in this mapping occurs in this file, so "
+            "nothing was rewritten and no backup was taken.")
+        assert backups(project) == []
+
+    def test_a_fault_after_the_note_statements_rolls_back_the_notes_too(
+            self, project, monkeypatch):
+        _plant_every_note(project)
+        before = self._snapshot(project)
+        text = query(project, "SELECT fulltext FROM source WHERE id=1")
+        written = []
+        original = QualcoderDatabase._pseudonymise_write_memos
+
+        def then_fail(self, *args, **kwargs):
+            value = original(self, *args, **kwargs)
+            written.append(value)
+            raise RuntimeError("injected after the note statements")
+
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_write_memos",
+                            then_fail)
+        refused = execute_from(preview_of(rewrite_memos=True))
+        assert written, "the note statements never ran"
+        assert refused["error"] == "injected after the note statements"
+        assert refused["backup_path"]
+        assert self._snapshot(project) == before
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     ) == text
+        assert server.db.read_only is True
+
+
+class TestTheNotePassRate:
+    """Test 33 and the lead's third answer to Brief 2's hand-off note: the
+    note pass (the note plan, built twice, once under the RESERVED lock,
+    and the note statements) is outside ruling 7's three budgets, as the
+    named file's own rewrite plan is. It is linear in the note text, and
+    its rate is measured and published, not gated: the line below reaches
+    the run's summary through `pytest_terminal_summary` and CI copies it
+    into a check-run annotation, so the slowest platform's figure can be
+    read and stated."""
+
+    BODY = ("Thomas described the ward round in some detail, and Mary Ann "
+            "added that the night staff saw it differently; Tom was not "
+            "there. ")
+
+    @staticmethod
+    def measure(notes=2000, repeat=4):
+        """In a fresh interpreter (the file-text probe's reason): the
+        plan on a read connection and the statements on a write one,
+        inside a transaction that is rolled back. Best of three."""
+        import tempfile
+        import time
+        body = TestTheNotePassRate.BODY * repeat
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = build_project(Path(tmp) / "rate.qda")
+            con = sqlite3.connect(str(folder / "data.qda"))
+            con.executemany(
+                "INSERT INTO cases (caseid,name,memo,owner,date) VALUES "
+                "(?,?,?,'TestCoder','d')",
+                [(10 + i, f"Case {i}", body) for i in range(notes)])
+            con.commit()
+            con.close()
+            compiled = P.Compiled(P.validate_mapping(MAPPING))
+            megabytes = notes * len(body) / 1_000_000
+            ro = QualcoderDatabase(str(folder))
+            plan_s = []
+            for _ in range(3):
+                started = time.perf_counter()
+                plan = ro.pseudonymise_memo_plan(compiled)
+                plan_s.append(time.perf_counter() - started)
+            ro.close()
+            rw = QualcoderDatabase(str(folder), read_only=False)
+            write_s = []
+            for _ in range(3):
+                rw.begin_immediate()
+                started = time.perf_counter()
+                written = rw._pseudonymise_write_memos(plan)
+                write_s.append(time.perf_counter() - started)
+                rw.conn.rollback()
+            rw.close()
+        return {"notes": notes, "megabytes": megabytes,
+                "rows": written["totals"]["rows_updated"],
+                "plan_ms_per_mb": 1000 * min(plan_s) / megabytes,
+                "write_ms_per_mb": 1000 * min(write_s) / megabytes}
+
+    def test_the_note_pass_rate_is_measured_and_published(
+            self, record_property):
+        import subprocess
+        here = Path(__file__).resolve()
+        probe = ("import sys, json; sys.path[:0] = ['src', 'tests']; "
+                 "import test_v012_pseudonymise_tool as t; "
+                 "print(json.dumps(t.TestTheNotePassRate.measure()))")
+        result = subprocess.run([sys.executable, "-B", "-c", probe],
+                                cwd=str(here.parents[1]),
+                                capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stderr[-2000:]
+        m = json.loads(result.stdout.strip().splitlines()[-1])
+        assert m["rows"] == m["notes"]
+        line = (f"{m['plan_ms_per_mb']:.1f} ms per MB of note text for the "
+                f"note plan (built twice per run, once under the RESERVED "
+                f"lock), {m['write_ms_per_mb']:.1f} ms per MB for the note "
+                f"statements; {m['notes']} notes, {m['megabytes']:.2f} MB, "
+                f"3 surface forms; outside ruling 7's budgets, linear in "
+                f"the note text")
+        record_property("note_pass_rate", line)
+        sys.stderr.write(f"\nnote pass rate: {line}\n")
+
+    def test_the_rate_reaches_the_summary_ci_prints(self):
+        """Driven the way CI runs, `pytest -ra -q` in its own
+        interpreter, which prints nothing of a passing test's output:
+        the line is in the summary `pytest_terminal_summary` writes."""
+        import subprocess
+        here = Path(__file__).resolve()
+        target = (f"{here}::TestTheNotePassRate::"
+                  f"test_the_note_pass_rate_is_measured_and_published")
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "pytest", "-ra", "-q",
+             "-p", "no:cacheprovider", target],
+            cwd=str(here.parents[1]), capture_output=True, text=True,
+            timeout=300)
+        assert result.returncode == 0, result.stdout[-2000:]
+        lines = [line for line in result.stdout.splitlines()
+                 if line.startswith("note pass rate: ")]
+        assert len(lines) == 1, result.stdout[-2000:]
+        assert " ms per MB of note text for the note plan " in lines[0]
+        assert " ms per MB for the note statements; " in lines[0]
+        assert lines[0].endswith("test passed)")
+
+    def test_ci_copies_the_line_into_the_summary_and_an_annotation(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github" /
+                    "workflows" / "ci.yml").read_text(encoding="utf-8")
+        step = workflow[workflow.index("- name: Run test suite"):
+                        workflow.index("- name: Upload pytest output")]
+        closing = step.index('} >> "$GITHUB_STEP_SUMMARY"')
+        summary = step[step.rindex("{\n", 0, closing):closing]
+        assert 'grep -E "^note pass rate: " pytest_output.txt | head -3' \
+            in summary
+        outside = step[closing:]
+        line = next(row.strip() for row in outside.splitlines()
+                    if "::notice title=note pass rate::" in row)
+        assert line == ("sed -n 's/^note pass rate: "
+                        "/::notice title=note pass rate::/p' "
+                        "pytest_output.txt | head -3")
+        assert outside.index(line) < outside.index("exit $code")
+
+
+class TestTheRunRecordAndTheJournalOfANoteRewrite:
+    """Format 2 (ruling 2) and the journal lines (Brief 2, 4.9, 4.10,
+    5.7 and 5.8; tests 34 to 39)."""
+
+    @staticmethod
+    def _record(result):
+        return json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+
+    def test_the_record_carries_the_memo_section_exactly_when_the_switch_was_on(
+            self, project):
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Thomas said so.")
+        off = self._record(execute_from(preview_of()))
+        assert off["rewrite_memos"] is False
+        assert "memos" not in off
+        assert "memos_not_rewritten_marker_risk" not in off
+        # The file is clean now; the note is not, so this is a run of the
+        # note statements alone.
+        on = self._record(execute_from(preview_of(rewrite_memos=True)))
+        assert on["rewrite_memos"] is True
+        assert [(row["table"], row["key"]) for row in on["memos"]] == [
+            ("cases", 1)]
+        assert on["memos_not_rewritten_marker_risk"] == 0
+
+    def test_an_asked_run_with_no_note_to_change_records_an_empty_list(
+            self, project):
+        record = self._record(execute_from(preview_of(rewrite_memos=True)))
+        assert record["rewrite_memos"] is True
+        assert record["memos"] == []
+        assert record["memos_not_rewritten_marker_risk"] == 0
+
+    def test_the_record_spans_land_on_pseudonyms_in_the_stored_note(
+            self, project):
+        private = "\n#####Thomas stays here, and Tom."
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Tom met Thomas; Mary Ann met Tom." + private)
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Mary Ann")
+        record = self._record(execute_from(preview_of(rewrite_memos=True)))
+        by_table = {row["table"]: row for row in record["memos"]}
+        assert set(by_table) == {"source", "cases"}
+        for table, row in by_table.items():
+            column = dict(QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS)[table]
+            stored = _note_of(project, table, column)[0]["v"]
+            for replacement in row["replacements"]:
+                start, end = replacement["new_span"]
+                assert stored[start:end] == ("Alex", "Sam")[
+                    replacement["entry"]], (table, replacement)
+            public = split_public_private_memo(stored)[0]
+            assert row["public_length"][1] == len(public)
+        source = by_table["source"]
+        assert source["has_private"] is True
+        # The public part runs up to the marker, the line break included.
+        assert source["public_length"] == [
+            len("Tom met Thomas; Mary Ann met Tom.\n"),
+            len("Alex met Alex; Sam met Alex.\n")]
+        assert [r["entry"] for r in source["replacements"]] == [0, 0, 1, 0]
+        stored = _note_of(project, "source")[0]["v"]
+        assert stored.endswith(private)                 # untouched
+
+    def test_the_record_carries_no_note_text_no_original_and_no_form_or_shape_integer(
+            self, project):
+        _plant_every_note(project)
+        result = execute_from(preview_of(rewrite_memos=True))
+        body = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        for forbidden in ("Thomas", "Tom", "Mary Ann", "Mary", "spoke here",
+                          "Note code_text body"):
+            assert forbidden not in body, forbidden
+        record = json.loads(body)
+        assert len(record["memos"]) == 12
+        for row in record["memos"]:
+            assert set(row) <= {"table", "column", "key", "key_withheld",
+                                "has_private", "public_length",
+                                "replacements"}, row
+            for replacement in row["replacements"]:
+                assert set(replacement) == {"entry", "new_span"}, replacement
+
+    def test_the_attribute_type_key_is_withheld_when_it_carries_a_name(
+            self, project):
+        _plant_note(project, "INSERT INTO attribute_type (name,date,owner,"
+                             "memo,caseOrFile,valuetype) VALUES (?,'d',"
+                             "'TestCoder','Thomas said so.','case',"
+                             "'character')", "Thomas_group")
+        _plant_note(project, "INSERT INTO attribute_type (name,date,owner,"
+                             "memo,caseOrFile,valuetype) VALUES (?,'d',"
+                             "'TestCoder','Thomas again.','case',"
+                             "'character')", "Age group")
+        result = execute_from(preview_of(rewrite_memos=True))
+        body = Path(result["manifest_path"]).read_text(encoding="utf-8")
+        assert "Thomas" not in body
+        rows = [row for row in json.loads(body)["memos"]
+                if row["table"] == "attribute_type"]
+        assert [(row["key"], row.get("key_withheld")) for row in rows] == [
+            ("Age group", None), (None, True)]
+
+    def test_the_project_row_carries_its_rowid(self, project):
+        _plant_note(project, "UPDATE project SET memo=?", "Thomas's project.")
+        record = self._record(execute_from(preview_of(rewrite_memos=True)))
+        row = [r for r in record["memos"] if r["table"] == "project"][0]
+        assert row["key"] == 1 and row["column"] == "memo"
+
+    @pytest.mark.parametrize("switch", [False, True],
+                             ids=["switch-off", "switch-on"])
+    def test_the_record_note_says_audit_not_undo(self, project, switch):
+        record = self._record(execute_from(preview_of(
+            rewrite_memos=switch)))
+        assert record["record_note"] == (
+            "An audit record of this run: which rows it changed and "
+            "where the pseudonyms now sit. It is not an input to any "
+            "undo. The backup taken before the run is the way back; the "
+            "mapping is the researcher's and is not stored here.")
+        _house_rules([record["record_note"]])
+
+    def test_the_journal_body_carries_the_note_lines_and_no_marker(
+            self, project):
+        _plant_every_note(project)
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Tom and Thomas.\n#####private")
+        result = execute_from(preview_of(rewrite_memos=True))
+        body = query(project, "SELECT jentry FROM journal WHERE name=?",
+                     (result["journal_entry"],))[0]["jentry"]
+        assert ("Notes rewritten: 12 (code_text 1, annotation 1, case_text "
+                "1, source 1, cases 1, code_name 1, code_cat 1, project 1, "
+                "attribute_type 1, journal 1, code_av 1, code_image 1); "
+                "replacements: 13." in body)
+        assert ("Notes with a private part whose public part was rewritten: "
+                "1. Notes left as they were because a rewrite would have "
+                "formed a private-part marker: 0." in body)
+        assert ("Journal entries rewritten that were this server's own "
+                "records of earlier runs: 0." in body)
+        assert ("This entry was written after the rewrite and was not "
+                "itself rewritten." in body)
+        lines = body.split("\n")
+        assert lines.index(next(l for l in lines if l.startswith(
+            "Notes rewritten: "))) < lines.index(next(
+                l for l in lines if l.startswith("Pseudonyms applied: ")))
+        assert "#####" not in body
+        for forbidden in ("Thomas", "Tom", "Mary", "spoke here"):
+            assert forbidden not in body, forbidden
+        _house_rules([body])
+
+    def test_the_journal_body_has_no_note_lines_with_the_switch_off(
+            self, project):
+        result = execute_from(preview_of())
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert "Notes rewritten" not in body
+        assert "was not itself rewritten" not in body
 
 
 class TestTheSafeNameHelperOnWhatIsNotAName:

@@ -1245,6 +1245,41 @@ class TestAPseudonymCarryingANameIsWithheld:
                 out["preview"]["memo_rewrites"]["by_entry"]] == [
             (0, "Jones"), (1, "Alex Smith")]
 
+    # Brief 2's hand-off note, H.2.4: the note section of the run record
+    # carries each replacement's entry and span and no pseudonym, and the
+    # journal's note lines carry counts, so a withheld pseudonym reaches
+    # neither on either mapping path.
+    @pytest.mark.parametrize("sidecar", [True, False],
+                             ids=["sidecar-path", "typed-path"])
+    def test_the_note_records_carry_no_withheld_pseudonym(self, tmp_path,
+                                                          sidecar):
+        mapping, text, withheld = CARRYING["contains_other"]
+        folder = self._project(tmp_path, text, mapping, sidecar=sidecar)
+        self._note(folder, text)
+        with wired(folder):
+            if sidecar:
+                out = call(mapping=None, use_project_pseudonyms=True,
+                           rewrite_memos=True)
+                result = flagship.execute_as_recipe(out)
+            else:
+                out = preview_of(mapping=mapping, rewrite_memos=True)
+                result = execute_from(out, mapping=mapping)
+            assert result.get("success") is True, result
+            manifest, journal = self._records(folder, result)
+        record = json.loads(manifest)
+        assert len(record["memos"]) == 2
+        for row in record["memos"]:
+            for replacement in row["replacements"]:
+                assert set(replacement) == {"entry", "new_span"}
+        for name in _originals(mapping) + ["Alex Smith"]:
+            assert name.lower() not in manifest.lower(), name
+            for row in journal:
+                assert name.lower() not in row["jentry"].lower(), name
+        body = [row["jentry"] for row in journal
+                if "Notes rewritten" in row["jentry"]][0]
+        assert "Notes rewritten: 2 (source 1, cases 1); replacements: 6." \
+            in body
+
     def test_the_sentence_keeps_the_house_rules(self):
         _house_rules([P.PSEUDONYMS_WITHHELD_NOTE], ["withheld note"])
 

@@ -9756,7 +9756,8 @@ class QualcoderDatabase:
                 (base - 2 * offset - 1, base - 2 * offset, row["id"]))
 
     def pseudonymise_write(self, plan: Dict[str, Any],
-                           preview_fingerprints: Dict[int, Any]
+                           preview_fingerprints: Dict[int, Any],
+                           memo_plan: Optional[Dict[str, Any]] = None
                            ) -> Dict[str, Any]:
         """Rewrite every touched file and move every span, in one go.
 
@@ -9780,8 +9781,19 @@ class QualcoderDatabase:
         only say that something did.
 
         Never touched, at either pin and under either policy:
-        `important`, `owner`, `date`, `memo` and `avid` on a coding, and
-        `memo`, `owner` and `date` on an annotation or a case link.
+        `important`, `owner`, `date` and `avid` on a coding, `owner` on an
+        annotation, and `owner` and `date` on a case link. `memo` on every
+        row, and `date` on an annotation and on a journal entry, are
+        touched only by the note rewrite when `rewrite_memos` is on, and
+        then the public part of the note only.
+
+        With a note plan, after the per-file work and before the report
+        is assembled, one `UPDATE ... SET <note> = ?` per planned note,
+        keyed by the field's own key (`PSEUDONYMISE_MEMO_KEYS`), and the
+        date stamped only where QualCoder's interface stamps it
+        (`PSEUDONYMISE_MEMO_DATED`, ruling 9), in the form our own
+        `update_annotation` writes. Never a DELETE: a public part cannot
+        become empty (`pseudonymise_memo_plan`). The report gains `memos`.
         """
         self._require_write_access()
         # Nothing is written until every touched file still reads exactly
@@ -9837,7 +9849,70 @@ class QualcoderDatabase:
                 "case_links_deleted": len(deleted["case_text"]),
                 "position_safe": position_safe(new_text),
             })
-        return {"files": report}
+        written: Dict[str, Any] = {"files": report}
+        if memo_plan is not None:
+            written["memos"] = self._pseudonymise_write_memos(memo_plan)
+        return written
+
+    def _pseudonymise_write_memos(self, memo_plan: Dict[str, Any]
+                                  ) -> Dict[str, Any]:
+        """The note statements of one run, and what the run record needs.
+
+        Each row's `replacements` are re-expressed as `new_span`s in the
+        rewritten public part, which by the prefix property are offsets
+        in the stored note. No note text, old or new, goes into the
+        report; the public length goes in as a pair, before and after.
+        """
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fields: Dict[str, Dict[str, int]] = {}
+        rows: List[Dict[str, Any]] = []
+        totals = {"rows_updated": 0, "replacements": 0}
+        try:
+            for field in memo_plan["fields"]:
+                table, column = field["table"], field["column"]
+                key_column = field["key_column"]
+                dated = table in self.PSEUDONYMISE_MEMO_DATED
+                for row in field["rows"]:
+                    if dated:
+                        self.conn.execute(
+                            f"UPDATE {table} SET {column} = ?, date = ? "
+                            f"WHERE {key_column} = ?",
+                            (row["new_stored"], stamp, row["key"]))
+                    else:
+                        self.conn.execute(
+                            f"UPDATE {table} SET {column} = ? "
+                            f"WHERE {key_column} = ?",
+                            (row["new_stored"], row["key"]))
+                    offset = 0
+                    spans = []
+                    for replacement in row["replacements"]:
+                        start = replacement.start + offset
+                        spans.append({"entry": replacement.entry,
+                                      "new_span": [start, start + len(
+                                          replacement.text)]})
+                        offset += replacement.delta
+                    rows.append({
+                        "table": table, "column": column, "key": row["key"],
+                        "has_private": row["has_private"],
+                        "public_length": [row["public_length"],
+                                          row["public_length"] + offset],
+                        "replacements": spans})
+                fields[table] = {"rows_updated": len(field["rows"]),
+                                 "replacements": field["replacements"]}
+                totals["rows_updated"] += len(field["rows"])
+                totals["replacements"] += field["replacements"]
+        except sqlite3.Error as e:
+            logger.error("Database error in pseudonymise_write: %s", e)
+            raise RuntimeError(
+                "Could not rewrite this project's notes; nothing was "
+                "written.") from None
+        # The plan's three counts of things said about the run, so the
+        # journal entry and the run record read one report.
+        for key in ("rewritten_with_private_part",
+                    "not_rewritten_marker_risk",
+                    "journal_entries_from_earlier_runs"):
+            totals[key] = memo_plan["totals"][key]
+        return {"fields": fields, "totals": totals, "rows": rows}
 
     def _pseudonymise_move_rows(self, item: Dict[str, Any], new_text: str,
                                 fid: int) -> Dict[str, int]:
