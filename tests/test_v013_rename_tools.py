@@ -263,6 +263,29 @@ def _saved_places(project):
         _exec(project, ddl)
 
 
+def _save_display(project, name, rows):
+    """A saved Manage Files display as QualCoder writes one: its rows
+    '<column>\t<operator>\t<value>' joined by two tabs (master
+    manage_files.py:751, :1169, :1176, :1183, transcribed)."""
+    tblrows = "\t\t".join(f"{col}\t{op}\t{value}" for col, op, value in rows)
+    _exec(project, "INSERT INTO manage_files_display (name, tblrows, "
+                   "tblcolumns, owner) VALUES (?, ?, 'Name\t100\t\t', "
+                   "'gui_user')", (name, tblrows))
+
+
+def _save_filter(project, name, boolean, conditions):
+    """A saved attribute filter as QualCoder writes one: the text of the
+    parameter list (master report_attributes.py:143, :268-310,
+    transcribed), character values in single quotes."""
+    parameters = [[boolean]]
+    for attr, case_or_file, type_, op, values in conditions:
+        if type_ == "character":
+            values = [f"'{v}'" for v in values]
+        parameters.append([attr, case_or_file, type_, op, values])
+    _exec(project, "INSERT INTO files_filter (name, filter, owner) "
+                   "VALUES (?, ?, 'gui_user')", (name, parameters.__str__()))
+
+
 class TestRenameCaseReportsWhereTheOldNameStays:
 
     def test_each_count_only_when_not_zero(self, project):
@@ -830,8 +853,9 @@ class TestWhatKeepsTheOldName:
         _exec(project, "INSERT INTO gr_file_text_item (grid, fid, "
                        "displaytext) VALUES (1, 1, 'Interview.TXT'), "
                        "(1, 2, 'interview.txt')")
-        _exec(project, "INSERT INTO files_filter (name, filter) VALUES "
-                       "('f', 'Name like interview.txt')")
+        _save_filter(project, "f", "BOOLEAN_OR",
+                     [("file name", "file", "character", "like",
+                       ["interview.txt"])])
         _add_file(project, 7, "interview_p1.jpg", mediapath="/images/x.jpg")
         _add_file(project, 8, "interview.txt_summary")
         _reload()
@@ -1295,12 +1319,12 @@ class TestWhereTheOldNameStaysByWholeWords:
     def test_a_short_label_is_not_found_inside_longer_words(self, project):
         _saved_places(project)
         _add_case(project, "AS", 5)
-        _exec(project, "INSERT INTO manage_files_display (name, tblrows) "
-                       "VALUES ('d1', 'Case\t=\tThomas'), "
-                       "('d2', 'Case\t=\tAS')")
-        _exec(project, "INSERT INTO files_filter (name, filter) VALUES "
-                       "('f1', 'case name like Thomas'), "
-                       "('f2', 'case name = \"as\"')")
+        _save_display(project, "d1", [("Case", "=", "Thomas")])
+        _save_display(project, "d2", [("Case", "=", "AS")])
+        _save_filter(project, "f1", "BOOLEAN_OR",
+                     [("case name", "case", "character", "like", ["Thomas"])])
+        _save_filter(project, "f2", "BOOLEAN_AND",
+                     [("case name", "case", "character", "=", ["AS"])])
         _add_file(project, 7, "Thomas.txt")
         _add_file(project, 8, "AS_interview.txt")
         _add_file(project, 9, "Survey_as")
@@ -1403,3 +1427,50 @@ class TestTheFiveBehavioursQAFoundUnpinned:
         assert out["changed"] is True and out["new_name"] == written
         assert _rows(project, "SELECT name FROM source WHERE id = 5") == \
             [{"name": written}]
+
+
+class TestSavedDisplaysAndFiltersByTheirValues:
+    """Fix round 2, R2-1: in QualCoder's saved displays and filters only
+    the values they filter on are read, so a label that is one of
+    QualCoder's own words is not counted everywhere."""
+
+    @pytest.mark.parametrize("label", ["OR", "AND", "Case", "like",
+                                       "character"])
+    def test_qualcoders_own_words_are_not_labels(self, project, label):
+        _saved_places(project)
+        _add_case(project, label, 5)
+        _save_display(project, "d1", [("Case", "like", "Thomas"),
+                                      ("Name", "hide", "notes")])
+        _save_filter(project, "any", "BOOLEAN_OR",
+                     [("case name", "case", "character", "like", ["P01"]),
+                      ("Age", "case", "numeric", "between", ["20", "30"])])
+        _save_filter(project, "all", "BOOLEAN_AND",
+                     [("case name", "case", "character", "=", ["P02"])])
+        _reload()
+        out = _case(5, "P05", create_backup=False)
+        assert out["old_name_left_in"] == {}, out
+
+    def test_the_values_are_still_read(self, project):
+        _saved_places(project)
+        _add_case(project, "OR", 5)
+        _save_display(project, "d1", [("Case", "=", "OR"),
+                                      ("Name", "like", "Thomas")])
+        _save_filter(project, "any", "BOOLEAN_OR",
+                     [("case name", "case", "character", "like", ["P01"]),
+                      ("case name", "case", "character", "=", ["OR"])])
+        _reload()
+        out = _case(5, "P05", create_backup=False)
+        assert out["old_name_left_in"] == {
+            "saved_table_displays": 1, "saved_filters": 1}
+
+    def test_a_text_in_no_saved_shape_is_read_whole(self):
+        from qualcoder_mcp.database import (saved_display_values,
+                                            saved_filter_values)
+        assert saved_filter_values("case name like OR") == \
+            ["case name like OR"]
+        assert saved_filter_values(
+            "[['BOOLEAN_OR'], ['n', 'case', 'character', '=', [\"'OR'\"]]]"
+        ) == ["OR"]
+        assert saved_display_values("Case\t=\tOR\t\tName\tlike\tP 1") == \
+            ["OR", "P 1"]
+        assert saved_display_values("no tabs here") == []

@@ -201,18 +201,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ids only as well; until now they logged both names.
 - Each result says where the old name stays. `old_name_left_in` counts
   QualCoder's saved graph labels, saved table displays and saved filters
-  that still hold it and lists the ids of files named after it (a
+  that still hold it and lists the ids of files whose name holds it (a
   heuristic: the old name as a whole word, ignoring letter case, where
   letters and digits make up a word, so `_` and `.` separate words and a
-  short label such as `AS` is not found inside `Case`; each count only
-  when it is not zero). `rename_file` adds `stored_copy` (an imported file's copy
-  in the project folder and its stored path keep the old name, and a
-  document's copy keeps the original text, which QualCoder's exports
-  ship), `linked_transcript` or `transcript_of`, `transcript_pairing`
-  (where QualCoder would pair a recording with a transcript by name) and
-  `search_index_note`. A `note` names the rest: backups, session files,
-  QualCoder 4.0's AI chat, and imports and merges that bring an old name
-  back.
+  short label such as `AS` is not found inside `Case`; in saved displays
+  and filters only the values they filter on are read, so a label such
+  as `OR` is not counted in every filter QualCoder saved as
+  `BOOLEAN_OR`; each count only when it is not zero). `rename_file` adds
+  `stored_copy` (an imported file's copy in the project folder and its
+  stored path keep the old name, and a document's copy keeps the
+  original text, which QualCoder's exports ship), `linked_transcript` or
+  `transcript_of`, `transcript_pairing` (where QualCoder would pair a
+  recording with a transcript by name) and `search_index_note`. A `note`
+  names the rest: backups, session files, this server's pseudonymisation
+  journal entries and run records (for a file), QualCoder 4.0's AI chat,
+  and imports and merges that bring an old name back.
 - QualCoder 4.0 writes no lock file, so a Manage Cases or Manage Files
   window opened before a rename keeps the old name and can overwrite the
   rename or fail on it. Both descriptions say so; close the project in

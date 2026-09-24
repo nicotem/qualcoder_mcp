@@ -12090,7 +12090,9 @@ def create_case(name: str, memo: Optional[str] = None,
 OLD_NAME_LEFT_IN_NOTE = (
     "old_name_left_in is a heuristic: it looks for the old name as a whole "
     "word, ignoring letter case, where letters and digits make up a word "
-    "(so '_', '-', '.' and spaces separate words), and it can miss a "
+    "(so '_', '-', '.' and spaces separate words); in saved table "
+    "displays and filters it reads only the values they filter on, not "
+    "QualCoder's own words such as BOOLEAN_OR or like. It can miss a "
     "label written another way or count one that names something else.")
 
 # What rename_case's result says stays behind (v0.13, rename dossier 3.2).

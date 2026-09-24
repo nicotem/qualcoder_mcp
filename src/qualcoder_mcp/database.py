@@ -1,5 +1,6 @@
 """Database interface for Qualcoder .qda files."""
 
+import ast
 import bisect
 import locale
 import os
@@ -1065,6 +1066,57 @@ def stored_path_extension(mediapath: Optional[str]) -> str:
         return ''
     last = re.split(r"[\\/]", mediapath)[-1]
     return '.' + last.rsplit('.', 1)[1] if '.' in last else ''
+
+
+def saved_display_values(tblrows: Any) -> List[str]:
+    """The values a saved Manage Files display filters on (fix round 2,
+    R2-1): QualCoder saves its rows joined by two tabs, each row
+    '<column>\t<operator>\t<value>' (master manage_files.py:745-783,
+    :1165-1186; 3.8.2 the same), so the column names and operators
+    ('Case', 'Name', 'like', 'hide') are never read as a label."""
+    if not isinstance(tblrows, str):
+        return []
+    return [row.split("\t", 2)[2] for row in tblrows.split("\t\t")
+            if row.count("\t") >= 2]
+
+
+# A saved filter longer than this is read whole rather than parsed: a
+# filter QualCoder saves is a few hundred characters, and literal_eval's
+# cost grows with its input.
+SAVED_FILTER_PARSE_LIMIT = 20_000
+
+
+def saved_filter_values(text: Any) -> List[str]:
+    """The values a saved attribute filter compares with (R2-1).
+    QualCoder saves the text of a Python list (master
+    report_attributes.py:139-161, :265-310): a first item
+    ['BOOLEAN_OR'] or ['BOOLEAN_AND'], then one
+    [name, 'case' or 'file', type, operator, [values]] per condition,
+    character values in single quotes. Only the values are read, so
+    QualCoder's own words (BOOLEAN_OR, AND, case, character, like) are
+    never read as a label. A text in no such shape is read whole, the
+    conservative reading."""
+    if not isinstance(text, str):
+        return []
+    if len(text) > SAVED_FILTER_PARSE_LIMIT:
+        return [text]
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError,
+            TypeError):
+        return [text]
+    if not isinstance(parsed, list):
+        return [text]
+    values: List[str] = []
+    for item in parsed[1:]:
+        if isinstance(item, (list, tuple)) and len(item) >= 5 and \
+                isinstance(item[4], (list, tuple)):
+            for value in item[4]:
+                if isinstance(value, str):
+                    if len(value) >= 2 and value[0] == value[-1] == "'":
+                        value = value[1:-1]
+                    values.append(value)
+    return values
 
 
 def documents_name_key(name: str) -> str:
@@ -8103,8 +8155,11 @@ class QualcoderDatabase:
         present only when not zero, and a table this schema lacks is
         skipped. Saved graph labels are this row's own nodes
         (gr_case_text_item or gr_file_text_item); saved table displays
-        (manage_files_display.tblrows) and saved filters
-        (files_filter.filter) are the whole project's; file_ids are the
+        (the value field of each manage_files_display.tblrows row) and
+        saved filters (the values of each files_filter.filter condition)
+        are the whole project's, read without QualCoder's own words
+        (fix round 2, R2-1: a case called OR is not counted in every
+        filter saved as BOOLEAN_OR); file_ids are the
         other files whose name holds the old name, for a file with a
         stored path without the stored file's extension ('Thomas.pdf'
         finds its pages 'Thomas_p1.jpg'), otherwise whole ('Thomas.Jones'
@@ -8139,11 +8194,15 @@ class QualcoderDatabase:
             ("saved_filters", "files_filter",
              "SELECT filter FROM files_filter", ()),
         )
+        readers = {"saved_graph_labels": lambda text: [text],
+                   "saved_table_displays": saved_display_values,
+                   "saved_filters": saved_filter_values}
         for label, place, sql, args in places:
             if not present(place):
                 continue
             hits = sum(1 for (value,) in self.conn.execute(sql, args)
-                       if pattern.search(key(value)))
+                       if any(pattern.search(key(part))
+                              for part in readers[label](value)))
             if hits:
                 found[label] = hits
 
