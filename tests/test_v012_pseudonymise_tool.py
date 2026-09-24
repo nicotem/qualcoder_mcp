@@ -50,6 +50,7 @@ from track5_helpers import write_fixture_sidecar
 from qualcoder_mcp import preview_tokens as pt
 from qualcoder_mcp import pseudonymise as P
 from qualcoder_mcp.database import QualcoderDatabase
+from qualcoder_mcp.memo_privacy import split_public_private_memo
 from qualcoder_mcp.project_settings import (AI_CODER_NAME_ENV,
                                             DEFAULT_AI_CODER_NAME,
                                             KNOWN_AI_ASSISTANT_OWNER,
@@ -2466,6 +2467,150 @@ class TestTheLabelsAndMemosTheResidueCounts:
         assert "it reports anything a reader might see, including" \
             not in warning
         _house_rules([warning], ["residue warning"])
+
+
+# =============================================================================
+# v0.13 Brief 2: the note plan (section 4.5), read at the database layer
+# =============================================================================
+
+def _compiled(mapping=MAPPING, case_mode="exact"):
+    return P.Compiled(P.validate_mapping(mapping, case_mode))
+
+
+def _plant_note(project, sql, value):
+    con = sqlite3.connect(str(project / "data.qda"))
+    for statement in ([sql] if isinstance(sql, str) else sql):
+        con.execute(statement, (value,) if "?" in statement else ())
+    con.commit()
+    con.close()
+    server.db.close()
+    server.db = QualcoderDatabase(str(project))
+
+
+# The twelve note planters of the residue pins, by table.
+NOTE_PLANTERS = [(field.split(".", 1)[1], sql) for field, sql in
+                 TestTheLabelsAndMemosTheResidueCounts.RESIDUE_FIELDS
+                 if field.startswith("memos.")]
+
+
+class TestTheNotePlan:
+
+    @staticmethod
+    def _field(plan, table):
+        return next(f for f in plan["fields"] if f["table"] == table)
+
+    @pytest.mark.parametrize("table,sql", NOTE_PLANTERS,
+                             ids=[t for t, _ in NOTE_PLANTERS])
+    def test_each_field_is_in_the_plan_on_its_own(self, project, table, sql):
+        _plant_note(project, sql, "Interviewed Thomas at home.")
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        assert [f["table"] for f in plan["fields"]] == [
+            t for t, _ in QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS]
+        field = self._field(plan, table)
+        assert len(field["rows"]) == 1, table
+        row = field["rows"][0]
+        assert row["new_stored"] == "Interviewed Alex at home."
+        assert row["public_length"] == len("Interviewed Thomas at home.")
+        assert row["has_private"] is False
+        assert plan["totals"]["rows"] == 1
+        assert sum(len(f["rows"]) for f in plan["fields"]) == 1
+
+    def test_a_name_only_in_a_private_part_is_not_in_the_plan(self,
+                                                              project):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Clean public part.\n#####Thomas, privately")
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        assert plan["totals"]["rows"] == 0
+        assert all(not f["rows"] and not f["not_rewritten_marker_risk"]
+                   for f in plan["fields"])
+
+    def test_a_public_part_cannot_become_empty(self, project):
+        """The guarantee rests on a constant in another module: a
+        pseudonym is at least `MIN_PSEUDONYM_CHARS` characters and never
+        whitespace, so a note whose public part is one name keeps a
+        public part, and `update_annotation`'s clear-means-delete branch
+        is never reached."""
+        assert P.MIN_PSEUDONYM_CHARS >= 1
+        for pseudonym in ("", "  ", "\t"):
+            with pytest.raises(P.MappingError):
+                P.validate_mapping([{"original": "Thomas",
+                                     "pseudonym": pseudonym}])
+        for table, sql in NOTE_PLANTERS:
+            _plant_note(project, sql, "Thomas")
+        compiled = _compiled()
+        plan = server.db.pseudonymise_memo_plan(compiled)
+        assert plan["totals"]["rows"] == 12
+        for field in plan["fields"]:
+            for row in field["rows"]:
+                public = split_public_private_memo(row["new_stored"])[0]
+                assert public != "", field["table"]
+                assert len(public) >= P.MIN_PSEUDONYM_CHARS
+
+    def test_the_too_long_guard_is_not_applied_to_a_rewrite(self, project):
+        from qualcoder_mcp.database import MAX_TEXT_CONTENT_LENGTH
+        long_note = "Thomas " + "x" * MAX_TEXT_CONTENT_LENGTH
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    long_note)
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        row = self._field(plan, "source")["rows"][0]
+        assert row["new_stored"] == "Alex " + "x" * MAX_TEXT_CONTENT_LENGTH
+
+    def test_the_plan_reaches_the_media_notes_whatever_the_file(self,
+                                                                project):
+        for table, sql in NOTE_PLANTERS:
+            if table in ("code_av", "code_image"):
+                _plant_note(project, sql, "Thomas again")
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        assert len(self._field(plan, "code_av")["rows"]) == 1
+        assert len(self._field(plan, "code_image")["rows"]) == 1
+
+    def test_a_marker_risk_row_is_listed_and_not_in_rows(self, project):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "####Thomas\n#####kept")
+        plan = server.db.pseudonymise_memo_plan(
+            _compiled([{"original": "Thomas", "pseudonym": "#X#"}]))
+        field = self._field(plan, "source")
+        assert field["rows"] == []
+        assert field["not_rewritten_marker_risk"] == [
+            {"key": 1, "has_private": True}]
+        assert plan["totals"]["not_rewritten_marker_risk"] == 1
+        assert plan["totals"]["rows"] == 0
+
+    def test_an_earlier_run_entry_is_flagged_by_its_first_line(self,
+                                                               project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("INSERT INTO journal (jid,name,jentry,date,owner) VALUES "
+                    "(1,'a',?,'d','x')", ("Pseudonymisation run, "
+                                          "2026-09-01 10:00:00.\nThomas",))
+        con.execute("INSERT INTO journal (jid,name,jentry,date,owner) VALUES "
+                    "(2,'b',?,'d','x')", ("Thomas wrote this.",))
+        con.execute("INSERT INTO journal (jid,name,jentry,date,owner) VALUES "
+                    "(3,'c',?,'d','x')", (" Pseudonymisation run, "
+                                          "2026-09-01 10:00:00.\nThomas",))
+        con.commit()
+        con.close()
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        rows = self._field(plan, "journal")["rows"]
+        assert [(r["key"], r["earlier_run_entry"]) for r in rows] == [
+            (1, True), (2, False), (3, False)]
+        assert plan["totals"]["journal_entries_from_earlier_runs"] == 1
+
+    def test_an_unreadable_field_is_listed_and_skipped(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("DROP TABLE code_image")
+        con.commit()
+        con.close()
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        assert plan["unreadable"] == ["code_image.memo"]
+        assert "code_image" not in [f["table"] for f in plan["fields"]]
+        assert len(plan["fields"]) == 11
+
+    def test_the_counts_by_entry_are_the_callers_indices(self, project):
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Mary Ann met Thomas and Tom.")
+        plan = server.db.pseudonymise_memo_plan(_compiled())
+        assert plan["by_entry"] == {0: 2, 1: 1}
+        assert plan["totals"]["replacements"] == 3
 
 
 class TestTheSafeNameHelperOnWhatIsNotAName:

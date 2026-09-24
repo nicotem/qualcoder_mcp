@@ -1276,3 +1276,96 @@ class TestCascadePreviewsCountPrivateNotes:
         raw = server.merge_category(2)
         assert SECRET not in raw
         assert json.loads(raw)["preview"]["private_notes_affected"] == 1
+
+
+# =============================================================================
+# v0.13 Brief 2: the note rewrite's helper (section 4.3, tests 1 to 5)
+# =============================================================================
+
+from hypothesis import given, settings, strategies as st  # noqa: E402
+
+from qualcoder_mcp import pseudonymise as P  # noqa: E402
+from qualcoder_mcp.memo_privacy import rewrite_public_memo  # noqa: E402
+
+
+def _engine_rewrite(mapping):
+    """The rewrite the note plan applies: the run's own whole-word rule."""
+    compiled = P.Compiled(P.validate_mapping(mapping, "exact"))
+    return lambda text: P.apply_replacements(
+        text, P.find_replacements(compiled, text))
+
+
+# Stored notes with no marker, one marker, and several markers, built
+# from characters that make markers and separators likely.
+_STORED = st.text(alphabet="ab #\n\t", max_size=40)
+
+
+class TestRewritePublicMemo:
+
+    STORED = "Thomas said so.\n\n#####Thomas is also here, privately.\n#####"
+
+    def test_rewrite_public_memo_never_reads_the_private_part(self):
+        seen = []
+
+        def rewrite(text):
+            seen.append(text)
+            return text.replace("Thomas", "Alex")
+
+        result = rewrite_public_memo(self.STORED, rewrite)
+        public, private = split_public_private_memo(self.STORED)
+        assert seen == [public]                     # exactly, byte for byte
+        assert result.endswith(private)             # verbatim
+        assert result == "Alex said so.\n\n" + private
+        # The name in the private part is still there, unread.
+        assert "Thomas is also here" in result
+
+    @settings(max_examples=300, deadline=None)
+    @given(stored=_STORED)
+    def test_the_public_part_is_a_prefix_so_offsets_carry_over(self, stored):
+        public, private = split_public_private_memo(stored)
+        result = rewrite_public_memo(stored, str.swapcase)
+        new_public = public.swapcase()
+        assert result is not None
+        assert result[:len(new_public)] == new_public
+        assert result[len(new_public):] == private
+        assert stored[:len(public)] == public
+
+    def test_the_separator_is_not_doubled(self):
+        stored = "P01 said Thomas.\n\n#####private"
+        rewrite = _engine_rewrite([{"original": "Thomas",
+                                    "pseudonym": "Alex"}])
+        result = rewrite_public_memo(stored, rewrite)
+        assert result == "P01 said Alex.\n\n#####private"
+        # The naive call doubles it: merge_public_memo re-adds the run
+        # that preceded the old marker to a text that already ends in it
+        # (the notes dossier's reproduction).
+        naive = merge_public_memo(stored, rewrite(extract_ai_memo(stored)))
+        assert naive == "P01 said Alex.\n\n\n\n#####private"
+        # And the helper gives what merge gives on the trimmed text.
+        assert result == merge_public_memo(
+            stored, rewrite(extract_ai_memo(stored)).rstrip(" \t\r\n"))
+
+    @pytest.mark.parametrize("stored,mapping", [
+        ("####Thomas", [{"original": "Thomas", "pseudonym": "#X#"}]),
+        ("Thomas#Anna", [{"original": "Thomas", "pseudonym": "ab##"},
+                         {"original": "Anna", "pseudonym": "##cd"}]),
+    ], ids=["hashes-meet-a-pseudonym", "two-pseudonyms-meet"])
+    def test_a_rewrite_that_forms_a_marker_returns_none(self, stored,
+                                                        mapping):
+        rewrite = _engine_rewrite(mapping)
+        assert PERSONAL_NOTE_MARK not in stored
+        assert PERSONAL_NOTE_MARK in rewrite(stored)     # the hazard is real
+        assert rewrite_public_memo(stored, rewrite) is None
+        # Through a private part as well: the marker is formed in the
+        # public part, and the note is still left alone.
+        assert rewrite_public_memo(stored + "\n#####kept", rewrite) is None
+
+    def test_merge_public_memo_is_unchanged(self):
+        """The helper is new and `merge_public_memo` is not touched: it
+        stays matched to upstream `ai_memo.py:46-59`, which the module
+        docstring promises."""
+        import qualcoder_mcp.memo_privacy as memo_privacy
+        assert "Behaviour is matched to upstream ai_memo.py exactly" in \
+            memo_privacy.__doc__
+        assert merge_public_memo("old\n\n#####p", "new") == "new\n\n#####p"
+        assert merge_public_memo("old", "new#####x") == "new"

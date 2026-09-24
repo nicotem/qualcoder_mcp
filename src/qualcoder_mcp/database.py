@@ -24,6 +24,7 @@ from .memo_privacy import (
     extract_ai_memo,
     merge_public_memo,
     neutralize_marker,
+    rewrite_public_memo,
     split_public_private_memo,
 )
 
@@ -8094,6 +8095,96 @@ class QualcoderDatabase:
                 "case_mode": compiled.case_mode,
                 "compiled": compiled}
 
+    def pseudonymise_memo_plan(self, compiled) -> Dict[str, Any]:
+        """What `rewrite_memos` would do to the notes, without writing.
+
+        Project-wide, whatever `file_id` says: the twelve fields of
+        `PSEUDONYMISE_MEMO_FIELDS`, which are exactly the fields the
+        residue counts, so the preview never counts a field the run then
+        refuses to act on. Built like the file plan, on the read
+        connection for the preview and again on the write connection
+        inside the transaction, and never cached across the two.
+
+        Each note is split at its first private-part marker and the
+        rewriter (`compiled.pattern`, the run's whole-word rule) runs over
+        the PUBLIC part only (`rewrite_public_memo`); the private part is
+        carried across unread. A note with no match is not in the plan.
+        A note the rewrite would plant a marker in is left out of `rows`
+        and listed under `not_rewritten_marker_risk` (its key and its
+        private-part flag, nothing else). `_reject_if_too_long` is not
+        applied: the text written back is the researcher's own, with
+        names substituted, and a note QualCoder already stores may be
+        longer than this server lets the model write.
+
+        A public part cannot become empty, so no rewrite reaches
+        `update_annotation`'s clear-means-delete rule: every replacement
+        is a pseudonym of at least `MIN_PSEUDONYM_CHARS` characters, never
+        whitespace, and `replacement_for` only changes its case.
+        """
+        from . import pseudonymise as engine
+
+        fields: List[Dict[str, Any]] = []
+        unreadable: List[str] = []
+        totals = {"rows": 0, "replacements": 0,
+                  "rewritten_with_private_part": 0,
+                  "not_rewritten_marker_risk": 0,
+                  "journal_entries_from_earlier_runs": 0}
+        by_entry: Dict[int, int] = {}
+        for table, column in self.PSEUDONYMISE_MEMO_FIELDS:
+            key_column = self.PSEUDONYMISE_MEMO_KEYS[table]
+            try:
+                stored_rows = self.conn.execute(
+                    f"SELECT {key_column}, {column} FROM {table} "
+                    f"WHERE {column} IS NOT NULL AND {column} != '' "
+                    f"ORDER BY {key_column}").fetchall()
+            except sqlite3.Error:
+                # A table or column this schema does not have: listed, as
+                # the residue scan lists it, and neither counted nor
+                # written.
+                unreadable.append(f"{table}.{column}")
+                continue
+            field: Dict[str, Any] = {
+                "table": table, "column": column, "key_column": key_column,
+                "rows": [], "not_rewritten_marker_risk": [],
+                "replacements": 0}
+            for key, value in stored_rows:
+                if not isinstance(value, str):
+                    continue
+                public, private = split_public_private_memo(value)
+                replacements = engine.find_replacements(compiled, public)
+                if not replacements:
+                    continue
+                has_private = private != ""
+                new_stored = rewrite_public_memo(
+                    value, lambda text: engine.apply_replacements(
+                        text, replacements))
+                if new_stored is None:
+                    field["not_rewritten_marker_risk"].append(
+                        {"key": key, "has_private": has_private})
+                    totals["not_rewritten_marker_risk"] += 1
+                    continue
+                row: Dict[str, Any] = {
+                    "key": key, "has_private": has_private,
+                    "public_length": len(public),
+                    "replacements": replacements, "new_stored": new_stored}
+                if table == "journal":
+                    row["earlier_run_entry"] = bool(
+                        self.PSEUDONYMISE_EARLIER_RUN_RE.fullmatch(
+                            public.split("\n", 1)[0]))
+                    totals["journal_entries_from_earlier_runs"] += \
+                        row["earlier_run_entry"]
+                field["rows"].append(row)
+                field["replacements"] += len(replacements)
+                totals["rows"] += 1
+                totals["replacements"] += len(replacements)
+                totals["rewritten_with_private_part"] += has_private
+                for replacement in replacements:
+                    by_entry[replacement.entry] = by_entry.get(
+                        replacement.entry, 0) + 1
+            fields.append(field)
+        return {"fields": fields, "unreadable": unreadable,
+                "totals": totals, "by_entry": by_entry}
+
     @staticmethod
     def _pseudonymise_collisions(file_id: int,
                                  rows: Dict[str, List[Dict]]
@@ -8343,12 +8434,13 @@ class QualcoderDatabase:
     # columns beside them (D1 3.9, which listed ten and three; the
     # media-coding memos, the category, attribute-type and journal names
     # were added in fix round 3 after a project named after its
-    # participant in fourteen fields reported four). Scanned and COUNTED
-    # in v0.12, never rewritten: memos are the researcher's own notes and
-    # rewriting them crosses into the private-zone convention, which the
-    # owner ruled needs its own dossier (Q4, ruling (a)). Every field
-    # here is pinned one at a time, because seven of them could once be
-    # dropped from this tuple with the suite green.
+    # participant in fourteen fields reported four). Scanned and counted
+    # always; since v0.13 (Brief 2, rulings 3 and 4) the public part of
+    # each is also rewritten when the run is asked to with
+    # `rewrite_memos`, and never otherwise. The labels beside them are
+    # never rewritten. Every field here is pinned one at a time, because
+    # seven of them could once be dropped from this tuple with the suite
+    # green.
     PSEUDONYMISE_MEMO_FIELDS = (
         ("code_text", "memo"), ("annotation", "memo"), ("case_text", "memo"),
         ("source", "memo"), ("cases", "memo"), ("code_name", "memo"),
@@ -8372,6 +8464,32 @@ class QualcoderDatabase:
     # `pseudonyms.json` IS the mapping (view_av.py:149, speakers.py:719-731).
     PSEUDONYMISE_SIDECARS = ("pseudonyms.json", "speakers.json",
                              "speaker_regex.json")
+    # The key the note rewrite updates each field by, the one QualCoder's
+    # schema gives the table (the notes dossier verified each). `project`
+    # is one row with no key column, so it is read and written by rowid,
+    # where upstream's own statement has no WHERE at all
+    # (`__main__.py:1953`): identical on a one-row table and safer on any
+    # other. `attribute_type` is keyed by its own name, as upstream's
+    # `update attribute_type set memo=? where name=?` is (`attributes.py:202`).
+    PSEUDONYMISE_MEMO_KEYS = {
+        "code_text": "ctid", "annotation": "anid", "case_text": "id",
+        "source": "id", "cases": "caseid", "code_name": "cid",
+        "code_cat": "catid", "project": "rowid", "attribute_type": "name",
+        "journal": "jid", "code_av": "avid", "code_image": "imid",
+    }
+    # Ruling 9: the date is stamped where QualCoder's interface stamps it
+    # on an edit of the note, for an annotation (`code_text.py:1017-1020`)
+    # and a journal entry (`journals.py:636-639`), and on no other kind.
+    # The interface also stamps it on a media coding's note
+    # (`code_av.py:4874`, `:5555`); ruling 9 as recorded, and the lead's
+    # night ruling 3, leave `code_av` untouched, a named departure.
+    PSEUDONYMISE_MEMO_DATED = ("annotation", "journal")
+    # The first line `_pseudonymise_journal_body` writes. A journal entry
+    # whose public part opens with it is taken to be this server's own
+    # record of an earlier run: a HEURISTIC, by its first line, used to
+    # count and warn, never to skip the entry.
+    PSEUDONYMISE_EARLIER_RUN_RE = re.compile(
+        r"Pseudonymisation run, \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.")
 
     @staticmethod
     def _pseudonymise_field_pair(compiled, values) -> Dict[str, int]:

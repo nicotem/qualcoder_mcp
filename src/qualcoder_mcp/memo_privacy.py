@@ -35,7 +35,7 @@ memo content into the AI conversation always strip.
 """
 
 import re
-from typing import Any, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 # The marker QualCoder 4.0 documents for private memo tails
 # (upstream ai_memo.py:28).
@@ -107,6 +107,39 @@ def merge_public_memo(existing_memo: Any, new_public_memo: Any) -> str:
     trimmed = existing_public.rstrip(_SEPARATOR_CHARS)
     separator = existing_public[len(trimmed):]
     return public + separator + private_suffix
+
+
+def rewrite_public_memo(stored: Any,
+                        rewrite: Callable[[str], str]) -> Optional[str]:
+    """Apply `rewrite` to the public part of a note; the private part is
+    carried across verbatim and never read.
+
+    The public part is a PREFIX of the stored text
+    (`split_public_private_memo` returns `text[:mark]`), so an offset in
+    the public part is an offset in the stored note and the two halves
+    concatenate back without a separator. Returns the new stored text,
+    or None when the rewritten public part would contain the marker:
+    writing it would hide the rest of the researcher's note from every
+    later AI read, so the caller leaves that note as it is and counts it.
+
+    Not `merge_public_memo`, on purpose. That function re-adds the
+    whitespace run that preceded the old marker, and a rewrite that
+    substitutes names never touches that run (a surface form cannot
+    begin or end with whitespace), so the rewritten public part already
+    ends in it: merging would double it. Concatenation gives, byte for
+    byte, what `merge_public_memo(stored, new_public.rstrip(" \\t\\r\\n"))`
+    gives, and `merge_public_memo` itself stays matched to upstream
+    (the pseudonymisation tool's note rewrite, v0.13 Brief 2, 4.3).
+    The old public part can never contain a marker (it ends where the
+    first one begins), so a marker in the new one was MADE by the
+    rewrite: hashes already in the note meeting a pseudonym, or two
+    pseudonyms meeting across a character that is not a word character.
+    """
+    public, private = split_public_private_memo(stored)
+    new_public = rewrite(public)
+    if PERSONAL_NOTE_MARK in new_public:
+        return None
+    return new_public + private
 
 
 def strip_private_memos(value: Any) -> Any:
