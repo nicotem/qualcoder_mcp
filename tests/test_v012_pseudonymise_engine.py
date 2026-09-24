@@ -1092,6 +1092,7 @@ class TestDiagnostics:
         assert len(conflicts) == P.MAX_OVERLAP_CONFLICTS
 
 
+
 # =============================================================================
 # MAPPING VALIDATION (D1 3.2, texts of D1 3.11)
 # =============================================================================
@@ -3122,6 +3123,96 @@ class TestNamesLeftInText:
 
         count()
         assert all(value > 0 for value in seen.values()), seen
+
+
+class TestTheEstimateReadsWhatTheCountReads:
+    """Fix round 6, the fourth re-verification's B4-1: a file is priced at
+    the length of what the count reads, its reader's reading (NFKC) and
+    that reading casefolded, never at its stored length when those are
+    longer. U+FDFA is eighteen code points read; U+3316 and U+33AF six."""
+
+    ONE = [{"original": "Thomas", "pseudonym": "Alex"}]
+
+    def test_b41_the_estimate_prices_what_the_count_reads(self):
+        """The bounds lane's candidate pin, as it wrote it."""
+        compiled = P.Compiled(P.validate_mapping(self.ONE))
+        for text in ("Robert said so. " * 100, "\ufdfa" * 1000,
+                     "\u3316" * 1000, "\u33af" * 1000):
+            reading = P._reader_sees(text)
+            estimate = P.residue_work(compiled, text)
+            assert estimate >= P.residue_work(compiled, reading), (
+                f"U+{ord(text[0]):04X}: {estimate:,} units for a reading of "
+                f"{len(reading):,} characters")
+            assert estimate >= P.residue_work(compiled, P._fold(reading))
+
+    @staticmethod
+    def _bounds(text):
+        reading = P._reader_sees(text)
+        return (P.reading_length(text), len(text), len(reading),
+                len(P._fold(reading)))
+
+    def test_the_bound_holds_on_every_character_and_composition(self):
+        """The per-character bound, on each character that decomposes or
+        has case (the only ones that can read longer), and on each
+        canonical composition of two, which is where composing could
+        fold longer than the parts (U+0390: U+03CA and an acute)."""
+        import unicodedata
+        checked = 0
+        for code_point in range(0x110000):
+            char = chr(code_point)
+            parts = unicodedata.decomposition(char)
+            if not (parts or unicodedata.category(char) in (
+                    "Ll", "Lu", "Lt")):
+                continue
+            texts = [char]
+            if parts and not parts.startswith("<") and " " in parts:
+                texts.append("".join(chr(int(part, 16))
+                                     for part in parts.split()))
+            for text in texts:
+                bound, *lengths = self._bounds(text)
+                assert bound >= max(lengths), (hex(code_point), text)
+                checked += 1
+        assert checked > 5000
+
+    def test_the_bound_holds_on_random_texts(self):
+        """Seeded: texts of the characters where composing, reordering,
+        folding and stripping meet."""
+        import random
+        pool = ([chr(c) for c in range(0x300, 0x370)]
+                + list("\u03b9\u03c5\u03ca\u03cb\u0390\u03b0\u03b1"
+                       "\u0399\u03a5\u03aa\u03abeaouEAOUiIjJ")
+                + ["\ufdfa", "\u3316", "\u00df", "\u1e9e", "\u0130",
+                   "\u0149", "\u01f0", "\ufb01", "\u0587", "\u1fb3",
+                   "\uac00", "\u1161", "\u11a8", "\u1100", "\u212b",
+                   "\u2126", "\u0344", "\u0345", "\uff9e", "\uff76",
+                   "\u3099", "\u200b", "\u034f", "\u00ad"])
+        rng = random.Random(20260924)
+        for _ in range(20_000):
+            text = "".join(rng.choice(pool)
+                           for _ in range(rng.randint(1, 12)))
+            bound, *lengths = self._bounds(text)
+            assert bound >= max(lengths), [hex(ord(c)) for c in text]
+
+    def test_ordinary_text_is_priced_as_it_stands(self):
+        """The bound is the stored length for text that reads no longer:
+        prose in several scripts, composed or not."""
+        import unicodedata
+        for text in ("Robert said so.", "Мы встретились.", "Élodie à Paris.",
+                     unicodedata.normalize("NFD", "Élodie à Paris."),
+                     "\u79c1\u305f\u3061\u306f\u3002",
+                     "\u2018quoted\u2019"):
+            assert P.reading_length(text) == len(text), text
+        assert P.reading_length("Stra\u00dfe") == 7       # folds to ss
+
+    def test_the_sum_stops_once_no_mapping_could_count_it(self):
+        """With a limit, a text past it under one form is not summed to
+        its end: what is returned is past the limit, and less than the
+        whole."""
+        text = "\ufdfa" * 2_000_000
+        limit = P.MAX_RESIDUE_SCAN_WORK
+        stopped = P.reading_length(text, stop_past_work=limit)
+        assert stopped * (1 + P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII) > limit
+        assert stopped < P.reading_length(text) == 36_000_000
 
 
 class TestThePropertiesAreDerandomisedInCI:

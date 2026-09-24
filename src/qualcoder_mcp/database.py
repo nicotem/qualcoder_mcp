@@ -8668,7 +8668,11 @@ class QualcoderDatabase:
                 head["rewritten_by_this_run"] = reason is None
                 if reason is not None:
                     head["file_not_rewritten_because"] = reason
-            work = engine.residue_work(compiled, text)
+            # Priced at the length of what the count reads (fix round 6,
+            # B4-1), measured once for both estimates.
+            length = engine.reading_length(
+                text, stop_past_work=engine.MAX_RESIDUE_SCAN_WORK)
+            work = engine.residue_work(compiled, text, length)
             named = fid == chosen
             pdf = reason == "pdf_source"
             found = None
@@ -8686,7 +8690,7 @@ class QualcoderDatabase:
             # Too large even for a mapping of one name: no mapping could
             # let it be counted, so fewer names is never its remedy.
             beyond = too_large and engine.residue_work_at_one_form(
-                text) > engine.MAX_RESIDUE_SCAN_WORK
+                text, length) > engine.MAX_RESIDUE_SCAN_WORK
             large_here = too_large and not beyond
             if too_large:
                 pass

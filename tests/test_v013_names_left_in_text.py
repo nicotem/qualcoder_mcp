@@ -3269,3 +3269,18 @@ class TestAFileTooLargeForAnyMapping:
         warning = _file_text_warning(out)
         assert warning == "Warning: " + self.NAMED.format(shown) + self.END
         assert "fewer names" not in warning
+
+    def test_a_text_nfkc_lengthens_is_priced_at_its_reading(self, project):
+        """Fix round 6, the fourth re-verification's B4-1, at the real
+        budgets under the fixture's mapping (3 forms): 600,000 of U+FDFA
+        read as 10,800,000 characters, too large for this mapping and not
+        for one name; 700,000 read as 12,600,000, too large for any.
+        Priced at their stored length both would be counted, at a cost
+        the budgets were never sized for."""
+        _set_text(project, 100, "ﷺ" * 600_000, name="ligature_100.txt")
+        _set_text(project, 101, "ﷺ" * 700_000, name="ligature_101.txt")
+        block = _block(preview_of(residue_detail="project"))
+        assert block["files_too_large_for_this_mapping"] == [100]
+        assert block["files_too_large_for_any_mapping"] == [101]
+        assert block["files_not_checked"] == [100, 101]
+        assert block["files_counted"] == 3                  # 1, 2 and 4

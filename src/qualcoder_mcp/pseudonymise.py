@@ -757,6 +757,17 @@ _MARK_RANGES: Optional[List[List[int]]] = None
 # themselves. Found in the same one sweep, as ranges.
 _NON_STARTER_RANGES: Optional[List[List[int]]] = None
 
+# What each code point adds to the length the count reads (fix round 6,
+# the fourth re-verification's B4-1), found in the same one sweep: for a
+# code point whose NFKC, casefolded, is longer than one character, that
+# length less one (U+FDFA adds 17). And where a composition with a mark
+# folds longer than its two parts (six Greek letters with dialytika and
+# an accent: U+03CA and U+03CB with an acute, a grave or a perispomeni),
+# the letter it is built on adds the difference, so the sum over a text
+# bounds its reading, composed or not. Made into a pattern on first use.
+_READING_EXTRA: Optional[Dict[int, int]] = None
+_READING_EXTRA_PATTERN: Optional["re.Pattern[str]"] = None
+
 
 def _add_to_ranges(ranges: List[List[int]], code_point: int) -> None:
     """Append `code_point` to sorted `ranges`, merging a neighbour."""
@@ -772,10 +783,12 @@ def _sweep_code_points() -> None:
     non-starters for `_ordered_runs`. About a tenth of a second once per
     process, paid on the first text that is not ASCII and never at
     import."""
-    global _UNSEEN_TABLE, _MARK_RANGES, _NON_STARTER_RANGES
+    global _UNSEEN_TABLE, _MARK_RANGES, _NON_STARTER_RANGES, _READING_EXTRA
     table = dict.fromkeys(_DEFAULT_IGNORABLE)
     marks: List[List[int]] = []
     non_starters: List[List[int]] = []
+    readings: Dict[int, str] = {}
+    deficit: Dict[str, int] = {}
     category = unicodedata.category
     combining = unicodedata.combining
     decomposition = unicodedata.decomposition
@@ -786,12 +799,31 @@ def _sweep_code_points() -> None:
             table[code_point] = None
         elif kind[0] == "M":
             _add_to_ranges(marks, code_point)
-        if combining(char) or (decomposition(char) and all(
+        parts = decomposition(char)
+        if combining(char) or (parts and all(
                 combining(part) for part in
                 unicodedata.normalize("NFKD", char))):
             _add_to_ranges(non_starters, code_point)
+        # Only a letter folds to more than one character, and only a
+        # character with a decomposition normalises to more than one.
+        if parts or kind in ("Ll", "Lu", "Lt"):
+            readings[code_point] = unicodedata.normalize(
+                "NFKC", char).casefold()
+        if parts and not parts.startswith("<") and " " in parts:
+            base, mark = (chr(int(part, 16)) for part in parts.split())
+            short = len(char.casefold()) - len(base.casefold()) - len(
+                mark.casefold())
+            if short > 0:
+                deficit[base] = max(deficit.get(base, 0), short)
+    extra: Dict[int, int] = {}
+    for code_point, reading in readings.items():
+        added = len(reading) - 1 + (deficit.get(reading[-1], 0)
+                                    if reading else 0)
+        if added > 0:
+            extra[code_point] = added
     _MARK_RANGES = marks
     _NON_STARTER_RANGES = non_starters
+    _READING_EXTRA = extra
     _UNSEEN_TABLE = table
 
 
@@ -1851,28 +1883,104 @@ def _with_trailing_marks(text: str, start: int, end: int) -> str:
     return text[start:end]
 
 
-def residue_work(compiled: "Compiled", text: str) -> int:
+def _reading_extra_pattern() -> "re.Pattern[str]":
+    """The code points of `_READING_EXTRA` as one character class, built
+    once, as `_unseen_pattern` builds its own."""
+    global _READING_EXTRA_PATTERN
+    pattern = _READING_EXTRA_PATTERN
+    if pattern is None:
+        if _READING_EXTRA is None:
+            _sweep_code_points()
+        ranges: List[List[int]] = []
+        for code_point in sorted(_READING_EXTRA or {}):
+            _add_to_ranges(ranges, code_point)
+        pattern = _READING_EXTRA_PATTERN = re.compile(
+            "[" + "".join(
+                re.escape(chr(low)) if low == high
+                else re.escape(chr(low)) + "-" + re.escape(chr(high))
+                for low, high in ranges) + "]")
+    return pattern
+
+
+def reading_length(text: str, stop_past_work: Optional[int] = None) -> int:
+    """The length the count is priced at: its reading, not its store.
+
+    The count and the cheap question read `_reader_sees(text)` (NFKC) and
+    its casefolded form, and one character's NFKC can be eighteen (U+FDFA,
+    the Arabic ligature of the honorific), so the stored length
+    under-prices such a text (fix round 6, the fourth re-verification's
+    B4-1). Returned: an upper bound on the length of both readings, and
+    never less than the stored length, which the normalisation itself
+    reads. Linear, and never normalising (the normalisation of U+FDFA
+    costs what the count does, which is what the estimate must not):
+    ASCII text reads as it stands; text already in NFKC reads no longer
+    than its casefolded form (the reading only removes invisible
+    characters, and casefolding maps each character on its own), which
+    is measured exactly; any other text is bounded character by
+    character, each adding what `_READING_EXTRA` says (its NFKC,
+    casefolded, less one). The sum bounds the reading because composing
+    only shortens a text, and a composition that folds longer than its
+    parts is charged to the letter it is built on; both are checked on
+    every code point and every composition of the interpreter's tables,
+    and on random texts, in the tests.
+
+    With `stop_past_work`, the sum stops once the text would cost more
+    than that under a mapping of one form, the least any mapping costs:
+    the caller needs no more to know the file is too large for any
+    mapping, and a text of U+FDFA is not read to its end for it.
+    """
+    if text.isascii():
+        return len(text)
+    if unicodedata.is_normalized("NFKC", text):
+        return len(text.casefold())
+    pattern = _reading_extra_pattern()
+    extra = _READING_EXTRA or {}
+    length = len(text)
+    limit = (None if stop_past_work is None else
+             stop_past_work // (1 + RESIDUE_WORK_PER_CHARACTER_NON_ASCII))
+    for start in range(0, len(text), _READING_CHUNK):
+        length += sum(extra[ord(char)] for char in pattern.findall(
+            text, start, start + _READING_CHUNK))
+        if limit is not None and length > limit:
+            break
+    return length
+
+
+# The stretch `reading_length` sums at a time between two looks at its
+# limit: small beside a file, large beside the pattern's own start-up.
+_READING_CHUNK = 65536
+
+
+def residue_work(compiled: "Compiled", text: str,
+                 length: Optional[int] = None) -> int:
     """What counting (or checking) `text` costs, in the budgets' units.
 
-    `len(text) * (surface forms + the per-character term of the text's
-    class)`: `RESIDUE_WORK_PER_CHARACTER` when the text is ASCII,
-    `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` when it is not (fix round 2,
-    B-1). The same units price the count, the cheap question and the
-    whole detector asked about one word.
+    `reading_length(text) * (surface forms + the per-character term of
+    the text's class)`: `RESIDUE_WORK_PER_CHARACTER` when the text is
+    ASCII, `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` when it is not (fix
+    round 2, B-1); the length is the reading's since fix round 6 (B4-1),
+    and `length` passes it when the caller has it already. The same units
+    price the count, the cheap question and the whole detector asked
+    about one word.
     """
     term = (RESIDUE_WORK_PER_CHARACTER if text.isascii()
             else RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
-    return len(text) * (len(compiled.forms) + term)
+    if length is None:
+        length = reading_length(text)
+    return length * (len(compiled.forms) + term)
 
 
-def residue_work_at_one_form(text: str) -> int:
+def residue_work_at_one_form(text: str,
+                             length: Optional[int] = None) -> int:
     """`residue_work` of `text` under a mapping of one surface form, the
     least any mapping costs: a file whose work passes the budget even so
     cannot be counted in a preview with any mapping, and fewer names
     cannot help it (the lead's follow-on to fix round 5)."""
     term = (RESIDUE_WORK_PER_CHARACTER if text.isascii()
             else RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
-    return len(text) * (1 + term)
+    if length is None:
+        length = reading_length(text)
+    return length * (1 + term)
 
 
 def in_a_no_separator_script(char: str) -> bool:
