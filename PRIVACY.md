@@ -648,7 +648,8 @@ will ask, and the summary above depends on them:
     asked whether a name shows, and past a budget for that question it
     is not checked at all; the warning says to preview such files one at
     a time, except a PDF source, which cannot be named for a preview and
-    has a sentence of its own. A file too large to count with this many
+    has a sentence of its own, as has a PDF source too large to count:
+    neither is promised that fewer names would let it be counted. A file too large to count with this many
     names is told apart before anything is counted, because its
     estimated cost passes the whole budget: it is listed in
     `files_too_large_for_this_mapping`, it is asked whether a name shows

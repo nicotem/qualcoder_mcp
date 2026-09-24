@@ -11326,8 +11326,9 @@ def pseudonymise_source(
                  read first, with the first claim on the budgets. A
                  count that stops part-way found a name and gives a
                  lower bound; a file too large to count with this many
-                 names is said to be, and fewer names would let it be
-                 counted, and one too large for any mapping is said so.
+                 names is said to be, and fewer names would let a text
+                 file be counted, and one too large for any mapping is
+                 said so.
         residue_detail: "file" (default): full detail for the file this
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;

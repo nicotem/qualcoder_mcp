@@ -60,7 +60,9 @@ jobs:
             # Ruling 7: the file-text count's rate and the worst case of
             # its three budgets on this platform, readable from the public
             # run page without admin rights. Since fix round 5 everything
-            # a count spends is charged, so that is the count's worst case.
+            # a count spends is charged, and since fix round 6 a file is
+            # priced at its reading and a form by its length, so that is
+            # the count's worst case on realistic input (ruling 7's scope).
             grep -E "^file-text count rate: " pytest_output.txt | head -3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -3600,9 +3600,13 @@ class TestTheFileTextCountStaysCheap:
         """The summary line, and the worst case of the three budgets.
 
         Since fix round 5 every count is charged all it spent, a count
-        that stops part-way too (the lead's rule 1), so the three budgets'
-        cost is the whole file-text count's worst case: the figure the
-        report states (K3) and this line prints are the same one."""
+        that stops part-way too (the lead's rule 1), and since fix round 6
+        a file is priced at the length of its reading and a form by its
+        length, so on realistic input (the lead's scope of ruling 7) the
+        three budgets' cost is the whole file-text count's worst case:
+        the figure the report states and this line prints are the same
+        one. Crafted input is bounded but may cost more a unit (the
+        CHANGELOG and the constants' comment give the dearest measured)."""
         at_100 = m["elapsed"] * 1000 / m["megabytes"]
         at_1 = m["one_elapsed"] * 1000 / m["megabytes"]
         unit = max((at_100 - at_1) / 99, 1e-6)

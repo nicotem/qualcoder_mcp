@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,597 characters (about 39.4k tokens at
+  below included: full = 157,620 characters (about 39.4k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,633 and
+  in the repository's `.venv/`, the same definitions measure 165,660 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -74,10 +74,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Chinese, Japanese, Thai, Lao, Khmer, Myanmar), at most 20 per entry
   per file and 4,000 characters in a whole preview. On the
   `use_project_pseudonyms` path no longer word and no form is returned.
-  The count has fixed budgets, for its work (characters times names,
-  and a little more for every character, more again in text that is not
-  plain ASCII) and for the number of matches, and everything a count
-  spends is charged to them, a count that stops part-way too. Past them
+  The count has fixed budgets, for its work (the characters it reads
+  times the length of the names, and a little more for every character,
+  more again in text that is not plain ASCII) and for the number of
+  matches, and everything a count spends is charged to them, a count
+  that stops part-way too. A file is priced at the length of its
+  reading, not of its store, so a text that compatibility normalisation
+  lengthens (the Arabic ligature of the honorific reads as eighteen
+  characters) is priced at what the count reads; and a name is one unit
+  for each ten characters or part of them, so a mapping of long names
+  sharing a long prefix, which the matching compares as far as the
+  prefix goes, is priced by their length. No limit on names is added. Past them
   a file is only asked whether any name shows, is listed in
   `files_not_counted`, and the preview says so. That question has a
   budget of its own, because on a file where no name shows it reads as
@@ -98,20 +105,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed in `files_too_large_for_any_mapping` instead, and the warning
   says no preview can count it rather than offer fewer names. A
   PDF source, which cannot be named for a preview, is never told to be
-  previewed on its own and has a sentence of its own. The three are
-  sized so that, on any text and at any mapping size up to the maximum
-  of 500 entries, a preview's file-text count takes about one second
-  on the development Mac and about two seconds on the slowest CI
-  platform. Since everything spent is charged, the count's worst case
-  is the three budgets' cost, which each CI platform's rate line
-  prints: 1.09 to 2.18 s on the six platforms at the last measurement,
-  prose under a case-insensitive mapping included, and 0.93 to 0.96 s
-  on the development Mac. Through the tool there, the dearest shape
-  measured, which fills all three budgets, takes 0.75 to 0.84 s;
-  twelve files too dense for the match budget 0.53 to 0.58 s, and
-  forty-eight chat exports with a name on every line 0.22 s. The
-  rewrite's own plan of the file this call names is not priced by
-  the budgets (about 0.9 s for 450,000 characters at 2,000 names).
+  previewed on its own, nor promised that fewer names would let it be
+  counted, and has sentences of its own. The three are sized so that,
+  on realistic input (natural text in any script, and mappings of up to
+  2,000 forms of up to 100 characters each), a preview's file-text
+  count takes about one second on the development Mac and about two
+  seconds on the slowest CI platform: its worst case is the three
+  budgets' cost, which each CI platform's rate line prints (1.16 to
+  2.22 s on the six platforms at the last measurement, prose under a
+  case-insensitive mapping included) and which reads 0.93 to 0.96 s on
+  the development Mac. Through the tool there, the dearest realistic
+  shape measured, which fills all three budgets, takes 0.80 to 0.86 s;
+  twelve files too dense for the match budget 0.59 to 0.60 s, and
+  forty-eight chat exports with a name on every line 0.22 to 0.26 s.
+  Crafted input stays bounded, and linear in the size of the text and
+  the mapping, but may take longer: the dearest measured, text written
+  in a squared katakana character that reads as six, fills the budgets
+  in 1.9 to 2.1 s on the development Mac, where it took 9.4 s priced at
+  its stored length; a mapping of long names sharing a prefix, 1.2 to
+  1.3 s (30.5 s before). The rewrite's own plan of the file this call
+  names is not priced by the budgets: about one second for 450,000
+  characters at 2,000 names and two seconds at the tool's import cap
+  of 1,000,000, so the whole preview's realistic worst is about 2.2 s on
+  the development Mac. Its diagnostic of entries competing for the same
+  characters examines at most 2,000,000 forms (about half a second
+  there) and says when it stopped (`overlap_conflicts_capped`); the
+  rewrite itself is not affected.
   A row lists at most
   50 entries, the most frequent first, with its own totals complete. A
   second warning reads the file-text counts out, kept apart from the

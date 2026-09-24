@@ -162,14 +162,23 @@ SHORT_FORM_CHARS = 4
 # file a call names is read first from the same budgets (ruling 1 as
 # amended, fix round 4), and every count is charged all it spent, one
 # that stops part-way too (fix round 5, the lead's rule 1), so nothing is
-# spent outside them and the worst case is the three budgets' cost, the
-# figure the rate line prints (0.93 to 0.96 s on the development Mac;
-# through the tool the dearest shape measured, filling all three, takes
-# 0.75 to 0.84 s, and twelve files too dense for the match budget 0.53
-# to 0.58 s, fix round 5's K3). A file whose estimate passes the EMPTY
-# budget is not counted at all, and is too large for this mapping (rule
-# 2). A run of combining marks out of
-# order no longer costs more than its length (`_ordered_runs`).
+# spent outside them. A unit costs what the rate line measured only if
+# the estimate prices what the count reads: since fix round 6 a file is
+# priced at the length of its reading (`reading_length`, B4-1) and a
+# form by its length (`FORM_UNIT_CHARS`, B4-2). The lead's scope of
+# ruling 7: on realistic input (natural text in any script, mappings of
+# up to 2,000 forms of up to 100 characters) the worst case is the
+# three budgets' cost, the figure the rate line prints (0.93 to 0.96 s
+# on the development Mac; through the tool the dearest shape measured,
+# filling all three, 0.80 to 0.86 s at fix round 6). Crafted input is
+# bounded, and linear in the text and the mapping, but may take longer:
+# the dearest measured, a text of U+3316 (NFKC reads it as six
+# characters and recomposes them, at about 3.6 times a unit of prose),
+# fills the budgets in 1.9 to 2.1 s there; long forms sharing a prefix,
+# 1.2 to 1.3 s. A file whose estimate passes the EMPTY budget is not
+# counted at all, and is too large for this mapping (rule 2). A run of
+# combining marks out of order no longer costs more than its length
+# (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
 # Ours (fix round 6, the fourth re-verification's B4-2). A form is priced

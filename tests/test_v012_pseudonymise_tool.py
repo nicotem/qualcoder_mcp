@@ -4980,8 +4980,8 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "The file this call names is read first, with the first claim on "
          "the budgets. A count that stops part-way found a name and gives a "
          "lower bound; a file too large to count with this many names is "
-         "said to be, and fewer names would let it be counted, and one too "
-         "large for any mapping is said so."),
+         "said to be, and fewer names would let a text file be counted, and "
+         "one too large for any mapping is said so."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "
@@ -5216,7 +5216,8 @@ class TestTheDocumentsTellTheTruth:
         "in `files_counted_in_part`, with a lower bound on its occurrences.",
         "the warning says to preview such files one at a time, except a "
         "PDF source, which cannot be named for a preview and has a sentence "
-        "of its own.",
+        "of its own, as has a PDF source too large to count: neither is "
+        "promised that fewer names would let it be counted.",
         "A file too large to count with this many names is told apart "
         "before anything is counted, because its estimated cost passes the "
         "whole budget",
