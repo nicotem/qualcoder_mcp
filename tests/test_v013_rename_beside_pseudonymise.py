@@ -78,3 +78,75 @@ def test_the_sidecar_path_carries_the_same_texts(project):
     residue = out["preview"]["residue"]
     assert "rename_case and rename_file change" in residue["scope_note"]
     assert "renamed with rename_case" in residue["file_text"]["reading_note"]
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _flat(name):
+    return " ".join((REPO / name).read_text(encoding="utf-8").split())
+
+
+def test_the_description_names_the_two_tools():
+    flat = " ".join(server.pseudonymise_source.__doc__.split())
+    assert "Case and file names are changed with rename_case and " \
+           "rename_file." in flat
+
+
+def test_privacy_says_what_a_rename_cannot_reach():
+    flat = _flat("PRIVACY.md")
+    assert "never rewritten by the pseudonymisation tool (a case or file " \
+           "name is renamed with `rename_case` or `rename_file`, below)" \
+           in flat
+    assert ("A rename cannot reach, and the preview's count does not read: "
+            "the stored copy and stored path of an imported file (the copy "
+            "in the project folder keeps the name it was imported under "
+            "and, for a document, the original text, and QualCoder's "
+            "exports ship that copy), saved graph labels, and saved table "
+            "displays and filters.") in flat
+
+
+def test_the_guide_readme_and_changelog_name_the_tools():
+    assert "is renamed with `rename_case` or `rename_file`; an imported " \
+           "file's stored copy keeps its original name and text." \
+           in _flat("AI_CODING_GUIDE.md")
+    readme = _flat("README.md")
+    assert "- `rename_case(case_id, new_name, create_backup)` - **WRITES " \
+           "TO DATABASE**" in readme
+    assert "- `rename_file(file_id, new_name, create_backup)` - **WRITES " \
+           "TO DATABASE**" in readme
+    unreleased = _flat("CHANGELOG.md").split("## [0.12")[0]
+    assert "### Added: `rename_case` and `rename_file`" in unreleased
+    assert "**`import_text_file` shares `rename_file`'s name rules, and " \
+           "refuses four names it used to accept.**" in unreleased
+
+
+def test_the_documents_count_the_tools_the_server_registers():
+    """README and INSTALL state the full count in prose; nothing read it
+    before, so a tool added without them would have left both stale."""
+    import asyncio
+    count = len(asyncio.run(server.mcp.list_tools()))
+    assert count == 72
+    assert f"(the default, `QUALCODER_MCP_TOOLSET=full`) registers " \
+           f"{count} tools" in _flat("README.md")
+    install = _flat("INSTALL.md")
+    assert f"`full` (default) registers all {count} tools" in install
+    assert f"This server exposes {count} tools by default" in install
+
+
+def test_every_rename_text_keeps_the_house_rules():
+    from test_v012_pseudonymise_tool import _house_rules
+    from qualcoder_mcp import database as D
+    texts = [server.rename_case.__doc__, server.rename_file.__doc__,
+             server.RENAME_CASE_NOTE, server.RENAME_FILE_NOTE,
+             server.RENAME_FILE_SEARCH_INDEX_NOTE,
+             server._RENAME_QC40_PARAGRAPH, D.documents_clash_message("x")]
+    texts += [D.file_name_problem(n) for n in
+              ("", "a​b", "\ud800", "a:b", "x" * 101,
+               "\U0001d49c" * 51)]
+    texts += [D.file_ending_problem(o, n, m, r) for o, n, m, r in (
+        ("a.txt", "a", None, ["a"]), ("a.pdf", "a", "/docs/a.pdf", []),
+        ("a", "a.transcribed", None, []), ("a.mp3", "a", "/audio/a.mp3", []),
+        ("a.txt", "a.docx", None, []))]
+    assert all(isinstance(t, str) and t for t in texts)
+    _house_rules(texts)

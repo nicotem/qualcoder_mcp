@@ -925,3 +925,45 @@ class TestTheCodebookRenamesLogIdsToo:
         text = "\n".join(r.getMessage() for r in caplog.records)
         assert "Renamed category 1" in text
         assert "Category A" not in text and "Parity Group" not in text
+
+
+class TestTheDatabaseHalf:
+    """The database methods keep their own backstops: an exact duplicate
+    is refused before the UPDATE, and rename_file applies the name rules
+    again (defence in depth behind the tool's pre-check)."""
+
+    @pytest.fixture
+    def wdb(self, project):
+        from qualcoder_mcp.database import QualcoderDatabase
+        db = QualcoderDatabase(str(project), read_only=False)
+        yield db
+        db.close()
+
+    def test_an_exact_duplicate_case_is_refused(self, project, wdb):
+        _add_case(project, "Tom", 5)
+        with pytest.raises(ValueError, match=r"^A case named 'Tom' already "
+                                             r"exists \(id 5\)$"):
+            wdb.rename_case(1, "Tom")
+        with pytest.raises(ValueError, match="Case ID 99 does not exist"):
+            wdb.rename_case(99, "x")
+
+    def test_an_exact_duplicate_file_is_refused(self, project, wdb):
+        with pytest.raises(ValueError, match=r"^A file named 'notes.txt' "
+                                             r"already exists \(id 2\)$"):
+            wdb.rename_file(1, "notes.txt")
+
+    @pytest.mark.parametrize("name", ["", "a/b.txt", "a​b.txt",
+                                      "x" * 101])
+    def test_rename_file_applies_the_name_rules_itself(self, wdb, name):
+        with pytest.raises(ValueError, match="^A file name must"):
+            wdb.rename_file(1, name)
+
+    def test_the_date_owner_and_stored_path_are_not_written(self, project,
+                                                             wdb):
+        _add_file(project, 5, "a.png", mediapath="/images/a.png")
+        assert wdb.rename_file(5, " b.png ") == {
+            "file_id": 5, "old_name": "a.png", "new_name": "b.png"}
+        assert _rows(project, "SELECT name, mediapath, owner, date FROM "
+                              "source WHERE id = 5") == [
+            {"name": "b.png", "mediapath": "/images/a.png",
+             "owner": "gui_user", "date": "2024-01-15"}]
