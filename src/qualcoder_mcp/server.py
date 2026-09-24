@@ -12050,9 +12050,13 @@ def pseudonymise_source(
                  owner-only on macOS and Linux, an existing one keeps its
                  own permissions, and one this account cannot write is
                  refused. The preview run with it lists, by entry number,
-                 which typed names the file already maps and which typed
-                 pseudonyms it already gives to another name, so it
-                 confirms whether a name is in the file. This argument IS
+                 which typed names the file already maps, which typed
+                 pseudonyms it already gives to another name and which
+                 typed names hold, as a word, a name the file lists, so
+                 it confirms whether a name is in the file; and an
+                 execute refused for a name the file already maps says
+                 when the file holds every typed name under its typed
+                 pseudonym, which confirms an exact pair. This argument IS
                  bound into the token:
                  the preview must be run with it, and the execute repeats
                  it.

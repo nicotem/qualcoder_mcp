@@ -7819,11 +7819,14 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "is true: the mapping is half of the reverse key and this server "
          "does not keep it. With use_project_pseudonyms the file is the "
          "record and neither may be given."),
-        ("the_save_preview_confirms_names",              # fix round 1, S-4
+        ("the_save_preview_confirms_names",      # fix round 1, S-4; 2, RS-1
          "The preview run with it lists, by entry number, which typed "
-         "names the file already maps and which typed pseudonyms it already "
-         "gives to another name, so it confirms whether a name is in the "
-         "file."),
+         "names the file already maps, which typed pseudonyms it already "
+         "gives to another name and which typed names hold, as a word, a "
+         "name the file lists, so it confirms whether a name is in the "
+         "file; and an execute refused for a name the file already maps "
+         "says when the file holds every typed name under its typed "
+         "pseudonym, which confirms an exact pair."),
         ("where_qualcoder_applies_the_file",             # fix round 2, B2P-N1
          "QualCoder's text and transcript imports apply the file one entry "
          "at a time, in file order and case-sensitively (its survey import "
@@ -8068,6 +8071,16 @@ class TestTheDocumentsTellTheTruth:
         "it already gives to another name",
         "it also confirms, to anyone who can call the preview, whether a "
         "name they type is in the file.",
+        # Fix round 2, RS-1: the save's other two confirmations.
+        "The same preview lists which typed names hold, as a word, a name "
+        "the file lists (`pre_empted_by_existing`): the researcher needs "
+        "that to order the file, and it confirms whether a typed name "
+        "holds, as whole words, a name in the file, so one call can test "
+        "many guesses.",
+        "An execute refused for a name the file already maps says when the "
+        "file holds every typed name under its typed pseudonym, which "
+        "confirms an exact pair. Neither writes anything or takes a "
+        "backup.",
         "The names themselves reach the conversation only through a tool "
         "of their own, `read_pseudonym_list` (in the full toolset only), "
         "whose description says first that it sends the real names to the "

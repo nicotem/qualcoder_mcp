@@ -623,7 +623,14 @@ will ask, and the summary above depends on them:
     maps and which typed pseudonyms it already gives to another name:
     the researcher needs that to fix a clash, and it also confirms, to
     anyone who can call the preview, whether a name they type is in the
-    file. `get_current_project` reports whether the file is present
+    file. The same preview lists which typed names hold, as a word, a
+    name the file lists (`pre_empted_by_existing`): the researcher needs
+    that to order the file, and it confirms whether a typed name holds,
+    as whole words, a name in the file, so one call can test many
+    guesses. An execute refused for a name the file already maps says
+    when the file holds every typed name under its typed pseudonym,
+    which confirms an exact pair. Neither writes anything or takes a
+    backup. `get_current_project` reports whether the file is present
     and how many entries it has, never a name. The names themselves
     reach the conversation only through a tool of their own,
     `read_pseudonym_list` (in the full toolset only), whose description

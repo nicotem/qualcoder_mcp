@@ -308,9 +308,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 163_635          # 71 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 163_904          # 71 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_568           # 21 tools, same environment
-    FULL_MEASURED_310 = 172_023      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 172_308      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_520
 
     # Why two per cent, away from the reference environment.
@@ -338,7 +338,7 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "163,635"
+    FULL_CHARS = "163,904"
     CORE_CHARS = "56,568"
     FULL_ROUNDED = "163,000"
     CORE_ROUNDED = "56,000"
@@ -514,7 +514,7 @@ class TestThePublishedSchemaBudget:
     # signature and the file-text count moved it from about 10,500 to
     # about 11,500 characters without anything saying so, and Brief 1's
     # fix round to about 12,500).
-    FLAGSHIP_ROUNDED = "17,500"
+    FLAGSHIP_ROUNDED = "18,000"
 
     def test_install_quotes_the_flagships_own_share(self):
         install = self._read("INSTALL.md")
