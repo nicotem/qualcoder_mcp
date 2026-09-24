@@ -3442,28 +3442,40 @@ class TestTheNoteRewriteIsWritten:
             self, project):
         """QA-B2-5: under qualcoder_edit_parity the coding that sits on
         "Thomas" is deleted by the file rewrite, and its note goes with
-        it; it is not counted, reported or recorded as a note rewritten."""
-        _plant_note(project, "UPDATE code_text SET memo=? WHERE ctid=1",
+        it; it is not counted, reported or recorded as a note rewritten.
+        The same for the other two row kinds the rewrite deletes, an
+        annotation exactly on "Thomas" and a case link exactly on "Mary
+        Ann" (fix round 2, Q-1)."""
+        add_annotation(project, 2, 0, 6, memo="Thomas noted here")
+        add_case_link(project, 2, 34, 42)
+        _plant_note(project, ["UPDATE code_text SET memo=? WHERE ctid=1",
+                              "UPDATE case_text SET memo=? WHERE id=2"],
                     "Thomas coded here")
-        # Under the default policy the coding stays, and so does its note.
+        deleted = {"code_text": ("ctid", 1), "annotation": ("anid", 2),
+                   "case_text": ("id", 2)}
+        # Under the default policy the rows stay, and so do their notes.
         kept = preview_of(rewrite_memos=True)
-        assert kept["preview"]["memo_rewrites"]["fields"]["code_text"] == {
-            "rows": 1, "replacements": 1}
+        for table in deleted:
+            assert kept["preview"]["memo_rewrites"]["fields"][table] == {
+                "rows": 1, "replacements": 1}, table
         out = preview_of(rewrite_memos=True,
                          overlap_policy="qualcoder_edit_parity")
-        assert out["preview"]["totals"]["rows_deleted"] >= 1
-        assert out["preview"]["memo_rewrites"]["fields"]["code_text"] == {
-            "rows": 0, "replacements": 0}
+        assert out["preview"]["totals"]["rows_deleted"] >= 3
+        for table in deleted:
+            assert out["preview"]["memo_rewrites"]["fields"][table] == {
+                "rows": 0, "replacements": 0}, table
         result = execute_from(out)
         assert result.get("success") is True, result
         assert result["files"][0]["codings_deleted"] >= 1
-        assert result["memos"]["fields"]["code_text"] == {
-            "rows_updated": 0, "replacements": 0}
         record = json.loads(Path(result["manifest_path"]).read_text(
             encoding="utf-8"))
-        assert not any(row["table"] == "code_text" and row["key"] == 1
-                       for row in record["memos"])
-        assert query(project, "SELECT ctid FROM code_text WHERE ctid=1") == []
+        for table, (column, key) in deleted.items():
+            assert result["memos"]["fields"][table] == {
+                "rows_updated": 0, "replacements": 0}, table
+            assert not any(row["table"] == table and row["key"] == key
+                           for row in record["memos"]), table
+            assert query(project, f"SELECT {column} FROM {table} "
+                                  f"WHERE {column}={key}") == [], table
 
     def test_a_note_only_run_takes_a_backup_and_proceeds(self, project):
         _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
@@ -3767,6 +3779,19 @@ class TestTheNotesOfHiddenCoders:
         con.execute("INSERT INTO code_image (imid,id,x1,y1,width,height,cid,"
                     "memo,date,owner,important) VALUES (1,2,0,0,10,10,1,"
                     "'Thomas in the photo.','d',?,0)", (self.HIDDEN,))
+        # The hidden coder's notes where QualCoder hides nothing: a case
+        # link, a code and a journal entry have an owner but no
+        # `_visible` view, so they are rewritten and not counted (fix
+        # round 2, Q-2).
+        con.execute("INSERT INTO case_text (id,caseid,fid,pos0,pos1,memo,"
+                    "owner,date) VALUES (40,1,4,0,7,'Mary Ann linked.',?,"
+                    "'d')", (self.HIDDEN,))
+        con.execute("INSERT INTO code_name (cid,name,memo,catid,owner,date,"
+                    "color) VALUES (40,'Hidden code','About Thomas.',NULL,"
+                    "?,'d','#0000FF')", (self.HIDDEN,))
+        con.execute("INSERT INTO journal (jid,name,jentry,date,owner) "
+                    "VALUES (40,'Hidden notes','Tom said so.','d',?)",
+                    (self.HIDDEN,))
         # A visible coder's note, and a case note, which no coder owns.
         con.execute("UPDATE source SET memo='Thomas again.' WHERE id=4")
         con.execute("UPDATE cases SET memo='Thomas, the case.' WHERE "
@@ -3804,6 +3829,12 @@ class TestTheNotesOfHiddenCoders:
             assert self.HIDDEN not in payload
         assert query(project, "SELECT memo FROM code_av WHERE avid=1"
                      )[0]["memo"] == "Sam on tape."
+        # Rewritten, and still outside the count.
+        assert [query(project, sql)[0]["note"] for sql in (
+            "SELECT memo AS note FROM case_text WHERE id=40",
+            "SELECT memo AS note FROM code_name WHERE cid=40",
+            "SELECT jentry AS note FROM journal WHERE jid=40")] == [
+            "Sam linked.", "About Alex.", "Alex said so."]
 
     def test_none_is_none(self, project):
         _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
@@ -4833,10 +4864,15 @@ def written_list(mapping, case_mode="exact"):
 
 
 # Names that nest (Ann in Mary Ann, Tom in Tom Smith, Mary Ann in Mary
-# Ann Lee) and never overlap otherwise, and pseudonyms that contain none
-# of them, so that ordering is the only thing that can differ.
-_NAMES = ["Ann", "Mary Ann", "Mary Ann Lee", "Tom", "Tom Smith", "Thomas"]
-_PSEUDONYMS = ["Pab", "Qcd", "Rst", "Uvw", "Xyz", "Kfg"]
+# Ann Lee) and never overlap otherwise, spellings that differ from them
+# in letter case only (drawn as variants too, which under the exact case
+# mode must each reach the file as an entry of its own: fix round 2,
+# Q-4), and pseudonyms that contain none of them, so that ordering is the
+# only thing that can differ.
+_NAMES = ["Ann", "Mary Ann", "Mary Ann Lee", "Tom", "Tom Smith", "Thomas",
+          "THOMAS", "thomas", "mary ann"]
+_PSEUDONYMS = ["Pab", "Qcd", "Rst", "Uvw", "Xyz", "Kfg", "Hij", "Mno",
+               "Def"]
 
 
 @st.composite
@@ -4876,7 +4912,11 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
         ([{"original": "Ann", "pseudonym": "Sam",
            "variants": ["Mary Ann"]}],
          "Mary Ann spoke.", "Sam spoke."),
-    ], ids=["a-shorter-entry-first", "a-longer-variant"])
+        ([{"original": "Thomas", "pseudonym": "Alex",
+           "variants": ["THOMAS", "thomas"]}],
+         "THOMAS and thomas met Thomas.", "Alex and Alex met Alex."),
+    ], ids=["a-shorter-entry-first", "a-longer-variant",
+            "case-variants-under-exact"])
     def test_the_qa_reproductions_through_the_tool(self, tmp_path, mapping,
                                                    text, expected):
         folder = build_project(tmp_path / "p.qda", text)
@@ -4946,6 +4986,28 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
         again = preview_of(mapping=mapping, save_mapping_to_project=True)
         assert again["preview"]["mapping_retention"]["if_saved"][
             "pre_empted_by_existing"] == []
+
+    @pytest.mark.parametrize("existing,typed", [
+        ("ann", "Mary Ann"),      # another letter case: QualCoder's is exact
+        ("Ann", "Annabel"),       # inside a word, not a word of its own
+    ])
+    def test_no_warning_where_qualcoder_gives_this_runs_text(
+            self, project, existing, typed):
+        """Fix round 2, Q-3: the check reads as QualCoder matches, whole
+        word and case-sensitive, so it is silent where QualCoder's own
+        loop over the saved file gives this run's text."""
+        _sidecar_file(project, [{"original": existing, "pseudonym": "Pnine"}])
+        mapping = [{"original": "Thomas", "pseudonym": "Alex"},
+                   {"original": typed, "pseudonym": "Sam"}]
+        out = preview_of(mapping=mapping, save_mapping_to_project=True)
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "pre_empted_by_existing"] == []
+        assert not any("pre_empted_by_existing" in w
+                       for w in out["warnings"])
+        execute_strictly(out, mapping=mapping)
+        text = f"{typed} met Thomas."
+        assert upstream_apply(json.loads(_written(project)), text) == \
+            engine_apply(mapping, text) == "Sam met Alex."
 
 
 class TestTheInspectionRoutes:
