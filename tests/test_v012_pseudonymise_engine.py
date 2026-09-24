@@ -3195,6 +3195,40 @@ class TestTheEstimateReadsWhatTheCountReads:
         assert P.residue_work(compiled, text) == len(text) * (
             1 + P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
 
+    def test_the_sweep_takes_a_decomposition_of_any_length(
+            self, monkeypatch):
+        """CI's Python 3.13.15 spells a Hangul syllable's decomposition
+        as its jamo (two or three), where 3.13.5 and 3.13.7 return
+        nothing; the sweep took every canonical decomposition for two
+        parts, raised on the first non-ASCII text, and 186 tests failed
+        on the three 3.13 platforms (run 35979001000). Such an
+        interpreter, simulated: the sweep completes and builds the same
+        tables."""
+        import unicodedata
+        P._reader_sees("Tho\u00admas")          # the real tables, built
+        expected = (dict(P._READING_EXTRA), dict(P._UNSEEN_TABLE),
+                    list(map(list, P._MARK_RANGES)),
+                    list(map(list, P._NON_STARTER_RANGES)))
+        real = unicodedata.decomposition
+
+        def spelled(char):
+            found = real(char)
+            if found or not 0xAC00 <= ord(char) <= 0xD7A3:
+                return found
+            return " ".join(f"{ord(part):04X}" for part in
+                            unicodedata.normalize("NFD", char))
+
+        assert len(spelled("\uac01").split()) == 3
+        monkeypatch.setattr(unicodedata, "decomposition", spelled)
+        for name in ("_READING_EXTRA", "_READING_EXTRA_PATTERN",
+                     "_UNSEEN_TABLE", "_UNSEEN_PATTERN", "_MARK_RANGES",
+                     "_NON_STARTER_RANGES"):
+            monkeypatch.setattr(P, name, None)
+        assert P.reading_length("\uac01 \ufdfa said") == 1 + 1 + 18 + 5
+        assert P._reader_sees("Tho\u00admas") == "Thomas"
+        assert (P._READING_EXTRA, P._UNSEEN_TABLE, P._MARK_RANGES,
+                P._NON_STARTER_RANGES) == expected
+
     @staticmethod
     def _bounds(text):
         reading = P._reader_sees(text)
@@ -3323,12 +3357,20 @@ class TestTheFormsArePricedByTheirLength:
             gc.enable()
         return best / P.residue_work(compiled, text)
 
+    # The bounds lane's limit was three times prose. Python 3.10's regular
+    # expression engine compares a long alternation dearer: 3.6 times on
+    # 3.10.18 on the development Mac, and red on two of CI's three 3.10
+    # platforms (run 35974423636). Priced one unit a form the same shape
+    # read 22 to 31 times on 3.13 and 73 on 3.10, so eight still tells
+    # the two apart everywhere.
+    RATIO_LIMIT = 8
+
     def test_b42_long_forms_cost_what_the_estimate_says(self):
         """The bounds lane's candidate pin, over a run of 1,000 a's where
         it read 4,000 (the ratio is per unit; a quarter of the time): the
-        count's cost per unit under the long forms stays within three
-        times its cost on prose under 100 names. Priced one unit a form it
-        read 22 to 31 times."""
+        count's cost per unit under the long forms stays within
+        `RATIO_LIMIT` times its cost on prose under 100 names (about 1.4
+        on 3.13, 3.6 on 3.10)."""
         prose = ("It was a quiet morning when the committee met to discuss "
                  "the new timetable, and nobody spoke for a while. ") * 3000
         names = [{"original": f"{a}{b}{c}ara", "pseudonym": f"Pp{i:03d}"}
@@ -3340,7 +3382,7 @@ class TestTheFormsArePricedByTheirLength:
         long_compiled = P.Compiled(P.validate_mapping(self._long_mapping(),
                                                       "insensitive"))
         hostile = self._per_unit(long_compiled, "a" * 1000)
-        assert hostile <= 3 * base, (
+        assert hostile <= self.RATIO_LIMIT * base, (
             f"{hostile * 1e9:.1f} ns a unit against {base * 1e9:.1f} on "
             f"prose")
 

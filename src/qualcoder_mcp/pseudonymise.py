@@ -843,11 +843,15 @@ def _sweep_code_points() -> None:
             readings[code_point] = unicodedata.normalize(
                 "NFKC", char).casefold()
         if parts and not parts.startswith("<") and " " in parts:
-            base, mark = (chr(int(part, 16)) for part in parts.split())
-            short = len(char.casefold()) - len(base.casefold()) - len(
-                mark.casefold())
+            # Any number of parts: a canonical decomposition is two in
+            # the Unicode data, but some interpreters' `decomposition()`
+            # also spells a Hangul syllable as its two or three jamo
+            # (Python 3.13.15 on CI; 3.13.5 and 3.13.7 return nothing).
+            pieces = [chr(int(part, 16)) for part in parts.split()]
+            short = len(char.casefold()) - sum(len(piece.casefold())
+                                               for piece in pieces)
             if short > 0:
-                deficit[base] = max(deficit.get(base, 0), short)
+                deficit[pieces[0]] = max(deficit.get(pieces[0], 0), short)
     extra: Dict[int, int] = {}
     for code_point, reading in readings.items():
         added = len(reading) - 1 + (deficit.get(reading[-1], 0)
