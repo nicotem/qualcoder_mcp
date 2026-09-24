@@ -6938,29 +6938,25 @@ class TestProjectPseudonyms:
             "pseudonyms_json": {"present": True, "entries": None,
                                 "error": self.NOT_REGULAR}}
 
-    def test_a_huge_file_is_refused_by_its_size_before_it_is_read(
-            self, project):
-        import tracemalloc
+    def test_a_huge_file_is_refused_value_free(self, project):
+        """A 64 MB file at that name is refused with the size message;
+        that nothing of it is read is pinned by the test after this one
+        (memory measured inside the full suite read other tests'
+        allocations, so the pin counts the reads instead)."""
         from qualcoder_mcp.database import PSEUDONYMS_JSON_MAX_BYTES
         with open(project / "pseudonyms.json", "wb") as handle:
             handle.truncate(64 * PSEUDONYMS_JSON_MAX_BYTES)
-        tracemalloc.start()
-        try:
-            out = json.loads(server.get_current_project())
-            _current, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
+        out = json.loads(server.get_current_project())
         assert out["pseudonyms_json"]["error"] == (
             f"pseudonyms.json is larger than {PSEUDONYMS_JSON_MAX_BYTES} "
             f"bytes and was not read.")
-        assert peak < 8 * PSEUDONYMS_JSON_MAX_BYTES, peak
 
     def test_a_file_that_grows_past_the_limit_is_refused_after_a_bounded_read(
             self, project, monkeypatch):
         """At most the limit and one byte are read, so a file whose size
         was checked and which then grew is refused without being read
-        whole: `fstat` is made to report a small file over a large one."""
-        import tracemalloc
+        whole: `fstat` is made to report a small file over a large one,
+        and the bytes asked of `os.read` are counted."""
         from qualcoder_mcp import database as db_module
         limit = db_module.PSEUDONYMS_JSON_MAX_BYTES
         with open(project / "pseudonyms.json", "wb") as handle:
@@ -6978,17 +6974,11 @@ class TestProjectPseudonyms:
         monkeypatch.setattr(db_module.os, "read",
                             lambda fd, n: requested.append(n)
                             or real_read(fd, n))
-        tracemalloc.start()
-        try:
-            out = json.loads(server.get_current_project())
-            _current, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
+        out = json.loads(server.get_current_project())
         monkeypatch.undo()
         assert out["pseudonyms_json"]["error"] == (
             f"pseudonyms.json is larger than {limit} bytes and was not read.")
-        assert sum(requested) <= limit + 1, requested
-        assert peak < 8 * limit, peak
+        assert requested and sum(requested) <= limit + 1, requested
 
     def test_the_size_is_checked_before_anything_is_read(self, project,
                                                           monkeypatch):
