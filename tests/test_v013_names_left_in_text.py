@@ -1400,6 +1400,10 @@ class TestTheBlockIsBounded:
         assert note.startswith("1 file(s) were counted in part: each count "
                                "stopped at this preview's budget")
         assert "(27 in all)" in note
+        # The fourth re-verification's N-5: a file after it that is too
+        # large for this mapping is not past the budget.
+        assert note.endswith("so every file after it that is not too large "
+                             "for this mapping is past the budget.")
         _house_rules([note], ["files_counted_in_part_note"])
         # The default detail's compact row carries the lower bound too.
         compact = _rows(preview_of())[4]
@@ -2617,6 +2621,11 @@ class TestEveryWordingThroughTheTool:
     NOT_CHECKED = ("{} file(s) were not checked; preview them one at a "
                    "time, or use fewer names, to check them (see "
                    "files_not_checked).")
+    PDF_LARGE = ("{} PDF source(s) are too large to count in full with "
+                 "this many names{}; a PDF source cannot be named for a "
+                 "preview, so only a preview with fewer names, which costs "
+                 "less for every file, could reach them (see "
+                 "files_too_large_for_this_mapping).")
     NAMED_BEYOND = ("the file this call rewrites is too large to count in a "
                     "preview with any mapping, even of one name, {}. The "
                     "rewrite still applies to it (see "
@@ -2644,12 +2653,19 @@ class TestEveryWordingThroughTheTool:
         totals = block["totals"]
         assert totals["named_file_shows_a_name"] is True
         assert totals["files_too_large_showing_a_name"] == 2
+        assert totals["pdf_sources_too_large_for_this_mapping"] == 1
         assert _rows(out)[1]["shows_a_name"] is True
+        # R4-1: the note hedges fewer names for the PDF source among them.
+        assert block["files_too_large_note"].endswith(
+            "Fewer names (the mapping split in two) would let the 2 text "
+            "file(s) among them be counted; the 1 PDF source(s) among them "
+            "cannot be named for a preview, so only a preview with fewer "
+            "names, which costs less for every file, could reach them.")
         assert _file_text_warning(out) == (
             "Warning: " + self.NAMED.format(self.SHOWS) + " "
             + self.OTHERS.format(
-                2, " (1 of them would still show one of these names)")
-            + self.END)
+                1, " (1 of them would still show one of these names)")
+            + " " + self.PDF_LARGE.format(1, "") + self.END)
 
     def test_the_named_file_asked_clean_and_the_others_clean(
             self, project, monkeypatch):
@@ -2661,7 +2677,8 @@ class TestEveryWordingThroughTheTool:
         assert _block(out)["totals"]["named_file_shows_a_name"] is False
         assert _file_text_warning(out) == (
             "Warning: " + self.NAMED.format(self.NONE_DOES) + " "
-            + self.OTHERS.format(2, "") + self.END)
+            + self.OTHERS.format(1, "") + " " + self.PDF_LARGE.format(1, "")
+            + self.END)
 
     def test_the_named_file_not_checked_is_not_an_other(
             self, project, monkeypatch):
@@ -2678,7 +2695,8 @@ class TestEveryWordingThroughTheTool:
         assert block["totals"]["files_too_large_not_checked"] == 3
         assert _file_text_warning(out) == (
             "Warning: " + self.NAMED.format(self.UNCHECKED) + " "
-            + self.OTHERS.format(2, " (2 were not checked)") + self.END)
+            + self.OTHERS.format(1, " (1 were not checked)") + " "
+            + self.PDF_LARGE.format(1, " (1 were not checked)") + self.END)
 
     def test_the_others_both_ways_beside_the_named_file(
             self, project, monkeypatch):
@@ -2702,8 +2720,9 @@ class TestEveryWordingThroughTheTool:
         assert _file_text_warning(out) == (
             "Warning: " + self.NAMED.format(self.NONE_DOES) + " "
             + self.OTHERS.format(
-                3, " (1 of them would still show one of these names and 1 "
-                "were not checked)") + self.END)
+                2, " (1 of them would still show one of these names and 1 "
+                "were not checked)") + " " + self.PDF_LARGE.format(1, "")
+            + self.END)
 
     def test_the_named_file_after_the_counted_sentence(
             self, project, monkeypatch):
@@ -3030,6 +3049,76 @@ class TestTheWarningsGrammar:
                     assert not re.search(r"[2-9] (of them|were)", detail), w
         assert seen == 57344
 
+    def test_the_too_large_pdf_sources_beside_the_others(self):
+        """Fix round 6, R4-1: the PDF sources too large for this mapping
+        have a sentence of their own, with the hedged remedy, and are not
+        counted among the other files that fewer names would let be
+        counted; every consistent combination of the two families' counts
+        and the named file's states, 896 warnings."""
+        import itertools
+        import re
+        seen = 0
+        named_states = ["absent"] + [(kind, shows) for kind in ("this", "any")
+                                     for shows in (True, False, None)]
+        for (wide, o_show, o_unch, o_clean, p_show, p_unch, p_clean,
+             named) in itertools.product(*[range(2)] * 7, named_states):
+            seen += 1
+            large = named != "absent"
+            kind, shows = named if large else (None, None)
+            here = kind == "this"
+            pdfs = p_show + p_unch + p_clean
+            totals = {
+                "occurrences": {"wide": wide, "whole_word": 0},
+                "by_reason": {"whole_word_in_a_file_not_rewritten": wide},
+                "files_too_large_for_this_mapping":
+                    o_show + o_unch + o_clean + pdfs + here,
+                "files_too_large_showing_a_name":
+                    o_show + p_show + (here and shows is True),
+                "files_too_large_not_checked":
+                    o_unch + p_unch + (here and shows is None),
+                "pdf_sources_too_large_for_this_mapping": pdfs,
+                "pdf_sources_too_large_showing_a_name": p_show,
+                "pdf_sources_too_large_not_checked": p_unch,
+                "files_too_large_for_any_mapping": kind == "any",
+                "files_too_large_for_any_mapping_showing_a_name":
+                    kind == "any" and shows is True,
+                "files_too_large_for_any_mapping_not_checked":
+                    kind == "any" and shows is None,
+                "named_file_too_large": large,
+                "named_file_too_large_for_any_mapping": kind == "any",
+                "files_showing_a_name": 0, "files_not_checked": 0,
+                "files_whole_word_above_wide": 0}
+            if large:
+                totals["named_file_shows_a_name"] = shows
+            w = server._pseudonymise_file_text_warning({"totals": totals})
+            others = o_show + o_unch + o_clean
+            if not (wide or others or pdfs or large):
+                assert w is None
+                continue
+            assert w.startswith("Warning") and w.count("Warning") == 1, w
+            texts = self._detail(w, "in full with this many names",
+                                 "fewer names would let them be counted")
+            assert bool(texts) == bool(others), w
+            if texts:
+                assert texts[0] == others and texts[1] == large, w
+                assert ("1 of them would still show" in texts[2]) == bool(
+                    o_show), w
+                assert ("1 were not checked" in texts[2]) == bool(o_unch), w
+            p = re.search(r"(\d+) PDF source\(s\) are too large to count in "
+                          r"full with this many names( \(([^)]*)\))?; a PDF "
+                          r"source cannot be named for a preview, so only a "
+                          r"preview with fewer names, which costs less for "
+                          r"every file, could reach them \(see "
+                          r"files_too_large_for_this_mapping\)\.", w)
+            assert bool(p) == bool(pdfs), w
+            if p:
+                assert int(p.group(1)) == pdfs, w
+                detail = p.group(3) or ""
+                assert ("1 of them would still show" in detail) == bool(
+                    p_show), w
+                assert ("1 were not checked" in detail) == bool(p_unch), w
+        assert seen == 896
+
     def test_the_whole_word_sentence_no_known_text_reaches(self):
         """The whole-word-only sentence (fix round 2's CORR-2 keeps it so
         the warning never goes quiet), verbatim, on the totals alone."""
@@ -3351,3 +3440,39 @@ class TestTheOverlapCheckIsCapped:
         assert result.get("success") is True, result
         assert query(project, "SELECT fulltext FROM source WHERE id=1")[0][
             "fulltext"] == "Sam Curie spoke. Sam Curie spoke."
+
+
+class TestAPdfSourceTooLargeForThisMapping:
+    """Fix round 6, the fourth re-verification's R4-1 and R4-2 (the rules
+    lane's Q4): a PDF source too large for this mapping cannot be named,
+    and is read after the file a call names and the files before it, so
+    it is never promised that fewer names would let it be counted; it has
+    the PDF sentence's hedged remedy, and it is not in the past-the-budget
+    PDF note, since nothing before it spent the budget."""
+
+    def test_a_pdf_too_large_is_not_in_the_past_the_budget_pdf_note(
+            self, project, monkeypatch):
+        """Q4, the rules lane's candidate pin as it wrote it, with R4-1's
+        note and warning beside it."""
+        pdf_text = "the cat sat on the mat, Thomas. " * 20
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            P.residue_work_at_one_form(pdf_text))
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", 1)
+        _set_text(project, 2, pdf_text)                   # the fixture's PDF
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        assert block["files_too_large_for_this_mapping"] == [2]
+        assert "files_too_large_note" in block
+        assert "pdf_sources_not_counted_note" not in block
+        assert block["files_too_large_note"].endswith(
+            "The rewrite applies to the file this call rewrites either way. "
+            "A PDF source cannot be named for a preview, so only a preview "
+            "with fewer names, which costs less for every file, could reach "
+            "them.")
+        warning = _file_text_warning(out)
+        assert warning == (
+            "Warning: " + TestEveryWordingThroughTheTool.PDF_LARGE.format(
+                1, " (1 were not checked)")
+            + TestEveryWordingThroughTheTool.END)
+        assert "fewer names would let" not in warning
+

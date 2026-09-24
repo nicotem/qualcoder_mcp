@@ -8442,8 +8442,8 @@ class QualcoderDatabase:
         "listed in files_counted_in_part, with shows_a_name true and "
         "occurrences_at_least, the occurrences found before it stopped, a "
         "lower bound ({at_least} in all). A count that stops is charged all "
-        "it spent, like any other, so the files after it are past the "
-        "budget.")
+        "it spent, like any other, so every file after it that is not too "
+        "large for this mapping is past the budget.")
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full, because the files read "
         "before them had spent one of this preview's two budgets: the work "
@@ -8486,8 +8486,21 @@ class QualcoderDatabase:
         "each is asked whether any name shows only when that question fits "
         "its own budget ({check} units), and is otherwise listed in "
         "files_not_checked. The rewrite applies to the file this call "
-        "rewrites either way. Fewer names (the mapping split in two) would "
-        "let them be counted.")
+        "rewrites either way. {remedy}")
+    # The too-large note's last sentence (fix round 6, the fourth
+    # re-verification's R4-1): a PDF source cannot be named, and is read
+    # after the file a call names and the files before it, so fewer names
+    # is only hedged for it, as in the PDF sentence of the warning.
+    PSEUDONYMISE_TOO_LARGE_REMEDY = (
+        "Fewer names (the mapping split in two) would let them be counted.")
+    PSEUDONYMISE_TOO_LARGE_REMEDY_PDF = (
+        "A PDF source cannot be named for a preview, so only a preview with "
+        "fewer names, which costs less for every file, could reach them.")
+    PSEUDONYMISE_TOO_LARGE_REMEDY_MIXED = (
+        "Fewer names (the mapping split in two) would let the {text} text "
+        "file(s) among them be counted; the {pdf} PDF source(s) among them "
+        "cannot be named for a preview, so only a preview with fewer names, "
+        "which costs less for every file, could reach them.")
     PSEUDONYMISE_TOO_LARGE_FOR_ANY_NOTE = (
         "{count} file(s) are too large to count in a preview with any "
         "mapping: even with one short name, each one's estimated cost, the "
@@ -8653,6 +8666,9 @@ class QualcoderDatabase:
         at_least_total = 0
         pdf_past_showing = 0
         pdf_past_unchecked = 0
+        pdf_large = 0
+        pdf_large_showing = 0
+        pdf_large_unchecked = 0
         too_large_showing = 0
         too_large_not_checked = 0
         named_too_large = False
@@ -8784,6 +8800,7 @@ class QualcoderDatabase:
                     beyond_ids.append(fid)
                 elif too_large:
                     too_large_ids.append(fid)
+                    pdf_large += pdf
                 if named:
                     named_beyond = beyond
                 if work > engine.MAX_RESIDUE_CHECK_WORK:
@@ -8804,6 +8821,7 @@ class QualcoderDatabase:
                     if shows:
                         showing_not_counted += 1
                         too_large_showing += large_here
+                        pdf_large_showing += pdf and large_here
                         beyond_showing += beyond
                         pdf_past_showing += pdf and not too_large
                         compact = {**base, "counted": False}
@@ -8818,6 +8836,7 @@ class QualcoderDatabase:
                     # says so where the detail asks for one.
                     not_checked.append(fid)
                     too_large_not_checked += large_here
+                    pdf_large_unchecked += pdf and large_here
                     beyond_not_checked += beyond
                     pdf_past_unchecked += pdf and not too_large
                     if named:
@@ -8877,6 +8896,11 @@ class QualcoderDatabase:
                            pdf_past_showing,
                        "pdf_sources_past_the_budget_not_checked":
                            pdf_past_unchecked,
+                       "pdf_sources_too_large_for_this_mapping": pdf_large,
+                       "pdf_sources_too_large_showing_a_name":
+                           pdf_large_showing,
+                       "pdf_sources_too_large_not_checked":
+                           pdf_large_unchecked,
                        "named_file_too_large": named_too_large,
                        "named_file_too_large_for_any_mapping": named_beyond,
                        "files_whole_word_above_wide": whole_word_above_wide,
@@ -8929,11 +8953,18 @@ class QualcoderDatabase:
             block["pdf_sources_not_counted_note"] = \
                 self.PSEUDONYMISE_PDF_NOTE.format(count=pdf_past)
         if too_large_ids:
+            text_large = len(too_large_ids) - pdf_large
+            remedy = (self.PSEUDONYMISE_TOO_LARGE_REMEDY if not pdf_large
+                      else self.PSEUDONYMISE_TOO_LARGE_REMEDY_PDF
+                      if not text_large
+                      else self.PSEUDONYMISE_TOO_LARGE_REMEDY_MIXED.format(
+                          text=text_large, pdf=pdf_large))
             block["files_too_large_note"] = \
                 self.PSEUDONYMISE_TOO_LARGE_NOTE.format(
                     count=len(too_large_ids),
                     budget=f"{engine.MAX_RESIDUE_SCAN_WORK:,}",
-                    check=f"{engine.MAX_RESIDUE_CHECK_WORK:,}")
+                    check=f"{engine.MAX_RESIDUE_CHECK_WORK:,}",
+                    remedy=remedy)
         if beyond_ids:
             block["files_too_large_for_any_mapping_note"] = \
                 self.PSEUDONYMISE_TOO_LARGE_FOR_ANY_NOTE.format(

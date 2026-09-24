@@ -10608,17 +10608,34 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             parts.append(f"{not_checked} were not checked")
         return f" ({' and '.join(parts)})" if parts else ""
 
-    others = large - named_here
+    # A PDF source too large for this mapping has the PDF sentence's
+    # hedged remedy, not the promise (fix round 6, the fourth
+    # re-verification's R4-1): it cannot be named, and is read after the
+    # file this call names and the files before it.
+    pdf_large = totals.get("pdf_sources_too_large_for_this_mapping", 0)
+    pdf_large_showing = totals.get("pdf_sources_too_large_showing_a_name", 0)
+    pdf_large_unchecked = totals.get("pdf_sources_too_large_not_checked", 0)
+    others = large - named_here - pdf_large
     if others:
-        others_showing = large_showing - (named_here and named_shows is True)
-        others_unchecked = large_unchecked - (named_here
-                                              and named_shows is None)
+        others_showing = (large_showing - pdf_large_showing
+                          - (named_here and named_shows is True))
+        others_unchecked = (large_unchecked - pdf_large_unchecked
+                            - (named_here and named_shows is None))
         sentences.append(
             f"{'Warning: ' if not sentences else ''}"
             f"{others} {'other ' if named_large else ''}file(s) are too "
             f"large to count in full with this many names"
             f"{detail(others_showing, others_unchecked)}; fewer names would "
             f"let them be counted (see files_too_large_for_this_mapping).")
+    if pdf_large:
+        sentences.append(
+            f"{'Warning: ' if not sentences else ''}"
+            f"{pdf_large} PDF source(s) are too large to count in full with "
+            f"this many names"
+            f"{detail(pdf_large_showing, pdf_large_unchecked)}; a PDF source "
+            f"cannot be named for a preview, so only a preview with fewer "
+            f"names, which costs less for every file, could reach them (see "
+            f"files_too_large_for_this_mapping).")
     beyond_others = beyond - named_beyond
     if beyond_others:
         # No remedy: not even a mapping of one name would let them be

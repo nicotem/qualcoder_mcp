@@ -3181,6 +3181,20 @@ class TestTheEstimateReadsWhatTheCountReads:
                 f"{len(reading):,} characters")
             assert estimate >= P.residue_work(compiled, P._fold(reading))
 
+    def test_b44_the_class_is_the_whole_texts(self):
+        """The bounds lane's candidate pin (B4-4, its mutation E3): the
+        per-character term follows the WHOLE text's class, so a text
+        that is ASCII for its first stretch and not after is priced as
+        not ASCII."""
+        compiled = P.Compiled(P.validate_mapping(self.ONE))
+        for head in (1, 4096, 100_000):
+            text = "a" * head + "\u00e9" * 1000
+            assert P.residue_work(compiled, text) == len(text) * (
+                1 + P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII), head
+        text = "\u00e9" + "a" * 5000
+        assert P.residue_work(compiled, text) == len(text) * (
+            1 + P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
+
     @staticmethod
     def _bounds(text):
         reading = P._reader_sees(text)
