@@ -1752,12 +1752,17 @@ class TestTheCheckBudget:
         assert block["files_not_counted"] == [5, 6]
         assert block["files_too_large_for_this_mapping"] == []
         assert block["totals"]["files_showing_a_name_not_counted"] == 1
-        # Sticky when the files before spent it: room for file 5 only.
-        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK",
-                            _work_of("nothing."))
+        # Sticky when the files before spent it (the second
+        # re-verification's PN-8 and T4): file 6 fits the question's
+        # budget on its own but not after file 5, so it closes it, and
+        # file 7, small enough for what is left, is not asked either.
+        _set_text(project, 7, "ok.", name="seven.txt")
+        room = _work_of("nothing.") + _work_of("Thomasin.") - 1
+        assert _work_of("nothing.") + _work_of("ok.") <= room
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", room)
         block = _block(preview_of(residue_detail="project"))
         assert block["files_not_counted"] == [5]
-        assert block["files_not_checked"] == [4, 6]
+        assert block["files_not_checked"] == [4, 6, 7]
 
     def test_a_checked_file_after_a_counted_one_and_the_warning_joins(
             self, project, monkeypatch):
