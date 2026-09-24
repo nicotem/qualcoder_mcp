@@ -12077,6 +12077,14 @@ def create_case(name: str, memo: Optional[str] = None,
     return _ai_json(result, indent=2)
 
 
+# How old_name_left_in reads, said in both renames' notes (fix round 1,
+# QA-6): a heuristic, by whole words.
+OLD_NAME_LEFT_IN_NOTE = (
+    "old_name_left_in is a heuristic: it looks for the old name as a whole "
+    "word, ignoring letter case, where letters and digits make up a word "
+    "(so '_', '-', '.' and spaces separate words), and it can miss a "
+    "label written another way or count one that names something else.")
+
 # What rename_case's result says stays behind (v0.13, rename dossier 3.2).
 RENAME_CASE_NOTE = (
     "Only the case's name changed, as in QualCoder's Manage Cases; its "
@@ -12091,7 +12099,7 @@ RENAME_CASE_NOTE = (
     "copies only the researcher can remove); and in QualCoder 4.0's AI "
     "chat. A later case spreadsheet import, survey import or Merge "
     "Projects that still uses the old label creates a case carrying it "
-    "again.")
+    "again. " + OLD_NAME_LEFT_IN_NOTE)
 
 # The accepted limitation both renames carry (rename dossier 1.6), in
 # their descriptions: QualCoder 4.0 writes no lock file.
@@ -12122,8 +12130,9 @@ def rename_case(case_id: int, new_name: str,
     renames carry `changed: true` and `old_name`, plus where the old name
     stays: `old_name_left_in` counts QualCoder's saved graph labels,
     table displays and filters that still contain it and lists the ids of
-    files named after it (a heuristic: "contains", ignoring letter case;
-    each count only when not zero), and `note` names the rest.
+    files named after it (a heuristic: the old name as a whole word,
+    ignoring letter case, '_' and '.' separating words; each count only
+    when not zero), and `note` names the rest.
 
     Find a case id in qualcoder://cases/list, get_case_code_matrix, a
     create_case answer, or QualCoder's own id column.
@@ -12197,7 +12206,7 @@ RENAME_FILE_NOTE = (
     "file's name as it was at the run unless that name carried a name "
     "from the mapping (they then name the file by its id). A Merge "
     "Projects with a copy of the project that still has the old name "
-    "brings the file in as a second file.")
+    "brings the file in as a second file. " + OLD_NAME_LEFT_IN_NOTE)
 RENAME_FILE_SEARCH_INDEX_NOTE = (
     "QualCoder's AI search index lists the file under its old name until "
     "QualCoder next opens the project with AI enabled.")
@@ -12572,8 +12581,9 @@ def rename_file(file_id: int, new_name: str,
     copy holds the original text), `linked_transcript` or
     `transcript_of`, `transcript_pairing` (pairings QualCoder makes by
     name), `old_name_left_in` (saved graph labels, table displays and
-    filters containing it, and ids of other files named after it; a
-    heuristic, each count only when not zero), `search_index_note` and
+    filters holding it as a whole word, and ids of other files named
+    after it; a heuristic, each count only when not zero),
+    `search_index_note` and
     `note`.
 
     Find a file id in qualcoder://files/list or search_files.
@@ -12621,7 +12631,7 @@ def rename_file(file_id: int, new_name: str,
                 "stored_copy": stored,
                 **_transcript_blocks(rows, file_id, old, candidate),
                 "old_name_left_in": wdb.old_name_left_in(
-                    "file", file_id, old),
+                    "file", file_id, old, mediapath=row["mediapath"]),
                 "search_index_note": RENAME_FILE_SEARCH_INDEX_NOTE,
                 "note": RENAME_FILE_NOTE}
 

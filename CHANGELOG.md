@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 164,048 characters (about 41.0k tokens at
+  below included: full = 164,109 characters (about 41.0k tokens at
   chars/4) over 72 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools, nor `pseudonymise_source`,
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 172,392 and
+  in the repository's `.venv/`, the same definitions measure 172,461 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -201,9 +201,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ids only as well; until now they logged both names.
 - Each result says where the old name stays. `old_name_left_in` counts
   QualCoder's saved graph labels, saved table displays and saved filters
-  that still contain it and lists the ids of files named after it (a
-  heuristic: "contains", ignoring letter case; each count only when it
-  is not zero). `rename_file` adds `stored_copy` (an imported file's copy
+  that still hold it and lists the ids of files named after it (a
+  heuristic: the old name as a whole word, ignoring letter case, where
+  letters and digits make up a word, so `_` and `.` separate words and a
+  short label such as `AS` is not found inside `Case`; each count only
+  when it is not zero). `rename_file` adds `stored_copy` (an imported file's copy
   in the project folder and its stored path keep the old name, and a
   document's copy keeps the original text, which QualCoder's exports
   ship), `linked_transcript` or `transcript_of`, `transcript_pairing`

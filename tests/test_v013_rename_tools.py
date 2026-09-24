@@ -833,10 +833,13 @@ class TestWhatKeepsTheOldName:
         _exec(project, "INSERT INTO files_filter (name, filter) VALUES "
                        "('f', 'Name like interview.txt')")
         _add_file(project, 7, "interview_p1.jpg", mediapath="/images/x.jpg")
+        _add_file(project, 8, "interview.txt_summary")
         _reload()
         out = _file(1, "P01.txt", create_backup=False)
+        # A text with no stored file is looked for whole: '.txt' is part
+        # of its name, so 'interview_p1.jpg' is not named after it.
         assert out["old_name_left_in"] == {
-            "saved_graph_labels": 1, "saved_filters": 1, "file_ids": [7]}
+            "saved_graph_labels": 1, "saved_filters": 1, "file_ids": [8]}
         assert out["note"] == server.RENAME_FILE_NOTE
         assert out["search_index_note"] == \
             server.RENAME_FILE_SEARCH_INDEX_NOTE
@@ -1280,3 +1283,64 @@ class TestTheTranscriptRefusalByCase:
         assert _file(11, "P01.mp3.txt")["changed"] is True   # a backup
         out = _file(11, "P01 transcript")
         assert "as a broken link" in out["error"], out
+
+
+class TestWhereTheOldNameStaysByWholeWords:
+    """Fix round 1, QA-6 (the lead's ruling): the old name is looked for
+    as a whole word, ignoring letter case, where letters and digits make
+    a word, so a short label does not over-report and a file named after
+    a case with '_' around the label is still found. A heuristic, and
+    both notes say so."""
+
+    def test_a_short_label_is_not_found_inside_longer_words(self, project):
+        _saved_places(project)
+        _add_case(project, "AS", 5)
+        _exec(project, "INSERT INTO manage_files_display (name, tblrows) "
+                       "VALUES ('d1', 'Case\t=\tThomas'), "
+                       "('d2', 'Case\t=\tAS')")
+        _exec(project, "INSERT INTO files_filter (name, filter) VALUES "
+                       "('f1', 'case name like Thomas'), "
+                       "('f2', 'case name = \"as\"')")
+        _add_file(project, 7, "Thomas.txt")
+        _add_file(project, 8, "AS_interview.txt")
+        _add_file(project, 9, "Survey_as")
+        _reload()
+        out = _case(5, "P05", create_backup=False)
+        assert out["old_name_left_in"] == {
+            "saved_table_displays": 1, "saved_filters": 1,
+            "file_ids": [8, 9]}
+
+    def test_files_named_after_a_case_with_underscores(self, project):
+        _add_case(project, "Thomas_P01", 5)
+        for fid, name in ((7, "Thomas_P01_interview.txt"),
+                          (8, "Survey_Thomas_P01"),
+                          (9, "Thomas_P010.txt"),        # another label
+                          (10, "Thomas_P01.mp3.txt")):
+            _add_file(project, fid, name)
+        _reload()
+        out = _case(5, "P01", create_backup=False)
+        assert out["old_name_left_in"] == {"file_ids": [7, 8, 10]}
+
+    def test_a_dotted_name_is_not_cut_at_its_dot(self, project):
+        _add_file(project, 5, "Thomas.Jones")
+        _add_file(project, 6, "Thomas_notes.txt")
+        _add_file(project, 7, "Thomas.Jones.txt")
+        _reload()
+        out = _file(5, "P05", create_backup=False)
+        assert out["old_name_left_in"] == {"file_ids": [7]}
+
+    def test_a_stored_file_is_looked_for_without_its_extension(self,
+                                                               project):
+        _add_file(project, 5, "Thomas.pdf", mediapath="/docs/Thomas.pdf")
+        _add_file(project, 6, "Thomas_p1.jpg", mediapath="/images/t.jpg")
+        _add_file(project, 7, "Thomasina.txt")
+        _reload()
+        out = _file(5, "P05.pdf", create_backup=False)
+        assert out["old_name_left_in"] == {"file_ids": [6]}
+
+    def test_both_notes_call_it_a_heuristic(self):
+        for note in (server.RENAME_CASE_NOTE, server.RENAME_FILE_NOTE):
+            assert note.endswith(server.OLD_NAME_LEFT_IN_NOTE)
+        assert server.OLD_NAME_LEFT_IN_NOTE.startswith(
+            "old_name_left_in is a heuristic: it looks for the old name as "
+            "a whole word, ignoring letter case")

@@ -8073,33 +8073,40 @@ class QualcoderDatabase:
             return [mediapath[len('/docs/'):]]
         return []
 
-    # A file name's stem for the "files named after it" count: the last
-    # dot-suffix is dropped only when it looks like an extension (1 to 10
-    # letters or digits), so 'Dr. Thomas notes' keeps its whole name.
-    _EXTENSION_RE = re.compile(r"^(.+)\.[A-Za-z0-9]{1,10}$")
-
-    def old_name_left_in(self, kind: str, row_id: int,
-                         old_name: str) -> Dict[str, Any]:
+    def old_name_left_in(self, kind: str, row_id: int, old_name: str,
+                         mediapath: Optional[str] = None) -> Dict[str, Any]:
         """Where the old name of a renamed case or file still shows, among
         the saved places QualCoder keeps by text rather than by id.
 
-        A HEURISTIC: 'contains', compared after NFC and casefold. Each
-        count is present only when not zero, and a table this schema
-        lacks is skipped. Saved graph labels are this row's own nodes
+        A HEURISTIC: the old name as a whole word, ignoring letter case
+        (both sides NFC and casefolded), where letters and digits make up
+        a word, so '_', '-', '.' and spaces separate words (fix round 1,
+        QA-6: a short label such as 'AS' is no longer found inside 'Case'
+        or 'Thomas'). Unlike the pseudonymisation rewrite's rule, '_'
+        separates here, because a file named after a case is typically
+        'Thomas_P01_interview.txt' or 'Survey_Thomas_P01'. Each count is
+        present only when not zero, and a table this schema lacks is
+        skipped. Saved graph labels are this row's own nodes
         (gr_case_text_item or gr_file_text_item); saved table displays
         (manage_files_display.tblrows) and saved filters
         (files_filter.filter) are the whole project's; file_ids are the
-        other files whose name contains the old name (a file's own
-        extension dropped first). Ids and counts only, never a name.
+        other files whose name holds the old name, for a file with a
+        stored path without the stored file's extension ('Thomas.pdf'
+        finds its pages 'Thomas_p1.jpg'), otherwise whole ('Thomas.Jones'
+        is not read as 'Thomas'). Ids and counts only, never a name.
         """
         def key(value: Any) -> str:
             return (unicodedata.normalize("NFC", value).casefold()
                     if isinstance(value, str) else "")
 
-        needle = key(old_name)
+        def whole_word(name: str):
+            return re.compile(r"(?<![^\W_])" + re.escape(key(name))
+                              + r"(?![^\W_])")
+
         found: Dict[str, Any] = {}
-        if not needle.strip():
+        if not key(old_name).strip():
             return found
+        pattern = whole_word(old_name)
 
         def present(table: str) -> bool:
             return self.conn.execute(
@@ -8121,20 +8128,21 @@ class QualcoderDatabase:
             if not present(place):
                 continue
             hits = sum(1 for (value,) in self.conn.execute(sql, args)
-                       if needle in key(value))
+                       if pattern.search(key(value)))
             if hits:
                 found[label] = hits
 
         stem = old_name
-        if kind == "file":
-            match = self._EXTENSION_RE.match(old_name)
-            stem = match.group(1) if match else old_name
-        stem_key = key(stem)
-        if stem_key.strip():
+        ext = stored_path_extension(mediapath) if kind == "file" else ""
+        if ext and len(old_name) > len(ext) and \
+                old_name.lower().endswith(ext.lower()):
+            stem = old_name[:-len(ext)]
+        if key(stem).strip():
+            stem_pattern = whole_word(stem)
             ids = [fid for fid, name in self.conn.execute(
                        "SELECT id, name FROM source ORDER BY id")
                    if not (kind == "file" and fid == row_id)
-                   and stem_key in key(name)]
+                   and stem_pattern.search(key(name))]
             if ids:
                 found["file_ids"] = ids
         return found
