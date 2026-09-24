@@ -618,7 +618,12 @@ will ask, and the summary above depends on them:
     accounts under the usual umask: a departure, for a file of real
     names. A file that exists keeps its own permissions, as QualCoder's
     write keeps them, and one this account cannot write is refused, as
-    QualCoder's write would fail on it. `get_current_project` reports whether the file is present
+    QualCoder's write would fail on it. A preview that asks for the save
+    lists, by entry number, which of the typed names the file already
+    maps and which typed pseudonyms it already gives to another name:
+    the researcher needs that to fix a clash, and it also confirms, to
+    anyone who can call the preview, whether a name they type is in the
+    file. `get_current_project` reports whether the file is present
     and how many entries it has, never a name. The names themselves
     reach the conversation only through a tool of their own,
     `read_pseudonym_list` (in the full toolset only), whose description

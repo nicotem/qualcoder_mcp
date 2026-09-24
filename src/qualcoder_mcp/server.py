@@ -12024,7 +12024,10 @@ def pseudonymise_source(
                  root and travels into every backup; a new one is written
                  owner-only on macOS and Linux, an existing one keeps its
                  own permissions, and one this account cannot write is
-                 refused. This argument IS
+                 refused. The preview run with it lists, by entry number,
+                 which typed names the file already maps and which typed
+                 pseudonyms it already gives to another name, so it
+                 confirms whether a name is in the file. This argument IS
                  bound into the token:
                  the preview must be run with it, and the execute repeats
                  it.

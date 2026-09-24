@@ -7451,6 +7451,11 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "is true: the mapping is half of the reverse key and this server "
          "does not keep it. With use_project_pseudonyms the file is the "
          "record and neither may be given."),
+        ("the_save_preview_confirms_names",              # fix round 1, S-4
+         "The preview run with it lists, by entry number, which typed "
+         "names the file already maps and which typed pseudonyms it already "
+         "gives to another name, so it confirms whether a name is in the "
+         "file."),
         ("the_file_is_qualcoders_format",                # point 7
          "Alternative spellings become separate entries with the same "
          "pseudonym, which the dialog will "
@@ -7685,6 +7690,12 @@ class TestTheDocumentsTellTheTruth:
         "where QualCoder's own write would leave it readable by other "
         "accounts under the usual umask: a departure, for a file of real "
         "names.",
+        # Brief 2 fix round 1, S-4: what the save preview confirms.
+        "A preview that asks for the save lists, by entry number, which of "
+        "the typed names the file already maps and which typed pseudonyms "
+        "it already gives to another name",
+        "it also confirms, to anyone who can call the preview, whether a "
+        "name they type is in the file.",
         "The names themselves reach the conversation only through a tool "
         "of their own, `read_pseudonym_list` (in the full toolset only), "
         "whose description says first that it sends the real names to the "
