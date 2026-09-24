@@ -203,7 +203,8 @@ class TestCanonicalJson:
             "pseudonymise_source",
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
-            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym")
+            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym",
+            rewrite_memos=False)
         token = pt.issue("pseudonymise_source", args, "/p/data.qda", "s1")
         bind = token.split(".")[2]
         plain = pt.hashlib.sha256(pt.canonical(
@@ -253,7 +254,8 @@ class TestCanonicalJson:
             "pseudonymise_source",
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
-            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym")
+            file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym",
+            rewrite_memos=False)
         with pytest.raises(TypeError, match="needs the secret"):
             pt.bind_id("pseudonymise_source", args, "/p/data.qda")
         assert not (tmp_path / "state").exists(), "nothing was loaded"
@@ -266,13 +268,16 @@ class TestCanonicalJson:
         assert pt.KEYED_BIND <= set(pt.REGISTRY)
 
     def test_the_flagship_binds_only_what_decides_the_effect(self):
-        """The four arguments that change the text or a row, and no more.
+        """The arguments that change the text or a row, and no more.
 
-        `include_context`, `context_chars`, `scan_residue` and
-        `max_spans_per_entry` change what the preview SHOWS;
-        `record_in_journal` changes only whether the run records itself.
-        None of them is bound, so passing a different one on the execute
-        call is not "a different operation": it changes nothing.
+        `include_context`, `context_chars`, `scan_residue`,
+        `residue_detail` and `max_spans_per_entry` change what the preview
+        SHOWS; `record_in_journal` changes only whether the run records
+        itself. None of them is bound, so passing a different one on the
+        execute call is not "a different operation": it changes nothing.
+        `rewrite_memos` changes the notes, so it IS bound (v0.13, Brief
+        2), as the `bool` the server passes whatever truthy value it was
+        given.
         """
         bound = pt.canonical_args(
             "pseudonymise_source",
@@ -282,7 +287,7 @@ class TestCanonicalJson:
             overlap_policy="snap_to_pseudonym",
             use_project_pseudonyms=True, include_context=True,
             context_chars=99, scan_residue=False, max_spans_per_entry=1,
-            residue_detail="project",
+            residue_detail="project", rewrite_memos=1,
             record_in_journal=False, allow_hidden_coder=True,
             preview_token="qcp1.1.aaaaaaaa." + "a" * 32, confirm=True)
         assert bound == {
@@ -290,7 +295,9 @@ class TestCanonicalJson:
             "mapping": [{"original": "Tom", "pseudonym": "Alex",
                          "variants": []}],
             "case_mode": "exact",
-            "overlap_policy": "snap_to_pseudonym"}
+            "overlap_policy": "snap_to_pseudonym",
+            "rewrite_memos": True}
+        assert bound["rewrite_memos"] is True
 
     def test_the_flagship_binds_its_one_file_as_an_integer(self):
         """One file per call since v0.13 (decision A): the bind carries
@@ -301,7 +308,8 @@ class TestCanonicalJson:
         def call(fid):
             return pt.canonical_args(
                 "pseudonymise_source", mapping=[], file_id=fid,
-                case_mode="exact", overlap_policy="snap_to_pseudonym")
+                case_mode="exact", overlap_policy="snap_to_pseudonym",
+                rewrite_memos=False)
         assert call(1)["file_id"] == 1
         assert isinstance(call(1)["file_id"], int)
         assert call(1) != call(4)

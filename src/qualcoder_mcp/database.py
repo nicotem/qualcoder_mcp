@@ -8297,16 +8297,25 @@ class QualcoderDatabase:
                     pass
         return counts
 
-    def pseudonymise_effect(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def pseudonymise_effect(self, plan: Dict[str, Any],
+                            memo_plan: Optional[Dict[str, Any]] = None
+                            ) -> Dict[str, Any]:
         """The part of a preview an authorisation token signs (D1 3.8).
 
         Effect only: what the run would DO. The presentation-only parts
         of the preview are left out on purpose, because none of them
         changes the outcome and signing them would make a token depend on
         arguments that are not bound. So `include_context`,
-        `max_spans_per_entry`, `scan_residue` and `case_variants_seen` are
-        absent, and the replacement spans here are the FULL set rather
-        than the truncated list the model reads.
+        `max_spans_per_entry`, `scan_residue`, `residue_detail` and
+        `case_variants_seen` are absent, and the replacement spans here
+        are the FULL set rather than the truncated list the model reads.
+
+        With a note plan (`rewrite_memos`, v0.13) the effect gains one
+        key, `memo_rewrites`: per field the rows and replacements, the
+        counts by CANONICAL entry position (for the reason the file
+        replacements use it), and the three counts the preview warns
+        about. Without one it is exactly what it was, so a run with the
+        switch off signs what it signed before.
         """
         from . import pseudonymise as engine
 
@@ -8348,18 +8357,37 @@ class QualcoderDatabase:
                 "hidden_coder_rows": self.pseudonymise_hidden_rows(item),
                 "null_position_rows": self._pseudonymise_null_rows(item),
             })
-        return {"overlap_policy": plan["overlap_policy"],
-                "case_mode": plan["case_mode"],
-                "eligible_files": plan["eligible"],
-                # Ids and reasons, never NAMES. D1 3.8's digest list has
-                # no names in it, and signing them meant that renaming an
-                # unrelated PDF -- a file this run does not touch --
-                # invalidated a live token as `project_changed`, with an
-                # explanation that was false (QA F-13). The readable
-                # preview still carries the names.
-                "skipped_files": [[item["file_id"], item["reason"]]
-                                  for item in plan["skipped"]],
-                "files": files}
+        effect = {"overlap_policy": plan["overlap_policy"],
+                  "case_mode": plan["case_mode"],
+                  "eligible_files": plan["eligible"],
+                  # Ids and reasons, never NAMES. D1 3.8's digest list has
+                  # no names in it, and signing them meant that renaming
+                  # an unrelated PDF -- a file this run does not touch --
+                  # invalidated a live token as `project_changed`, with an
+                  # explanation that was false (QA F-13). The readable
+                  # preview still carries the names.
+                  "skipped_files": [[item["file_id"], item["reason"]]
+                                    for item in plan["skipped"]],
+                  "files": files}
+        if memo_plan is not None:
+            totals = memo_plan["totals"]
+            per_entry: Dict[int, int] = {}
+            for index, count in memo_plan["by_entry"].items():
+                per_entry[canon[index]] = count
+            effect["memo_rewrites"] = {
+                "fields": [[field["table"], len(field["rows"]),
+                            field["replacements"]]
+                           for field in memo_plan["fields"]],
+                "entries": [{"entry": index, "count": count}
+                            for index, count in sorted(per_entry.items())],
+                "rewritten_with_private_part":
+                    totals["rewritten_with_private_part"],
+                "not_rewritten_marker_risk":
+                    totals["not_rewritten_marker_risk"],
+                "journal_entries_from_earlier_runs":
+                    totals["journal_entries_from_earlier_runs"],
+            }
+        return effect
 
     @staticmethod
     def _pseudonymise_null_rows(item: Dict[str, Any]) -> Dict[str, List]:
@@ -8406,12 +8434,25 @@ class QualcoderDatabase:
             counts["snapped"] or counts["deleted"] or counts["clamped"])
         return counts
 
-    def pseudonymise_row_digests(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def pseudonymise_row_digests(self, plan: Dict[str, Any],
+                                 memo_plan: Optional[Dict[str, Any]] = None
+                                 ) -> Dict[str, Any]:
         """The rows a token covers: every span row of every touched file.
 
         Every row, not only the rows that move. They share the coordinate
         system the run rewrites, and a row added or removed since the
         preview changes the counts the researcher approved.
+
+        With a note plan (`rewrite_memos`, v0.13), one list per field of
+        the notes the run would rewrite, in key order: the row's key,
+        whether it has a private part, and the length of its public part
+        as read now. No digest of note text, keyed or plain (ruling 4).
+        A note that gains or loses a match changes the list; a note
+        edited to the same length that keeps its matches does not, which
+        is the consequence of that ruling's choice and is documented.
+        `attribute_type` is keyed by its name, which enters the digest as
+        it stands: this payload is hashed and never serialised into a
+        result.
         """
         digests: Dict[str, Any] = {"files": plan["eligible"]}
         for item in plan["files"]:
@@ -8428,6 +8469,11 @@ class QualcoderDatabase:
                 [r["id"], r["caseid"], fid, r["pos0"], r["pos1"], r["owner"],
                  r["has_memo"], r["has_private"]]
                 for r in item["rows"]["case_text"]]
+        if memo_plan is not None:
+            for field in memo_plan["fields"]:
+                digests[f"memo:{field['table']}"] = [
+                    [row["key"], row["has_private"], row["public_length"]]
+                    for row in field["rows"]]
         return digests
 
     # The twelve memo fields a name can survive in, and the six label
@@ -9094,7 +9140,9 @@ class QualcoderDatabase:
     def pseudonymise_residue(self, compiled,
                              plan: Optional[Dict[str, Any]] = None,
                              may_echo_names: bool = True,
-                             detail: str = "file") -> Dict[str, Any]:
+                             detail: str = "file",
+                             memo_plan: Optional[Dict[str, Any]] = None
+                             ) -> Dict[str, Any]:
         """Where the names would still be after the run (D1 3.9).
 
         Counts, never content, and PUBLIC memo parts only: a private
@@ -9103,33 +9151,53 @@ class QualcoderDatabase:
         reported, as a number, which is the trade S-P2(c) already makes
         elsewhere.
 
-        Every field is read with `compiled.detector`, not with the
-        rewriter's pattern. This block is the answer to "where do the
-        names remain", so its reading has to be at least as wide as a
-        human reader's: `Thomas_P01` is a case named after the
-        participant, and the whole-word pattern called it clean, which
-        is how this block came to report zero where five names survived
-        (Security S2). The counts are therefore deliberately WIDER than
-        the rewrite: a memo reading "Thomas_Smith" is counted here and
-        is not rewritten, which is the point, since nothing in this
-        block is rewritten at all.
+        The wide reading of every field is `compiled.carries_a_name`: the
+        detector, or the rewriter's pattern, whichever finds a name (the
+        union, the lead's ruling on QA-1), never the pattern alone. This
+        block is the answer to "where do the names remain", so its
+        reading has to be at least as wide as a human reader's:
+        `Thomas_P01` is a case named after the participant, and the
+        whole-word pattern called it clean, which is how this block came
+        to report zero where five names survived (Security S2). The
+        counts are therefore deliberately WIDER than the rewrite: a note
+        reading "Thomas_Smith" is counted here and is not rewritten.
 
         Since v0.13 (ruling 5) every count is two readings in one
-        object, `{"wide": N, "whole_word": M}`: `wide` is the detector's
-        reading above, exactly as before, and `whole_word` is how many of
-        the same fields this run's own rule matches (`compiled.pattern`,
-        under the run's case mode). A note is read through
-        `extract_ai_memo` for BOTH readings, so the whole-word half never
-        reads a private part either.
+        object, `{"wide": N, "whole_word": M}`: `wide` is the reading
+        above and `whole_word` is how many of the same fields this run's
+        own rule matches (`compiled.pattern`, under the run's case mode).
+        A note is read through `extract_ai_memo` for BOTH readings, so
+        the whole-word half never reads a private part either.
+
+        With a note plan (`rewrite_memos`, v0.13 Brief 2) each of the
+        twelve note counts gains `wide_after_rewrite`: the wide reading
+        over the public part as the run would leave it (the plan's own
+        rewritten text for a note in it, the stored public part for every
+        other note), and the block gains `after_rewrite_note`, which says
+        why that number is not zero. Labels and attribute values are
+        never rewritten and gain nothing.
         """
         residue: Dict[str, Any] = {"counts": "fields, not occurrences",
                                    "memos": {}, "unreadable": []}
         private_zones = 0
+        # The public part each planned note would have after the run, by
+        # field and key; every other note keeps the one it has.
+        after_run: Dict[str, Dict[Any, str]] = {}
+        if memo_plan is not None:
+            for field in memo_plan["fields"]:
+                after_run[field["table"]] = {
+                    row["key"]: split_public_private_memo(
+                        row["new_stored"])[0]
+                    for row in field["rows"]}
         for table, column in self.PSEUDONYMISE_MEMO_FIELDS:
             key = table
+            # The key is read only when the switch is on, so the scan a
+            # run without it makes is the one it always made.
+            selected = (column if memo_plan is None else
+                        f"{self.PSEUDONYMISE_MEMO_KEYS[table]}, {column}")
             try:
                 rows = self.conn.execute(
-                    f"SELECT {column} FROM {table} "
+                    f"SELECT {selected} FROM {table} "
                     f"WHERE {column} IS NOT NULL AND {column} != ''"
                 ).fetchall()
             except sqlite3.Error:
@@ -9138,8 +9206,11 @@ class QualcoderDatabase:
                 residue["unreadable"].append(f"{table}.{column}")
                 continue
             hits = {"wide": 0, "whole_word": 0}
+            if memo_plan is not None:
+                hits["wide_after_rewrite"] = 0
+            rewritten = after_run.get(table, {})
             for row in rows:
-                value = row[0]
+                value = row[-1]
                 if not isinstance(value, str):
                     continue
                 if memo_has_private_zone(value):
@@ -9151,6 +9222,9 @@ class QualcoderDatabase:
                     hits["wide"] += 1
                 if compiled.pattern.search(public):
                     hits["whole_word"] += 1
+                if memo_plan is not None and compiled.carries_a_name(
+                        rewritten.get(row[0], public)):
+                    hits["wide_after_rewrite"] += 1
             residue["memos"][key] = hits
         residue["memos_with_private_zones_not_scanned"] = private_zones
 
@@ -9227,6 +9301,8 @@ class QualcoderDatabase:
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
             "scanned; it may still hold the previous text.")
+        if memo_plan is not None:
+            residue["after_rewrite_note"] = self.PSEUDONYMISE_AFTER_REWRITE_NOTE
         try:
             residue["file_text"] = self._pseudonymise_file_text(
                 compiled, plan, may_echo_names, detail)
@@ -9235,6 +9311,21 @@ class QualcoderDatabase:
         if not residue["unreadable"]:
             residue.pop("unreadable")
         return residue
+
+    # v0.13, Brief 2, 5.5, with the lead's fourth answer to the hand-off
+    # note: the measured drop is eleven to six, not to zero, and the
+    # preview says why before the researcher reads the number.
+    PSEUDONYMISE_AFTER_REWRITE_NOTE = (
+        "With rewrite_memos on, the note counts are read twice: wide as the "
+        "project stands, and wide_after_rewrite as it would stand after the "
+        "run. The second number is not zero and is not meant to be. The "
+        "rewrite replaces whole words in the case mode you chose; the wide "
+        "reading is wider, so a name inside a longer word, in a different "
+        "letter case, or spelled with its parts joined is still counted and "
+        "is still there. A pseudonym that contains a name from the mapping, "
+        "or forms one with the words around it, writes that name into the "
+        "notes it rewrites, where wide_after_rewrite counts it too. Read what "
+        "remains as a list of fields to check by hand.")
 
     def _pseudonymise_by_owner(self, item: Dict[str, Any],
                                ai_coder_names: Sequence[str]
@@ -9311,9 +9402,16 @@ class QualcoderDatabase:
                              scan_residue: bool = True,
                              max_spans_per_entry: int = 50,
                              may_echo_names: bool = True,
-                             residue_detail: str = "file"
+                             residue_detail: str = "file",
+                             memo_plan: Optional[Dict[str, Any]] = None
                              ) -> Dict[str, Any]:
         """What the researcher is shown before approving a run (D1 3.5).
+
+        With a note plan (`rewrite_memos`, v0.13 Brief 2) the preview
+        gains a `memo_rewrites` block, present whether or not the residue
+        is scanned, because it says what the run would DO; counts, the
+        caller's entry indices and pseudonyms only, never note text and
+        never a row key.
 
         Read-only, and everything in it is a count, a span or a name the
         caller already supplied. The only file CONTENT it can return is
@@ -9511,14 +9609,83 @@ class QualcoderDatabase:
                 [{"entry": item["entry"],
                   "contains_entry": item["contains_entry"]}
                  for item in containing])
+        if memo_plan is not None:
+            preview["memo_rewrites"] = self._pseudonymise_memo_block(
+                memo_plan, pseudonym_of)
         if scan_residue:
             # The plan's own `new_text` for the file this run rewrites,
             # and no second read of it; `may_echo_names` withholds the
             # forms and the longer words on the sidecar path.
             preview["residue"] = self.pseudonymise_residue(
                 compiled, plan, may_echo_names=may_echo_names,
-                detail=residue_detail)
+                detail=residue_detail, memo_plan=memo_plan)
         return preview
+
+    # The fixed strings of the preview's `memo_rewrites` block (v0.13,
+    # Brief 2, 5.2). Every count block carries a fixed units string, and
+    # every key for a thing not done carries a note saying why.
+    PSEUDONYMISE_MEMO_UNITS = (
+        "rows, one row being one note or one journal entry, and "
+        "replacements within them; never occurrences in file text")
+    PSEUDONYMISE_MEMO_PRIVATE_NOTE = (
+        "Of the rows above, this many carry a private part. Their public "
+        "part is rewritten; the private part is carried across unchanged "
+        "and unread.")
+    PSEUDONYMISE_MEMO_MARKER_RISK_NOTE = (
+        "Notes left exactly as they are because the rewrite would have "
+        "formed a private-part marker in them, which would hide the rest of "
+        "the note from every later AI read.")
+    PSEUDONYMISE_MEMO_EARLIER_RUNS_NOTE = (
+        "Of the journal rows above, this many are this server's own records "
+        "of earlier pseudonymisation runs. Rewriting them changes the "
+        "project's record of what those runs applied. This is a heuristic "
+        "reading of each entry's first line.")
+
+    def _pseudonymise_memo_block(self, memo_plan: Dict[str, Any],
+                                 pseudonym_of) -> Dict[str, Any]:
+        """The readable `memo_rewrites` block, from the note plan.
+
+        All twelve fields, in `PSEUDONYMISE_MEMO_FIELDS` order and zeros
+        included, so the shape does not move with the data. `by_entry`
+        carries the caller's indices, which are what the model can relay,
+        and each pseudonym through `pseudonym_of`, so on the sidecar path
+        a pseudonym that carries a name is withheld here as on every
+        other route of the preview (the owner's F-1 ruling).
+        """
+        planned = {field["table"]: field for field in memo_plan["fields"]}
+        fields = {}
+        for table, _ in self.PSEUDONYMISE_MEMO_FIELDS:
+            field = planned.get(table)
+            fields[table] = {
+                "rows": len(field["rows"]) if field else 0,
+                "replacements": field["replacements"] if field else 0}
+        totals = memo_plan["totals"]
+        block: Dict[str, Any] = {
+            "counts": self.PSEUDONYMISE_MEMO_UNITS,
+            "fields": fields,
+            "totals": {"rows": totals["rows"],
+                       "replacements": totals["replacements"]},
+            "by_entry": [{"entry": index, "pseudonym": pseudonym_of(index),
+                          "count": count}
+                         for index, count in sorted(
+                             memo_plan["by_entry"].items())],
+            "memos_rewritten_with_private_part":
+                totals["rewritten_with_private_part"],
+            "memos_rewritten_with_private_part_note":
+                self.PSEUDONYMISE_MEMO_PRIVATE_NOTE,
+            "memos_not_rewritten_marker_risk":
+                totals["not_rewritten_marker_risk"],
+            "memos_not_rewritten_marker_risk_note": (
+                self.PSEUDONYMISE_MEMO_MARKER_RISK_NOTE
+                + " They are not counted in the rows above."),
+            "journal_entries_from_earlier_runs":
+                totals["journal_entries_from_earlier_runs"],
+            "journal_entries_from_earlier_runs_note":
+                self.PSEUDONYMISE_MEMO_EARLIER_RUNS_NOTE,
+        }
+        if memo_plan["unreadable"]:
+            block["unreadable"] = list(memo_plan["unreadable"])
+        return block
 
     # ------------------------------------------------------------------
     # The write

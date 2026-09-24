@@ -1200,6 +1200,51 @@ class TestAPseudonymCarryingANameIsWithheld:
             P.PSEUDONYMS_WITHHELD_NOTE
         assert "smith" not in json.dumps(out).lower()
 
+    # v0.13, Brief 2 (its hand-off note, H.2.3): the preview's note block
+    # quotes a pseudonym through the same `pseudonym_of`, so on the
+    # sidecar path a pseudonym carrying a name is null there too, and the
+    # preview's one count and sentence cover it; typed, it is quoted.
+    @staticmethod
+    def _note(folder, text):
+        con = sqlite3.connect(str(folder / "data.qda"))
+        con.execute("UPDATE source SET memo=? WHERE id=1", (text,))
+        con.execute("UPDATE cases SET memo=? WHERE caseid=1", (text,))
+        con.commit()
+        con.close()
+
+    @pytest.mark.parametrize("shape", sorted(CARRYING))
+    def test_the_note_block_withholds_it_on_the_sidecar_path(self, tmp_path,
+                                                             shape):
+        mapping, text, withheld = CARRYING[shape]
+        folder = self._project(tmp_path, text, mapping, sidecar=True)
+        self._note(folder, text)
+        with wired(folder):
+            out = call(mapping=None, use_project_pseudonyms=True,
+                       rewrite_memos=True)
+        block = out["preview"]["memo_rewrites"]
+        assert block["by_entry"], shape
+        for item in block["by_entry"]:
+            assert (item["pseudonym"] is None) == (
+                item["entry"] in withheld), (shape, item)
+        # Test 25: no original and no variant anywhere in the block, and
+        # nowhere in the preview beyond the declared routes.
+        serialised = json.dumps(block).lower()
+        for name in _originals(mapping):
+            assert name.lower() not in serialised, (shape, name)
+            assert _outside_fixed_prose(out, name) == [], (shape, name)
+        assert out["preview"]["pseudonyms_withheld"] == len(withheld)
+        assert "pseudonyms_withheld" not in block
+
+    def test_the_typed_path_note_block_quotes_it(self, tmp_path):
+        mapping, text, _ = CARRYING["contains_other"]
+        folder = self._project(tmp_path, text, mapping, sidecar=False)
+        self._note(folder, text)
+        with wired(folder):
+            out = preview_of(mapping=mapping, rewrite_memos=True)
+        assert [(item["entry"], item["pseudonym"]) for item in
+                out["preview"]["memo_rewrites"]["by_entry"]] == [
+            (0, "Jones"), (1, "Alex Smith")]
+
     def test_the_sentence_keeps_the_house_rules(self):
         _house_rules([P.PSEUDONYMS_WITHHELD_NOTE], ["withheld note"])
 

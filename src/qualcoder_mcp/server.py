@@ -10673,6 +10673,9 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
     warnings: List[str] = []
     totals = preview.get("totals", {})
     hidden = preview.get("hidden_coder_rows", {})
+    # Present exactly when the run was asked to rewrite notes (v0.13,
+    # Brief 2): every note warning below reads its counts from here.
+    memo_block = preview.get("memo_rewrites")
 
     other = sum(entry["codings"] for item in preview.get("files", [])
                 for entry in item["codings"].get("by_owner", []))
@@ -10780,10 +10783,19 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         # with the one class it does not reach said in the same breath.
         # Since v0.13 the whole-word count stands beside it, so the
         # researcher can see how much of the count is the wide reading.
+        # With rewrite_memos on (Brief 2, 5.6) one clause changes: the
+        # notes among them are rewritten where the whole-word rule
+        # matches, and nothing else is.
+        rewritten = (
+            "this run rewrites only the notes among them, and only where "
+            "the whole-word rule matches (see memo_rewrites); labels and "
+            "attribute values are never rewritten"
+            if memo_block is not None else
+            "this tool does not rewrite any of them")
         warnings.append(
             f"Warning: {residue_total} note(s), label(s) or attribute "
-            f"value(s) may still show one of these names, and this tool "
-            f"does not rewrite any of them; {whole_word_total} of those "
+            f"value(s) may still show one of these names, and "
+            f"{rewritten}; {whole_word_total} of those "
             f"match this run's own whole-word rule. The rest are the "
             f"wide reading, which is a heuristic and deliberately wide: "
             f"it reports anything a reader might see in the spelling you "
@@ -10807,6 +10819,38 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"nowhere in residue. Preview again; if the same parts still "
             f"cannot be read, check them in QualCoder before sharing the "
             f"project.")
+    if memo_block is not None:
+        # v0.13, Brief 2, 5.6: what the note rewrite does that the
+        # researcher must hear before approving it, each only when its
+        # count is not zero. The private part is never read, so the last
+        # clause of the first is not softened.
+        private = memo_block.get("memos_rewritten_with_private_part", 0)
+        if private:
+            warnings.append(
+                f"Warning: {private} note(s) or journal entr(ies) this run "
+                f"would rewrite carry a private part this assistant cannot "
+                f"see. Their public part will be rewritten; the private "
+                f"part is carried across unchanged and unread, so if a name "
+                f"occurs there it is still there, and nothing in this "
+                f"server can tell you whether it does.")
+        risky = memo_block.get("memos_not_rewritten_marker_risk", 0)
+        if risky:
+            warnings.append(
+                f"Warning: {risky} note(s) will not be rewritten, because "
+                f"the rewrite would form a private-part marker in them and "
+                f"hide the rest of the note from every later AI read; the "
+                f"names in those notes stay as they are. This happens only "
+                f"when a pseudonym contains hash characters: choose one "
+                f"without, or edit those notes by hand.")
+        earlier = memo_block.get("journal_entries_from_earlier_runs", 0)
+        if earlier:
+            warnings.append(
+                f"Warning: {earlier} journal entr(ies) this run would "
+                f"rewrite are this server's own records of earlier "
+                f"pseudonymisation runs. Rewriting them changes the "
+                f"project's record of what those runs applied. If that "
+                f"record matters, run without rewrite_memos and change "
+                f"those entries by hand.")
     # v0.13, ruling 8: a pseudonym that contains a name from the mapping
     # puts that name back wherever it is written. Warned about and
     # counted, never refused: a researcher may mean to run the contained
@@ -10815,31 +10859,43 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
     containing = preview.get("pseudonyms_containing_a_name") or []
     put_back = ((file_text or {}).get("totals", {}).get("by_reason", {})
                 .get("put_back_by_a_pseudonym", 0))
+    # The lead's fourth answer to Brief 2's hand-off note: with the notes
+    # rewritten, a pseudonym writes a name into them as into file text.
+    # One clause for notes, no new count.
+    in_notes = ""
     if containing:
         entries = sorted({item["entry"] for item in containing})
+        if memo_block is not None:
+            in_notes = (" With rewrite_memos on, the rewritten notes carry "
+                        "that name too, and residue.memos counts them under "
+                        "wide_after_rewrite.")
         warnings.append(
             f"Warning: pseudonym(s) of entry {entries} contain a name from "
             f"this mapping (see pseudonyms_containing_a_name), so the "
             f"rewrite puts that name back wherever it writes them; "
             f"residue.file_text counts those occurrences under "
-            f"put_back_by_a_pseudonym. A pseudonym that puts a name back "
-            f"inside a longer word (xThomasx) is not caught by this check "
-            f"and is counted under inside_a_longer_word instead. Choose a "
-            f"pseudonym that contains no name from the mapping, or run the "
-            f"contained name in a second pass and check the count.")
+            f"put_back_by_a_pseudonym.{in_notes} A pseudonym that puts a "
+            f"name back inside a longer word (xThomasx) is not caught by "
+            f"this check and is counted under inside_a_longer_word instead. "
+            f"Choose a pseudonym that contains no name from the mapping, or "
+            f"run the contained name in a second pass and check the count.")
     elif put_back:
         # No pseudonym contains a name on its own, and yet the rewrite
         # leaves a whole name the rewriter would match: a pseudonym has
         # formed one with the words around it ("Mary" written before an
         # "Ann" that was already there, for "Mary Ann").
+        if memo_block is not None:
+            in_notes = (" With rewrite_memos on, a pseudonym can form one in "
+                        "a rewritten note in the same way, and residue.memos "
+                        "counts it under wide_after_rewrite.")
         warnings.append(
             f"Warning: after this run, {put_back} occurrence(s) of a name "
             f"from this mapping would be put back by the pseudonyms it "
             f"writes, although no pseudonym contains a name on its own: a "
             f"pseudonym can form a name with the words around it. "
-            f"residue.file_text counts them under put_back_by_a_pseudonym. "
-            f"Choose a different pseudonym, or run the name in a second "
-            f"pass and check the count.")
+            f"residue.file_text counts them under put_back_by_a_pseudonym."
+            f"{in_notes} Choose a different pseudonym, or run the name in a "
+            f"second pass and check the count.")
     short = preview.get("short_forms") or []
     if short:
         # Fix round 3, L3. QualCoder's own minimum for an original is two
@@ -11151,6 +11207,7 @@ def pseudonymise_source(
     use_project_pseudonyms: bool = False,
     case_mode: str = "exact",
     overlap_policy: str = "snap_to_pseudonym",
+    rewrite_memos: bool = False,
     preview_token: Optional[str] = None,
     allow_hidden_coder: bool = False,
     record_in_journal: bool = True,
@@ -11430,11 +11487,12 @@ def pseudonymise_source(
     file_ids = [file_id]
 
     ai_names = _ai_names_for_project()
+    rewrite_memos = bool(rewrite_memos)
     token_args = canonical_args(
         "pseudonymise_source",
         mapping=pseudo.canonical_mapping(validated),
         file_id=file_id, case_mode=case_mode,
-        overlap_policy=overlap_policy)
+        overlap_policy=overlap_policy, rewrite_memos=rewrite_memos)
 
     # The plan is the expensive part of everything below it: it reads
     # every eligible file's text, runs the pattern over all of it, and
@@ -11467,6 +11525,24 @@ def pseudonymise_source(
             read_phase["conn"] = db_.conn
         return plan
 
+    def _read_memo_plan(db_):
+        """The read-only phase's note plan, on `_read_plan`'s terms.
+
+        None when `rewrite_memos` is off, so nothing about the notes is
+        read, signed or shown. Cached on the connection that filled it,
+        for `_read_plan`'s reason: the write connection always builds
+        its own inside the transaction.
+        """
+        if not rewrite_memos:
+            return None
+        if read_phase.get("memo_conn") is db_.conn:
+            return read_phase["memo_plan"]
+        memo_plan = db_.pseudonymise_memo_plan(compiled)
+        if "memo_plan" not in read_phase:
+            read_phase["memo_plan"] = memo_plan
+            read_phase["memo_conn"] = db_.conn
+        return memo_plan
+
     def _signed(preview):
         """What the token covers: the effect, never the presentation.
 
@@ -11478,14 +11554,16 @@ def pseudonymise_source(
 
     def _preview_with_effect(db_):
         plan = _read_plan(db_)
+        memo_plan = _read_memo_plan(db_)
         preview = db_.pseudonymise_preview(
             plan, ai_names, include_context=include_context,
             context_chars=context_chars, scan_residue=scan_residue,
             max_spans_per_entry=max_spans_per_entry,
-            may_echo_names=may_echo_names, residue_detail=residue_detail)
+            may_echo_names=may_echo_names, residue_detail=residue_detail,
+            memo_plan=memo_plan)
         if sidecar_encoding is not None:
             preview["pseudonyms_json_encoding"] = sidecar_encoding
-        preview["_effect"] = db_.pseudonymise_effect(plan)
+        preview["_effect"] = db_.pseudonymise_effect(plan, memo_plan)
         return preview
 
     def _override_required(preview):
@@ -11585,11 +11663,21 @@ def pseudonymise_source(
         The plan is kept for `_op`, so the run writes exactly the plan
         whose effect was verified against the token, rather than a sixth
         recomputation of it.
+
+        With `rewrite_memos` it builds two plans, the file plan and the
+        note plan, both on the write connection and neither from the
+        read phase's cache, and keeps both. The note plan is the
+        rewrite's pass over every note's public part (the notes dossier
+        measured it at about a fifth of the residue scan's cost), not
+        the residue scan this docstring keeps out of the transaction.
         """
         plan = wdb.pseudonymise_plan(compiled, overlap_policy, file_ids)
         captured["write_plan"] = plan
-        return fingerprint_rows(wdb.pseudonymise_effect(plan),
-                                wdb.pseudonymise_row_digests(plan))
+        memo_plan = (wdb.pseudonymise_memo_plan(compiled) if rewrite_memos
+                     else None)
+        captured["write_memo_plan"] = memo_plan
+        return fingerprint_rows(wdb.pseudonymise_effect(plan, memo_plan),
+                                wdb.pseudonymise_row_digests(plan, memo_plan))
 
     def _op(wdb):
         plan = captured.get("write_plan")
@@ -11645,7 +11733,7 @@ def pseudonymise_source(
         preview_fn=_preview_with_effect,
         op_fn=_op,
         fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(
-            _read_plan(db_)),
+            _read_plan(db_), _read_memo_plan(db_)),
         tool="pseudonymise_source",
         token_args=token_args,
         preview_token=preview_token,
@@ -11662,6 +11750,7 @@ def pseudonymise_source(
             "overlap_policy": overlap_policy,
             "file_id": file_id,
             "use_project_pseudonyms": use_project_pseudonyms,
+            "rewrite_memos": rewrite_memos,
         },
         state_preview_fn=_signed,
         override_required_fn=_override_required,

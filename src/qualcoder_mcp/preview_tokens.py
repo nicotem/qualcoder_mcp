@@ -370,7 +370,7 @@ def _args_prune_backups(kwargs):
 
 
 def _args_pseudonymise_source(kwargs):
-    """The four arguments that decide what a pseudonymisation run does.
+    """The arguments that decide what a pseudonymisation run does.
 
     `mapping` arrives already in its canonical form (entries sorted by
     original, variants sorted, every string NFC-normalised), the same way
@@ -382,21 +382,26 @@ def _args_pseudonymise_source(kwargs):
     it was typed out or read from the project's own `pseudonyms.json`.
 
     The preview-only arguments are absent, as `cascade` is: `include_context`,
-    `context_chars`, `scan_residue` and `max_spans_per_entry` change what
-    the preview SHOWS, and `record_in_journal` changes only whether the
-    run records itself, so none of them changes what happens to the text
-    or to a single row.
+    `context_chars`, `scan_residue`, `residue_detail` and
+    `max_spans_per_entry` change what the preview SHOWS, and
+    `record_in_journal` changes only whether the run records itself, so
+    none of them changes what happens to the text or to a single row.
+
+    `rewrite_memos` changes what happens to rows (the public part of
+    every note in the project), so it is bound (v0.13, Brief 2).
 
     `file_id` is one id since v0.13 (one file per call), bound as the
     integer the server validated. `TOKEN_VERSION` is not bumped for it:
     a token lives sixty minutes, and one issued by 0.12 for `file_ids`
     that did reach this binding would fail as `token_other_operation`,
-    which is what it is.
+    which is what it is. The `bool()` on each switch is so that a truthy
+    value that is not `True` cannot bind differently from `True`.
     """
     return {"file_id": int(kwargs["file_id"]),
             "mapping": kwargs["mapping"],
             "case_mode": str(kwargs["case_mode"]),
-            "overlap_policy": str(kwargs["overlap_policy"])}
+            "overlap_policy": str(kwargs["overlap_policy"]),
+            "rewrite_memos": bool(kwargs["rewrite_memos"])}
 
 
 REGISTRY: Dict[str, Any] = {
@@ -436,8 +441,10 @@ def fingerprint_rows(preview: Any, rows: Any) -> str:
     of the rows behind them, so neither a changed count nor a swapped row
     can slip through a token issued for the earlier state. Row tuples
     carry ids, positions and ownership plus `has_memo` and `has_private`
-    booleans; memo text never enters the payload, on principle, even
-    though an HMAC would not reveal it.
+    booleans; note rows (v0.13, `rewrite_memos`) carry their key, the
+    private-part flag and the public part's length. Memo text never
+    enters the payload, on principle, even though an HMAC would not
+    reveal it.
     """
     return hashlib.sha256(
         canonical({"preview": preview, "rows": rows}).encode("utf-8")
