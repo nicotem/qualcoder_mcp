@@ -12431,20 +12431,18 @@ def stored_file_name(mediapath: Optional[str]) -> Optional[str]:
     return re.split(r"[\\/]", tail)[-1] or None
 
 
-def _is_a_rename_back(rows, file_id: int, clash: str,
-                      earlier: List[str]) -> bool:
+def _is_a_rename_back(rows, file_id: int, clash: str, find_earlier) -> bool:
     """Whether the documents/ file `clash` is this text's own copy under
     a name it had before (the lead's ruling on QA-4).
 
     A text with no stored path owns `documents/<its name>`; a backup that
-    shows this entry with a name matching `clash` is the evidence that
-    the file was its copy. Refused all the same when any other entry
-    claims the file now, by its stored path or by its own name, compared
-    as the documents/ rule compares.
+    shows this same entry (its id and its date, fix round 2) with a name
+    matching `clash` is the evidence that the file was its copy. Refused
+    all the same when any other entry claims the file now, by its stored
+    path or by its own name, compared as the documents/ rule compares;
+    that is checked first, so no backup is read for it.
     """
     key = documents_name_key(clash)
-    if not any(documents_name_key(name) == key for name in earlier):
-        return False
     for other in rows:
         if other["id"] == file_id:
             continue
@@ -12457,10 +12455,13 @@ def _is_a_rename_back(rows, file_id: int, clash: str,
             continue
         if isinstance(claim, str) and documents_name_key(claim) == key:
             return False
-    return True
+    return find_earlier(("documents", key),
+                        lambda name: documents_name_key(name) == key) \
+        is not None
 
 
-def _file_rename_precheck(db, file_id: int, candidate: str):
+def _file_rename_precheck(db, file_id: int, candidate: str,
+                          evidence: Optional[Dict[Any, Any]] = None):
     """A result to answer without writing, or None to proceed.
 
     In order: the unknown id; the identical name, answered unchanged
@@ -12469,7 +12470,13 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
     both sides (exact otherwise, as QualCoder's dialog and unique(name)
     compare); a text document's documents/ clash; the ending rule; and
     master's `unnamed_file_<n>` for a file n it would auto-rename.
+
+    `evidence` carries what the project's backups showed from the
+    read-only pre-check into the re-check inside the transaction, so the
+    backups are read at most once per call (fix round 2, R1-4).
     """
+    if evidence is None:
+        evidence = {}
     rows = db.file_name_rows()
     by_id = {r["id"]: r for r in rows}
     row = by_id.get(file_id)
@@ -12494,14 +12501,15 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
                 "candidates": [{"id": r["id"], "name": r["name"]}
                                for r in others]}
     mediapath = row["mediapath"]
-    earlier_cache: List[List[str]] = []
 
-    def earlier() -> List[str]:
-        """This file's earlier names, read from the project's backups
-        only when a rule would refuse (QA-4: a rename back)."""
-        if not earlier_cache:
-            earlier_cache.append(db.earlier_names(file_id))
-        return earlier_cache[0]
+    def find_earlier(tag, accept) -> Optional[str]:
+        """A name this entry had before that `accept` accepts, read from
+        the project's backups only when a rule would refuse (QA-4: a
+        rename back), and once per call for each question."""
+        tag = (tag, row.get("date"))
+        if tag not in evidence:
+            evidence[tag] = db.earlier_name(file_id, row.get("date"), accept)
+        return evidence[tag]
 
     if not mediapath or mediapath.startswith(("/docs/", "docs:")):
         clashes = db.documents_clashes(
@@ -12510,7 +12518,7 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
         # Two files there that one disk folds into one cannot both be
         # this entry's copy, so a rename back needs exactly one.
         if len(clashes) == 1 and not mediapath and \
-                _is_a_rename_back(rows, file_id, clash, earlier()):
+                _is_a_rename_back(rows, file_id, clash, find_earlier):
             clash = None
         if clash is not None:
             message = documents_clash_message(candidate, clash)
@@ -12524,12 +12532,16 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
     recordings = [r["name"] for r in rows
                   if r["av_text_id"] == file_id and r["id"] != file_id]
     old_name = old if isinstance(old, str) else ""
-    ending = file_ending_problem(old_name, candidate, mediapath, recordings)
-    if ending is not None:
-        stored = stored_file_name(mediapath)
-        ending = file_ending_problem(
-            old_name, candidate, mediapath, recordings,
-            earlier=([stored] if stored else []) + earlier())
+    stored = stored_file_name(mediapath)
+    base = [stored] if stored else []
+    ending = file_ending_problem(old_name, candidate, mediapath, recordings,
+                                 earlier=base)
+    if ending is not None and find_earlier(
+            ("ending", candidate),
+            lambda name: file_ending_problem(
+                old_name, candidate, mediapath, recordings,
+                earlier=base + [name]) is None) is not None:
+        ending = None
     if ending is not None:
         return {"error": ending}
     for other in rows:
@@ -12578,10 +12590,11 @@ def rename_file(file_id: int, new_name: str,
     still make those changes. Any other name changes freely
     ('Thomas.Jones' to 'P01'). A rename back is not refused: an ending
     the file had before (its stored file's own name shows one, and so
-    does any of the project's backups, which this tool reads for that)
-    may be restored, except a transcript losing both endings or a media
-    file its extension; and a text with no stored file may take back its
-    own copy in the documents folder under a name a backup shows it with.
+    does any of the project's backups that shows this same entry, the
+    same id and the same date, which this tool reads for that) may be
+    restored, except a transcript losing both endings or a media file its
+    extension; and a text with no stored file may take back its own copy
+    in the documents folder under a name such a backup shows it with.
 
     The result carries `changed: true`, `old_name`, `file_type`, and
     what kept the old name: `stored_copy` (an imported file's copy in the
@@ -12616,14 +12629,16 @@ def rename_file(file_id: int, new_name: str,
     if gate is not None:
         return json.dumps(gate)
     db = get_db()
-    answer = _file_rename_precheck(db, file_id, candidate)
+    # What the backups showed, carried into the re-check (R1-4).
+    evidence: Dict[Any, Any] = {}
+    answer = _file_rename_precheck(db, file_id, candidate, evidence)
     if answer is not None:
         return json.dumps(answer, indent=2)
 
     def _op(wdb):
         # SQLite's write lock first, then the re-check (as rename_case).
         wdb.begin_immediate()
-        answer = _file_rename_precheck(wdb, file_id, candidate)
+        answer = _file_rename_precheck(wdb, file_id, candidate, evidence)
         if answer is not None:
             if "error" in answer:
                 raise ValueError(answer["error"])

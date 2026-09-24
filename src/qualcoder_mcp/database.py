@@ -5,7 +5,7 @@ import locale
 import os
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Sequence, Tuple, Union
+from typing import Optional, List, Dict, Any, Callable, Sequence, Tuple, Union
 import json
 import re
 import time
@@ -7963,13 +7963,14 @@ class QualcoderDatabase:
                 self.conn.execute("SELECT caseid, name FROM cases")]
 
     def file_name_rows(self) -> List[Dict[str, Any]]:
-        """Every file's id, name, stored path and transcript link, one
-        light query (the rename pre-check)."""
+        """Every file's id, name, stored path, transcript link and date,
+        one light query (the rename pre-check)."""
         return [{"id": r["id"], "name": r["name"],
-                 "mediapath": r["mediapath"], "av_text_id": r["av_text_id"]}
+                 "mediapath": r["mediapath"], "av_text_id": r["av_text_id"],
+                 "date": r["date"]}
                 for r in self.conn.execute(
-                    "SELECT id, name, mediapath, av_text_id FROM source "
-                    "ORDER BY id")]
+                    "SELECT id, name, mediapath, av_text_id, date FROM "
+                    "source ORDER BY id")]
 
     def documents_listing(self) -> List[str]:
         """The names in the project's documents/ folder ([] when it is
@@ -8019,17 +8020,30 @@ class QualcoderDatabase:
     # recognise a rename back (fix round 1, QA-4).
     EARLIER_NAMES_BACKUP_LIMIT = 200
 
-    def earlier_names(self, file_id: int) -> List[str]:
-        """The names this file (the same id) has in the project's backups,
-        newest first, each once: this server's `<project>_backup_*` and
-        QualCoder's `<project>_BKUP_*` copies beside the project, at most
-        EARLIER_NAMES_BACKUP_LIMIT of them, each read-only.
+    def earlier_name(self, file_id: int, current_date: Any,
+                     accept: Callable[[str], bool]) -> Optional[str]:
+        """The first name `accept` accepts that this same entry has in one
+        of the project's backups, newest backup first, or None: this
+        server's `<project>_backup_*` and QualCoder's `<project>_BKUP_*`
+        copies beside the project, at most EARLIER_NAMES_BACKUP_LIMIT of
+        them.
 
         The evidence rename_file uses to recognise a rename back (the
-        lead's ruling on QA-4): a backup keeps every earlier name, so a
-        name this entry had there is its own. Nothing is written; a
-        backup that cannot be read is skipped.
+        lead's ruling on QA-4): a backup keeps every earlier name. A
+        backup's row is this entry's only when its id AND its date match
+        the current row (fix round 2, R1-1): QualCoder's `source.id` has
+        no AUTOINCREMENT, so a deleted last entry's id is given to the
+        next one, while the date is written once, at creation, and
+        neither rename touches it. No date, no evidence (the safe
+        direction: a rename back is then refused). Each backup is opened
+        read-only and immutable (R1-2), so no lock is taken and no side
+        file is made, a WAL backup included; the scan stops at the first
+        backup that shows an accepted name (R1-4). A backup that cannot
+        be read is skipped. Nothing is written, and only this entry's
+        name and date are read.
         """
+        if current_date is None or current_date == "":
+            return None
         folder = Path(self.db_path).parent
         backups = []
         for prefix in (f"{folder.stem}_backup_", f"{folder.stem}_BKUP_"):
@@ -8043,21 +8057,22 @@ class QualcoderDatabase:
             except OSError:
                 continue
         backups.sort(key=lambda item: item[0], reverse=True)
-        found: List[str] = []
         for _mtime, entry in backups[:self.EARLIER_NAMES_BACKUP_LIMIT]:
             data = entry / "data.qda"
             try:
                 if not data.is_file():
                     continue
-                with closing(sqlite3.connect(_sqlite_ro_uri(data),
-                                             uri=True)) as con:
-                    row = con.execute("SELECT name FROM source WHERE id = ?",
-                                      (file_id,)).fetchone()
+                uri = _sqlite_ro_uri(data) + "&immutable=1"
+                with closing(sqlite3.connect(uri, uri=True)) as con:
+                    row = con.execute(
+                        "SELECT name, date FROM source WHERE id = ?",
+                        (file_id,)).fetchone()
             except (sqlite3.Error, OSError, ValueError):
                 continue
-            if row and isinstance(row[0], str) and row[0] not in found:
-                found.append(row[0])
-        return found
+            if row and row[1] == current_date and \
+                    isinstance(row[0], str) and accept(row[0]):
+                return row[0]
+        return None
 
     @staticmethod
     def own_stored_names(mediapath: Optional[str],

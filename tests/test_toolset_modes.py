@@ -308,9 +308,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 164_637          # 72 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 164_701          # 72 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_317           # 21 tools, same environment
-    FULL_MEASURED_310 = 173_021      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 173_089      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_253
 
     # Why two per cent, away from the reference environment.
@@ -338,7 +338,7 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "164,637"
+    FULL_CHARS = "164,701"
     CORE_CHARS = "56,317"
     FULL_ROUNDED = "165,000"
     CORE_ROUNDED = "56,000"
