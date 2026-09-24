@@ -72,6 +72,21 @@ jobs:
           # constant can be frozen from all six platforms without admin
           # rights (v0.13 fix round 2).
           sed -n 's/^file-text count rate: /::notice title=file-text count rate::/p' pytest_output.txt | head -3
+          # The failures themselves as annotations, for the same reason:
+          # a signed-out reader cannot open the job log, and can read
+          # these through the API. Up to ten FAILED or ERROR lines, each
+          # with pytest's short message, and the summary line; when there
+          # is none (the run ended before pytest could write it), the
+          # last ten lines of the output instead. A percent sign is
+          # escaped, as the workflow-command syntax requires.
+          grep -E "^(FAILED|ERROR) " pytest_output.txt | head -10 \
+            | sed -e 's/%/%25/g' -e 's/^/::error title=pytest::/'
+          summary=$(grep -E "^[0-9]+ (passed|failed|error)|^(=+ )?[0-9]+ (failed|passed|errors?)[ ,]" pytest_output.txt | tail -1)
+          if [ -n "$summary" ]; then
+            echo "::notice title=pytest summary::$(echo "$summary" | sed 's/%/%25/g')"
+          else
+            tail -10 pytest_output.txt | sed -e 's/%/%25/g' -e 's/^/::error title=pytest output tail::/'
+          fi
           exit $code
 
       - name: Upload pytest output
