@@ -8445,9 +8445,9 @@ class QualcoderDatabase:
     PSEUDONYMISE_NOT_COUNTED_NOTE = (
         "{count} file(s) were not counted in full, because the files read "
         "before them had spent one of this preview's two budgets: the work "
-        "(characters times surface forms, and a little more for every "
-        "character, more again in text that is not plain ASCII) or the "
-        "number of matches. Each is listed in files_not_counted and was "
+        "(the characters the count reads times the length of the names, "
+        "and a little more for every character, more again in text that is "
+        "not plain ASCII) or the number of matches. Each is listed in files_not_counted and was "
         "still asked whether any name shows in it, and every one that does "
         "is in the totals and the warnings. Preview each on its own to count "
         "more of it: the file a call names is read first, with the first "
@@ -8474,8 +8474,9 @@ class QualcoderDatabase:
         "names, which costs less for every file, can reach further.")
     PSEUDONYMISE_TOO_LARGE_NOTE = (
         "{count} file(s) are too large to count in full with this many "
-        "names: each one's estimated cost, its characters times the surface "
-        "forms and a little more for every character, is more than this "
+        "names: each one's estimated cost, the characters the count reads "
+        "times the length of the names (a unit for each ten characters of "
+        "a name) and a little more for every character, is more than this "
         "preview's whole budget ({budget} units), so it is not counted, "
         "whatever the order of the files. This is decided before any file "
         "is read, and closes nothing for the files after it. Each is listed "
@@ -8487,11 +8488,12 @@ class QualcoderDatabase:
         "let them be counted.")
     PSEUDONYMISE_TOO_LARGE_FOR_ANY_NOTE = (
         "{count} file(s) are too large to count in a preview with any "
-        "mapping: even with one name, each one's estimated cost, its "
-        "characters times one surface form and a little more for every "
-        "character, is more than this preview's whole budget ({budget} "
-        "units), so fewer names would not let it be counted. Each is listed "
-        "in files_too_large_for_any_mapping and none is reported clean: "
+        "mapping: even with one short name, each one's estimated cost, the "
+        "characters the count reads times that one name and a little more "
+        "for every character, is more than this preview's whole budget "
+        "({budget} units), so fewer names would not let it be counted. "
+        "Each is listed in files_too_large_for_any_mapping and none is "
+        "reported clean: "
         "each is asked whether any name shows only when that question fits "
         "its own budget ({check} units), and is otherwise listed in "
         "files_not_checked. The rewrite applies to the file this call "
@@ -8561,8 +8563,9 @@ class QualcoderDatabase:
         The file this call names is read first, from the same budgets as
         every other file, so it has the first claim on them (the lead's
         ruling 1 as amended, fix round 4); every other file then spends
-        what it leaves, in `source.id` order: the work, characters times
-        (surface forms plus a per-character term), and the matches. The
+        what it leaves, in `source.id` order: the work, the characters the
+        count reads (its NFKC reading, fix round 6) times (the forms' units,
+        by their length, plus a per-character term), and the matches. The
         lead's four rules (fix round 5): everything a count spends is
         charged, a count that stops part-way too, so the time is bounded
         by the budgets alone; a file whose estimate passes the EMPTY work

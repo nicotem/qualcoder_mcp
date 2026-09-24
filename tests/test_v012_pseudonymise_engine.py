@@ -3215,6 +3215,86 @@ class TestTheEstimateReadsWhatTheCountReads:
         assert stopped < P.reading_length(text) == 36_000_000
 
 
+class TestTheFormsArePricedByTheirLength:
+    """Fix round 6, the fourth re-verification's B4-2: over text that runs
+    along a prefix many forms share, the detector's alternation compares
+    every one of them as far as the prefix goes, so the forms are priced
+    by their length (a unit for each started block of `FORM_UNIT_CHARS`
+    characters), not their number. No new limit on forms."""
+
+    @staticmethod
+    def _long_mapping(entries=P.MAX_ENTRIES):
+        """The bounds lane's mapping: four forms an entry, 200 characters
+        each, sharing 197; one original of another letter."""
+        letters = "bcdfghjklmnpqrstvwxyz"
+        k, out = 0, []
+        for e in range(entries):
+            forms = []
+            for _ in range(4):
+                forms.append("a" * (P.MAX_FORM_CHARS - 3) + letters[k % 21]
+                             + letters[(k // 21) % 21]
+                             + letters[(k // 441) % 21])
+                k += 1
+            out.append({"original": forms[0], "variants": forms[1:],
+                        "pseudonym": f"Pseu{e:03d}"})
+        out[-1]["original"] = "Zeta"
+        return out
+
+    def test_the_units(self):
+        assert P.FORM_UNIT_CHARS == 10
+        names = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex",
+              "variants": ["Tom", "Thomasinaa"]},
+             {"original": "Thomasina Smith", "pseudonym": "Beth"}]))
+        assert names.form_units == 1 + 1 + 1 + 2
+        assert P.residue_work(names, "abc") == 3 * (5 + 3)
+        long_forms = P.Compiled(P.validate_mapping(self._long_mapping()))
+        assert long_forms.form_units == 1999 * 20 + 1       # and "Zeta"
+        # Priced as they read: a form of U+FDFA reads eighteen characters.
+        ligature = P.Compiled(P.validate_mapping(
+            [{"original": "\ufdfa\ufdfa", "pseudonym": "Alex"}]))
+        assert ligature.form_units == 4
+
+    @staticmethod
+    def _per_unit(compiled, text):
+        import gc
+        import time
+        P.names_left_in_text(compiled, text[:200], True, False)
+        best = None
+        gc.collect()
+        gc.disable()
+        try:
+            for _ in range(3):
+                started = time.perf_counter()
+                P.names_left_in_text(compiled, text, True, False)
+                elapsed = time.perf_counter() - started
+                best = elapsed if best is None else min(best, elapsed)
+        finally:
+            gc.enable()
+        return best / P.residue_work(compiled, text)
+
+    def test_b42_long_forms_cost_what_the_estimate_says(self):
+        """The bounds lane's candidate pin, over a run of 1,000 a's where
+        it read 4,000 (the ratio is per unit; a quarter of the time): the
+        count's cost per unit under the long forms stays within three
+        times its cost on prose under 100 names. Priced one unit a form it
+        read 22 to 31 times."""
+        prose = ("It was a quiet morning when the committee met to discuss "
+                 "the new timetable, and nobody spoke for a while. ") * 3000
+        names = [{"original": f"{a}{b}{c}ara", "pseudonym": f"Pp{i:03d}"}
+                 for i, (a, b, c) in enumerate(
+                     (a, b, c) for b in "aeiou" for c in "lmnrst"
+                     for a in "BCDFGHJKLMNPRSTVWZ")][:100]
+        base = self._per_unit(
+            P.Compiled(P.validate_mapping(names, "insensitive")), prose)
+        long_compiled = P.Compiled(P.validate_mapping(self._long_mapping(),
+                                                      "insensitive"))
+        hostile = self._per_unit(long_compiled, "a" * 1000)
+        assert hostile <= 3 * base, (
+            f"{hostile * 1e9:.1f} ns a unit against {base * 1e9:.1f} on "
+            f"prose")
+
+
 class TestThePropertiesAreDerandomisedInCI:
     """Fix round 2, the lead's ruling on CORR-1: CI runs the properties
     derandomised through a Hypothesis profile (tests/conftest.py), so a

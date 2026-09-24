@@ -159,6 +159,17 @@ SHORT_FORM_CHARS = 4
 # order no longer costs more than its length (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
+# Ours (fix round 6, the fourth re-verification's B4-2). A form is priced
+# one unit for each started block of this many characters of its reading,
+# not one unit whatever its length: over text that runs along a prefix
+# many forms share, the detector's alternation compares every one of them
+# as far as the prefix goes. Measured on this Mac: 100 names of up to ten
+# characters over prose cost 5.4 ns a unit for the count and 6.2 for the
+# cheap question, as before; 2,000 forms of 200 characters sharing 197
+# over a run of that letter, 7.6 and 12.5 ns a unit priced by blocks of
+# ten (152 and 250 priced one unit a form). Ten keeps every name of up to
+# ten characters at one unit; a full name of eleven to twenty is two.
+FORM_UNIT_CHARS = 10
 MAX_RESIDUE_SCAN_WORK = 90_000_000
 # Ours (fix round 2, the lead's ruling on B-2). Past the work or the match
 # budget a file is asked the cheap question "does any name show here", and
@@ -1192,7 +1203,7 @@ class Compiled:
                  "_exact", "_folded", "_by_first", "max_form_len",
                  "pseudonym_pattern", "_pseudonym_entries", "detector",
                  "_text_lookup", "_entry_memo", "_form_patterns",
-                 "_by_key", "_by_length")
+                 "_by_key", "_by_length", "_form_units")
 
     def __init__(self, mapping: Mapping):
         self.mapping = mapping
@@ -1247,6 +1258,24 @@ class Compiled:
         self._form_patterns: Dict[str, "re.Pattern[str]"] = {}
         self._by_key: Optional[Dict[str, List[Tuple[str, int]]]] = None
         self._by_length: Optional[Dict[int, List[Tuple[str, int]]]] = None
+        self._form_units: Optional[int] = None
+
+    @property
+    def form_units(self) -> int:
+        """The forms' part of `residue_work`'s price for one character,
+        by their total length rather than their number (fix round 6, the
+        fourth re-verification's B4-2): each form is a unit for every
+        `FORM_UNIT_CHARS` characters it reads as, or part of them. Where
+        the text runs along a prefix many forms share, the detector's
+        alternation compares each of them as far as it goes, so a
+        position costs up to the forms' total length, not their number; a
+        name of up to ten characters is one unit, as every form was."""
+        units = self._form_units
+        if units is None:
+            units = self._form_units = sum(
+                -(-reading_length(form) // FORM_UNIT_CHARS)
+                for form, _ in self.forms)
+        return units
 
     def text_lookup(self) -> "_TextLookup":
         """What `names_left_in_text` needs from these forms, built once."""
@@ -1955,11 +1984,13 @@ def residue_work(compiled: "Compiled", text: str,
                  length: Optional[int] = None) -> int:
     """What counting (or checking) `text` costs, in the budgets' units.
 
-    `reading_length(text) * (surface forms + the per-character term of
-    the text's class)`: `RESIDUE_WORK_PER_CHARACTER` when the text is
+    `reading_length(text) * (the forms' units + the per-character term
+    of the text's class)`: `RESIDUE_WORK_PER_CHARACTER` when the text is
     ASCII, `RESIDUE_WORK_PER_CHARACTER_NON_ASCII` when it is not (fix
-    round 2, B-1); the length is the reading's since fix round 6 (B4-1),
-    and `length` passes it when the caller has it already. The same units
+    round 2, B-1). Since fix round 6 the length is the reading's (B4-1),
+    and `length` passes it when the caller has it already, and the forms
+    are priced by their length, `Compiled.form_units` (B4-2): a unit for
+    each ten characters of a form, so a name is one unit, as before. The same units
     price the count, the cheap question and the whole detector asked
     about one word.
     """
@@ -1967,7 +1998,7 @@ def residue_work(compiled: "Compiled", text: str,
             else RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
     if length is None:
         length = reading_length(text)
-    return length * (len(compiled.forms) + term)
+    return length * (compiled.form_units + term)
 
 
 def residue_work_at_one_form(text: str,

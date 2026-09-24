@@ -3221,9 +3221,10 @@ class TestAFileTooLargeForAnyMapping:
         note = block["files_too_large_for_any_mapping_note"]
         assert note == (
             "1 file(s) are too large to count in a preview with any "
-            "mapping: even with one name, each one's estimated cost, its "
-            "characters times one surface form and a little more for every "
-            "character, is more than this preview's whole budget "
+            "mapping: even with one short name, each one's estimated cost, "
+            "the characters the count reads times that one name and a "
+            "little more for every character, is more than this preview's "
+            "whole budget "
             "(90,000,000 units), so fewer names would not let it be "
             "counted. Each is listed in files_too_large_for_any_mapping and "
             "none is reported clean: each is asked whether any name shows "
@@ -3284,3 +3285,26 @@ class TestAFileTooLargeForAnyMapping:
         assert block["files_too_large_for_any_mapping"] == [101]
         assert block["files_not_checked"] == [100, 101]
         assert block["files_counted"] == 3                  # 1, 2 and 4
+
+
+class TestLongFormsArePricedByTheirLength:
+    """Fix round 6, the fourth re-verification's B4-2, through the tool
+    at the real budgets: ten entries of the bounds lane's long forms (four
+    of 200 characters each, sharing 197) price a character at 800 units,
+    so a run of 150,000 a's is too large for this mapping and not
+    counted. Priced one unit a form it was 43 units a character, counted,
+    at about 133 ns a unit where the budgets were sized on about 7."""
+
+    def test_a_run_along_the_shared_prefix_is_too_large(self, project):
+        from test_v012_pseudonymise_engine import \
+            TestTheFormsArePricedByTheirLength as Engine
+        mapping = Engine._long_mapping(10)
+        compiled = P.Compiled(P.validate_mapping(mapping, "insensitive"))
+        assert compiled.form_units == 9 * 4 * 20 + 3 * 20 + 1
+        _set_text(project, 100, "a" * 150_000, name="run_100.txt")
+        assert P.residue_work(compiled, "a" * 150_000) > \
+            P.MAX_RESIDUE_SCAN_WORK
+        block = _block(preview_of(mapping=mapping, case_mode="insensitive",
+                                  residue_detail="project"))
+        assert block["files_too_large_for_this_mapping"] == [100]
+        assert block["files_not_checked"] == [100]
