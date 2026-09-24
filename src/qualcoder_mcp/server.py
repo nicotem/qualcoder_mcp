@@ -10616,9 +10616,17 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
     forms_of: Dict[int, set] = {}
     for index, original, _, _ in new:
         forms_of.setdefault(index, set()).add(original)
+    # A pseudonym the file already gives to another name, or that two
+    # typed entries share (their own variants aside): both leave one
+    # pseudonym on two people in the file, which the dialog refuses
+    # (Brief 2 fix round 1, QA-B2-4).
+    typed_users: Dict[str, set] = {}
+    for index, _, pseudonym, _ in new:
+        typed_users.setdefault(pseudonym, set()).add(index)
     duplicates = sorted({
         index for index, _, pseudonym, _ in new
-        if any(item["pseudonym"] == pseudonym
+        if len(typed_users[pseudonym]) > 1
+        or any(item["pseudonym"] == pseudonym
                and item["original"] not in forms_of[index]
                for item in existing)})
     # An entry already in the file whose original is a word of a new,
@@ -11490,7 +11498,8 @@ def _pseudonymise_mapping_notes(result: Dict[str, Any],
     if save and saved and merge["duplicate_pseudonyms"]:
         notes.append(
             f"{len(merge['duplicate_pseudonyms'])} entr(ies) of the mapping "
-            f"use a pseudonym pseudonyms.json already gives to another name. "
+            f"use a pseudonym that pseudonyms.json already gives to another "
+            f"name, or that another entry of the mapping uses too. "
             f"QualCoder's Pseudonyms dialog (the button in Manage Files) "
             f"would have refused to add them by hand; this tool wrote them, "
             f"so those people share one pseudonym in the file as they do in "
@@ -11785,14 +11794,15 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
             "entries_to_add": (retention or {}).get("entries_to_add"),
         },
         # The mapping itself is never stored; this is only enough to
-        # tell whether a later reversal was given the same one. Keyed
-        # with the per-user token secret rather than a plain digest,
-        # because a plain digest of a mapping whose pseudonyms are
-        # listed two lines below is a confirmation oracle for the
-        # originals: a dictionary of first names recovered one in twenty
-        # guesses (fix round 3, S2). A reversal on the same account
-        # recomputes it; on another, or after a rotation, it cannot be
-        # confirmed, which is the safe direction.
+        # tell, on this account, whether a mapping at hand is the one
+        # this run applied (the record is an audit record; undoing a run
+        # was dropped, ruling C). Keyed with the per-user token secret
+        # rather than a plain digest, because a plain digest of a mapping
+        # whose pseudonyms are listed two lines below is a confirmation
+        # oracle for the originals: a dictionary of first names recovered
+        # one in twenty guesses (fix round 3, S2). On another account, or
+        # after a rotation, it cannot be confirmed, which is the safe
+        # direction.
         "mapping_hmac_sha256": hmac.new(
             secret.encode("ascii"),
             json.dumps(canonical_map, sort_keys=True, separators=(",", ":"),
@@ -12259,7 +12269,7 @@ def pseudonymise_source(
             return None
         if read_phase.get("memo_conn") is db_.conn:
             return read_phase["memo_plan"]
-        memo_plan = db_.pseudonymise_memo_plan(compiled)
+        memo_plan = db_.pseudonymise_memo_plan(compiled, _read_plan(db_))
         if "memo_plan" not in read_phase:
             read_phase["memo_plan"] = memo_plan
             read_phase["memo_conn"] = db_.conn
@@ -12451,8 +12461,8 @@ def pseudonymise_source(
         """
         plan = wdb.pseudonymise_plan(compiled, overlap_policy, file_ids)
         captured["write_plan"] = plan
-        memo_plan = (wdb.pseudonymise_memo_plan(compiled) if rewrite_memos
-                     else None)
+        memo_plan = (wdb.pseudonymise_memo_plan(compiled, plan)
+                     if rewrite_memos else None)
         captured["write_memo_plan"] = memo_plan
         return fingerprint_rows(wdb.pseudonymise_effect(plan, memo_plan),
                                 wdb.pseudonymise_row_digests(plan, memo_plan))

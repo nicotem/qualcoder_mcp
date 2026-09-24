@@ -2603,6 +2603,18 @@ class TestTheNotePlan:
         assert plan["totals"]["not_rewritten_marker_risk"] == 1
         assert plan["totals"]["rows"] == 0
 
+    def test_a_marker_formed_across_the_boundary_is_marker_risk(self,
+                                                                 project):
+        """QA-B2-3: 'Al#' written just before the marker would move it."""
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Thomas#####secret about Thomas")
+        plan = server.db.pseudonymise_memo_plan(
+            _compiled([{"original": "Thomas", "pseudonym": "Al#"}]))
+        field = self._field(plan, "source")
+        assert field["rows"] == []
+        assert field["not_rewritten_marker_risk"] == [
+            {"key": 1, "has_private": True}]
+
     def test_an_earlier_run_entry_is_flagged_by_its_first_line(self,
                                                                project):
         con = sqlite3.connect(str(project / "data.qda"))
@@ -3408,6 +3420,33 @@ class TestTheNoteRewriteIsWritten:
                      (second["journal_entry"],))[0]["jentry"]
         assert ("Journal entries rewritten that were this server's own "
                 "records of earlier runs: 1." in body)
+
+    def test_a_note_on_a_row_the_file_rewrite_deletes_is_not_rewritten(
+            self, project):
+        """QA-B2-5: under qualcoder_edit_parity the coding that sits on
+        "Thomas" is deleted by the file rewrite, and its note goes with
+        it; it is not counted, reported or recorded as a note rewritten."""
+        _plant_note(project, "UPDATE code_text SET memo=? WHERE ctid=1",
+                    "Thomas coded here")
+        # Under the default policy the coding stays, and so does its note.
+        kept = preview_of(rewrite_memos=True)
+        assert kept["preview"]["memo_rewrites"]["fields"]["code_text"] == {
+            "rows": 1, "replacements": 1}
+        out = preview_of(rewrite_memos=True,
+                         overlap_policy="qualcoder_edit_parity")
+        assert out["preview"]["totals"]["rows_deleted"] >= 1
+        assert out["preview"]["memo_rewrites"]["fields"]["code_text"] == {
+            "rows": 0, "replacements": 0}
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert result["files"][0]["codings_deleted"] >= 1
+        assert result["memos"]["fields"]["code_text"] == {
+            "rows_updated": 0, "replacements": 0}
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert not any(row["table"] == "code_text" and row["key"] == 1
+                       for row in record["memos"])
+        assert query(project, "SELECT ctid FROM code_text WHERE ctid=1") == []
 
     def test_a_note_only_run_takes_a_backup_and_proceeds(self, project):
         _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
@@ -4434,12 +4473,30 @@ class TestSavingTheMappingIntoPseudonymsJson:
             _written(project))
         note = [n for n in result["notes"] if n.startswith("1 entr(ies)")]
         assert note == [
-            "1 entr(ies) of the mapping use a pseudonym pseudonyms.json "
-            "already gives to another name. QualCoder's Pseudonyms dialog "
-            "(the button in Manage Files) would have refused to add them by "
-            "hand; this tool wrote them, so those people share one pseudonym "
-            "in the file as they do in the rewritten text."]
+            "1 entr(ies) of the mapping use a pseudonym that pseudonyms.json "
+            "already gives to another name, or that another entry of the "
+            "mapping uses too. QualCoder's Pseudonyms dialog (the button in "
+            "Manage Files) would have refused to add them by hand; this tool "
+            "wrote them, so those people share one pseudonym in the file as "
+            "they do in the rewritten text."]
         assert "Peter" not in json.dumps(result)
+
+    def test_two_typed_entries_sharing_a_pseudonym_are_reported(self,
+                                                                project):
+        """QA-B2-4: two typed entries with one pseudonym leave it on two
+        people in the file, which the dialog refuses; an entry's own
+        variants sharing its pseudonym do not count."""
+        mapping = [{"original": "Thomas", "pseudonym": "Alex",
+                    "variants": ["Tom"]},
+                   {"original": "Mary Ann", "pseudonym": "Alex"}]
+        single = preview_of(save_mapping_to_project=True)
+        assert single["preview"]["mapping_retention"]["if_saved"][
+            "duplicate_pseudonyms"] == []
+        out, result = _save_run(mapping=mapping)
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "duplicate_pseudonyms"] == [0, 1]
+        assert any(n.startswith("2 entr(ies) of the mapping use a pseudonym")
+                   for n in result["notes"])
 
     def test_an_unreadable_pseudonyms_json_refuses_the_save_with_a_value_free_message(
             self, project, monkeypatch):

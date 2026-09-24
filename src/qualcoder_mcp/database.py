@@ -8146,7 +8146,9 @@ class QualcoderDatabase:
                 "case_mode": compiled.case_mode,
                 "compiled": compiled}
 
-    def pseudonymise_memo_plan(self, compiled) -> Dict[str, Any]:
+    def pseudonymise_memo_plan(self, compiled,
+                               file_plan: Optional[Dict[str, Any]] = None
+                               ) -> Dict[str, Any]:
         """What `rewrite_memos` would do to the notes, without writing.
 
         Project-wide, whatever `file_id` says: the twelve fields of
@@ -8171,8 +8173,20 @@ class QualcoderDatabase:
         `update_annotation`'s clear-means-delete rule: every replacement
         is a pseudonym of at least `MIN_PSEUDONYM_CHARS` characters, never
         whitespace, and `replacement_for` only changes its case.
+
+        `file_plan` is the same run's file plan: a coding, annotation or
+        case link it deletes (`qualcoder_edit_parity`) takes its note
+        with it, so that note is not in this plan, and nothing counts or
+        records it as rewritten (Brief 2 fix round 1, QA-B2-5).
         """
         from . import pseudonymise as engine
+
+        deleted: Dict[str, set] = {}
+        for item in (file_plan or {}).get("files", ()):
+            for table, rows in item["rows"].items():
+                deleted.setdefault(table, set()).update(
+                    row["id"] for row in rows
+                    if row["map"] is not None and row["map"].pos0 is None)
 
         fields: List[Dict[str, Any]] = []
         unreadable: List[str] = []
@@ -8203,9 +8217,10 @@ class QualcoderDatabase:
                 "table": table, "column": column, "key_column": key_column,
                 "rows": [], "not_rewritten_marker_risk": [],
                 "replacements": 0}
+            gone = deleted.get(table, set())
             for stored_row in stored_rows:
                 key, value = stored_row[0], stored_row[1]
-                if not isinstance(value, str):
+                if not isinstance(value, str) or key in gone:
                     continue
                 public, private = split_public_private_memo(value)
                 replacements = engine.find_replacements(compiled, public)

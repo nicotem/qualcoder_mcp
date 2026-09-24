@@ -1360,6 +1360,26 @@ class TestRewritePublicMemo:
         # public part, and the note is still left alone.
         assert rewrite_public_memo(stored + "\n#####kept", rewrite) is None
 
+    @pytest.mark.parametrize("stored,pseudonym", [
+        ("Thomas#####secret about Thomas", "Al#"),
+        ("Thomas#####secret about Thomas", "####"),
+    ], ids=["a-trailing-hash", "hashes-only"])
+    def test_a_marker_formed_across_the_boundary_returns_none(self, stored,
+                                                              pseudonym):
+        """Brief 2 fix round 1, QA-B2-3: the new public part holds no
+        marker, but it ends in hashes written just before the private
+        part's, so the marker moves earlier and the pseudonym's tail
+        would read as private."""
+        rewrite = _engine_rewrite([{"original": "Thomas",
+                                    "pseudonym": pseudonym}])
+        public, private = split_public_private_memo(stored)
+        assert PERSONAL_NOTE_MARK not in rewrite(public)
+        assert split_public_private_memo(rewrite(public) + private)[0] != \
+            rewrite(public)
+        assert rewrite_public_memo(stored, rewrite) is None
+        # A trailing hash with no private part after it is harmless.
+        assert rewrite_public_memo("Thomas", rewrite) == pseudonym
+
     def test_merge_public_memo_is_unchanged(self):
         """The helper is new and `merge_public_memo` is not touched: it
         stays matched to upstream `ai_memo.py:46-59`, which the module

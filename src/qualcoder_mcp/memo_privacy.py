@@ -118,9 +118,13 @@ def rewrite_public_memo(stored: Any,
     (`split_public_private_memo` returns `text[:mark]`), so an offset in
     the public part is an offset in the stored note and the two halves
     concatenate back without a separator. Returns the new stored text,
-    or None when the rewritten public part would contain the marker:
-    writing it would hide the rest of the researcher's note from every
-    later AI read, so the caller leaves that note as it is and counts it.
+    or None when the note would not read back with the rewritten public
+    part: the rewrite made a marker inside the public part, or across its
+    boundary with the private part (a pseudonym ending in a hash, written
+    just before the marker, moves the marker earlier; Brief 2 fix round
+    1, QA-B2-3). Writing it would hide part of the researcher's note
+    from every later AI read, or move a pseudonym behind the marker, so
+    the caller leaves that note as it is and counts it.
 
     Not `merge_public_memo`, on purpose. That function re-adds the
     whitespace run that preceded the old marker, and a rewrite that
@@ -134,12 +138,15 @@ def rewrite_public_memo(stored: Any,
     first one begins), so a marker in the new one was MADE by the
     rewrite: hashes already in the note meeting a pseudonym, or two
     pseudonyms meeting across a character that is not a word character.
+    One test covers both places: the new stored text, split again, must
+    give back exactly the new public part.
     """
     public, private = split_public_private_memo(stored)
     new_public = rewrite(public)
-    if PERSONAL_NOTE_MARK in new_public:
+    new_stored = new_public + private
+    if split_public_private_memo(new_stored)[0] != new_public:
         return None
-    return new_public + private
+    return new_stored
 
 
 def strip_private_memos(value: Any) -> Any:
