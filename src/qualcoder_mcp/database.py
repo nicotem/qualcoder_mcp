@@ -8075,8 +8075,17 @@ class QualcoderDatabase:
     # recognise a rename back (fix round 1, QA-4).
     EARLIER_NAMES_BACKUP_LIMIT = 200
 
+    def current_text(self, file_id: int) -> Any:
+        """This entry's stored text as it is now (for earlier_name's
+        same-text question), or None."""
+        row = self.conn.execute("SELECT fulltext FROM source WHERE id = ?",
+                                (file_id,)).fetchone()
+        return row[0] if row else None
+
     def earlier_name(self, file_id: int, current_date: Any,
-                     accept: Callable[[str], bool]) -> Optional[str]:
+                     accept: Callable[[str], bool],
+                     same_text: bool = False,
+                     text: Any = None) -> Optional[str]:
         """The first name `accept` accepts that this same entry has in one
         of the project's backups, newest backup first, or None: this
         server's `<project>_backup_*` and QualCoder's `<project>_BKUP_*`
@@ -8085,17 +8094,23 @@ class QualcoderDatabase:
 
         The evidence rename_file uses to recognise a rename back (the
         lead's ruling on QA-4): a backup keeps every earlier name. A
-        backup's row is this entry's only when its id AND its date match
-        the current row (fix round 2, R1-1): QualCoder's `source.id` has
-        no AUTOINCREMENT, so a deleted last entry's id is given to the
-        next one, while the date is written once, at creation, and
-        neither rename touches it. No date, no evidence (the safe
-        direction: a rename back is then refused). Each backup is opened
-        read-only and immutable (R1-2), so no lock is taken and no side
-        file is made, a WAL backup included; the scan stops at the first
-        backup that shows an accepted name (R1-4). A backup that cannot
-        be read is skipped. Nothing is written, and only this entry's
-        name and date are read.
+        HEURISTIC for "the same entry": a backup's row counts only when
+        its id AND its date match the current row (fix round 2, R1-1):
+        QualCoder's `source.id` has no AUTOINCREMENT, so a deleted last
+        entry's id is given to the next one, and the date is set at
+        creation and by some later QualCoder actions (saving a
+        transcript, replacing a text, its 4.0 assistant's memo update),
+        never by a rename. With `same_text`, for the documents/ half
+        only, the row's text must equal `text` too (fix round 3, F2A-2:
+        QualCoder's Merge projects copies dates, so a different text can
+        match on id and date); the comparison runs inside SQLite
+        (`fulltext IS ?`), so no text is read out of a backup. No date,
+        no evidence (the safe direction: a rename back is then refused).
+        Each backup is opened read-only and immutable (R1-2), so no lock
+        is taken and no side file is made, a WAL backup included; the
+        scan stops at the first backup that shows an accepted name
+        (R1-4). A backup that cannot be read is skipped. Nothing is
+        written; only this entry's name and date are read.
         """
         if current_date is None or current_date == "":
             return None
@@ -8119,9 +8134,14 @@ class QualcoderDatabase:
                     continue
                 uri = _sqlite_ro_uri(data) + "&immutable=1"
                 with closing(sqlite3.connect(uri, uri=True)) as con:
-                    row = con.execute(
-                        "SELECT name, date FROM source WHERE id = ?",
-                        (file_id,)).fetchone()
+                    if same_text:
+                        row = con.execute(
+                            "SELECT name, date FROM source WHERE id = ? "
+                            "AND fulltext IS ?", (file_id, text)).fetchone()
+                    else:
+                        row = con.execute(
+                            "SELECT name, date FROM source WHERE id = ?",
+                            (file_id,)).fetchone()
             except (sqlite3.Error, OSError, ValueError):
                 continue
             if row and row[1] == current_date and \

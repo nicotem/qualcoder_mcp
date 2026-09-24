@@ -76,12 +76,20 @@ def legacy(setup_server, qualcoder_db_path):
     return project
 
 
+def _in_a_backup(target):
+    """Whether a connection target is a backup's database: by the backup
+    folder's own name, not the whole path (a test's temporary folder is
+    named after the test)."""
+    folder = str(target).split("?")[0].rstrip("/").split("/")[-2]
+    return "_backup_" in folder or "_BKUP_" in folder
+
+
 def _spy_connections(monkeypatch):
     seen = []
     real = sqlite3.connect
 
     def connect(target, *a, **kw):
-        if "_backup_" in str(target) or "_BKUP_" in str(target):
+        if _in_a_backup(target):
             seen.append((str(target), kw.get("uri")))
         return real(target, *a, **kw)
     monkeypatch.setattr(database.sqlite3, "connect", connect)
@@ -217,7 +225,7 @@ class TestTheBackupsAreReadOnlyWhenNeededAndOnce:
         real = database.QualcoderDatabase.earlier_name
         monkeypatch.setattr(
             database.QualcoderDatabase, "earlier_name",
-            lambda self, *a: calls.append(a) or real(self, *a))
+            lambda self, *a, **kw: calls.append(a) or real(self, *a, **kw))
         assert _file(1, "interview_b.txt", create_backup=False)["changed"]
         assert calls == []
 
@@ -229,9 +237,9 @@ class TestTheBackupsAreReadOnlyWhenNeededAndOnce:
         calls = []
         real = database.QualcoderDatabase.earlier_name
 
-        def spy(self, *a):
+        def spy(self, *a, **kw):
             calls.append(self.conn.in_transaction)
-            return real(self, *a)
+            return real(self, *a, **kw)
         monkeypatch.setattr(database.QualcoderDatabase, "earlier_name", spy)
         assert _file(5, "legacy.txt")["changed"]
         assert calls == [False]
@@ -284,3 +292,84 @@ class TestTheCarriedAnswerIsCheckedAgain:
                                ).fetchone()[0] == "a.txt"
         finally:
             con.close()
+
+
+class TestTheDocumentsHalfAsksForTheSameText:
+    """Fix round 3, F2A-2 (the lead's ruling): QualCoder's Merge projects
+    copies each text's date, so for the documents/ half a backup's row is
+    evidence only when its id, date AND text equal the current row's,
+    compared inside SQLite. The ending half keeps id and date."""
+
+    def test_replay_a_a_merged_text_with_the_same_date(self, setup_server,
+                                                       qualcoder_db_path):
+        """Checker A's replay a: texts 5 and 6 share a creation second; 6
+        is renamed here, deleted in QualCoder, and a merge brings coder
+        B's copy of text 5 with that date; it takes id 6."""
+        project = Path(qualcoder_db_path)
+        docs = project / "documents"
+        docs.mkdir(exist_ok=True)
+        stamp = "2021-03-02 11:22:33"
+        (docs / "p5.txt").write_text("participant five, original")
+        (docs / "p6.txt").write_text("participant six, original")
+        _add(project, 5, "p5.txt", "participant five", date=stamp)
+        _add(project, 6, "p6.txt", "participant six", date=stamp)
+        _reload()
+        assert _file(6, "P06.txt")["changed"]            # a backup
+        _exec(project, "DELETE FROM source WHERE id = 6")
+        # QualCoder's merge (master merge_projects.py:858-862, replayed).
+        _exec(project, "INSERT INTO source (name, fulltext, mediapath, "
+                       "memo, owner, date) VALUES ('p5-coderB.txt', "
+                       "'participant five, coder B''s copy', NULL, '', "
+                       "'coderB', ?)", (stamp,))
+        _reload()
+        out = _file(6, "p6.txt", create_backup=False)
+        assert "already holds a file called 'p6.txt'" in \
+            out.get("error", ""), out
+
+    def test_the_same_text_is_still_recognised(self, legacy):
+        assert _file(5, "legacy2.txt")["changed"]
+        assert _file(5, "legacy.txt", create_backup=False)["changed"]
+
+    def test_an_edited_text_is_refused_its_old_copy(self, legacy):
+        """The safe direction the ruling accepts: the copy holds the text
+        as it was, and QualCoder's own Rename remains."""
+        assert _file(5, "legacy2.txt")["changed"]
+        _exec(legacy, "UPDATE source SET fulltext = 'pseudonymised' "
+                      "WHERE id = 5")
+        _reload()
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+
+    def test_the_ending_half_does_not_ask_for_the_text(self, setup_server,
+                                                       qualcoder_db_path):
+        project = Path(qualcoder_db_path)
+        _add(project, 5, "Thomas.Jones")
+        _reload()
+        assert _file(5, "P05 notes")["changed"]           # a backup
+        _exec(project, "UPDATE source SET fulltext = 'edited' WHERE id = 5")
+        _reload()
+        assert _file(5, "Thomas.Jones", create_backup=False)["changed"]
+
+    def test_no_backup_text_is_read_into_python(self, legacy, monkeypatch):
+        assert _file(5, "legacy2.txt")["changed"]
+        seen = []
+        real = sqlite3.connect
+
+        class Spy:
+            def __init__(self, con):
+                self._con = con
+
+            def execute(self, sql, args=()):
+                seen.append(sql)
+                return self._con.execute(sql, args)
+
+            def close(self):
+                self._con.close()
+
+        def connect(target, *a, **kw):
+            con = real(target, *a, **kw)
+            return Spy(con) if _in_a_backup(target) else con
+        monkeypatch.setattr(database.sqlite3, "connect", connect)
+        assert _file(5, "legacy.txt", create_backup=False)["changed"]
+        assert seen == ["SELECT name, date FROM source WHERE id = ? AND "
+                        "fulltext IS ?"], seen

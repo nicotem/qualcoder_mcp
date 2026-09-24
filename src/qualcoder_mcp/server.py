@@ -12438,8 +12438,9 @@ def _is_a_rename_back(rows, file_id: int, clash: str, find_earlier) -> bool:
     a name it had before (the lead's ruling on QA-4).
 
     A text with no stored path owns `documents/<its name>`; a backup that
-    shows this same entry (its id and its date, fix round 2) with a name
-    matching `clash` is the evidence that the file was its copy. Refused
+    shows this same entry (its id, its date and, since fix round 3, its
+    text) with a name matching `clash` is the evidence that the file was
+    its copy. Refused
     all the same when any other entry claims the file now, by its stored
     path or by its own name, compared as the documents/ rule compares;
     that is checked first, so no backup is read for it.
@@ -12458,8 +12459,8 @@ def _is_a_rename_back(rows, file_id: int, clash: str, find_earlier) -> bool:
         if isinstance(claim, str) and documents_name_key(claim) == key:
             return False
     return find_earlier(("documents", key),
-                        lambda name: documents_name_key(name) == key) \
-        is not None
+                        lambda name: documents_name_key(name) == key,
+                        same_text=True) is not None
 
 
 def _file_rename_precheck(db, file_id: int, candidate: str,
@@ -12504,13 +12505,19 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
                                for r in others]}
     mediapath = row["mediapath"]
 
-    def find_earlier(tag, accept) -> Optional[str]:
+    def find_earlier(tag, accept, same_text: bool = False) -> Optional[str]:
         """A name this entry had before that `accept` accepts, read from
         the project's backups only when a rule would refuse (QA-4: a
-        rename back), and once per call for each question."""
-        tag = (tag, row.get("date"))
+        rename back), and once per call for each question. With
+        `same_text` (the documents/ half, F2A-2) the backup's row must
+        hold this entry's current text as well."""
+        text = db.current_text(file_id) if same_text else None
+        digest = hashlib.sha256(str(text).encode(
+            "utf-8", "surrogatepass")).hexdigest() if same_text else None
+        tag = (tag, row.get("date"), digest)
         if tag not in evidence:
-            evidence[tag] = db.earlier_name(file_id, row.get("date"), accept)
+            evidence[tag] = db.earlier_name(file_id, row.get("date"), accept,
+                                            same_text=same_text, text=text)
         name = evidence[tag]
         # A name carried from the pre-check counts only if it still
         # answers the question as the re-check asks it (fix round 3,
