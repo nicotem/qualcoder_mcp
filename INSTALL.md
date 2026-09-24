@@ -443,10 +443,10 @@ Experimental.
 
 **Step 3. Use the core toolset.** This server exposes 70 tools by
 default, and the serialised tool definitions alone measure about
-157,000 characters, roughly 39k tokens (measured for 0.13 under
+158,000 characters, roughly 39k tokens (measured for 0.13 under
 Python 3.13.5 with mcp 1.30.0, in the
 repository's own `venv/`; `pseudonymise_source`, the 0.12 flagship,
-accounts for about 13,000 characters of that on its own, because a tool
+accounts for about 13,500 characters of that on its own, because a tool
 that rewrites the researcher's text has to say in its own definition
 what it rewrites, what it leaves behind and what the backup then
 holds; the paging, novelty-filter and sampling arguments added in 0.12
@@ -459,7 +459,7 @@ That exceeds LM Studio's 8k default context several times over before
 you type a word, and tool counts this size are far past where
 small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
 (in the config of Step 5) to register only the 21-tool supervised
-coding set, measured at about 56,000 characters, roughly 14k tokens.
+coding set, measured at about 57,000 characters, roughly 14k tokens.
 
 **Step 4. Raise the context length.** Even the core toolset's roughly
 14k tokens of schema exceed the 8k default context. When loading the

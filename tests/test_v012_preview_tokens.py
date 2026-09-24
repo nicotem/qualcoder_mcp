@@ -204,7 +204,8 @@ class TestCanonicalJson:
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
             file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym",
-            rewrite_memos=False)
+            rewrite_memos=False,
+            save_mapping_to_project=False)
         token = pt.issue("pseudonymise_source", args, "/p/data.qda", "s1")
         bind = token.split(".")[2]
         plain = pt.hashlib.sha256(pt.canonical(
@@ -255,7 +256,8 @@ class TestCanonicalJson:
             mapping=[{"original": "Thomas", "pseudonym": "Alex",
                       "variants": []}],
             file_id=1, case_mode="exact", overlap_policy="snap_to_pseudonym",
-            rewrite_memos=False)
+            rewrite_memos=False,
+            save_mapping_to_project=False)
         with pytest.raises(TypeError, match="needs the secret"):
             pt.bind_id("pseudonymise_source", args, "/p/data.qda")
         assert not (tmp_path / "state").exists(), "nothing was loaded"
@@ -275,9 +277,11 @@ class TestCanonicalJson:
         SHOWS; `record_in_journal` changes only whether the run records
         itself. None of them is bound, so passing a different one on the
         execute call is not "a different operation": it changes nothing.
-        `rewrite_memos` changes the notes, so it IS bound (v0.13, Brief
-        2), as the `bool` the server passes whatever truthy value it was
-        given.
+        `rewrite_memos` changes the notes and `save_mapping_to_project`
+        writes a file of real names into the project folder, so both ARE
+        bound (v0.13, Brief 2), each as the `bool` the server passes
+        whatever truthy value it was given; `researcher_keeps_mapping` is
+        an attestation with no side effect and is not.
         """
         bound = pt.canonical_args(
             "pseudonymise_source",
@@ -288,6 +292,7 @@ class TestCanonicalJson:
             use_project_pseudonyms=True, include_context=True,
             context_chars=99, scan_residue=False, max_spans_per_entry=1,
             residue_detail="project", rewrite_memos=1,
+            save_mapping_to_project="yes", researcher_keeps_mapping=True,
             record_in_journal=False, allow_hidden_coder=True,
             preview_token="qcp1.1.aaaaaaaa." + "a" * 32, confirm=True)
         assert bound == {
@@ -296,8 +301,11 @@ class TestCanonicalJson:
                          "variants": []}],
             "case_mode": "exact",
             "overlap_policy": "snap_to_pseudonym",
-            "rewrite_memos": True}
+            "rewrite_memos": True,
+            "save_mapping_to_project": True}
         assert bound["rewrite_memos"] is True
+        assert bound["save_mapping_to_project"] is True
+        assert "researcher_keeps_mapping" not in bound
 
     def test_the_flagship_binds_its_one_file_as_an_integer(self):
         """One file per call since v0.13 (decision A): the bind carries
@@ -309,7 +317,8 @@ class TestCanonicalJson:
             return pt.canonical_args(
                 "pseudonymise_source", mapping=[], file_id=fid,
                 case_mode="exact", overlap_policy="snap_to_pseudonym",
-                rewrite_memos=False)
+                rewrite_memos=False,
+            save_mapping_to_project=False)
         assert call(1)["file_id"] == 1
         assert isinstance(call(1)["file_id"], int)
         assert call(1) != call(4)

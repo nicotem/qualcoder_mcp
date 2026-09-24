@@ -52,6 +52,7 @@ from .database import (
     name_key,
     position_safe as db_position_safe,
     read_project_pseudonyms,
+    PSEUDONYMS_JSON_NAME,
 )
 from . import pseudonymise as pseudo
 from .cursors import (
@@ -2854,9 +2855,47 @@ def _set_name_warnings(ro, state, name: str,
             "Unchanged; recorded again.")
     return warnings
 
+def _pseudonyms_json_report(include: bool) -> Dict[str, Any]:
+    """The two inspection routes of ruling 14b.
+
+    By default no name enters the conversation: whether the file is
+    present, how many entries it has, which encoding it read as, and a
+    pointer to QualCoder's Pseudonyms dialog (the button in Manage Files,
+    `manage_files.py:285`, `:733-743` at the pin), where the human sees
+    the list. With `include`, the entries themselves, which the argument's
+    description says plainly sends the real names to the AI provider. An
+    unreadable file is reported with the reader's own value-free message.
+    """
+    folder = _current_project_folder()
+    if not os.path.lexists(str(folder / PSEUDONYMS_JSON_NAME)):
+        return {"present": False}
+    try:
+        entries, encoding = read_project_pseudonyms(folder)
+    except (ValueError, OSError) as e:
+        return {"present": True, "entries": None,
+                "error": (str(e) if isinstance(e, ValueError) else
+                          f"{PSEUDONYMS_JSON_NAME} could not be read "
+                          f"({type(e).__name__}).")}
+    block: Dict[str, Any] = {
+        "present": True, "entries": len(entries), "encoding": encoding,
+        "note": (
+            f"The project's own pseudonyms.json (QualCoder's import-time "
+            f"list) is present with {len(entries)} entries. Its contents are "
+            f"the researcher's reverse key and are not returned by default: "
+            f"to see or change them, open QualCoder's Pseudonyms dialog (the "
+            f"button in Manage Files), or call get_current_project with "
+            f"include_pseudonyms=true, which sends the real names to the AI "
+            f"provider.")}
+    if include:
+        block["entries_list"] = [{"original": item["original"],
+                                  "pseudonym": item["pseudonym"]}
+                                 for item in entries]
+    return block
+
+
 @mcp.tool()
 @_tool_guard
-def get_current_project() -> str:
+def get_current_project(include_pseudonyms: bool = False) -> str:
     """Get information about the currently open project.
 
     Also reports whether QualCoder currently has this project open, with
@@ -2878,14 +2917,30 @@ def get_current_project() -> str:
     An open QualCoder 4.0 window will not display external changes until
     the project is reopened there.
 
+    Also reports the project's own pseudonyms.json (QualCoder's
+    import-time list, the researcher's reverse key) as `pseudonyms_json`:
+    whether it is present, how many entries it has and which encoding it
+    read as, with no name in it.
+
+    Args:
+        include_pseudonyms: Also return the file's entries, as
+                 pseudonyms_json.entries_list. This returns every original
+                 name in the file and its pseudonym into the conversation,
+                 which sends the real names to the AI provider. Use it only
+                 when the researcher has asked to see or check the list;
+                 the default report says whether the file exists and how
+                 many entries it has without that. The transport turns
+                 1, "1", "true", "yes" and "on" into true before this tool
+                 runs.
+
     Returns:
         JSON with current project path, basic metadata, the schema report
         (capability probes and write support), the QualCoder-open state
         (qualcoder_open boolean; qualcoder_lock detail when a lock file is
-        present), and qualcoder_gui_signals (with qualcoder_gui_hint when
-        any signal is present). With no project open, the message names
-        the last project used on this machine when that project still
-        exists.
+        present), qualcoder_gui_signals (with qualcoder_gui_hint when
+        any signal is present), and pseudonyms_json. With no project open,
+        the message names the last project used on this machine when that
+        project still exists.
     """
     try:
         if current_project_path is None:
@@ -2905,6 +2960,10 @@ def get_current_project() -> str:
         }
         # The project's AI coder name, reported and never asked for (D7 4.4)
         result.update(_ai_coder_name_report())
+        # The project's own pseudonyms.json (v0.13, Brief 2, ruling 14b):
+        # presence and count by default, the list only when asked.
+        result["pseudonyms_json"] = _pseudonyms_json_report(
+            bool(include_pseudonyms))
 
         # QualCoder-open state, cheap to re-check after the user says
         # they have closed it (heartbeat refreshes every 5 s, stale > 30 s)
@@ -10374,6 +10433,247 @@ def _write_run_manifest(payload: Dict[str, Any],
         return None
 
 
+# ----------------------------------------------------------------------
+# Keeping the mapping (v0.13, Brief 2, ruling 14): the retention check,
+# and the save into the project's own pseudonyms.json
+# ----------------------------------------------------------------------
+
+_RETENTION_REQUIRED = (
+    "This run applies a mapping you typed, and that mapping is half of the "
+    "reverse key: without it nobody can say later who each pseudonym was. "
+    "Nothing was written. Ask the user which they want: to save the mapping "
+    "into the project's own pseudonyms.json in QualCoder's format, call the "
+    "preview again with save_mapping_to_project=true (the token binds it) "
+    "and execute from that preview; to record that the researcher keeps "
+    "their own copy, call again with the same preview_token and "
+    "researcher_keeps_mapping=true.")
+_RETENTION_ON_THE_SIDECAR_PATH = (
+    "save_mapping_to_project and researcher_keeps_mapping describe what "
+    "happens to a mapping you typed; with use_project_pseudonyms the mapping "
+    "is already the project's own pseudonyms.json, which is the record. "
+    "Give neither.")
+_RETENTION_NOTE_TYPED = (
+    "This run applies a mapping you typed. It is half of the reverse key, "
+    "and the execute is refused until the call says where it is kept. To "
+    "save it into the project's own pseudonyms.json in QualCoder's format, "
+    "preview again with save_mapping_to_project=true: that argument is bound "
+    "into the token, and the preview then shows what the save would do. To "
+    "record that the researcher keeps their own copy, add "
+    "researcher_keeps_mapping=true to the execute call with this token. Ask "
+    "the user which.")
+_RETENTION_NOTE_SIDECAR = (
+    "The mapping is the project's own pseudonyms.json, which is the record; "
+    "nothing needs choosing.")
+_RETENTION_ASK = (
+    "Ask the user which they want. To save the mapping, call the preview "
+    "again with save_mapping_to_project=true and execute from that preview. "
+    "To attest that the researcher keeps their own record, add "
+    "researcher_keeps_mapping=true to this execute call.")
+_SAVE_INSTEAD = (
+    "preview again without save_mapping_to_project and execute with "
+    "researcher_keeps_mapping=true instead.")
+# The tail of every "nothing to do" answer on the typed path when the save
+# was asked for: no run, so no reverse key to keep (the lead's third
+# ruling for Brief 2).
+_NOT_SAVED_NO_RUN = (
+    " The mapping was not saved, because no run happened. Pick a file that "
+    "contains one of the names and preview again, or enter the mapping in "
+    "QualCoder's Pseudonyms dialog (the button in Manage Files) directly.")
+
+
+class _SaveRefused(Exception):
+    """The save into pseudonyms.json cannot happen; a value-free reason."""
+
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+def _pseudonyms_json_new_entries(validated) -> List[Tuple[int, str, str, bool]]:
+    """The typed mapping as QualCoder's own list, in the caller's order.
+
+    Each entry's original, then each of its variants as an entry of its
+    own with the same pseudonym, which is how QualCoder applies such a
+    file (`manage_files.py:2510-2512`, `:3344-3349`: every entry fires).
+    As `(caller index, original, pseudonym, is_variant)`.
+    """
+    out = []
+    for entry in validated.entries:
+        out.append((entry.index, entry.original, entry.pseudonym, False))
+        for variant in entry.variants:
+            out.append((entry.index, variant, entry.pseudonym, True))
+    return out
+
+
+def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
+    """What saving the typed mapping into pseudonyms.json would do.
+
+    QualCoder's own merge rules (`pseudonyms.py:84-89` at the pin): an
+    original the file already has is a duplicate original, refused
+    whatever the file's pseudonym for it, since QualCoder's check is on
+    the original alone; a pseudonym the file already gives to another
+    original is written and reported, where the dialog refuses it
+    (ruling 14c). The file is read through `read_project_pseudonyms`
+    for the check, and parsed once more as raw JSON so that every
+    existing entry, with any key a future version adds, is written back
+    verbatim and in order. A symbolic link is refused whichever way it
+    points: the save renames a new file into place, which would replace
+    the link and leave what it pointed at as it was.
+
+    Raises `_SaveRefused` with a value-free detail. Never quotes a value
+    out of the file.
+    """
+    path = folder / PSEUDONYMS_JSON_NAME
+    if path.is_symlink():
+        raise _SaveRefused(
+            "pseudonyms_json_is_a_link",
+            f"{PSEUDONYMS_JSON_NAME} in the project folder is a symbolic "
+            f"link, and this tool saves by renaming a new file into place, "
+            f"which would replace the link and leave the file it points to "
+            f"as it was")
+    existing: List[Dict[str, str]] = []
+    raw: List[Any] = []
+    encoding: Optional[str] = None
+    if os.path.lexists(str(path)):
+        try:
+            existing, encoding = read_project_pseudonyms(folder)
+            data = path.read_bytes()
+            text = (data.decode("utf-8-sig") if encoding.startswith("utf-8")
+                    else data.decode(encoding))
+            raw = json.loads(text)
+        except (ValueError, OSError, LookupError) as e:
+            detail = (str(e).rstrip(".") if isinstance(e, ValueError)
+                      and PSEUDONYMS_JSON_NAME in str(e) else
+                      f"{PSEUDONYMS_JSON_NAME} could not be read "
+                      f"({type(e).__name__})")
+            raise _SaveRefused("pseudonyms_json_unreadable", detail) from None
+        if not isinstance(raw, list) or len(raw) != len(existing):
+            raise _SaveRefused(
+                "pseudonyms_json_unreadable",
+                f"{PSEUDONYMS_JSON_NAME} changed while it was being read")
+    by_original = {item["original"]: item["pseudonym"] for item in existing}
+    new = _pseudonyms_json_new_entries(validated)
+    conflicts = sorted({index for index, original, _, _ in new
+                        if original in by_original})
+    forms_of: Dict[int, set] = {}
+    for index, original, _, _ in new:
+        forms_of.setdefault(index, set()).add(original)
+    duplicates = sorted({
+        index for index, _, pseudonym, _ in new
+        if any(item["pseudonym"] == pseudonym
+               and item["original"] not in forms_of[index]
+               for item in existing)})
+    return {
+        "existing_entries": len(existing),
+        "encoding": encoding,
+        "would_write": len(new),
+        "variants_as_separate_entries": sum(1 for *_, variant in new
+                                            if variant),
+        "conflicts": conflicts,
+        "duplicate_pseudonyms": duplicates,
+        # The whole mapping already in the file under the same pseudonyms:
+        # the refusal then points to use_project_pseudonyms.
+        "already_there": bool(new) and all(
+            by_original.get(original) == pseudonym
+            for _, original, pseudonym, _ in new),
+        "merged": list(raw) + [{"original": original, "pseudonym": pseudonym}
+                               for _, original, pseudonym, _ in new],
+    }
+
+
+def _pseudonyms_json_refusal(error: _SaveRefused) -> Dict[str, Any]:
+    """The execute's refusal for a save that cannot happen, before the
+    backup: count-free, and name-free (entry indices only)."""
+    return {"error": (
+        f"The mapping cannot be saved into this project's pseudonyms.json: "
+        f"{error.detail}. Nothing was written. Fix the file and preview "
+        f"again, or {_SAVE_INSTEAD}"),
+        "reason": error.reason, "nothing_changed": True}
+
+
+def _pseudonyms_json_conflict(merge: Dict[str, Any]) -> Dict[str, Any]:
+    """`pseudonyms_json_conflict`: QualCoder's dialog refuses a duplicate
+    original as well (`pseudonyms.py:84-86`), whether or not its
+    pseudonym is the same; the entry is named by its index, never by the
+    file's value."""
+    remedy = (
+        "Those entries are already in the file under the same pseudonyms, "
+        "so run this file with use_project_pseudonyms=true instead."
+        if merge["already_there"] else
+        f"Remove or change the entry and preview again, or edit the file in "
+        f"the dialog; or {_SAVE_INSTEAD}")
+    return {"error": (
+        f"The mapping cannot be saved into this project's pseudonyms.json: "
+        f"entry {merge['conflicts']} maps a name the file already maps, and "
+        f"QualCoder's Pseudonyms dialog (the button in Manage Files) refuses "
+        f"a duplicate original as well. Nothing was written. {remedy}"),
+        "reason": "pseudonyms_json_conflict", "nothing_changed": True}
+
+
+def _write_pseudonyms_json_tmp(folder: Path, merged: List[Any]) -> Path:
+    """The merged list, written to a temporary file beside the target.
+
+    Inside the run's transaction, so the rename into place can wait for
+    the commit (the lead's ruling for Brief 2): a run that rolls back
+    leaves no pseudonyms.json behind for QualCoder to apply to the next
+    import. QualCoder's own format and bytes: `json.dump(data, f,
+    indent=2)` with the defaults (`pseudonyms.py:92-93`), whose ASCII
+    escaping makes the bytes the same whatever the handle's encoding, so
+    the handle names UTF-8 for the Windows rule and changes no byte. The
+    descriptor is owned by `os.fdopen` before anything can fault, the file
+    is fsynced, and its mode is set to the one QualCoder's own
+    `open(path, "w")` leaves (0666 under the process umask) rather than
+    mkstemp's 0600 (the lead's night ruling 4). A failure removes the
+    temporary file and raises RuntimeError, which rolls the run back.
+    """
+    tmp: Optional[Path] = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(folder), prefix=f"{PSEUDONYMS_JSON_NAME}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle as f:
+            json.dump(merged, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.name != "nt":
+            mask = os.umask(0)
+            os.umask(mask)
+            os.chmod(tmp_name, 0o666 & ~mask)
+        return tmp
+    except Exception as e:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise RuntimeError(
+            f"The mapping could not be written into this project's folder "
+            f"for saving ({type(e).__name__}); the rewrite was rolled back "
+            f"with it, nothing was changed and no file was left behind. "
+            f"Check the permissions on the project folder and preview again, "
+            f"or {_SAVE_INSTEAD}") from None
+
+
+def _pseudonymise_retention(typed: bool, save: bool,
+                            keeps: bool) -> Dict[str, Any]:
+    """Which retention was chosen, as the run record and the journal say it.
+
+    "save_requested", never "saved": both are written before the file is
+    renamed into place, and only the execute result says whether it was.
+    """
+    if not typed:
+        return {"choice": "project_pseudonyms_json",
+                "researcher_keeps_record": False}
+    return {"choice": "save_requested" if save else "researcher_record",
+            "researcher_keeps_record": bool(save and keeps)}
+
+
 def _pseudonymise_count_arg(value: Any, name: str, cap: int,
                             minimum: int = 1) -> int:
     """One presentation count: a whole number, in range, capped at `cap`.
@@ -10923,14 +11223,51 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"unaffected and still replaces whole words only. A short form "
             f"makes the file-text counts generous too; the whole-word "
             f"number beside each wide one shows how far.")
+    retention = preview.get("mapping_retention") or {}
+    if retention.get("required") and retention.get("chosen") is None:
+        # Ruling 14a: the preview says which is needed.
+        warnings.append(
+            "Warning: the execute will be refused unless the call says "
+            "where the mapping is kept. To save it into the project's own "
+            "pseudonyms.json in QualCoder's format, preview again with "
+            "save_mapping_to_project=true, which the token binds; to record "
+            "that the researcher keeps their own copy, add "
+            "researcher_keeps_mapping=true to the execute call with this "
+            "token. Ask the user which; see execute_with.mapping_retention.")
+    if_saved = retention.get("if_saved") or {}
+    if if_saved.get("conflicts"):
+        warnings.append(
+            f"Warning: saving this mapping into pseudonyms.json would be "
+            f"refused: entry {if_saved['conflicts']} maps a name the file "
+            f"already maps, and QualCoder's Pseudonyms dialog (the button in "
+            f"Manage Files) refuses a duplicate original as well (see "
+            f"mapping_retention.if_saved.conflicts). Remove the entry and "
+            f"preview again; if the whole mapping is already in the file, "
+            f"run with use_project_pseudonyms=true instead; or preview "
+            f"again without save_mapping_to_project and execute with "
+            f"researcher_keeps_mapping=true.")
+    elif if_saved.get("error"):
+        warnings.append(
+            f"Warning: saving this mapping into pseudonyms.json would be "
+            f"refused: {if_saved['error']} Fix the file and preview again, "
+            f"or preview again without save_mapping_to_project and execute "
+            f"with researcher_keeps_mapping=true.")
     if not totals.get("replacements"):
         # Three forms (Brief 2, 4.8): the switch off; on, with notes to
-        # rewrite; on, with nothing anywhere.
+        # rewrite; on, with nothing anywhere. Where an execute would do
+        # nothing, a save asked for on the typed path is said not to
+        # happen either (the lead's third ruling for Brief 2).
         note_rows = (memo_block or {}).get("totals", {}).get("rows", 0)
+        no_save = (" The mapping would not be saved either, because no run "
+                   "would happen. Pick a file that contains one of the names "
+                   "and preview again, or enter the mapping in QualCoder's "
+                   "Pseudonyms dialog (the button in Manage Files) directly."
+                   if retention.get("required") and retention.get("chosen")
+                   in ("save_requested", "both") else "")
         if memo_block is None:
             warnings.append(
                 "None of the names in this mapping occurs in this file, so "
-                "an execute would rewrite nothing.")
+                "an execute would rewrite nothing." + no_save)
         elif note_rows:
             warnings.append(
                 f"None of the names in this mapping occurs in this file; "
@@ -10941,7 +11278,7 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             warnings.append(
                 "None of the names in this mapping occurs in this file or "
                 "in any note or journal entry, so an execute would rewrite "
-                "nothing.")
+                "nothing." + no_save)
     return warnings
 
 
@@ -10979,6 +11316,62 @@ def _pseudonymise_notes(backup_name: Optional[str],
         "previous text too and is never re-indexed; this server neither "
         "reads nor writes either file.",
     ]
+
+
+def _pseudonymise_mapping_notes(result: Dict[str, Any],
+                                merge: Optional[Dict[str, Any]],
+                                save: bool) -> List[str]:
+    """The notes a typed-path run adds (ruling 14d, Brief 2 5.6).
+
+    The mapping note always, with the tail the run earned: saved, asked
+    for and not renamed into place, or attested. Then, when the file was
+    saved, the variants note and the duplicate-pseudonym note, each only
+    when it applies. Counts and the error's class name only.
+    """
+    note = ("The mapping you gave is half of the reverse key for this run; "
+            "the backup is the other half and holds the real names. This "
+            "server does not keep the mapping unless asked.")
+    saved = bool(result.get("mapping_saved"))
+    if save and saved:
+        note += (f" On this run it was saved into the project's own "
+                 f"pseudonyms.json ({merge['would_write']} entries added), "
+                 f"which QualCoder applies on every import and which travels "
+                 f"into every later backup; store that file securely once "
+                 f"the import work is done, as QualCoder's own guidance "
+                 f"says.")
+    elif save:
+        note += (f" On this run the save into the project's own "
+                 f"pseudonyms.json was requested, but the file could not be "
+                 f"renamed into place after the run committed "
+                 f"({result.get('mapping_not_saved_because')}); nothing else "
+                 f"was lost: the rewrite stands, the backup holds the real "
+                 f"names, and the journal entry and the run record say the "
+                 f"save was requested, not made. Enter the mapping in "
+                 f"QualCoder's Pseudonyms dialog (the button in Manage Files) "
+                 f"now.")
+    else:
+        note += (" On this run the call attested that the researcher keeps "
+                 "their own record; make sure that is true now, because "
+                 "nothing else can say later who each pseudonym was.")
+    notes = [note]
+    if save and saved and merge["variants_as_separate_entries"]:
+        notes.append(
+            f"The mapping had alternative spellings; each was written to "
+            f"pseudonyms.json as its own entry with the same pseudonym "
+            f"({merge['variants_as_separate_entries']} such entries). "
+            f"QualCoder applies such a file exactly as this run did, but "
+            f"QualCoder's Pseudonyms dialog (the button in Manage Files) will "
+            f"not add a second entry with a pseudonym already in use, so "
+            f"change those entries in the file rather than in the dialog.")
+    if save and saved and merge["duplicate_pseudonyms"]:
+        notes.append(
+            f"{len(merge['duplicate_pseudonyms'])} entr(ies) of the mapping "
+            f"use a pseudonym pseudonyms.json already gives to another name. "
+            f"QualCoder's Pseudonyms dialog (the button in Manage Files) "
+            f"would have refused to add them by hand; this tool wrote them, "
+            f"so those people share one pseudonym in the file as they do in "
+            f"the rewritten text.")
+    return notes
 
 
 def _stale_sessions_for(file_ids: Sequence[int]) -> List[str]:
@@ -11052,7 +11445,9 @@ def _pseudonymise_journal_name(files: Sequence[Dict[str, Any]],
 
 def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
                                compiled, backup_name: Optional[str],
-                               manifest_name: str) -> str:
+                               manifest_name: str,
+                               retention: Optional[Dict[str, Any]] = None
+                               ) -> str:
     """The audit the PROJECT itself carries, with no original in it.
 
     Upstream's PDF restructure writes a report of its own rewrite into
@@ -11138,6 +11533,23 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
             "Backup taken before the run: its name is withheld, because "
             "the project folder's own name contains a name from the "
             "mapping. It is the newest backup folder beside the project.")
+    if retention is not None:
+        # Ruling 14a: which was chosen is written into the journal entry.
+        # "Requested", never "saved": this entry is written before the
+        # file is renamed into place (Brief 2, 5.8).
+        choice = retention["choice"]
+        if choice == "save_requested":
+            lines.append(
+                f"Mapping: save into the project's pseudonyms.json requested "
+                f"({retention.get('entries_to_add')} entries to add)."
+                + (" The researcher also keeps their own record."
+                   if retention["researcher_keeps_record"] else ""))
+        elif choice == "researcher_record":
+            lines.append("Mapping kept: the researcher attested to keeping "
+                         "their own record.")
+        else:
+            lines.append("Mapping kept: read from the project's own "
+                         "pseudonyms.json.")
     lines.append(f"Run manifest: {manifest_name}.")
     lines.append(
         "The names replaced are not recorded here. Positions after the "
@@ -11153,7 +11565,9 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            journal_entry: Optional[str],
                            when: datetime, secret: str,
                            project_path_at_start: str,
-                           rewrite_memos: bool = False) -> Dict[str, Any]:
+                           rewrite_memos: bool = False,
+                           retention: Optional[Dict[str, Any]] = None
+                           ) -> Dict[str, Any]:
     """The run record kept in the state home (D1 3.2), format 2.
 
     An audit record: which rows this run changed and where the
@@ -11237,6 +11651,15 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         "case_mode": plan["case_mode"],
         "overlap_policy": plan["overlap_policy"],
         "rewrite_memos": bool(rewrite_memos),
+        # Ruling 14a: which was chosen, "requested" and never "saved",
+        # since this record is written before the file is renamed into
+        # place; the execute result says whether it was.
+        "mapping_retention": {
+            "choice": (retention or {}).get("choice"),
+            "researcher_keeps_record": bool(
+                (retention or {}).get("researcher_keeps_record")),
+            "entries_to_add": (retention or {}).get("entries_to_add"),
+        },
         # The mapping itself is never stored; this is only enough to
         # tell whether a later reversal was given the same one. Keyed
         # with the per-user token secret rather than a plain digest,
@@ -11300,6 +11723,8 @@ def pseudonymise_source(
     case_mode: str = "exact",
     overlap_policy: str = "snap_to_pseudonym",
     rewrite_memos: bool = False,
+    save_mapping_to_project: bool = False,
+    researcher_keeps_mapping: bool = False,
     preview_token: Optional[str] = None,
     allow_hidden_coder: bool = False,
     record_in_journal: bool = True,
@@ -11536,6 +11961,17 @@ def pseudonymise_source(
         return json.dumps({"error": (
             "mapping and use_project_pseudonyms were both given; give one "
             "mapping source.")}, indent=2)
+    # Keeping the mapping (v0.13, Brief 2, ruling 14a). On the sidecar
+    # path the mapping IS the project's own pseudonyms.json, so a call
+    # that says what to do with a typed mapping is one the model got
+    # wrong: refused here, in the posture of the error above, before any
+    # read of the project.
+    typed = not use_project_pseudonyms
+    save = bool(save_mapping_to_project)
+    keeps = bool(researcher_keeps_mapping)
+    if not typed and (save or keeps):
+        return json.dumps({"error": _RETENTION_ON_THE_SIDECAR_PATH},
+                          indent=2)
     sidecar_encoding = None
     if use_project_pseudonyms:
         try:
@@ -11584,7 +12020,8 @@ def pseudonymise_source(
         "pseudonymise_source",
         mapping=pseudo.canonical_mapping(validated),
         file_id=file_id, case_mode=case_mode,
-        overlap_policy=overlap_policy, rewrite_memos=rewrite_memos)
+        overlap_policy=overlap_policy, rewrite_memos=rewrite_memos,
+        save_mapping_to_project=save)
 
     # The plan is the expensive part of everything below it: it reads
     # every eligible file's text, runs the pattern over all of it, and
@@ -11655,8 +12092,37 @@ def pseudonymise_source(
             memo_plan=memo_plan)
         if sidecar_encoding is not None:
             preview["pseudonyms_json_encoding"] = sidecar_encoding
+        preview["mapping_retention"] = _retention_block()
         preview["_effect"] = db_.pseudonymise_effect(plan, memo_plan)
         return preview
+
+    def _retention_block():
+        """What the preview says about keeping the mapping (ruling 14a).
+
+        Presentation, not effect: the save is bound through its argument,
+        and whether it can happen is decided again on the execute, before
+        the backup, and a third time inside the transaction.
+        """
+        if not typed:
+            return {"required": False, "chosen": "project_pseudonyms_json",
+                    "note": _RETENTION_NOTE_SIDECAR}
+        chosen = ("both" if save and keeps else "save_requested" if save
+                  else "researcher_record" if keeps else None)
+        block: Dict[str, Any] = {"required": True, "chosen": chosen}
+        if save:
+            try:
+                merge = _pseudonyms_json_merge(_current_project_folder(),
+                                               validated)
+                block["if_saved"] = {
+                    key: merge[key] for key in (
+                        "existing_entries", "encoding", "would_write",
+                        "variants_as_separate_entries", "conflicts",
+                        "duplicate_pseudonyms")}
+            except _SaveRefused as e:
+                block["if_saved"] = {"error": f"{e.detail}.",
+                                     "reason": e.reason}
+        block["note"] = _RETENTION_NOTE_TYPED
+        return block
 
     def _override_required(preview):
         return bool(preview.get("hidden_coder_rows", {})
@@ -11694,8 +12160,25 @@ def pseudonymise_source(
                     if rewrite_memos else
                     "None of the names in this mapping occurs in this "
                     "file, so nothing was rewritten and no backup was "
-                    "taken."),
+                    "taken.")
+                + (_NOT_SAVED_NO_RUN if typed and save else ""),
             }
+        # Keeping the mapping (ruling 14a): after the collision and the
+        # nothing-to-do answers, before the owner refusal and the backup,
+        # so nothing is written, no backup is taken and the token stays
+        # valid for the attestation.
+        if typed and not save and not keeps:
+            return {"error": _RETENTION_REQUIRED,
+                    "reason": "mapping_retention_required",
+                    "nothing_changed": True}
+        if save:
+            try:
+                merge = _pseudonyms_json_merge(_current_project_folder(),
+                                               validated)
+            except _SaveRefused as e:
+                return _pseudonyms_json_refusal(e)
+            if merge["conflicts"]:
+                return _pseudonyms_json_conflict(merge)
         if owner_error is not None:
             # The last check before the write, where `_resolve_write_owner`
             # says it belongs: after the token, the hidden-coder rule and
@@ -11728,6 +12211,7 @@ def pseudonymise_source(
                 "it.")
 
     captured: Dict[str, Any] = {}
+    retention = _pseudonymise_retention(typed, save, keeps)
     # Both fixed before the write, because the journal entry is written
     # INSIDE the transaction and has to be able to name the manifest that
     # will sit beside it. `bind` covers the tool, the arguments and the
@@ -11807,12 +12291,34 @@ def pseudonymise_source(
             hidden_updated += sum(hidden[key] for key in
                                   ("shifted", "substituted", "resized",
                                    "snapped", "deleted", "clamped"))
+        if save:
+            # The save, between the rewrite and the journal entry: the
+            # merged list to a temporary file beside the target, renamed
+            # into place only after the commit. Checked again here, under
+            # the lock and after the backup: the file may have moved since
+            # the check before the backup, and a refusal now rolls the run
+            # back and names the backup.
+            folder = _current_project_folder()
+            try:
+                merge = _pseudonyms_json_merge(folder, validated)
+            except _SaveRefused as e:
+                raise RuntimeError(_pseudonyms_json_refusal(e)["error"]) \
+                    from None
+            if merge["conflicts"]:
+                raise RuntimeError(_pseudonyms_json_conflict(merge)["error"])
+            captured["pseudonyms_json_merge"] = merge
+            captured["pseudonyms_json_tmp"] = _write_pseudonyms_json_tmp(
+                folder, merge["merged"])
+        retention["entries_to_add"] = (
+            captured["pseudonyms_json_merge"]["would_write"] if save
+            else None)
         journal_entry = None
         if record_in_journal:
             backup = getattr(wdb, "last_backup_path", None)
             journal_entry = _pseudonymise_write_journal(
                 wdb, plan, written, compiled, owner,
-                Path(backup).name if backup else None, manifest_name)
+                Path(backup).name if backup else None, manifest_name,
+                retention)
         captured["plan"] = plan
         captured["written"] = written
         captured["journal_entry"] = journal_entry
@@ -11846,40 +12352,66 @@ def pseudonymise_source(
                 f"not align with the slices this server reports.")
         return result
 
-    result = _guarded_destructive(
-        preview_fn=_preview_with_effect,
-        op_fn=_op,
-        fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(
-            _read_plan(db_), _read_memo_plan(db_)),
-        tool="pseudonymise_source",
-        token_args=token_args,
-        preview_token=preview_token,
-        allow_hidden_coder=allow_hidden_coder,
-        backup_fail_detail="no text was rewritten",
-        confirm_hint=(
-            "Read the user the per-file replacement counts, every "
-            "collision and the residue summary, and say plainly that this "
-            "rewrites the stored text and moves every coding in that "
-            "file. Only with an explicit yes, call pseudonymise_source "
-            "again exactly as execute_with says, with the SAME mapping."),
-        execute_arguments={
-            "case_mode": case_mode,
-            "overlap_policy": overlap_policy,
-            "file_id": file_id,
-            "use_project_pseudonyms": use_project_pseudonyms,
-            "rewrite_memos": rewrite_memos,
-        },
-        state_preview_fn=_signed,
-        override_required_fn=_override_required,
-        warnings_fn=_pseudonymise_warnings,
-        execute_guard_fn=_collisions_refusal,
-        state_of_fn=_state_on_write_connection,
-    )
+    result = None
+    try:
+        result = _guarded_destructive(
+            preview_fn=_preview_with_effect,
+            op_fn=_op,
+            fingerprint_fn=lambda db_: db_.pseudonymise_row_digests(
+                _read_plan(db_), _read_memo_plan(db_)),
+            tool="pseudonymise_source",
+            token_args=token_args,
+            preview_token=preview_token,
+            allow_hidden_coder=allow_hidden_coder,
+            backup_fail_detail="no text was rewritten",
+            confirm_hint=(
+                "Read the user the per-file replacement counts, every "
+                "collision and the residue summary, and say plainly that this "
+                "rewrites the stored text and moves every coding in that "
+                "file. Only with an explicit yes, call pseudonymise_source "
+                "again exactly as execute_with says, with the SAME mapping."),
+            execute_arguments={
+                "case_mode": case_mode,
+                "overlap_policy": overlap_policy,
+                "file_id": file_id,
+                "use_project_pseudonyms": use_project_pseudonyms,
+                "rewrite_memos": rewrite_memos,
+                # Bound, so always repeated, false included; the
+                # attestation only when the preview call gave it.
+                "save_mapping_to_project": save,
+                **({"researcher_keeps_mapping": True} if keeps else {}),
+            },
+            state_preview_fn=_signed,
+            override_required_fn=_override_required,
+            warnings_fn=_pseudonymise_warnings,
+            execute_guard_fn=_collisions_refusal,
+            state_of_fn=_state_on_write_connection,
+        )
+    finally:
+        # A run that did not commit leaves no pseudonyms.json behind for
+        # QualCoder to apply to the next import (the lead's ruling for
+        # Brief 2): the temporary file goes, whichever way it failed.
+        tmp = captured.get("pseudonyms_json_tmp")
+        if tmp is not None and not (
+                isinstance(result, dict) and "error" not in result
+                and captured.get("written")):
+            captured.pop("pseudonyms_json_tmp", None)
+            try:
+                Path(tmp).unlink()
+            except OSError:
+                pass
     if isinstance(result, dict):
         result.pop("_effect", None)
         preview = result.get("preview")
         if isinstance(preview, dict):
             preview.pop("_effect", None)
+        if typed and not save and not keeps and "execute_with" in result:
+            # Ruling 14a: the preview says which is needed, and the model
+            # finds the two ways forward where it finds the recipe.
+            result["execute_with"]["mapping_retention"] = {
+                "choose_one": ["save_mapping_to_project",
+                               "researcher_keeps_mapping"],
+                "message": _RETENTION_ASK}
         if owner_error is not None and "execute_with" in result:
             # The preview carries the ask, so the researcher hears it
             # before approving and the model has the arguments to act on
@@ -11925,10 +12457,25 @@ def pseudonymise_source(
         return json.dumps(result, indent=2)
 
     backup_path = result.get("backup_path")
+    tmp = captured.get("pseudonyms_json_tmp")
+    if tmp is not None:
+        # After the commit: the rename into place (the lead's ruling for
+        # Brief 2). A failure here loses nothing else, and the journal
+        # entry and the run record already say "requested", not "saved".
+        try:
+            Path(tmp).replace(Path(tmp).parent / PSEUDONYMS_JSON_NAME)
+            result["mapping_saved"] = True
+        except Exception as e:
+            result["mapping_saved"] = False
+            result["mapping_not_saved_because"] = type(e).__name__
+            try:
+                Path(tmp).unlink()
+            except OSError:
+                pass
     manifest = _pseudonymise_manifest(
         captured["plan"], captured["written"], compiled, bind, backup_path,
         captured.get("journal_entry"), when, secret, project_path_at_start,
-        rewrite_memos=rewrite_memos)
+        rewrite_memos=rewrite_memos, retention=retention)
     written_to = _write_run_manifest(manifest, manifest_name)
     if written_to is None:
         result["manifest_path"] = None
@@ -11950,6 +12497,9 @@ def pseudonymise_source(
             f"and journal entr(ies) was rewritten across the whole project, "
             f"not only in this file; every private part was carried across "
             f"unread. Re-read a note before quoting it.")
+    if typed:
+        result["notes"].extend(_pseudonymise_mapping_notes(
+            result, captured.get("pseudonyms_json_merge"), save))
     return json.dumps(result, indent=2)
 
 
@@ -11957,7 +12507,9 @@ def _pseudonymise_write_journal(wdb, plan: Dict[str, Any],
                                 written: Dict[str, Any], compiled,
                                 owner: Optional[str],
                                 backup_name: Optional[str],
-                                manifest_name: str) -> Optional[str]:
+                                manifest_name: str,
+                                retention: Optional[Dict[str, Any]] = None
+                                ) -> Optional[str]:
     """Add the run's journal entry, and refuse if the rewrite died with it.
 
     The entry is an audit record, not the run, so every way of failing to
@@ -11977,7 +12529,8 @@ def _pseudonymise_write_journal(wdb, plan: Dict[str, Any],
     not to commit, and this check catches it if any future path does.
     """
     name = _pseudonymise_journal_attempt(
-        wdb, plan, written, compiled, owner, backup_name, manifest_name)
+        wdb, plan, written, compiled, owner, backup_name, manifest_name,
+        retention)
     if not wdb.conn.in_transaction:
         raise RuntimeError(
             "The journal entry could not be written and the rewrite was "
@@ -11990,7 +12543,9 @@ def _pseudonymise_journal_attempt(wdb, plan: Dict[str, Any],
                                   written: Dict[str, Any], compiled,
                                   owner: Optional[str],
                                   backup_name: Optional[str],
-                                  manifest_name: str) -> Optional[str]:
+                                  manifest_name: str,
+                                  retention: Optional[Dict[str, Any]] = None
+                                  ) -> Optional[str]:
     """Write the entry, or return None with the reason logged.
 
     Inside the caller's transaction, so the database and its own audit
@@ -12020,7 +12575,7 @@ def _pseudonymise_journal_attempt(wdb, plan: Dict[str, Any],
                        "pseudonymisation run; no entry was written.")
         return None
     body = _pseudonymise_journal_body(
-        plan, written, compiled, backup_name, manifest_name)
+        plan, written, compiled, backup_name, manifest_name, retention)
     try:
         wdb.add_journal_entry(name=name, entry=body, owner=owner,
                               auto_commit=False)

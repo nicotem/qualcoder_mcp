@@ -250,8 +250,19 @@ def call(**kwargs):
     One file per call since v0.13 (decision A), and file 1 is the one
     text source in this fixture a mapping fires on; a test about another
     file, or about a missing or invalid `file_id`, says so explicitly.
+
+    An EXECUTE on a typed mapping attests `researcher_keeps_mapping`
+    unless the test says otherwise: since v0.13's Brief 2 (ruling 14a)
+    such an execute is refused without a retention choice, and every
+    test written before that is about something else. The attestation is
+    not bound and has no side effect, so adding it changes nothing a
+    test asserts; the tests of the refusal itself pass the choice
+    explicitly (TestKeepingTheMapping).
     """
     kwargs.setdefault("file_id", 1)
+    if kwargs.get("preview_token") is not None and \
+            not kwargs.get("use_project_pseudonyms"):
+        kwargs.setdefault("researcher_keeps_mapping", True)
     return json.loads(server.pseudonymise_source(**kwargs))
 
 
@@ -3676,6 +3687,739 @@ class TestTheRunRecordAndTheJournalOfANoteRewrite:
         assert "was not itself rewritten" not in body
 
 
+# =============================================================================
+# v0.13 Brief 2: keeping the mapping (ruling 14a and d; tests 41 to 46)
+# =============================================================================
+
+def execute_strictly(out, **kwargs):
+    """Execute from the recipe with NO retention default: the attestation
+    only if the test gives it."""
+    arguments = dict(out["execute_with"]["arguments"])
+    arguments.pop("use_project_pseudonyms", None)
+    arguments.setdefault("mapping", MAPPING)
+    arguments.setdefault("researcher_keeps_mapping", False)
+    arguments.update(kwargs)
+    arguments.setdefault("file_id", 1)
+    return json.loads(server.pseudonymise_source(**arguments))
+
+
+def _sidecar_file(project, entries):
+    (project / "pseudonyms.json").write_text(json.dumps(entries),
+                                             encoding="utf-8")
+
+
+class TestKeepingTheMapping:
+
+    def test_a_typed_execute_without_a_choice_is_refused_before_the_backup(
+            self, project):
+        out = preview_of()
+        refused = execute_strictly(out)
+        assert refused["reason"] == "mapping_retention_required"
+        assert refused["nothing_changed"] is True
+        assert refused["error"].startswith(
+            "This run applies a mapping you typed, and that mapping is half "
+            "of the reverse key: without it nobody can say later who each "
+            "pseudonym was. Nothing was written.")
+        _house_rules([refused["error"]])
+        assert backups(project) == []
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"] == TEXT
+        # The token is still valid: a save needs a fresh preview, since
+        # the token binds it ...
+        other = execute_strictly(out, save_mapping_to_project=True)
+        assert other["reason"] == "token_other_operation"
+        assert backups(project) == []
+        # ... and the attestation does not.
+        done = execute_strictly(out, researcher_keeps_mapping=True)
+        assert done.get("success") is True, done
+
+    def test_the_refusal_comes_after_the_nothing_to_do_answer(self, project):
+        out = preview_of(file_id=4)
+        answered = execute_strictly(out)
+        assert answered["nothing_changed"] is True
+        assert "reason" not in answered            # the no-op, not refused
+
+    def test_the_refusal_comes_before_the_owner_refusal(self, project):
+        (project / SIDECAR_NAME).unlink()
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+        out = preview_of()
+        assert execute_strictly(out)["reason"] == "mapping_retention_required"
+        owner = execute_strictly(out, researcher_keeps_mapping=True)
+        assert "error" in owner and "alternative" in owner, owner
+        assert backups(project) == []
+
+    def test_both_flags_are_accepted_and_recorded_as_both(self, project):
+        out = preview_of(save_mapping_to_project=True)
+        assert out["preview"]["mapping_retention"]["chosen"] == \
+            "save_requested"
+        result = execute_strictly(out, researcher_keeps_mapping=True)
+        assert result.get("success") is True, result
+        assert result["mapping_saved"] is True
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["mapping_retention"] == {
+            "choice": "save_requested", "researcher_keeps_record": True,
+            "entries_to_add": 3}
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert ("Mapping: save into the project's pseudonyms.json requested "
+                "(3 entries to add). The researcher also keeps their own "
+                "record." in body)
+        both = preview_of(save_mapping_to_project=True,
+                          researcher_keeps_mapping=True, file_id=4)
+        assert both["preview"]["mapping_retention"]["chosen"] == "both"
+
+    @pytest.mark.parametrize("flag", ["save_mapping_to_project",
+                                      "researcher_keeps_mapping"])
+    def test_either_flag_on_the_use_project_pseudonyms_path_is_an_argument_error(
+            self, project, monkeypatch, flag):
+        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        reads = []
+        monkeypatch.setattr(server, "read_project_pseudonyms",
+                            lambda *a, **k: reads.append(a) or ([], "x"))
+        out = call(mapping=None, use_project_pseudonyms=True, **{flag: True})
+        assert out == {"error": (
+            "save_mapping_to_project and researcher_keeps_mapping describe "
+            "what happens to a mapping you typed; with use_project_pseudonyms "
+            "the mapping is already the project's own pseudonyms.json, which "
+            "is the record. Give neither.")}
+        assert reads == [], "the project was read before the refusal"
+
+    def test_the_preview_says_which_is_needed_on_the_typed_path(self,
+                                                               project):
+        out = preview_of()
+        block = out["preview"]["mapping_retention"]
+        assert block["required"] is True and block["chosen"] is None
+        assert "if_saved" not in block
+        assert block["note"] == (
+            "This run applies a mapping you typed. It is half of the reverse "
+            "key, and the execute is refused until the call says where it is "
+            "kept. To save it into the project's own pseudonyms.json in "
+            "QualCoder's format, preview again with "
+            "save_mapping_to_project=true: that argument is bound into the "
+            "token, and the preview then shows what the save would do. To "
+            "record that the researcher keeps their own copy, add "
+            "researcher_keeps_mapping=true to the execute call with this "
+            "token. Ask the user which.")
+        warning = [w for w in out["warnings"] if w.startswith(
+            "Warning: the execute will be refused unless")]
+        assert warning == [
+            "Warning: the execute will be refused unless the call says where "
+            "the mapping is kept. To save it into the project's own "
+            "pseudonyms.json in QualCoder's format, preview again with "
+            "save_mapping_to_project=true, which the token binds; to record "
+            "that the researcher keeps their own copy, add "
+            "researcher_keeps_mapping=true to the execute call with this "
+            "token. Ask the user which; see execute_with.mapping_retention."]
+        _house_rules([block["note"]] + warning)
+        for given in ({"researcher_keeps_mapping": True},
+                      {"save_mapping_to_project": True}):
+            chosen = preview_of(**given)
+            assert not any(w.startswith("Warning: the execute will be "
+                                        "refused unless")
+                           for w in chosen["warnings"])
+
+    def test_the_preview_says_which_is_needed_on_the_sidecar_path(self,
+                                                                  project):
+        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        out = call(mapping=None, use_project_pseudonyms=True)
+        assert out["preview"]["mapping_retention"] == {
+            "required": False, "chosen": "project_pseudonyms_json",
+            "note": "The mapping is the project's own pseudonyms.json, which "
+                    "is the record; nothing needs choosing."}
+        assert "mapping_retention" not in out["execute_with"]
+        assert out["execute_with"]["arguments"][
+            "save_mapping_to_project"] is False
+        assert "researcher_keeps_mapping" not in out["execute_with"][
+            "arguments"]
+        result = execute_as_recipe(out)
+        assert result.get("success") is True, result
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["mapping_retention"] == {
+            "choice": "project_pseudonyms_json",
+            "researcher_keeps_record": False, "entries_to_add": None}
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert "Mapping kept: read from the project's own pseudonyms.json." \
+            in body
+        assert not any(note.startswith("The mapping you gave")
+                       for note in result["notes"])
+
+    @pytest.mark.parametrize("given,save,keeps,ask", [
+        ({}, False, False, True),
+        ({"researcher_keeps_mapping": True}, False, True, False),
+        ({"save_mapping_to_project": True}, True, False, False),
+    ], ids=["neither", "attested", "save"])
+    def test_execute_with_carries_the_bound_save_value_and_the_ask(
+            self, project, given, save, keeps, ask):
+        out = preview_of(**given)
+        arguments = out["execute_with"]["arguments"]
+        assert arguments["save_mapping_to_project"] is save
+        assert arguments.get("researcher_keeps_mapping", False) is keeps
+        assert ("researcher_keeps_mapping" in arguments) is keeps
+        assert ("mapping_retention" in out["execute_with"]) is ask
+        if ask:
+            assert out["execute_with"]["mapping_retention"] == {
+                "choose_one": ["save_mapping_to_project",
+                               "researcher_keeps_mapping"],
+                "message": (
+                    "Ask the user which they want. To save the mapping, "
+                    "call the preview again with save_mapping_to_project="
+                    "true and execute from that preview. To attest that the "
+                    "researcher keeps their own record, add "
+                    "researcher_keeps_mapping=true to this execute call.")}
+        # The recipe, executed verbatim, goes through only with a choice.
+        result = execute_strictly(out)
+        assert (result.get("reason") == "mapping_retention_required") is ask
+
+    @pytest.mark.parametrize("given,choice,keeps,to_add,line", [
+        ({"researcher_keeps_mapping": True}, "researcher_record", False,
+         None, "Mapping kept: the researcher attested to keeping their own "
+               "record."),
+        ({"save_mapping_to_project": True}, "save_requested", False, 3,
+         "Mapping: save into the project's pseudonyms.json requested (3 "
+         "entries to add)."),
+    ], ids=["attested", "save"])
+    def test_the_choice_is_written_into_the_record_and_the_journal(
+            self, project, given, choice, keeps, to_add, line):
+        out = preview_of(**given)
+        result = execute_strictly(out)
+        assert result.get("success") is True, result
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["mapping_retention"] == {
+            "choice": choice, "researcher_keeps_record": keeps,
+            "entries_to_add": to_add}
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        lines = body.split("\n")
+        assert line in lines
+        assert lines.index(line) == lines.index(next(
+            l for l in lines if l.startswith("Run manifest: "))) - 1
+        # "requested", never "saved", in both durable records.
+        assert "saved" not in json.dumps(record["mapping_retention"])
+        assert "was saved" not in body and "Mapping saved" not in body
+
+    def test_the_mapping_note_appears_on_the_typed_path_only(self, project):
+        result = execute_strictly(preview_of(), researcher_keeps_mapping=True)
+        note = [n for n in result["notes"]
+                if n.startswith("The mapping you gave")]
+        assert note == [
+            "The mapping you gave is half of the reverse key for this run; "
+            "the backup is the other half and holds the real names. This "
+            "server does not keep the mapping unless asked. On this run the "
+            "call attested that the researcher keeps their own record; make "
+            "sure that is true now, because nothing else can say later who "
+            "each pseudonym was."]
+        _house_rules(result["notes"])
+
+    @pytest.mark.parametrize("source", ["typed", "sidecar"])
+    def test_the_walk_with_the_switch_on(self, tmp_path, source, caplog):
+        """The walk of every sink, with the notes rewritten: the hidden
+        coder nowhere, the participant by the declared routes only, and
+        neither name in the run record, the journal entry or the log. The
+        fixture puts both names in every kind of note (DECLARED_ROUTES
+        needs no new route: none of the new notes names a file)."""
+        import logging
+        walk = TestEveryStringOfEverySinkOnAProjectNamedAfterTheParticipant
+        with wired(walk()._build(tmp_path, collide=False)) as folder:
+            caplog.set_level(logging.DEBUG)
+            if source == "typed":
+                out = preview_of(rewrite_memos=True)
+                result = execute_from(out, allow_hidden_coder=True)
+            else:
+                out = preview_of(mapping=None, use_project_pseudonyms=True,
+                                 rewrite_memos=True)
+                result = execute_as_recipe(out, allow_hidden_coder=True)
+            assert result.get("success") is True, result
+            # Every note of the fixture that names the participant.
+            assert result["memos"]["totals"]["rows_updated"] == 8
+            assert routes_carrying(out, HIDDEN_COLLEAGUE) == []
+            assert routes_carrying(result, HIDDEN_COLLEAGUE) == []
+            assert routes_carrying(result, PARTICIPANT, DECLARED_ROUTES) == []
+            manifest = Path(result["manifest_path"]).read_text(
+                encoding="utf-8")
+            record = json.loads(manifest)
+            assert any(row.get("key_withheld") for row in record["memos"])
+            for name in (HIDDEN_COLLEAGUE, PARTICIPANT):
+                assert name.lower() not in manifest.lower(), name
+            rows = query(folder, "SELECT name, jentry, owner FROM journal "
+                                 "WHERE name = ?", (result["journal_entry"],))
+            for column, text in rows[0].items():
+                assert HIDDEN_COLLEAGUE.lower() not in text.lower(), column
+                assert PARTICIPANT.lower() not in text.lower(), column
+            logged = "\n".join(r.getMessage() for r in caplog.records)
+            assert HIDDEN_COLLEAGUE.lower() not in logged.lower()
+            assert PARTICIPANT.lower() not in logged.lower()
+
+
+# =============================================================================
+# v0.13 Brief 2: saving the mapping into pseudonyms.json (ruling 14c;
+# tests 47 to 57)
+# =============================================================================
+
+def _save_run(**preview_kwargs):
+    """Preview with the save and execute strictly from that preview."""
+    out = preview_of(save_mapping_to_project=True, **preview_kwargs)
+    mapping = preview_kwargs.get("mapping", MAPPING)
+    return out, execute_strictly(out, mapping=mapping)
+
+
+def _written(project):
+    return (project / "pseudonyms.json").read_bytes()
+
+
+class TestSavingTheMappingIntoPseudonymsJson:
+
+    def test_pseudonyms_json_is_written_when_asked(self, project):
+        out, result = _save_run()
+        assert out["preview"]["mapping_retention"]["if_saved"] == {
+            "existing_entries": 0, "encoding": None, "would_write": 3,
+            "variants_as_separate_entries": 1, "conflicts": [],
+            "duplicate_pseudonyms": []}
+        assert result.get("success") is True, result
+        assert result["mapping_saved"] is True
+        assert "mapping_not_saved_because" not in result
+        assert json.loads(_written(project)) == [
+            {"original": "Thomas", "pseudonym": "Alex"},
+            {"original": "Tom", "pseudonym": "Alex"},
+            {"original": "Mary Ann", "pseudonym": "Sam"}]
+        assert list(project.glob("pseudonyms.json.*")) == []
+        notes = result["notes"]
+        mapping_note = [n for n in notes if n.startswith("The mapping you")]
+        assert mapping_note == [
+            "The mapping you gave is half of the reverse key for this run; "
+            "the backup is the other half and holds the real names. This "
+            "server does not keep the mapping unless asked. On this run it "
+            "was saved into the project's own pseudonyms.json (3 entries "
+            "added), which QualCoder applies on every import and which "
+            "travels into every later backup; store that file securely once "
+            "the import work is done, as QualCoder's own guidance says."]
+        variants = [n for n in notes if n.startswith("The mapping had")]
+        assert variants == [
+            "The mapping had alternative spellings; each was written to "
+            "pseudonyms.json as its own entry with the same pseudonym (1 "
+            "such entries). QualCoder applies such a file exactly as this "
+            "run did, but QualCoder's Pseudonyms dialog (the button in "
+            "Manage Files) will not add a second entry with a pseudonym "
+            "already in use, so change those entries in the file rather than "
+            "in the dialog."]
+        _house_rules(notes)
+
+    def test_pseudonyms_json_is_byte_identical_to_qualcoders_own_write(
+            self, tmp_path):
+        folder = build_project(tmp_path / "p.qda", "André met Zoë.")
+        write_fixture_sidecar(str(folder))
+        mapping = [{"original": "André", "pseudonym": "Alex"},
+                   {"original": "Zoë", "pseudonym": "Sam"}]
+        with wired(folder):
+            _, result = _save_run(mapping=mapping)
+        assert result.get("success") is True, result
+        written = _written(folder)
+        # QualCoder's own statement (pseudonyms.py:92-93), no encoding
+        # argument, on the same list.
+        reference = tmp_path / "reference.json"
+        with open(reference, "w") as output_file:
+            json.dump([{"original": "André", "pseudonym": "Alex"},
+                       {"original": "Zoë", "pseudonym": "Sam"}],
+                      output_file, indent=2)
+        assert written == reference.read_bytes()
+        assert written.isascii()
+        assert not written.endswith(b"\n")
+        assert b"\\u00e9" in written
+
+    def test_qualcoder_applying_the_written_file_gives_this_runs_text(
+            self, project):
+        _, result = _save_run()
+        assert result.get("success") is True, result
+        stored = query(project, "SELECT fulltext FROM source WHERE id=1"
+                       )[0]["fulltext"]
+        # Upstream's loop (manage_files.py:3344-3349): every entry of the
+        # file, in order, as a sequential whole-word re.sub. No chaining
+        # is possible here (no pseudonym is a name), so it must agree.
+        text = TEXT
+        for entry in json.loads(_written(project)):
+            text = re.sub(rf"(?<!\w){re.escape(entry['original'])}(?!\w)",
+                          entry["pseudonym"], text)
+        assert text == stored
+        from qualcoder_mcp.database import read_project_pseudonyms
+        entries, encoding = read_project_pseudonyms(project)
+        assert encoding == "utf-8"
+        assert entries == [{"original": "Thomas", "pseudonym": "Alex"},
+                           {"original": "Tom", "pseudonym": "Alex"},
+                           {"original": "Mary Ann", "pseudonym": "Sam"}]
+
+    def test_an_existing_file_is_merged_in_qualcoders_order(self, project):
+        existing = [{"original": "Peter", "pseudonym": "Pat",
+                     "added_by": "a later version"},
+                    {"original": "Jane", "pseudonym": "Jo"}]
+        _sidecar_file(project, existing)
+        out, result = _save_run()
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "existing_entries"] == 2
+        assert result["mapping_saved"] is True
+        assert json.loads(_written(project)) == existing + [
+            {"original": "Thomas", "pseudonym": "Alex"},
+            {"original": "Tom", "pseudonym": "Alex"},
+            {"original": "Mary Ann", "pseudonym": "Sam"}]
+
+    def test_a_conflicting_original_refuses_the_execute_before_the_backup(
+            self, project):
+        existing = [{"original": "Mary Ann", "pseudonym": "Zelda"}]
+        _sidecar_file(project, existing)
+        before = _written(project)
+        out = preview_of(save_mapping_to_project=True)
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "conflicts"] == [1]
+        warning = [w for w in out["warnings"]
+                   if w.startswith("Warning: saving this mapping")]
+        assert warning == [
+            "Warning: saving this mapping into pseudonyms.json would be "
+            "refused: entry [1] maps a name the file already maps, and "
+            "QualCoder's Pseudonyms dialog (the button in Manage Files) "
+            "refuses a duplicate original as well (see "
+            "mapping_retention.if_saved.conflicts). Remove the entry and "
+            "preview again; if the whole mapping is already in the file, run "
+            "with use_project_pseudonyms=true instead; or preview again "
+            "without save_mapping_to_project and execute with "
+            "researcher_keeps_mapping=true."]
+        refused = execute_strictly(out)
+        assert refused["reason"] == "pseudonyms_json_conflict"
+        assert refused["nothing_changed"] is True
+        assert refused["error"] == (
+            "The mapping cannot be saved into this project's pseudonyms.json: "
+            "entry [1] maps a name the file already maps, and QualCoder's "
+            "Pseudonyms dialog (the button in Manage Files) refuses a "
+            "duplicate original as well. Nothing was written. Remove or "
+            "change the entry and preview again, or edit the file in the "
+            "dialog; or preview again without save_mapping_to_project and "
+            "execute with researcher_keeps_mapping=true instead.")
+        # The file's own value is never quoted.
+        assert "Zelda" not in json.dumps(out) + json.dumps(refused)
+        assert backups(project) == []
+        assert _written(project) == before
+        _house_rules([refused["error"]] + warning)
+
+    def test_an_identical_pair_is_refused_and_points_to_use_project_pseudonyms(
+            self, project):
+        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"},
+                                {"original": "Tom", "pseudonym": "Alex"},
+                                {"original": "Mary Ann", "pseudonym": "Sam"}])
+        refused = execute_strictly(preview_of(save_mapping_to_project=True))
+        assert refused["reason"] == "pseudonyms_json_conflict"
+        assert refused["error"].endswith(
+            "Nothing was written. Those entries are already in the file "
+            "under the same pseudonyms, so run this file with "
+            "use_project_pseudonyms=true instead.")
+        # One entry the same and one new: the ordinary remedy.
+        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        refused = execute_strictly(preview_of(save_mapping_to_project=True))
+        assert refused["reason"] == "pseudonyms_json_conflict"
+        assert "Remove or change the entry" in refused["error"]
+        assert backups(project) == []
+
+    def test_a_duplicate_pseudonym_is_written_and_reported(self, project):
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Sam"}])
+        out, result = _save_run()
+        assert out["preview"]["mapping_retention"]["if_saved"][
+            "duplicate_pseudonyms"] == [1]
+        assert result["mapping_saved"] is True
+        assert json.loads(_written(project))[-1] == {
+            "original": "Mary Ann", "pseudonym": "Sam"}
+        note = [n for n in result["notes"] if n.startswith("1 entr(ies)")]
+        assert note == [
+            "1 entr(ies) of the mapping use a pseudonym pseudonyms.json "
+            "already gives to another name. QualCoder's Pseudonyms dialog "
+            "(the button in Manage Files) would have refused to add them by "
+            "hand; this tool wrote them, so those people share one pseudonym "
+            "in the file as they do in the rewritten text."]
+        assert "Peter" not in json.dumps(result)
+
+    def test_an_unreadable_pseudonyms_json_refuses_the_save_with_a_value_free_message(
+            self, project, monkeypatch):
+        """The reader's own cp1252 fixture: bytes a Windows QualCoder
+        wrote, on a machine whose default is UTF-8."""
+        (project / "pseudonyms.json").write_bytes(
+            '[{"original": "André", "pseudonym": "Alex"}]'.encode(
+                "cp1252"))
+        import locale
+        monkeypatch.setattr(locale, "getpreferredencoding",
+                            lambda do_setlocale=True: "utf-8")
+        out = preview_of(save_mapping_to_project=True)
+        if_saved = out["preview"]["mapping_retention"]["if_saved"]
+        assert if_saved["reason"] == "pseudonyms_json_unreadable"
+        refused = execute_strictly(out)
+        assert refused["reason"] == "pseudonyms_json_unreadable"
+        assert refused["error"].startswith(
+            "The mapping cannot be saved into this project's pseudonyms.json: "
+            "pseudonyms.json could not be parsed as QualCoder's list")
+        assert refused["error"].endswith(
+            "Nothing was written. Fix the file and preview again, or preview "
+            "again without save_mapping_to_project and execute with "
+            "researcher_keeps_mapping=true instead.")
+        assert "Andr" not in json.dumps(refused) + json.dumps(out)
+        assert backups(project) == []
+        assert any(w.startswith("Warning: saving this mapping into "
+                                "pseudonyms.json would be refused: "
+                                "pseudonyms.json could not be parsed")
+                   for w in out["warnings"])
+
+    @POSIX_ONLY
+    @pytest.mark.parametrize("inside", [True, False],
+                             ids=["into-the-project", "out-of-the-project"])
+    def test_a_symlinked_pseudonyms_json_is_not_written(self, project,
+                                                        tmp_path, inside):
+        target = (project / "kept.json") if inside else (
+            tmp_path / "elsewhere.json")
+        target.write_text(json.dumps([{"original": "Peter",
+                                       "pseudonym": "Pat"}]),
+                          encoding="utf-8")
+        (project / "pseudonyms.json").symlink_to(target)
+        before = target.read_bytes()
+        refused = execute_strictly(preview_of(save_mapping_to_project=True))
+        assert refused["reason"] == "pseudonyms_json_is_a_link"
+        assert "symbolic link" in refused["error"]
+        assert (project / "pseudonyms.json").is_symlink()
+        assert target.read_bytes() == before
+        assert backups(project) == []
+
+    @staticmethod
+    def _db_bytes(project):
+        return (project / "data.qda").read_bytes()
+
+    def test_a_save_failure_rolls_the_run_back_and_names_the_backup(
+            self, project, monkeypatch):
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Thomas said so.")
+        out = preview_of(save_mapping_to_project=True, rewrite_memos=True)
+        before = self._db_bytes(project)
+        real = server.tempfile.mkstemp
+
+        def refusing(*args, **kwargs):
+            if str(kwargs.get("prefix", "")).startswith("pseudonyms.json"):
+                raise PermissionError("the folder is read-only")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(server.tempfile, "mkstemp", refusing)
+        refused = execute_strictly(out)
+        monkeypatch.undo()
+        assert refused["error"] == (
+            "The mapping could not be written into this project's folder for "
+            "saving (PermissionError); the rewrite was rolled back with it, "
+            "nothing was changed and no file was left behind. Check the "
+            "permissions on the project folder and preview again, or preview "
+            "again without save_mapping_to_project and execute with "
+            "researcher_keeps_mapping=true instead.")
+        assert "read-only" not in refused["error"]       # class name only
+        assert refused["backup_path"]
+        assert self._db_bytes(project) == before
+        assert not (project / "pseudonyms.json").exists()
+        assert list(project.glob("pseudonyms.json*")) == []
+        assert server.db.read_only is True
+        _house_rules([refused["error"]])
+
+    def test_a_failing_fdopen_leaves_no_descriptor_and_no_file(
+            self, project, monkeypatch):
+        """Test 57, the Batch B round-5 lesson on this writer: the
+        descriptor is owned by `os.fdopen` before anything can fault, so a
+        failure there closes it, and the suite's Windows rule (an open
+        file cannot be unlinked) would leave the temporary file behind
+        if it did not."""
+        out = preview_of(save_mapping_to_project=True)
+
+        def failing(fd, *args, **kwargs):
+            raise OSError("too many open files")
+
+        monkeypatch.setattr(server.os, "fdopen", failing)
+        refused = execute_strictly(out)
+        monkeypatch.undo()
+        assert "(OSError)" in refused["error"]
+        assert list(project.glob("pseudonyms.json*")) == []
+        # The database is open, as it should be; no descriptor is left on
+        # the temporary file.
+        assert [path for path in H.open_paths_under(project)
+                if "pseudonyms.json" in path] == []
+
+    @pytest.mark.parametrize("pre_existing", [True, False],
+                             ids=["a-file-was-there", "no-file-was-there"])
+    def test_a_failed_commit_leaves_no_pseudonyms_json_behind(
+            self, project, monkeypatch, pre_existing):
+        if pre_existing:
+            _sidecar_file(project, [{"original": "Peter",
+                                     "pseudonym": "Pat"}])
+        before = (_written(project) if pre_existing else None)
+        out = preview_of(save_mapping_to_project=True)
+        written = []
+        real = server._write_pseudonyms_json_tmp
+
+        def spy(*args, **kwargs):
+            path = real(*args, **kwargs)
+            written.append(path)
+            return path
+
+        def failing_commit(*args, **kwargs):
+            assert written and written[0].exists()
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(server, "_write_pseudonyms_json_tmp", spy)
+        monkeypatch.setattr(server, "_recheck_lock_before_commit",
+                            failing_commit)
+        refused = execute_strictly(out)
+        monkeypatch.undo()
+        assert written, "the temporary file was never written"
+        assert "error" in refused and refused["backup_path"]
+        assert not written[0].exists()
+        assert list(project.glob("pseudonyms.json.*")) == []
+        if pre_existing:
+            assert _written(project) == before
+        else:
+            assert not (project / "pseudonyms.json").exists()
+
+    def test_a_rename_failure_after_the_commit_is_reported_not_recorded(
+            self, project, monkeypatch):
+        out = preview_of(save_mapping_to_project=True)
+        real = Path.replace
+
+        def refusing(self, target):
+            if Path(target).name == "pseudonyms.json":
+                raise PermissionError("no")
+            return real(self, target)
+
+        monkeypatch.setattr(Path, "replace", refusing)
+        result = execute_strictly(out)
+        monkeypatch.undo()
+        assert result.get("success") is True, result
+        assert result["mapping_saved"] is False
+        assert result["mapping_not_saved_because"] == "PermissionError"
+        assert not (project / "pseudonyms.json").exists()
+        assert list(project.glob("pseudonyms.json.*")) == []
+        note = [n for n in result["notes"] if n.startswith("The mapping")][0]
+        assert note.endswith(
+            "On this run the save into the project's own pseudonyms.json was "
+            "requested, but the file could not be renamed into place after "
+            "the run committed (PermissionError); nothing else was lost: the "
+            "rewrite stands, the backup holds the real names, and the "
+            "journal entry and the run record say the save was requested, "
+            "not made. Enter the mapping in QualCoder's Pseudonyms dialog "
+            "(the button in Manage Files) now.")
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["mapping_retention"]["choice"] == "save_requested"
+        body = query(project, "SELECT jentry FROM journal")[0]["jentry"]
+        assert "pseudonyms.json requested (3 entries to add)" in body
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     )[0]["fulltext"].startswith("Alex said")
+
+    def test_the_written_file_is_inside_the_backup_of_the_next_run(
+            self, project):
+        _, result = _save_run()
+        assert result["mapping_saved"] is True
+        written = _written(project)
+        # The next file, from the saved mapping, as the loop of ruling A
+        # runs it; its backup holds the file this run saved.
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE source SET fulltext=? WHERE id=4",
+                    ("Tom was here too.",))
+        con.commit()
+        con.close()
+        out = preview_of(mapping=None, use_project_pseudonyms=True,
+                         file_id=4)
+        second = execute_as_recipe(out)
+        assert second.get("success") is True, second
+        backup = Path(second["backup_path"])
+        assert (backup / "pseudonyms.json").read_bytes() == written
+
+    @pytest.mark.parametrize("switch", [False, True],
+                             ids=["switch-off", "switch-on"])
+    def test_nothing_changed_saves_nothing_and_says_so(self, project,
+                                                       switch):
+        out = preview_of(save_mapping_to_project=True, rewrite_memos=switch,
+                         file_id=4)
+        tail = (" The mapping would not be saved either, because no run "
+                "would happen. Pick a file that contains one of the names and "
+                "preview again, or enter the mapping in QualCoder's "
+                "Pseudonyms dialog (the button in Manage Files) directly.")
+        assert any(w.endswith("would rewrite nothing." + tail)
+                   for w in out["warnings"]), out["warnings"]
+        answered = execute_strictly(out)
+        assert answered["nothing_changed"] is True
+        assert answered["message"].endswith(
+            "no backup was taken. The mapping was not saved, because no run "
+            "happened. Pick a file that contains one of the names and "
+            "preview again, or enter the mapping in QualCoder's Pseudonyms "
+            "dialog (the button in Manage Files) directly.")
+        assert not (project / "pseudonyms.json").exists()
+        assert backups(project) == []
+        _house_rules([answered["message"]])
+        # Without the save, no tail.
+        plain = execute_strictly(preview_of(rewrite_memos=switch, file_id=4))
+        assert "The mapping was not saved" not in plain["message"]
+
+
+# =============================================================================
+# v0.13 Brief 2: the two inspection routes (ruling 14b; tests 58 and 59)
+# =============================================================================
+
+class TestTheInspectionRoutes:
+
+    ENTRIES = [{"original": "Thomas", "pseudonym": "Alex"},
+               {"original": "Mary Ann", "pseudonym": "Sam"}]
+
+    @staticmethod
+    def _report(**kwargs):
+        return json.loads(server.get_current_project(**kwargs))
+
+    def test_get_current_project_reports_presence_and_count_without_a_name(
+            self, project):
+        _sidecar_file(project, self.ENTRIES)
+        out = self._report()
+        assert out["pseudonyms_json"] == {
+            "present": True, "entries": 2, "encoding": "utf-8",
+            "note": (
+                "The project's own pseudonyms.json (QualCoder's import-time "
+                "list) is present with 2 entries. Its contents are the "
+                "researcher's reverse key and are not returned by default: "
+                "to see or change them, open QualCoder's Pseudonyms dialog "
+                "(the button in Manage Files), or call get_current_project "
+                "with include_pseudonyms=true, which sends the real names to "
+                "the AI provider.")}
+        serialised = json.dumps(out)
+        for name in ("Thomas", "Mary Ann", "Alex", "Sam"):
+            assert name not in serialised, name
+        _house_rules([out["pseudonyms_json"]["note"]])
+
+    def test_it_reports_absence(self, project):
+        assert self._report()["pseudonyms_json"] == {"present": False}
+
+    def test_it_reports_an_unreadable_file_value_free(self, project):
+        (project / "pseudonyms.json").write_text(
+            '{"Thomas": "Alex"}', encoding="utf-8")
+        block = self._report()["pseudonyms_json"]
+        assert block == {"present": True, "entries": None, "error": (
+            "pseudonyms.json could not be parsed as QualCoder's list of "
+            "{original, pseudonym} entries: the file holds a dict, not a "
+            "list.")}
+
+    def test_include_pseudonyms_returns_the_list_and_the_description_says_so(
+            self, project):
+        _sidecar_file(project, self.ENTRIES)
+        block = self._report(include_pseudonyms=True)["pseudonyms_json"]
+        assert block["entries_list"] == self.ENTRIES
+        assert block["entries"] == 2
+        description = " ".join(
+            server.mcp._tool_manager._tools["get_current_project"]
+            .description.split())
+        assert ("This returns every original name in the file and its "
+                "pseudonym into the conversation, which sends the real names "
+                "to the AI provider. Use it only when the researcher has "
+                "asked to see or check the list; the default report says "
+                "whether the file exists and how many entries it has without "
+                "that." in description)
+        # Absent, the switch adds nothing.
+        (project / "pseudonyms.json").unlink()
+        assert self._report(include_pseudonyms=True)["pseudonyms_json"] == {
+            "present": False}
+
+
 class TestTheSafeNameHelperOnWhatIsNotAName:
     """Re-verification of fix round 1, R-8: the empty-string guard in
     `_pseudonymise_safe_name` reverted with the suite green. A name that
@@ -5437,7 +6181,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
                 "pseudonymise_source", mapping=mapping,
                 file_id=ew["file_id"], case_mode=ew["case_mode"],
                 overlap_policy=ew["overlap_policy"],
-                rewrite_memos=ew["rewrite_memos"])
+                rewrite_memos=ew["rewrite_memos"],
+                save_mapping_to_project=ew["save_mapping_to_project"])
             return pt.hashlib.sha256(pt.canonical(pt._binding(
                 "pseudonymise_source", args, project_id)).encode("utf-8")
             ).hexdigest()[:8]
@@ -5453,7 +6198,8 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
             "pseudonymise_source", mapping=true_mapping,
             file_id=ew["file_id"], case_mode=ew["case_mode"],
             overlap_policy=ew["overlap_policy"],
-            rewrite_memos=ew["rewrite_memos"])
+            rewrite_memos=ew["rewrite_memos"],
+            save_mapping_to_project=ew["save_mapping_to_project"])
         assert pt.bind_id("pseudonymise_source", true_args, project_id,
                           pt.load_secret()) == bind
 
@@ -5606,11 +6352,19 @@ class TestProjectPseudonyms:
         out = preview_of(mapping=None, use_project_pseudonyms=True)
         assert "outside the project" in out["error"]
 
-    def test_the_sidecar_is_never_written(self, project):
-        """Owner ruling Q6: the file is the reverse key in plain text at
-        the project root and this release never creates or changes it."""
-        execute_from(preview_of())
+    def test_the_sidecar_is_never_written_unless_asked(self, project):
+        """Owner ruling Q6 held that the file, the reverse key in plain
+        text at the project root, is never created or changed. Ruling 14
+        of 2026-09-22 supersedes it (and the v0.12 design dossier's
+        `D1_pseudonymise_source.md` on the point): the typed mapping is
+        saved into it when the call asks, with `save_mapping_to_project`,
+        and never otherwise. Attested or not asked, nothing is written
+        (TestSavingTheMappingIntoPseudonymsJson has the save itself)."""
+        result = execute_from(preview_of(), researcher_keeps_mapping=True)
+        assert result.get("success") is True, result
         assert not (project / "pseudonyms.json").exists()
+        assert "mapping_saved" not in result
+        assert list(project.glob("pseudonyms.json.*")) == []
 
 
 class TestImportRider:
@@ -5713,8 +6467,14 @@ class TestImportRider:
 
 class TestResultShape:
 
-    def test_the_result_carries_the_four_notes(self, project):
+    def test_the_result_carries_the_notes(self, project):
+        """The four notes of v0.12, and on the typed path the mapping note
+        of ruling 14d (Brief 2), by their opening words."""
         result = execute_from(preview_of())
+        assert [note.split(" ")[:3] for note in result["notes"]] == [
+            ["Positions", "after", "the"], ["The", "backup", "taken"],
+            ["An", "open", "QualCoder"], ["QualCoder", "4.0's", "AI"],
+            ["The", "mapping", "you"]]
         joined = " ".join(result["notes"])
         assert ("Positions after the first replacement in this file have "
                 "changed: re-read it before any further coding, and treat "
@@ -5823,6 +6583,8 @@ class TestStructureAndWindowsSafety:
     @pytest.mark.parametrize("module,name", [
         ("server", "_write_run_manifest"),
         ("database", "read_project_pseudonyms"),
+        # v0.13, Brief 2: the save into the project's pseudonyms.json.
+        ("server", "_write_pseudonyms_json_tmp"),
     ])
     def test_every_text_file_this_feature_opens_names_its_encoding(
             self, module, name):

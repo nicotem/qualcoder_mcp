@@ -151,6 +151,58 @@ class TestTheTransportCoercesFileId:
         assert answer.get("reason") == "unknown_file_id"
 
 
+
+class TestTheTransportCoercesTheNewSwitches:
+    """v0.13 Brief 2 (its hand-off note, H.2.6, and the lead's second
+    answer): the three new booleans are treated as `file_id` was under
+    QA-3: the transport's coercion is kept, documented in the
+    description, and pinned as it behaves. Measured on mcp 1.30.0:
+    1, "1", "true", "yes", "on", "t" and "y" reach the tool as true;
+    0, "0", "false", "no" and "off" as false; 2 and "maybe" are refused
+    by the transport. The attestation is among them: a host that sends
+    "yes" attests, which is why the description says so."""
+
+    TRUE = [1, "1", "true", "yes", "on", "t", "y"]
+    FALSE = [0, "0", "false", "no", "off"]
+
+    def _recipe(self, argument, sent):
+        answer = _preview_body(asyncio.run(server.mcp.call_tool(
+            "pseudonymise_source",
+            {"mapping": MAPPING, "file_id": 1, argument: sent})))
+        return answer["execute_with"]["arguments"]
+
+    @pytest.mark.parametrize("argument", ["rewrite_memos",
+                                          "save_mapping_to_project",
+                                          "researcher_keeps_mapping"])
+    def test_the_truthy_and_falsy_spellings(self, project, argument):
+        for sent in self.TRUE:
+            assert self._recipe(argument, sent).get(argument) is True, sent
+        for sent in self.FALSE:
+            assert self._recipe(argument, sent).get(argument, False) \
+                is False, sent
+        assert backups(project) == []
+
+    @pytest.mark.parametrize("argument", ["rewrite_memos",
+                                          "save_mapping_to_project",
+                                          "researcher_keeps_mapping"])
+    @pytest.mark.parametrize("sent", [2, "maybe"])
+    def test_a_value_that_is_not_a_boolean_is_refused(self, project,
+                                                      argument, sent):
+        with pytest.raises(Exception) as refused:
+            asyncio.run(server.mcp.call_tool(
+                "pseudonymise_source",
+                {"mapping": MAPPING, "file_id": 1, argument: sent}))
+        assert argument in str(refused.value)
+
+    def test_include_pseudonyms_takes_yes_for_true(self, project):
+        (project / "pseudonyms.json").write_text(json.dumps(
+            [{"original": "Thomas", "pseudonym": "Alex"}]), encoding="utf-8")
+        for sent, listed in (("yes", True), ("on", True), ("no", False)):
+            answer = _preview_body(asyncio.run(server.mcp.call_tool(
+                "get_current_project", {"include_pseudonyms": sent})))
+            assert ("entries_list" in answer["pseudonyms_json"]) is listed
+
+
 # =============================================================================
 # THE REFUSALS THAT REPLACE `skipped_files`
 # =============================================================================

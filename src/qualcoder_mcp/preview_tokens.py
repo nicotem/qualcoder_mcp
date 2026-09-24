@@ -389,6 +389,10 @@ def _args_pseudonymise_source(kwargs):
 
     `rewrite_memos` changes what happens to rows (the public part of
     every note in the project), so it is bound (v0.13, Brief 2).
+    `save_mapping_to_project` writes a file of real names into the
+    project folder, a side effect the human must have seen in the
+    preview, so it is bound. `researcher_keeps_mapping` is an attestation
+    with no side effect, in the class of `record_in_journal`, and is not.
 
     `file_id` is one id since v0.13 (one file per call), bound as the
     integer the server validated. `TOKEN_VERSION` is not bumped for it:
@@ -401,7 +405,9 @@ def _args_pseudonymise_source(kwargs):
             "mapping": kwargs["mapping"],
             "case_mode": str(kwargs["case_mode"]),
             "overlap_policy": str(kwargs["overlap_policy"]),
-            "rewrite_memos": bool(kwargs["rewrite_memos"])}
+            "rewrite_memos": bool(kwargs["rewrite_memos"]),
+            "save_mapping_to_project": bool(
+                kwargs["save_mapping_to_project"])}
 
 
 REGISTRY: Dict[str, Any] = {
