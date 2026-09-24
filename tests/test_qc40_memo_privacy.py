@@ -1382,7 +1382,7 @@ class TestRewritePublicMemo:
 
     def test_merge_public_memo_is_unchanged(self):
         """The helper is new and `merge_public_memo` is not touched: it
-        stays matched to upstream `ai_memo.py:46-59`, which the module
+        stays matched to upstream `ai_memo.py:48-59`, which the module
         docstring promises."""
         import qualcoder_mcp.memo_privacy as memo_privacy
         assert "Behaviour is matched to upstream ai_memo.py exactly" in \
