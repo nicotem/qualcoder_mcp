@@ -4035,14 +4035,15 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert out["preview"]["mapping_retention"]["if_saved"] == {
             "existing_entries": 0, "encoding": None, "would_write": 3,
             "variants_as_separate_entries": 1, "conflicts": [],
-            "duplicate_pseudonyms": []}
+            "duplicate_pseudonyms": [], "pre_empted_by_existing": []}
         assert result.get("success") is True, result
         assert result["mapping_saved"] is True
         assert "mapping_not_saved_because" not in result
+        # Longest original first (fix round 1, QA-B2-1).
         assert json.loads(_written(project)) == [
+            {"original": "Mary Ann", "pseudonym": "Sam"},
             {"original": "Thomas", "pseudonym": "Alex"},
-            {"original": "Tom", "pseudonym": "Alex"},
-            {"original": "Mary Ann", "pseudonym": "Sam"}]
+            {"original": "Tom", "pseudonym": "Alex"}]
         assert list(project.glob("pseudonyms.json.*")) == []
         notes = result["notes"]
         mapping_note = [n for n in notes if n.startswith("The mapping you")]
@@ -4058,11 +4059,24 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert variants == [
             "The mapping had alternative spellings; each was written to "
             "pseudonyms.json as its own entry with the same pseudonym (1 "
-            "such entries). QualCoder applies such a file exactly as this "
-            "run did, but QualCoder's Pseudonyms dialog (the button in "
+            "such entr(ies)). QualCoder's Pseudonyms dialog (the button in "
             "Manage Files) will not add a second entry with a pseudonym "
             "already in use, so change those entries in the file rather than "
             "in the dialog."]
+        # Fix round 1, QA-B2-1: the claim that QualCoder applies such a
+        # file "exactly as this run did" is gone, and what it does is said.
+        assert not any("exactly as this run did" in n for n in notes)
+        applying = [n for n in notes if n.startswith(
+            "QualCoder applies pseudonyms.json")]
+        assert applying == [
+            "QualCoder applies pseudonyms.json on every later import one "
+            "entry at a time, in file order and case-sensitively. The new "
+            "entries were written longest name first, so a shorter name "
+            "inside a longer one does not pre-empt it; an entry already in "
+            "the file can still (see the warnings), a pseudonym that "
+            "contains a name from the mapping is rewritten again, and under "
+            "an insensitive case mode only the spellings saved are "
+            "replaced."]
         _house_rules(notes)
 
     @POSIX_ONLY
@@ -4118,9 +4132,9 @@ class TestSavingTheMappingIntoPseudonymsJson:
         from qualcoder_mcp.database import read_project_pseudonyms
         entries, encoding = read_project_pseudonyms(project)
         assert encoding == "utf-8"
-        assert entries == [{"original": "Thomas", "pseudonym": "Alex"},
-                           {"original": "Tom", "pseudonym": "Alex"},
-                           {"original": "Mary Ann", "pseudonym": "Sam"}]
+        assert entries == [{"original": "Mary Ann", "pseudonym": "Sam"},
+                           {"original": "Thomas", "pseudonym": "Alex"},
+                           {"original": "Tom", "pseudonym": "Alex"}]
 
     def test_an_existing_file_is_merged_in_qualcoders_order(self, project):
         existing = [{"original": "Peter", "pseudonym": "Pat",
@@ -4132,9 +4146,9 @@ class TestSavingTheMappingIntoPseudonymsJson:
             "existing_entries"] == 2
         assert result["mapping_saved"] is True
         assert json.loads(_written(project)) == existing + [
+            {"original": "Mary Ann", "pseudonym": "Sam"},
             {"original": "Thomas", "pseudonym": "Alex"},
-            {"original": "Tom", "pseudonym": "Alex"},
-            {"original": "Mary Ann", "pseudonym": "Sam"}]
+            {"original": "Tom", "pseudonym": "Alex"}]
 
     def test_a_conflicting_original_refuses_the_execute_before_the_backup(
             self, project):
@@ -4197,8 +4211,8 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert out["preview"]["mapping_retention"]["if_saved"][
             "duplicate_pseudonyms"] == [1]
         assert result["mapping_saved"] is True
-        assert json.loads(_written(project))[-1] == {
-            "original": "Mary Ann", "pseudonym": "Sam"}
+        assert {"original": "Mary Ann", "pseudonym": "Sam"} in json.loads(
+            _written(project))
         note = [n for n in result["notes"] if n.startswith("1 entr(ies)")]
         assert note == [
             "1 entr(ies) of the mapping use a pseudonym pseudonyms.json "
@@ -4432,6 +4446,151 @@ class TestSavingTheMappingIntoPseudonymsJson:
 # =============================================================================
 # v0.13 Brief 2: the two inspection routes (ruling 14b; tests 58 and 59)
 # =============================================================================
+
+# =============================================================================
+# Brief 2 fix round 1, QA-B2-1: QualCoder's own application of the saved file
+# =============================================================================
+
+from hypothesis import given, settings, strategies as st  # noqa: E402
+
+
+def upstream_apply(entries, text):
+    """QualCoder's loop, as written at the pin (`manage_files.py:3344-3349`,
+    and `:2510-2512` the same): every entry of pseudonyms.json in file
+    order, each a case-sensitive whole-word `re.sub`."""
+    for pseudonym in entries:
+        text = re.sub(rf"(?<!\w){re.escape(pseudonym['original'])}(?!\w)",
+                      pseudonym['pseudonym'], text)
+    return text
+
+
+def engine_apply(mapping, text, case_mode="exact"):
+    compiled = P.Compiled(P.validate_mapping(mapping, case_mode))
+    return P.apply_replacements(text, P.find_replacements(compiled, text))
+
+
+def written_list(mapping, case_mode="exact"):
+    validated = P.validate_mapping(mapping, case_mode)
+    return [{"original": original, "pseudonym": pseudonym}
+            for _, original, pseudonym, _ in
+            server._pseudonyms_json_new_entries(validated)]
+
+
+# Names that nest (Ann in Mary Ann, Tom in Tom Smith, Mary Ann in Mary
+# Ann Lee) and never overlap otherwise, and pseudonyms that contain none
+# of them, so that ordering is the only thing that can differ.
+_NAMES = ["Ann", "Mary Ann", "Mary Ann Lee", "Tom", "Tom Smith", "Thomas"]
+_PSEUDONYMS = ["Pab", "Qcd", "Rst", "Uvw", "Xyz", "Kfg"]
+
+
+@st.composite
+def _nested_mappings(draw):
+    chosen = draw(st.permutations(_NAMES).map(
+        lambda names: names[:draw(st.integers(1, len(_NAMES)))]))
+    groups, entries = list(chosen), []
+    while groups:
+        size = draw(st.integers(1, min(2, len(groups))))
+        entry, groups = groups[:size], groups[size:]
+        entries.append({"original": entry[0],
+                        "pseudonym": _PSEUDONYMS[len(entries)],
+                        "variants": entry[1:]})
+    words = draw(st.lists(st.sampled_from(
+        _NAMES + ["said", "met", "and", "Lee", "Smith", "Mary", "."]),
+        min_size=1, max_size=12))
+    return entries, " ".join(words)
+
+
+class TestQualCoderAppliesTheSavedFileAsThisRunDid:
+
+    @settings(max_examples=300, deadline=None)
+    @given(sample=_nested_mappings())
+    def test_the_written_order_reproduces_the_run_under_upstreams_loop(
+            self, sample):
+        """Nested names in any typed order, variants included, under the
+        exact case mode: QualCoder's one-entry-at-a-time application of
+        the list as written gives this run's text."""
+        mapping, text = sample
+        assert upstream_apply(written_list(mapping), text) == \
+            engine_apply(mapping, text)
+
+    @pytest.mark.parametrize("mapping,text,expected", [
+        ([{"original": "Ann", "pseudonym": "Pnine"},
+          {"original": "Mary Ann", "pseudonym": "Sam"}],
+         "Mary Ann spoke to Ann.", "Sam spoke to Pnine."),
+        ([{"original": "Ann", "pseudonym": "Sam",
+           "variants": ["Mary Ann"]}],
+         "Mary Ann spoke.", "Sam spoke."),
+    ], ids=["a-shorter-entry-first", "a-longer-variant"])
+    def test_the_qa_reproductions_through_the_tool(self, tmp_path, mapping,
+                                                   text, expected):
+        folder = build_project(tmp_path / "p.qda", text)
+        write_fixture_sidecar(str(folder))
+        with wired(folder):
+            _, result = _save_run(mapping=mapping)
+            assert result.get("success") is True, result
+            stored = query(folder, "SELECT fulltext FROM source WHERE id=1"
+                           )[0]["fulltext"]
+            saved = json.loads(_written(folder))
+        assert stored == expected
+        assert upstream_apply(saved, text) == expected
+
+    def test_under_an_insensitive_mode_qualcoder_replaces_the_saved_spellings_only(
+            self, tmp_path):
+        text = "THOMAS came, then Tom and thomas left."
+        mapping = [{"original": "Thomas", "pseudonym": "Alex",
+                    "variants": ["Tom"]}]
+        folder = build_project(tmp_path / "p.qda", text)
+        write_fixture_sidecar(str(folder))
+        with wired(folder):
+            exact = preview_of(mapping=mapping, save_mapping_to_project=True)
+            out, result = _save_run(mapping=mapping,
+                                    case_mode="insensitive")
+            saved = json.loads(_written(folder))
+        assert engine_apply(mapping, text, "insensitive") == \
+            "Alex came, then Alex and Alex left."
+        assert upstream_apply(saved, text) == \
+            "THOMAS came, then Alex and thomas left."
+        warning = [w for w in out["warnings"]
+                   if "applies pseudonyms.json case-sensitively" in w]
+        assert warning == [
+            "Warning: this run replaces the names in any letter case "
+            "(case_mode insensitive), and QualCoder applies pseudonyms.json "
+            "case-sensitively: on its next import it replaces only the "
+            "spellings saved, so a THOMAS or a thomas in a new transcript "
+            "stays as it is. Add each spelling you expect as a variant, or "
+            "check the next import by hand."]
+        assert not any("case-sensitively: on its next import" in w
+                       for w in exact["warnings"])
+        assert any("under an insensitive case mode only the spellings "
+                   "saved are replaced" in n for n in result["notes"])
+        _house_rules(warning)
+
+    def test_an_existing_shorter_entry_is_warned_about(self, project):
+        _sidecar_file(project, [{"original": "Ann", "pseudonym": "Pnine"}])
+        mapping = [{"original": "Thomas", "pseudonym": "Alex"},
+                   {"original": "Mary Ann", "pseudonym": "Sam"}]
+        out = preview_of(mapping=mapping, save_mapping_to_project=True)
+        if_saved = out["preview"]["mapping_retention"]["if_saved"]
+        assert if_saved["pre_empted_by_existing"] == [1]
+        assert if_saved["conflicts"] == []
+        warning = [w for w in out["warnings"] if "pre_empted_by_existing"
+                   in w]
+        assert len(warning) == 1 and warning[0].startswith(
+            "Warning: entry [1] holds, as a word, a name that "
+            "pseudonyms.json already lists.")
+        assert "Pnine" not in json.dumps(out)
+        _house_rules(warning)
+        # QualCoder's loop over the file as it would be saved shows why.
+        result = execute_strictly(out, mapping=mapping)
+        assert upstream_apply(json.loads(_written(project)),
+                              "Mary Ann met Ann.") == "Mary Pnine met Pnine."
+        assert result["mapping_saved"] is True
+        # No shorter entry in the file: no warning.
+        _sidecar_file(project, [{"original": "Anne", "pseudonym": "Pnine"}])
+        again = preview_of(mapping=mapping, save_mapping_to_project=True)
+        assert again["preview"]["mapping_retention"]["if_saved"][
+            "pre_empted_by_existing"] == []
+
 
 class TestTheInspectionRoutes:
     """Ruling 14b, and the owner's ruling of 2026-09-24 (Brief 2 fix round
@@ -7104,7 +7263,7 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "record and neither may be given."),
         ("the_file_is_qualcoders_format",                # point 7
          "Alternative spellings become separate entries with the same "
-         "pseudonym, which QualCoder applies correctly but the dialog will "
+         "pseudonym, which the dialog will "
          "not add by hand."),
         ("the_transport_coerces_the_switches",           # H.2.6
          "The transport turns 1, \"1\", \"true\", \"yes\", \"on\", \"t\" "

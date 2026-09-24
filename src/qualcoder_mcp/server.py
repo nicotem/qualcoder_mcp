@@ -10526,20 +10526,28 @@ class _SaveRefused(Exception):
         self.detail = detail
 
 
-def _pseudonyms_json_new_entries(validated) -> List[Tuple[int, str, str, bool]]:
-    """The typed mapping as QualCoder's own list, in the caller's order.
+def _pseudonyms_json_new_entries(validated
+                                 ) -> List[Tuple[int, str, str, bool]]:
+    """The typed mapping as QualCoder's own list, longest name first.
 
-    Each entry's original, then each of its variants as an entry of its
-    own with the same pseudonym, which is how QualCoder applies such a
-    file (`manage_files.py:2510-2512`, `:3344-3349`: every entry fires).
-    As `(caller index, original, pseudonym, is_variant)`.
+    Each entry's original and each of its variants becomes an entry of
+    its own with the same pseudonym. QualCoder applies the file one entry
+    at a time, in file order and case-sensitively, each a whole-word
+    `re.sub` (`manage_files.py:3344-3349`, and `:2510-2512` the same, at
+    the pin), where this run applies the whole mapping in one pass,
+    longest match first. So the new entries are written longest original
+    first (a stable sort, so equal lengths keep the caller's order): a
+    name that holds a shorter one as a word (Mary Ann, Ann) then comes
+    before it, and QualCoder's next import replaces it as this run did
+    rather than rewriting its shorter part first (Brief 2 fix round 1,
+    QA-B2-1). As `(caller index, original, pseudonym, is_variant)`.
     """
     out = []
     for entry in validated.entries:
         out.append((entry.index, entry.original, entry.pseudonym, False))
         for variant in entry.variants:
             out.append((entry.index, variant, entry.pseudonym, True))
-    return out
+    return sorted(out, key=lambda item: -len(item[1]))
 
 
 def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
@@ -10600,6 +10608,21 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
         if any(item["pseudonym"] == pseudonym
                and item["original"] not in forms_of[index]
                for item in existing)})
+    # An entry already in the file whose original is a word of a new,
+    # longer one comes first in the file, so QualCoder's next import
+    # replaces that part before the longer name can match (an existing
+    # Ann before an appended Mary Ann gives "Mary <Ann's pseudonym>").
+    # Only warned about: the file's own order is the researcher's.
+    shorter = sorted({item["original"] for item in existing
+                      if item["original"]}, key=len, reverse=True)
+    pre_empted: List[int] = []
+    if shorter:
+        inside = re.compile(
+            r"(?<!\w)(?:" + "|".join(re.escape(form) for form in shorter)
+            + r")(?!\w)")
+        pre_empted = sorted({index for index, original, _, _ in new
+                             if original not in by_original
+                             and inside.search(original)})
     return {
         "existing_entries": len(existing),
         "encoding": encoding,
@@ -10608,6 +10631,7 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
                                             if variant),
         "conflicts": conflicts,
         "duplicate_pseudonyms": duplicates,
+        "pre_empted_by_existing": pre_empted,
         # The whole mapping already in the file under the same pseudonyms:
         # the refusal then points to use_project_pseudonyms.
         "already_there": bool(new) and all(
@@ -11288,6 +11312,28 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             f"refused: {if_saved['error']} Fix the file and preview again, "
             f"or preview again without save_mapping_to_project and execute "
             f"with researcher_keeps_mapping=true.")
+    # Brief 2 fix round 1, QA-B2-1: what QualCoder's own application of
+    # the saved file will do differently from this run.
+    if if_saved.get("pre_empted_by_existing"):
+        warnings.append(
+            f"Warning: entry {if_saved['pre_empted_by_existing']} holds, as "
+            f"a word, a name that pseudonyms.json already lists. QualCoder "
+            f"applies the file one entry at a time, in file order, so on "
+            f"its next import the entry already in the file replaces that "
+            f"word first and the longer name is never matched (an Ann "
+            f"listed before Mary Ann turns Mary Ann into Mary and Ann's "
+            f"pseudonym). After the save, edit pseudonyms.json so that the "
+            f"longer name comes first (see "
+            f"mapping_retention.if_saved.pre_empted_by_existing).")
+    if retention.get("chosen") in ("save_requested", "both") and \
+            preview.get("case_mode") not in (None, "exact"):
+        warnings.append(
+            f"Warning: this run replaces the names in any letter case "
+            f"(case_mode {preview.get('case_mode')}), and QualCoder applies "
+            f"pseudonyms.json case-sensitively: on its next import it "
+            f"replaces only the spellings saved, so a THOMAS or a thomas "
+            f"in a new transcript stays as it is. Add each spelling you "
+            f"expect as a variant, or check the next import by hand.")
     if not totals.get("replacements"):
         # Three forms (Brief 2, 4.8): the switch off; on, with notes to
         # rewrite; on, with nothing anywhere. Where an execute would do
@@ -11390,12 +11436,23 @@ def _pseudonymise_mapping_notes(result: Dict[str, Any],
                  "their own record; make sure that is true now, because "
                  "nothing else can say later who each pseudonym was.")
     notes = [note]
+    if save and saved:
+        # Brief 2 fix round 1, QA-B2-1: what QualCoder does with the file,
+        # said as it is. The ruling's "exactly as this run did" was not.
+        notes.append(
+            "QualCoder applies pseudonyms.json on every later import one "
+            "entry at a time, in file order and case-sensitively. The new "
+            "entries were written longest name first, so a shorter name "
+            "inside a longer one does not pre-empt it; an entry already in "
+            "the file can still (see the warnings), a pseudonym that "
+            "contains a name from the mapping is rewritten again, and under "
+            "an insensitive case mode only the spellings saved are "
+            "replaced.")
     if save and saved and merge["variants_as_separate_entries"]:
         notes.append(
             f"The mapping had alternative spellings; each was written to "
             f"pseudonyms.json as its own entry with the same pseudonym "
-            f"({merge['variants_as_separate_entries']} such entries). "
-            f"QualCoder applies such a file exactly as this run did, but "
+            f"({merge['variants_as_separate_entries']} such entr(ies)). "
             f"QualCoder's Pseudonyms dialog (the button in Manage Files) will "
             f"not add a second entry with a pseudonym already in use, so "
             f"change those entries in the file rather than in the dialog.")
@@ -11923,11 +11980,18 @@ def pseudonymise_source(
                  button in Manage Files) refuses a duplicate original,
                  whether or not the pseudonym is the same; a pseudonym the
                  file already uses for another name is written and
-                 reported). Alternative spellings become separate entries
-                 with the same pseudonym, which QualCoder applies correctly
-                 but the dialog will not add by hand. The file holds the
-                 real names in plain text at the project root and travels
-                 into every backup. This argument IS bound into the token:
+                 reported). QualCoder applies the file one entry at a
+                 time, in file order and case-sensitively: the new entries
+                 are written longest name first, so a shorter name inside
+                 a longer one does not pre-empt it, the preview warns when
+                 an entry already in the file would, and under an
+                 insensitive case_mode only the spellings saved are
+                 replaced on QualCoder's next import. Alternative
+                 spellings become separate entries with the same
+                 pseudonym, which the dialog will not add by hand. The
+                 file holds the real names in plain text at the project
+                 root and travels into every backup. This argument IS
+                 bound into the token:
                  the preview must be run with it, and the execute repeats
                  it.
         researcher_keeps_mapping: On a typed mapping, attest that the
@@ -12202,7 +12266,7 @@ def pseudonymise_source(
                     key: merge[key] for key in (
                         "existing_entries", "encoding", "would_write",
                         "variants_as_separate_entries", "conflicts",
-                        "duplicate_pseudonyms")}
+                        "duplicate_pseudonyms", "pre_empted_by_existing")}
             except _SaveRefused as e:
                 block["if_saved"] = {"error": f"{e.detail}.",
                                      "reason": e.reason}

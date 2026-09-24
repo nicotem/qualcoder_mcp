@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 162,406 characters (about 40.6k tokens at
+  below included: full = 162,824 characters (about 40.7k tokens at
   chars/4) over 71 tools, core = 56,568 (about 14.1k) over 21. `core`
   moved only with `get_current_project`, which gained its report of
   the project's own `pseudonyms.json`; neither the six
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 170,718 and
+  in the repository's `.venv/`, the same definitions measure 171,164 and
   59,520, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -224,7 +224,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name is written and reported, and a symbolic link is not written
   through (`pseudonyms_json_is_a_link`). It is written only once the
   run has committed; the result says `mapping_saved`, and the run
-  record and the journal entry say "requested".
+  record and the journal entry say "requested". QualCoder applies the
+  file one entry at a time, in file order and case-sensitively, so the
+  new entries are written longest name first (a shorter name inside a
+  longer one then does not pre-empt it, as this run's single pass does
+  not), the preview warns when an entry already in the file would
+  pre-empt a new one, and it warns that under an insensitive case mode
+  QualCoder's next import replaces only the spellings saved.
 - `get_current_project` reports `pseudonyms_json` (present, how many
   entries, which encoding) without a name. A new tool,
   `read_pseudonym_list`, in the full toolset only, returns the entries
