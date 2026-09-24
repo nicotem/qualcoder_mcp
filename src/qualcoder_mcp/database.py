@@ -1403,8 +1403,9 @@ PSEUDONYMS_JSON_NAME = "pseudonyms.json"
 PSEUDONYMS_JSON_MAX_BYTES = 1024 * 1024
 
 
-def _read_pseudonyms_json_bytes(path: Path) -> bytes:
-    """The bytes of pseudonyms.json, read only if it is a regular file.
+def _read_pseudonyms_json_bytes(path: Path) -> Tuple[bytes, int]:
+    """The bytes of pseudonyms.json, read only if it is a regular file,
+    and the permission bits of the file they were read from.
 
     Opened non-blocking and checked with `fstat` before anything is read,
     so a FIFO (or a device, or a directory) at that name is refused at
@@ -1412,7 +1413,10 @@ def _read_pseudonyms_json_bytes(path: Path) -> bytes:
     and a file larger than the limit is refused by its size rather than
     read whole first; at most the limit and one byte are ever read, so a
     file that grows after the check is refused too (Brief 2 fix round 1,
-    Security S-5). Every refusal is value-free.
+    Security S-5). Every refusal is value-free. The permission bits come
+    from the same `fstat` of the descriptor that was read, so a name
+    swapped for a link after the read cannot lend another file's mode to
+    the save (fix round 2, RS-2).
     """
     too_large = (f"{PSEUDONYMS_JSON_NAME} is larger than "
                  f"{PSEUDONYMS_JSON_MAX_BYTES} bytes and was not read.")
@@ -1440,7 +1444,7 @@ def _read_pseudonyms_json_bytes(path: Path) -> bytes:
     raw = b"".join(chunks)
     if len(raw) > PSEUDONYMS_JSON_MAX_BYTES:
         raise ValueError(too_large)
-    return raw
+    return raw, stat.S_IMODE(info.st_mode)
 
 
 def read_project_pseudonyms(project_folder: Union[str, Path]
@@ -1474,19 +1478,22 @@ def read_project_pseudonyms(project_folder: Union[str, Path]
         FileNotFoundError: no sidecar in this project.
         ValueError: the file is not QualCoder's list of entries.
     """
-    entries, encoding, _data = read_project_pseudonyms_with_raw(
+    entries, encoding, _data, _mode = read_project_pseudonyms_with_raw(
         project_folder)
     return entries, encoding
 
 
 def read_project_pseudonyms_with_raw(project_folder: Union[str, Path]
                                      ) -> Tuple[List[Dict[str, str]], str,
-                                                List[Any]]:
-    """`read_project_pseudonyms`, and the list exactly as parsed.
+                                                List[Any], int]:
+    """`read_project_pseudonyms`, the list exactly as parsed, and the
+    permission bits of the file read.
 
     The save into the file (Brief 2) writes the existing entries back
     verbatim, extra keys included, from this one read rather than from a
-    second read of the file.
+    second read of the file, and gives the new file the mode of the one
+    it read, taken from the descriptor it read rather than from the path
+    afterwards (fix round 2, RS-2).
     """
     folder = Path(project_folder)
     path = folder / PSEUDONYMS_JSON_NAME
@@ -1502,7 +1509,7 @@ def read_project_pseudonyms_with_raw(project_folder: Union[str, Path]
             raise ValueError(
                 f"{PSEUDONYMS_JSON_NAME} in the project folder is a link to "
                 f"a file outside the project and was not read.")
-    raw = _read_pseudonyms_json_bytes(path)
+    raw, mode = _read_pseudonyms_json_bytes(path)
     try:
         text = raw.decode("utf-8-sig")
         encoding = "utf-8-sig" if raw[:3] == b"\xef\xbb\xbf" else "utf-8"
@@ -1544,7 +1551,7 @@ def read_project_pseudonyms_with_raw(project_folder: Union[str, Path]
                 f"not an object with two text values.")
         entries.append({"original": item["original"],
                         "pseudonym": item["pseudonym"]})
-    return entries, encoding, data
+    return entries, encoding, data, mode
 
 
 def hidden_coder_refusal(kind: str, row_id: int,

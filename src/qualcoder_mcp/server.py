@@ -8,7 +8,6 @@ import argparse
 import shutil
 import logging
 import sqlite3
-import stat
 import tempfile
 import hashlib
 import hmac
@@ -10600,8 +10599,8 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
         try:
             # One read: the entries for the checks and the list exactly as
             # parsed, extra keys included, for the write-back.
-            existing, encoding, raw = read_project_pseudonyms_with_raw(
-                folder)
+            existing, encoding, raw, read_mode = \
+                read_project_pseudonyms_with_raw(folder)
         except (ValueError, OSError, LookupError) as e:
             detail = (str(e).rstrip(".") if isinstance(e, ValueError)
                       and PSEUDONYMS_JSON_NAME in str(e) else
@@ -10612,7 +10611,11 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
             raise _SaveRefused(
                 "pseudonyms_json_unreadable",
                 f"{PSEUDONYMS_JSON_NAME} changed while it was being read")
-        existing_mode = stat.S_IMODE(os.stat(str(path)).st_mode)
+        # The mode of the file that was read, from the reader's own
+        # fstat of its descriptor, never a second look by path, which a
+        # name swapped for a link after the read would answer with the
+        # link's target (fix round 2, RS-2).
+        existing_mode = read_mode
     by_original = {item["original"]: item["pseudonym"] for item in existing}
     new = _pseudonyms_json_new_entries(validated)
     conflicts = sorted({index for index, original, _, _ in new

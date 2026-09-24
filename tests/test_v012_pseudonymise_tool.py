@@ -4422,6 +4422,45 @@ class TestSavingTheMappingIntoPseudonymsJson:
                                                     "pseudonym": "Pat"}
 
     @POSIX_ONLY
+    def test_the_kept_mode_is_the_mode_of_the_file_read(
+            self, project, tmp_path, monkeypatch):
+        """Fix round 2, RS-2 (Security's B3c): just after the merge inside
+        the run's transaction has read the file, the name is swapped for a
+        link to a file anyone may write. The mode kept is the mode of the
+        file that was read, from the reader's own fstat, not the link
+        target's."""
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        os.chmod(project / "pseudonyms.json", 0o600)
+        loud = tmp_path / "world.json"
+        loud.write_text("[]", encoding="utf-8")
+        os.chmod(loud, 0o666)
+        real = server.read_project_pseudonyms_with_raw
+        calls = []
+
+        def reader(folder):
+            value = real(folder)
+            calls.append(1)
+            if len(calls) == 4:     # the merge inside the run's transaction
+                target = project / "pseudonyms.json"
+                target.rename(project / "aside.json")
+                target.symlink_to(loud)
+            return value
+
+        monkeypatch.setattr(server, "read_project_pseudonyms_with_raw",
+                            reader)
+        _, result = _save_run()
+        assert len(calls) == 4
+        assert result["mapping_saved"] is True
+        target = project / "pseudonyms.json"
+        assert not target.is_symlink()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert json.loads(_written(project))[0] == {"original": "Peter",
+                                                    "pseudonym": "Pat"}
+        # The file linked to is not touched.
+        assert stat.S_IMODE(loud.stat().st_mode) == 0o666
+        assert loud.read_text(encoding="utf-8") == "[]"
+
+    @POSIX_ONLY
     def test_a_read_only_file_is_refused_before_the_backup(self, project):
         if os.geteuid() == 0:
             pytest.skip("root writes a read-only file regardless")
