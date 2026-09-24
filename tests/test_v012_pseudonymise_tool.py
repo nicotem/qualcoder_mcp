@@ -6813,6 +6813,82 @@ class TestProjectPseudonyms:
         out = preview_of(mapping=None, use_project_pseudonyms=True)
         assert "outside the project" in out["error"]
 
+    # Brief 2 fix round 1, Security S-5: a regular file only, the size
+    # checked before anything is read.
+    NOT_REGULAR = ("pseudonyms.json in the project folder is not a regular "
+                   "file and was not read.")
+
+    @POSIX_ONLY
+    def test_a_fifo_is_refused_without_blocking(self, project):
+        import threading
+        fifo = project / "pseudonyms.json"
+        os.mkfifo(fifo)
+        answers = []
+        # The read itself in a thread (the project's SQLite connection
+        # belongs to this one), so a reader that blocks can be released.
+        worker = threading.Thread(
+            target=lambda: answers.append(server._pseudonyms_json_read()[0]),
+            daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        if worker.is_alive():
+            # Release the blocked reader so the suite can go on, then fail.
+            fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            worker.join(timeout=10)
+            pytest.fail("reading pseudonyms.json blocked on a FIFO")
+        expected = {"present": True, "entries": None,
+                    "error": self.NOT_REGULAR}
+        assert answers[0] == expected
+        assert json.loads(server.get_current_project())[
+            "pseudonyms_json"] == expected
+        refused = call(mapping=None, use_project_pseudonyms=True)
+        assert refused == {"error": self.NOT_REGULAR}
+
+    @POSIX_ONLY
+    def test_a_directory_is_refused_value_free(self, project):
+        (project / "pseudonyms.json").mkdir()
+        assert json.loads(server.read_pseudonym_list()) == {
+            "pseudonyms_json": {"present": True, "entries": None,
+                                "error": self.NOT_REGULAR}}
+
+    def test_a_huge_file_is_refused_by_its_size_before_it_is_read(
+            self, project):
+        import tracemalloc
+        from qualcoder_mcp.database import PSEUDONYMS_JSON_MAX_BYTES
+        with open(project / "pseudonyms.json", "wb") as handle:
+            handle.truncate(64 * PSEUDONYMS_JSON_MAX_BYTES)
+        tracemalloc.start()
+        try:
+            out = json.loads(server.get_current_project())
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert out["pseudonyms_json"]["error"] == (
+            f"pseudonyms.json is larger than {PSEUDONYMS_JSON_MAX_BYTES} "
+            f"bytes and was not read.")
+        assert peak < 8 * PSEUDONYMS_JSON_MAX_BYTES, peak
+
+    def test_a_file_that_grows_past_the_limit_is_refused(self, project,
+                                                         monkeypatch):
+        """At most the limit and one byte are read, so a file whose
+        size was checked and which then grew is still refused."""
+        from qualcoder_mcp import database as db_module
+        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"}])
+        monkeypatch.setattr(db_module, "PSEUDONYMS_JSON_MAX_BYTES", 10)
+        real_fstat = os.fstat
+
+        class Small:
+            def __init__(self, info):
+                self.st_mode = info.st_mode
+                self.st_size = 5
+
+        monkeypatch.setattr(db_module.os, "fstat",
+                            lambda fd: Small(real_fstat(fd)))
+        out = json.loads(server.get_current_project())
+        assert out["pseudonyms_json"]["error"] == (
+            "pseudonyms.json is larger than 10 bytes and was not read.")
+
     def test_the_sidecar_is_never_written_unless_asked(self, project):
         """Owner ruling Q6 held that the file, the reverse key in plain
         text at the project root, is never created or changed. Ruling 14
@@ -7043,7 +7119,8 @@ class TestStructureAndWindowsSafety:
 
     @pytest.mark.parametrize("module,name", [
         ("server", "_write_run_manifest"),
-        ("database", "read_project_pseudonyms"),
+        # Brief 2 fix round 1: the reader's body moved here.
+        ("database", "read_project_pseudonyms_with_raw"),
         # v0.13, Brief 2: the save into the project's pseudonyms.json.
         ("server", "_write_pseudonyms_json_tmp"),
     ])

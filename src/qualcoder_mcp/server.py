@@ -53,6 +53,7 @@ from .database import (
     name_key,
     position_safe as db_position_safe,
     read_project_pseudonyms,
+    read_project_pseudonyms_with_raw,
     PSEUDONYMS_JSON_NAME,
 )
 from . import pseudonymise as pseudo
@@ -10559,10 +10560,13 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
     whatever the file's pseudonym for it, since QualCoder's check is on
     the original alone; a pseudonym the file already gives to another
     original is written and reported, where the dialog refuses it
-    (ruling 14c). The file is read through `read_project_pseudonyms`
-    for the check, and parsed once more as raw JSON so that every
-    existing entry, with any key a future version adds, is written back
-    verbatim and in order. A symbolic link is refused whichever way it
+    (ruling 14c). The file is read once, through
+    `read_project_pseudonyms_with_raw`, which gives the entries for the
+    checks and the list as parsed, so that every existing entry, with any
+    key a future version adds, is written back verbatim and in order;
+    that reader takes a regular file only, and refuses one past its size
+    limit before reading it (Security S-5). A symbolic link is refused
+    whichever way it
     points: the save renames a new file into place, which would replace
     the link and leave what it pointed at as it was.
 
@@ -10590,11 +10594,10 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
             f"this account, and QualCoder's own write would fail on it too")
     if os.path.lexists(str(path)):
         try:
-            existing, encoding = read_project_pseudonyms(folder)
-            data = path.read_bytes()
-            text = (data.decode("utf-8-sig") if encoding.startswith("utf-8")
-                    else data.decode(encoding))
-            raw = json.loads(text)
+            # One read: the entries for the checks and the list exactly as
+            # parsed, extra keys included, for the write-back.
+            existing, encoding, raw = read_project_pseudonyms_with_raw(
+                folder)
         except (ValueError, OSError, LookupError) as e:
             detail = (str(e).rstrip(".") if isinstance(e, ValueError)
                       and PSEUDONYMS_JSON_NAME in str(e) else

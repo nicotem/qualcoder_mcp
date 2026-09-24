@@ -4,6 +4,7 @@ import bisect
 import locale
 import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Sequence, Tuple, Union
 import json
@@ -1402,6 +1403,46 @@ PSEUDONYMS_JSON_NAME = "pseudonyms.json"
 PSEUDONYMS_JSON_MAX_BYTES = 1024 * 1024
 
 
+def _read_pseudonyms_json_bytes(path: Path) -> bytes:
+    """The bytes of pseudonyms.json, read only if it is a regular file.
+
+    Opened non-blocking and checked with `fstat` before anything is read,
+    so a FIFO (or a device, or a directory) at that name is refused at
+    once rather than stopping the server until something writes to it,
+    and a file larger than the limit is refused by its size rather than
+    read whole first; at most the limit and one byte are ever read, so a
+    file that grows after the check is refused too (Brief 2 fix round 1,
+    Security S-5). Every refusal is value-free.
+    """
+    too_large = (f"{PSEUDONYMS_JSON_NAME} is larger than "
+                 f"{PSEUDONYMS_JSON_MAX_BYTES} bytes and was not read.")
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
+    fd = os.open(str(path), flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(
+                f"{PSEUDONYMS_JSON_NAME} in the project folder is not a "
+                f"regular file and was not read.")
+        if info.st_size > PSEUDONYMS_JSON_MAX_BYTES:
+            raise ValueError(too_large)
+        chunks: List[bytes] = []
+        remaining = PSEUDONYMS_JSON_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    raw = b"".join(chunks)
+    if len(raw) > PSEUDONYMS_JSON_MAX_BYTES:
+        raise ValueError(too_large)
+    return raw
+
+
 def read_project_pseudonyms(project_folder: Union[str, Path]
                             ) -> Tuple[List[Dict[str, str]], str]:
     """QualCoder's own `pseudonyms.json`, read the way it is written.
@@ -1433,6 +1474,20 @@ def read_project_pseudonyms(project_folder: Union[str, Path]
         FileNotFoundError: no sidecar in this project.
         ValueError: the file is not QualCoder's list of entries.
     """
+    entries, encoding, _data = read_project_pseudonyms_with_raw(
+        project_folder)
+    return entries, encoding
+
+
+def read_project_pseudonyms_with_raw(project_folder: Union[str, Path]
+                                     ) -> Tuple[List[Dict[str, str]], str,
+                                                List[Any]]:
+    """`read_project_pseudonyms`, and the list exactly as parsed.
+
+    The save into the file (Brief 2) writes the existing entries back
+    verbatim, extra keys included, from this one read rather than from a
+    second read of the file.
+    """
     folder = Path(project_folder)
     path = folder / PSEUDONYMS_JSON_NAME
     if not os.path.lexists(str(path)):
@@ -1447,11 +1502,7 @@ def read_project_pseudonyms(project_folder: Union[str, Path]
             raise ValueError(
                 f"{PSEUDONYMS_JSON_NAME} in the project folder is a link to "
                 f"a file outside the project and was not read.")
-    raw = path.read_bytes()
-    if len(raw) > PSEUDONYMS_JSON_MAX_BYTES:
-        raise ValueError(
-            f"{PSEUDONYMS_JSON_NAME} is larger than "
-            f"{PSEUDONYMS_JSON_MAX_BYTES} bytes and was not read.")
+    raw = _read_pseudonyms_json_bytes(path)
     try:
         text = raw.decode("utf-8-sig")
         encoding = "utf-8-sig" if raw[:3] == b"\xef\xbb\xbf" else "utf-8"
@@ -1493,7 +1544,7 @@ def read_project_pseudonyms(project_folder: Union[str, Path]
                 f"not an object with two text values.")
         entries.append({"original": item["original"],
                         "pseudonym": item["pseudonym"]})
-    return entries, encoding
+    return entries, encoding, data
 
 
 def hidden_coder_refusal(kind: str, row_id: int,
