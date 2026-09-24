@@ -9285,8 +9285,9 @@ class QualcoderDatabase:
         # sent there gets a narrower answer than this block's and is
         # told so (cross-check, both corrections).
         residue["scope_note"] = (
-            "file_id chooses which file is rewritten. The report always "
-            "covers the whole project. This block covers the notes, the "
+            "file_id chooses which file is rewritten. The notes and the "
+            "report always cover the whole project. This block covers the "
+            "notes, the "
             "labels and the attribute values as fields, and the file text "
             "of every file with stored text as occurrences, under "
             "file_text. Each count is two readings, wide and whole-word. "

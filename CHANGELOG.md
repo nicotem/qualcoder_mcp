@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 158,843 characters (about 39.7k tokens at
-  chars/4) over 70 tools, core = 57,252 (about 14.3k) over 21. `core`
+  below included: full = 161,921 characters (about 40.5k tokens at
+  chars/4) over 70 tools, core = 57,266 (about 14.3k) over 21. `core`
   moved only with `get_current_project`, which gained an argument and
   its report of the project's own `pseudonyms.json`; neither the six
   token-gated tools nor `pseudonymise_source` is in it. Measured
@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 166,939 and
-  60,244, because 3.10 to 3.12 keep the docstring indentation 3.13
+  in the repository's `.venv/`, the same definitions measure 170,209 and
+  60,258, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
 ### Added: `pseudonymise_source` reports every residue count as two readings
@@ -176,6 +176,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the public API returns without signing in, so the budgets can be
   checked on every platform.
 
+### Added: `pseudonymise_source` rewrites notes under `rewrite_memos`
+
+- A new argument, `rewrite_memos` (default off, bound into the approval
+  token), also rewrites the public part of every note (the twelve kinds
+  the residue counts, codings to image codings, and the project's own)
+  and of every journal entry, across the whole project whatever
+  `file_id` says, by the same whole-word rule as the file text. A
+  note's private part (from its `#####` marker) is carried across
+  unchanged and never read, so a name there is still there and cannot
+  be reported; the preview counts how many of the notes it would
+  rewrite carry one. Annotation and journal dates are stamped, as
+  QualCoder's interface stamps them on an edit; the other ten kinds are
+  not touched. No note row is ever deleted, and a note the rewrite
+  would plant a private-part marker in is left as it is, counted and
+  warned about. A run with no match in the file and a match in a note
+  now proceeds, with its backup.
+- The preview gains a `memo_rewrites` block (rows and replacements per
+  field, counts by entry, the private-part, marker-risk and
+  earlier-run counts, each with its note), and each of the twelve note
+  counts in `residue` a third number, `wide_after_rewrite`, with
+  `after_rewrite_note` saying why it does not reach zero. The token
+  signs each rewritten note's key, its private-part flag and the length
+  of its public part, never its text (ruling 4).
+- The journal entry the run writes gives the note counts, and says it
+  was written after the rewrite and not rewritten itself. A second run
+  with the switch on rewrites the entries earlier runs wrote, which the
+  preview counts (by each entry's first line, a heuristic) and warns
+  about.
+- The note pass's rate is printed in the test run's summary as
+  `note pass rate:` and published by CI as a check-run annotation.
+
+### Added: a typed mapping must be kept, and `pseudonyms.json` can be written and inspected
+
+- On a mapping you type, the execute is refused
+  (`mapping_retention_required`) unless the call either asks for the
+  mapping to be saved into the project's own `pseudonyms.json`
+  (`save_mapping_to_project`, bound into the token, so the preview
+  must be run with it) or attests that the researcher keeps their own
+  record (`researcher_keeps_mapping`, not bound). The preview's
+  `mapping_retention` block and `execute_with` say which is needed.
+  With `use_project_pseudonyms` either argument is an argument error.
+- The save writes QualCoder's own format, byte for byte, with each
+  alternative spelling as an entry of its own, and merges by
+  QualCoder's rules: a name the file already maps refuses the execute
+  (`pseudonyms_json_conflict`), a pseudonym it already gives to another
+  name is written and reported, and a symbolic link is not written
+  through (`pseudonyms_json_is_a_link`). It is written only once the
+  run has committed; the result says `mapping_saved`, and the run
+  record and the journal entry say "requested".
+- `get_current_project` reports `pseudonyms_json` (present, how many
+  entries, which encoding) without a name, and returns the entries
+  with `include_pseudonyms=true`, whose description says that this
+  sends the real names to the AI provider.
+
+### Changed: the run record is format 2
+
+- `"format": 2`, with `rewrite_memos`, `mapping_retention` and a fixed
+  `record_note` always, and, when the notes were rewritten, a `memos`
+  section (table, key, private-part flag, public length before and
+  after, and where each pseudonym now sits) with the marker-risk count.
+  It is an audit record of which rows a run changed; no tool reads it
+  back and it is not an input to any undo (undoing a run was dropped
+  from v0.13; the backup is the way back).
+
 ### Changed: `pseudonymise_source` rewrites one file per call
 
 - `file_ids` (an optional list; omit it for every eligible text source)
@@ -322,6 +386,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pseudonym there, in the preview on the `use_project_pseudonyms` path,
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
+- **`pseudonymise_source` on a mapping you type: say where the mapping
+  is kept.** An execute that passes neither `save_mapping_to_project`
+  nor `researcher_keeps_mapping` is now refused as
+  `mapping_retention_required`, with nothing written and the token
+  still valid: a loud break for any scripted caller. To attest, repeat
+  the execute with `researcher_keeps_mapping=true` and the same token.
+  To save, `save_mapping_to_project=true` must be given on the preview
+  as well as the execute, because the token binds it; adding it only
+  on the execute is refused as another operation. `rewrite_memos` is
+  bound the same way. The run record is now `"format": 2`.
+- **`get_current_project` gains `pseudonyms_json` and an argument,
+  `include_pseudonyms`.** A caller that compares the whole result
+  shape sees a new key; the entries themselves are returned only when
+  the argument is true.
 
 ## [0.12.1-alpha] - 2026-09-21
 

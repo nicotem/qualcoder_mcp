@@ -2930,8 +2930,8 @@ def get_current_project(include_pseudonyms: bool = False) -> str:
                  when the researcher has asked to see or check the list;
                  the default report says whether the file exists and how
                  many entries it has without that. The transport turns
-                 1, "1", "true", "yes" and "on" into true before this tool
-                 runs.
+                 1, "1", "true", "yes", "on", "t" and "y" into true before
+                 this tool runs.
 
     Returns:
         JSON with current project path, basic metadata, the schema report
@@ -11745,7 +11745,8 @@ def pseudonymise_source(
     pseudonymise a project, run it file by file; with
     use_project_pseudonyms the mapping is read from the project's own
     pseudonyms.json each time, and with a typed mapping the mapping is
-    repeated on each call. The report always covers the whole project.
+    repeated on each call. The notes and the report always cover the
+    whole project.
 
     Preview first, relay the counts, the collisions and the residue to
     the user, get an explicit yes, then execute with the token.
@@ -11754,7 +11755,8 @@ def pseudonymise_source(
     and the result is a preview of exactly what would change, with a
     preview_token. Show the user the preview and every warning it
     carries, and ask whether to proceed. Only if they agree, call again
-    with the SAME mapping, file_id, case_mode and overlap_policy, plus
+    with the SAME mapping, file_id, case_mode, overlap_policy,
+    rewrite_memos and save_mapping_to_project, plus
     preview_token=<the token>. The token is valid for 60 minutes and only
     while the text and the rows it covers are unchanged; if the project
     changed in between, the execute is refused and you must preview
@@ -11774,12 +11776,15 @@ def pseudonymise_source(
     re-identifiable from context. This reduces risk; it does not
     anonymise (PRIVACY.md).
 
-    What this does NOT rewrite, and where the names will remain: memos,
-    journal entries, case names, file names, attribute values, PDFs,
-    media files, QualCoder 4.0's ai_data folder, speakers.json and
-    speaker_regex.json. The preview's `residue` block counts where the
-    names still occur so you can tell the user; it counts the PUBLIC part
-    of memos only and never reads a '#####' private note. Its counts use
+    What this does NOT rewrite, and where the names will remain: case
+    names, file names, attribute values, PDFs, media files, QualCoder
+    4.0's ai_data folder, speakers.json and speaker_regex.json; notes (the
+    twelve kinds of note) and journal entries are rewritten only when
+    rewrite_memos is on, in their public part only and across the whole
+    project, and otherwise remain too. The preview's `residue` block
+    counts where the names still occur so you can tell the user; it
+    counts the PUBLIC part of notes only and never reads a '#####'
+    private note. Its counts use
     a WIDER reading than the rewrite: any occurrence a human would see,
     including inside a longer word and in any case, so a case named
     Thomas_P01 is counted even under case_mode="exact". Every count is
@@ -11860,6 +11865,48 @@ def pseudonymise_source(
                  (Tom to Tim) and keep a coding this policy deletes.
                  Use it only when matching that walk matters more than
                  keeping the codings.
+        rewrite_memos: Also rewrite the public part of every note (the
+                 twelve kinds of note: codings, annotations, case links,
+                 files, cases, codes, categories, the project, attribute
+                 types, audio/video and image codings) and of every
+                 journal entry, across the whole project whatever file_id
+                 says. Default false. A note's private part (after
+                 QualCoder's marker) is carried across unchanged and never
+                 read, so a name in a private part is still there and this
+                 server cannot tell you whether one is. Nothing is
+                 renamed: case, file, code, category, attribute-type and
+                 journal names stay as they are. The residue's wide counts
+                 do not go to zero after a note rewrite: a name inside a
+                 longer word, in another letter case, or with its parts
+                 joined is still counted and still there. This argument IS
+                 bound into the token: repeat it on the execute call.
+        save_mapping_to_project: On a typed mapping, write it into the
+                 project's own pseudonyms.json in QualCoder's format,
+                 merging with what is there (a name the file already maps
+                 refuses the execute, as QualCoder's Pseudonyms dialog (the
+                 button in Manage Files) refuses a duplicate original,
+                 whether or not the pseudonym is the same; a pseudonym the
+                 file already uses for another name is written and
+                 reported). Alternative spellings become separate entries
+                 with the same pseudonym, which QualCoder applies correctly
+                 but the dialog will not add by hand. The file holds the
+                 real names in plain text at the project root and travels
+                 into every backup. This argument IS bound into the token:
+                 the preview must be run with it, and the execute repeats
+                 it.
+        researcher_keeps_mapping: On a typed mapping, attest that the
+                 researcher keeps their own record of it. Not bound into
+                 the token: an attestation with no side effect, which may
+                 be added on the execute call.
+
+                 The execute is REFUSED on a typed mapping unless one of
+                 these two is true: the mapping is half of the reverse key
+                 and this server does not keep it. With
+                 use_project_pseudonyms the file is the record and neither
+                 may be given. The transport turns 1, "1", "true", "yes",
+                 "on", "t" and "y" into true for each of these three
+                 switches before this tool runs, and 0, "0", "false", "no"
+                 and "off" into false.
         preview_token: The token from this operation's preview; omit it
                  to get the preview.
         allow_hidden_coder: Required when the preview says this run would
@@ -11916,11 +11963,13 @@ def pseudonymise_source(
                  one budget for the whole preview; a block that runs out
                  of it says context_truncated.
 
-    The last five arguments and record_in_journal are NOT bound into the
-    token: passing a different value for one of them on the execute call
-    is not "a different operation", it simply changes what is shown or
-    whether the run is recorded. The four that ARE bound are mapping,
-    file_id, case_mode and overlap_policy, and they must be repeated
+    The last five arguments, record_in_journal and
+    researcher_keeps_mapping are NOT bound into the token: passing a
+    different value for one of them on the execute call is not "a
+    different operation", it changes what is shown, whether the run
+    records itself, or attests where the mapping is kept. The six that
+    ARE bound are mapping, file_id, case_mode, overlap_policy,
+    rewrite_memos and save_mapping_to_project, and they must be repeated
     identically on the execute call.
 
     Refused while QualCoder has the project open (heartbeat lock): ask

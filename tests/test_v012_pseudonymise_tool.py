@@ -2378,10 +2378,11 @@ class TestTheLabelsAndMemosTheResidueCounts:
         narrower than this block, so a researcher sent there is told."""
         note = preview_of()["preview"]["residue"]["scope_note"]
         # Decision A, said once in the preview and once in the
-        # description.
+        # description; since v0.13's Brief 2 the notes are named with the
+        # report, since `rewrite_memos` rewrites them project-wide.
         assert note.startswith("file_id chooses which file is rewritten. "
-                               "The report always covers the whole "
-                               "project.")
+                               "The notes and the report always cover the "
+                               "whole project.")
         assert ("This block covers the notes, the labels and the attribute "
                 "values as fields, and the file text of every file with "
                 "stored text as occurrences, under file_text." in note)
@@ -3349,6 +3350,35 @@ class TestTheNoteRewriteIsWritten:
         assert query(project, "SELECT memo FROM source WHERE id=1"
                      )[0]["memo"] == "Interviewed Alex at work."
 
+    def test_the_earlier_run_entry_is_counted_by_its_first_line_and_never_skipped(
+            self, project):
+        """Test 26: two stacked runs. The first writes its audit entry;
+        the second maps the first one's pseudonym on, with the notes
+        switch on, so the first entry (which quotes "Alex") is one of the
+        notes it rewrites: counted as an earlier run's record, warned
+        about, and rewritten, never skipped."""
+        first = execute_from(preview_of())
+        assert first["success"] is True
+        onward = [{"original": "Alex", "pseudonym": "Blake"}]
+        out = preview_of(mapping=onward, rewrite_memos=True)
+        block = out["preview"]["memo_rewrites"]
+        assert block["journal_entries_from_earlier_runs"] == 1
+        assert block["fields"]["journal"]["rows"] == 1
+        assert any(w.startswith("Warning: 1 journal entr(ies) this run "
+                                "would rewrite are this server's own "
+                                "records") for w in out["warnings"])
+        second = execute_from(out, mapping=onward)
+        assert second.get("success") is True, second
+        earlier = query(project, "SELECT jentry FROM journal WHERE name=?",
+                        (first["journal_entry"],))[0]["jentry"]
+        assert earlier.startswith("Pseudonymisation run, ")
+        assert "Pseudonyms applied: Blake (4), Sam (1)." in earlier
+        assert "Alex" not in earlier
+        body = query(project, "SELECT jentry FROM journal WHERE name=?",
+                     (second["journal_entry"],))[0]["jentry"]
+        assert ("Journal entries rewritten that were this server's own "
+                "records of earlier runs: 1." in body)
+
     def test_a_note_only_run_takes_a_backup_and_proceeds(self, project):
         _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
                     "Thomas and Mary Ann.")
@@ -4004,6 +4034,20 @@ class TestSavingTheMappingIntoPseudonymsJson:
             "already in use, so change those entries in the file rather than "
             "in the dialog."]
         _house_rules(notes)
+
+    @POSIX_ONLY
+    def test_the_file_takes_the_mode_qualcoders_own_write_leaves(
+            self, project):
+        """Parity (the lead's night ruling 4): QualCoder's `open(path,
+        "w")` leaves 0666 under the process umask, and mkstemp's 0600 is
+        widened to that before the rename, unless the Security gate rules
+        otherwise."""
+        mask = os.umask(0)
+        os.umask(mask)
+        _, result = _save_run()
+        assert result["mapping_saved"] is True
+        mode = stat.S_IMODE((project / "pseudonyms.json").stat().st_mode)
+        assert mode == 0o666 & ~mask
 
     def test_pseudonyms_json_is_byte_identical_to_qualcoders_own_write(
             self, tmp_path):
@@ -6830,11 +6874,13 @@ class TestTheDescriptionCarriesWhatD1Requires:
         ("variants_are_needed",
          "Nicknames, inflections and spelling variants each need their own "
          "entry or a `variants` list."),
-        ("what_is_not_rewritten",
-         "What this does NOT rewrite, and where the names will remain: "
-         "memos, journal entries, case names, file names, attribute "
-         "values, PDFs, media files, QualCoder 4.0's ai_data folder, "
-         "speakers.json and speaker_regex.json."),
+        ("what_is_not_rewritten",                       # v0.13 Brief 2
+         "What this does NOT rewrite, and where the names will remain: case "
+         "names, file names, attribute values, PDFs, media files, QualCoder "
+         "4.0's ai_data folder, speakers.json and speaker_regex.json; notes "
+         "(the twelve kinds of note) and journal entries are rewritten only "
+         "when rewrite_memos is on, in their public part only and across "
+         "the whole project, and otherwise remain too."),
         ("residue_says_where_names_remain",
          "The preview's `residue` block counts where the names still occur "
          "so you can tell the user"),
@@ -6916,15 +6962,16 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "use_project_pseudonyms the mapping is read from the project's "
          "own pseudonyms.json each time, and with a typed mapping the "
          "mapping is repeated on each call."),
-        ("the_report_covers_the_whole_project",          # v0.13 decision A
-         "The report always covers the whole project."),
+        ("the_report_covers_the_whole_project",  # decision A; Brief 2
+         "The notes and the report always cover the whole project."),
         ("the_file_id_argument",                         # v0.13 decision A
          "file_id: The one text source this call rewrites. A PDF, a media "
          "file or a source with no stored text is refused with the reason "
          "(pdf_source, no_fulltext, unknown_file_id)."),
-        ("repeat_the_same_bound_arguments",              # v0.13 decision A
-         "call again with the SAME mapping, file_id, case_mode and "
-         "overlap_policy, plus preview_token=<the token>."),
+        ("repeat_the_same_bound_arguments",       # decision A; Brief 2
+         "call again with the SAME mapping, file_id, case_mode, "
+         "overlap_policy, rewrite_memos and save_mapping_to_project, plus "
+         "preview_token=<the token>."),
         ("a_carrying_pseudonym_is_withheld",             # fix round 1, F1
          "A pseudonym that carries one of those names is withheld (null) "
          "wherever the preview would quote it, and its entry number stands "
@@ -6955,10 +7002,46 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "lower bound; a file too large to count with this many names is "
          "said to be, and fewer names would let a text file be counted, and "
          "one too large for any mapping is said so."),
-        ("the_four_bound_arguments",                     # v0.13 decision A
-         "The four that ARE bound are mapping, file_id, case_mode and "
-         "overlap_policy, and they must be repeated identically on the "
-         "execute call."),
+        ("the_six_bound_arguments",               # decision A; Brief 2
+         "The six that ARE bound are mapping, file_id, case_mode, "
+         "overlap_policy, rewrite_memos and save_mapping_to_project, and "
+         "they must be repeated identically on the execute call."),
+        ("the_unbound_arguments",                        # Brief 2, H.2.5
+         "The last five arguments, record_in_journal and "
+         "researcher_keeps_mapping are NOT bound into the token"),
+        # Brief 2, 4.15: one pin per point the description must make.
+        ("notes_are_rewritten_project_wide",             # point 1
+         "rewrite_memos: Also rewrite the public part of every note (the "
+         "twelve kinds of note: codings, annotations, case links, files, "
+         "cases, codes, categories, the project, attribute types, "
+         "audio/video and image codings) and of every journal entry, "
+         "across the whole project whatever file_id says. Default false."),
+        ("nothing_is_renamed",                           # point 2
+         "Nothing is renamed: case, file, code, category, attribute-type "
+         "and journal names stay as they are."),
+        ("private_parts_are_never_read",                 # point 3
+         "A note's private part (after QualCoder's marker) is carried "
+         "across unchanged and never read, so a name in a private part is "
+         "still there and this server cannot tell you whether one is."),
+        ("the_wide_counts_do_not_reach_zero",            # point 4
+         "The residue's wide counts do not go to zero after a note "
+         "rewrite"),
+        ("the_save_binds_and_the_attestation_does_not",  # points 5 and 6
+         "Not bound into the token: an attestation with no side effect, "
+         "which may be added on the execute call."),
+        ("a_typed_mapping_must_be_kept",                 # point 6
+         "The execute is REFUSED on a typed mapping unless one of these two "
+         "is true: the mapping is half of the reverse key and this server "
+         "does not keep it. With use_project_pseudonyms the file is the "
+         "record and neither may be given."),
+        ("the_file_is_qualcoders_format",                # point 7
+         "Alternative spellings become separate entries with the same "
+         "pseudonym, which QualCoder applies correctly but the dialog will "
+         "not add by hand."),
+        ("the_transport_coerces_the_switches",           # H.2.6
+         "The transport turns 1, \"1\", \"true\", \"yes\", \"on\", \"t\" "
+         "and \"y\" into true for each of these three switches before this "
+         "tool runs"),
     ]
 
     @staticmethod
@@ -7024,6 +7107,19 @@ class TestTheDescriptionCarriesWhatD1Requires:
         assert "omit for every eligible" not in published
         assert "chosen text sources" not in published
 
+    def test_the_old_bound_list_and_the_old_scope_are_gone(self):
+        """v0.13, Brief 2: six bound arguments, not four; notes and
+        journal entries rewritten when asked, not listed as never
+        rewritten; and the project-wide sentence names the notes."""
+        published = self.published()
+        assert "The four that ARE bound" not in published
+        assert "The last five arguments and record_in_journal" not in published
+        assert "case_mode and overlap_policy, plus preview_token" \
+            not in published
+        assert "remain: memos, journal entries" not in published
+        assert "The report always covers the whole project." not in published
+        assert "the PUBLIC part of memos only" not in published
+
     def test_the_wide_parity_claim_is_gone(self):
         """Fix round 3, S5: "exactly what QualCoder's own text editor
         does" was false for Tom to Tim, Sara to Sana, Thomas to Thom and
@@ -7065,9 +7161,23 @@ class TestTheDocumentsTellTheTruth:
         "PDFs are never rewritten, and their stored text is counted with "
         "every other file's; media files and `ai_data/` are out of scope "
         "and are neither rewritten nor scanned.",
-        "Memos, journal entries, case, file, code, category and "
-        "attribute-type names and attribute values are scanned and "
-        "counted, never rewritten",
+        # v0.13, Brief 2 (its hand-off note, H.2.8, and the lead's first
+        # answer): the tool entry's wording is conditional now and is
+        # pinned here; the v0.12 sentence stays only in the "Completed in
+        # v0.12.0" block, which is history.
+        "Notes and journal entries are scanned and counted, and are "
+        "rewritten, in their public part only and across the whole "
+        "project, only when `rewrite_memos` is on; case, file, code, "
+        "category and attribute-type names and attribute values are "
+        "scanned and counted, never rewritten",
+        "On a mapping you type, the execute is refused unless "
+        "`save_mapping_to_project` (given on the preview, because the "
+        "token binds it) writes the mapping into the project's own "
+        "`pseudonyms.json` in QualCoder's own format",
+        "an audit record of which rows the run changed and not a way back "
+        "(the backup is)",
+        "`include_pseudonyms=true` returns the entries themselves, which "
+        "sends the real names to the AI provider",
         "`qualcoder_edit_parity` reproduces the walk QualCoder's "
         "coding-view editor applies, fed this tool's exact edit list (the "
         "editor's own diff may factor a shared prefix or suffix out of a "
@@ -7118,6 +7228,8 @@ class TestTheDocumentsTellTheTruth:
         # in the roadmap's "Completed in v0.12.0" list, where it is
         # history and was true.)
         "rather than the file text",
+        # v0.13, Brief 2: shipped, so no longer planned.
+        "Rewriting the public part of memos under a separate switch",
     ])
     def test_readme_no_longer_claims_it(self, claim):
         assert claim not in self._flat("README.md")
@@ -7130,10 +7242,28 @@ class TestTheDocumentsTellTheTruth:
         "if the declaration itself cannot be read, the answer is the same "
         "posture rather than \"nobody is hidden\"",
         # S6 and S7: what the residue reads, and what it cannot reach.
-        "Memos (twelve fields, the audio/video and image coding memos "
+        # v0.13, Brief 2: "Notes" under the fixed vocabulary (the key
+        # stays `memos`), and the sentence after the list conditional.
+        "Notes (twelve fields, the audio/video and image coding notes "
         "included), journal entries and their names, case names, file "
         "names, code names, category names, attribute-type names and "
         "attribute values.",
+        "Scanned and counted; of these, only the public part of the notes "
+        "and journal entries is rewritten, and only when `rewrite_memos` "
+        "is on, across the whole project; the names of things and the "
+        "attribute values are never rewritten.",
+        "A note's private part (from its `#####` marker) is carried across "
+        "unread, so a name there is still there and nothing in this server "
+        "can report it.",
+        "A second run with `rewrite_memos` on also rewrites the journal "
+        "entries this server wrote for earlier runs",
+        "This server writes it only when asked, in QualCoder's own format, "
+        "and never deletes it",
+        "with `include_pseudonyms=true` it returns the entries themselves, "
+        "which sends the real names to the AI provider",
+        "each is an audit record of which rows a run changed and where the "
+        "pseudonyms now sit, kept so a run can be accounted for afterwards. "
+        "It is not a way back; the backup taken before the run is.",
         "a look-alike letter from another script (a Cyrillic \"о\" for a "
         "Latin \"o\") is a different letter to the comparison, and is out "
         "of scope",
@@ -7200,6 +7330,16 @@ class TestTheDocumentsTellTheTruth:
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
+
+    def test_the_privacy_document_no_longer_promises_a_reversal_over_spans(
+            self):
+        """Ruling 2: the run record is an audit record, and undoing a run
+        was dropped (ruling C); ruling 14c: the file is written when
+        asked."""
+        flat = self._flat("PRIVACY.md")
+        assert "reverse a run over spans" not in flat
+        assert "This server never writes it and never deletes it" not in flat
+        assert "Scanned and counted, never rewritten." not in flat
 
     def test_privacy_no_longer_makes_the_unqualified_promise(self):
         flat = self._flat("PRIVACY.md")

@@ -192,12 +192,19 @@ QualCoder, and rows written under an earlier name keep it.
 the stored text of one text source per call, run file by file, and
 moves every coding, annotation and case link with the text, after a
 preview you approve
-and a mandatory backup. Memos, journal entries, labels and attribute
-values are scanned and counted, never rewritten, PDFs are counted and
-never rewritten, and media files and `ai_data/` are out of scope; the preview's residue report says
-where names remain, in the notes, the labels, the attribute values and
-the text of every file, each count as two readings. Pseudonymised data is still personal data: read
-PRIVACY.md before sending it anywhere.
+and a mandatory backup. Notes and journal entries are scanned and
+counted, and with `rewrite_memos` their public part is rewritten too,
+across the whole project, while a private part is carried across
+unread; labels and attribute values are scanned and counted, never
+rewritten, PDFs are counted and never rewritten, and media files and
+`ai_data/` are out of scope; the preview's residue report says where
+names remain, in the notes, the labels, the attribute values and the
+text of every file, each count as two readings. A mapping you type is
+half of the reverse key, so the run asks where it is kept: saved into
+the project's own `pseudonyms.json` in QualCoder's format
+(`save_mapping_to_project`), or kept by you
+(`researcher_keeps_mapping`). Pseudonymised data is still personal
+data: read PRIVACY.md before sending it anywhere.
 
 **What happens to my original project?** Nothing, if you follow the
 workspace workflow: copy first, work on the copy, and compare in

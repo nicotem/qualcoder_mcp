@@ -81,10 +81,19 @@ What stays local, always:
   preview-token secret (`token_bind`, `mapping_hmac_sha256`). Never an
   original name: the project path, the backup path and a file's name
   are withheld where a reader would see one, and "Practical
-  mitigations" below says how. No tool reads these files back in this
-  release; they exist so that a
-  later release can reverse a run over spans rather than by matching
-  text.
+  mitigations" below says how. Since v0.13 the record is format 2: it
+  also says whether the run rewrote notes (`rewrite_memos`) and, when it
+  did, lists each note it rewrote in a `memos` section (the table, the
+  row's key, whether the note has a private part, the length of its
+  public part before and after as a `public_length` pair, and where each
+  pseudonym now sits), and it records which way the mapping was kept
+  (`mapping_retention`: saved into the project's `pseudonyms.json`, which
+  it records as requested, never as done; attested as kept by the
+  researcher; or read from that file). A length does not reconstruct a
+  note, and no note text, old or new, is in it. No tool reads these
+  files back: each is an audit record of which rows a run changed and
+  where the pseudonyms now sit, kept so a run can be accounted for
+  afterwards. It is not a way back; the backup taken before the run is.
 
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
@@ -596,16 +605,36 @@ will ask, and the summary above depends on them:
   - **`pseudonyms.json`**, if you keep one. It is QualCoder's own
     import-time list and it is the reverse key in plain text at the
     project root, so it travels into every backup either tool makes.
-    This server never writes it and never deletes it. QualCoder's own
+    This server writes it only when asked, in QualCoder's own format,
+    and never deletes it: since v0.13 a run on a mapping you typed is
+    refused unless the call either asks for the mapping to be saved into
+    this file (`save_mapping_to_project`, which the preview must be run
+    with) or attests that the researcher keeps their own record
+    (`researcher_keeps_mapping`), because a typed mapping exists nowhere
+    else and is half of the reverse key. A save merges with what is
+    there by QualCoder's own rules, and is written only once the run has
+    committed. `get_current_project` reports whether the file is present
+    and how many entries it has, never a name; with
+    `include_pseudonyms=true` it returns the entries themselves, which
+    sends the real names to the AI provider, and its description says
+    so. QualCoder's own
     guidance is to remove it and store it securely once the import is
     done (`manage_files.py` at the 9bddf17 pin), and that applies here
     too. `speakers.json` and `speaker_regex.json` can hold names as
     well; the preview reports whether they are present and never reads
     them.
-  - **Memos (twelve fields, the audio/video and image coding memos
+  - **Notes (twelve fields, the audio/video and image coding notes
     included), journal entries and their names, case names, file names,
     code names, category names, attribute-type names and attribute
-    values.** Scanned and counted, never rewritten. The count is in the
+    values.** Scanned and counted; of these, only the public part of the
+    notes and journal entries is rewritten, and only when `rewrite_memos`
+    is on, across the whole project; the names of things and the
+    attribute values are never rewritten. A note's private part (from
+    its `#####` marker) is carried across unread, so a name there is
+    still there and nothing in this server can report it. A second run
+    with `rewrite_memos` on also rewrites the journal entries this
+    server wrote for earlier runs, which the preview counts and warns
+    about. The count is in the
     preview's `residue` block, and a name that occurs only in a
     `#####` private note is neither read nor counted. Those counts are a
     heuristic that reads wider than the rewrite does: the rewrite
@@ -680,7 +709,11 @@ will ask, and the summary above depends on them:
     `delete_coding_session` is yours to call.
   - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` and the
     journal entry inside the project carry pseudonyms, counts and row
-    ids only, never an original name. A pseudonym that itself carries a
+    ids only, never an original name. When a run rewrites notes, the
+    manifest names each note by its table and key, with the lengths of
+    its public part, and the journal entry gives counts only; an
+    attribute type is keyed by its own name, which is withheld where a
+    reader would see a name in it. A pseudonym that itself carries a
     name from the mapping ("Alex Smith" when Smith is mapped, "Thomasina"
     when Thomas is) is withheld from both, and on the
     `use_project_pseudonyms` path from the preview too, by its entry
