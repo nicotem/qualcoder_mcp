@@ -4354,9 +4354,10 @@ class TestSavingTheMappingIntoPseudonymsJson:
             "the backup is the other half and holds the real names. This "
             "server does not keep the mapping unless asked. On this run it "
             "was saved into the project's own pseudonyms.json (3 entries "
-            "added), which QualCoder applies on every import and which "
-            "travels into every later backup; store that file securely once "
-            "the import work is done, as QualCoder's own guidance says."]
+            "added), which QualCoder applies on every later text or "
+            "transcript import and which travels into every later backup; "
+            "store that file securely once the import work is done, as "
+            "QualCoder's own guidance says."]
         variants = [n for n in notes if n.startswith("The mapping had")]
         assert variants == [
             "The mapping had alternative spellings; each was written to "
@@ -4370,15 +4371,20 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert not any("exactly as this run did" in n for n in notes)
         applying = [n for n in notes if n.startswith(
             "QualCoder applies pseudonyms.json")]
+        # Fix round 2: where QualCoder applies it (B2P-N1), and names that
+        # overlap without nesting (Q-5).
         assert applying == [
-            "QualCoder applies pseudonyms.json on every later import one "
-            "entry at a time, in file order and case-sensitively. The new "
-            "entries were written longest name first, so a shorter name "
-            "inside a longer one does not pre-empt it; an entry already in "
-            "the file can still (see the warnings), a pseudonym that "
-            "contains a name from the mapping is rewritten again, and under "
-            "an insensitive case mode only the spellings saved are "
-            "replaced."]
+            "QualCoder applies pseudonyms.json on every later text or "
+            "transcript import one entry at a time, in file order and "
+            "case-sensitively (its survey import and text-file replacement "
+            "match differently). The new entries were written longest name "
+            "first, so a shorter name inside a longer one does not pre-empt "
+            "it; an entry already in the file can still (see the warnings), "
+            "two names that overlap without either containing the other "
+            "(Mary Ann and Ann Lee, in Mary Ann Lee) can still come out "
+            "differently, a pseudonym that contains a name from the mapping "
+            "is rewritten again, and under an insensitive case mode only the "
+            "spellings saved are replaced."]
         _house_rules(notes)
 
     # Security's ruling of 2026-09-24 (S-1, S-3), which supersedes the
@@ -4947,15 +4953,16 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
         assert upstream_apply(saved, text) == \
             "THOMAS came, then Alex and thomas left."
         warning = [w for w in out["warnings"]
-                   if "applies pseudonyms.json case-sensitively" in w]
+                   if "apply pseudonyms.json case-sensitively" in w]
         assert warning == [
             "Warning: this run replaces the names in any letter case "
-            "(case_mode insensitive), and QualCoder applies pseudonyms.json "
-            "case-sensitively: on its next import it replaces only the "
+            "(case_mode insensitive), and QualCoder's text and transcript "
+            "imports apply pseudonyms.json case-sensitively: the next one "
+            "replaces only the "
             "spellings saved, so a THOMAS or a thomas in a new transcript "
             "stays as it is. Add each spelling you expect as a variant, or "
             "check the next import by hand."]
-        assert not any("case-sensitively: on its next import" in w
+        assert not any("case-sensitively: the next one" in w
                        for w in exact["warnings"])
         assert any("under an insensitive case mode only the spellings "
                    "saved are replaced" in n for n in result["notes"])
@@ -4974,6 +4981,11 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
         assert len(warning) == 1 and warning[0].startswith(
             "Warning: entry [1] holds, as a word, a name that "
             "pseudonyms.json already lists.")
+        # Fix round 2, B2P-N1: said of the imports that match this way.
+        assert ("QualCoder's text and transcript imports apply the file one "
+                "entry at a time, in file order, so on the next one the "
+                "entry already in the file replaces that word first"
+                in warning[0])
         assert "Pnine" not in json.dumps(out)
         _house_rules(warning)
         # QualCoder's loop over the file as it would be saved shows why.
@@ -7812,6 +7824,10 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "names the file already maps and which typed pseudonyms it already "
          "gives to another name, so it confirms whether a name is in the "
          "file."),
+        ("where_qualcoder_applies_the_file",             # fix round 2, B2P-N1
+         "QualCoder's text and transcript imports apply the file one entry "
+         "at a time, in file order and case-sensitively (its survey import "
+         "and text-file replacement match differently)"),
         ("the_file_is_qualcoders_format",                # point 7
          "Alternative spellings become separate entries with the same "
          "pseudonym, which the dialog will "
@@ -8167,6 +8183,24 @@ class TestTheDocumentsTellTheTruth:
                "one that would be deleted" not in entry
         assert "a clamp is counted under its own class rather than under " \
                "one the exemption carries" in entry
+
+    def test_the_documents_say_where_qualcoder_applies_the_file(self):
+        """Fix round 2 (B2P-N1, Q-5): the claim is said of the two imports
+        that match as this run does, and the one case it cannot promise
+        is named."""
+        entry = self._flat("CHANGELOG.md").split("## [0.12")[0]
+        assert ("QualCoder's text and transcript imports apply the file one "
+                "entry at a time, in file order and case-sensitively (its "
+                "survey import and text-file replacement match "
+                "differently)") in entry
+        assert ("Two names that overlap without either containing the other "
+                "can still come out differently, and the result says "
+                "so.") in entry
+        assert "QualCoder applies the file one entry at a time" not in entry
+        readme = self._flat("README.md")
+        assert ("(QualCoder's text and transcript imports apply the file one "
+                "entry at a time, case-sensitively;") in readme
+        assert "QualCoder applies the file one entry at a time" not in readme
 
     def test_the_changelog_counts_the_rounds(self):
         entry = self._flat("CHANGELOG.md").split("## [0.11")[0]

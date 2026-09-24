@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 163,518 characters (about 40.9k tokens at
+  below included: full = 163,635 characters (about 40.9k tokens at
   chars/4) over 71 tools, core = 56,568 (about 14.1k) over 21. `core`
   moved only with `get_current_project`, which gained its report of
   the project's own `pseudonyms.json`; neither the six
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 171,898 and
+  in the repository's `.venv/`, the same definitions measure 172,023 and
   59,520, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -232,13 +232,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owner-only (0600) on macOS and Linux, a departure from QualCoder's
   umask mode for a file of real names; an existing file keeps its own
   permissions, and a read-only one is refused before the backup
-  (`pseudonyms_json_read_only`). QualCoder applies the
-  file one entry at a time, in file order and case-sensitively, so the
-  new entries are written longest name first (a shorter name inside a
-  longer one then does not pre-empt it, as this run's single pass does
-  not), the preview warns when an entry already in the file would
-  pre-empt a new one, and it warns that under an insensitive case mode
-  QualCoder's next import replaces only the spellings saved.
+  (`pseudonyms_json_read_only`). QualCoder's text and transcript
+  imports apply the file one entry at a time, in file order and
+  case-sensitively (its survey import and text-file replacement match
+  differently), so the new entries are written longest name first (a
+  shorter name inside a longer one then does not pre-empt it, as this
+  run's single pass does not), the preview warns when an entry already
+  in the file would pre-empt a new one, and it warns that under an
+  insensitive case mode QualCoder's next import replaces only the
+  spellings saved. Two names that overlap without either containing the
+  other can still come out differently, and the result says so.
 - `get_current_project` reports `pseudonyms_json` (present, how many
   entries, which encoding) without a name. A new tool,
   `read_pseudonym_list`, in the full toolset only, returns the entries
