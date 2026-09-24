@@ -36,6 +36,7 @@ from .database import (
     file_name_is_invalid_upstream,
     file_ending_problem,
     documents_clash_message,
+    documents_name_key,
     _detect_file_type as detect_file_type,
     validate_id,
     validate_limit,
@@ -12191,9 +12192,12 @@ RENAME_FILE_NOTE = (
     "database entry\" does: nothing on disk was renamed, and the stored "
     "path, date, notes, codings and case links are kept. Every backup, "
     "including the one just taken, keeps the old name, and so do this "
-    "server's coding-session files. A Merge Projects with a copy of the "
-    "project that still has the old name brings the file in as a second "
-    "file.")
+    "server's coding-session files, and so do this server's "
+    "pseudonymisation journal entries and run records, which keep the "
+    "file's name as it was at the run unless that name carried a name "
+    "from the mapping (they then name the file by its id). A Merge "
+    "Projects with a copy of the project that still has the old name "
+    "brings the file in as a second file.")
 RENAME_FILE_SEARCH_INDEX_NOTE = (
     "QualCoder's AI search index lists the file under its old name until "
     "QualCoder next opens the project with AI enabled.")
@@ -12209,6 +12213,12 @@ def _stored_copy_block(db, mediapath: Optional[str],
     is touched."""
     later_import = ("A later QualCoder import of a file called '{0}' will "
                     "overwrite this stored copy, and may then delete it.")
+    # Master's image, audio and video import copies over the media folder
+    # and never unlinks (manage_files.py:3000-3040); only a document or
+    # PDF import removes its copy when it is rejected (:2965-2994), so the
+    # deletion clause is for documents only (fix round 1, QA-3).
+    later_media_import = ("A later QualCoder import of a file called '{0}' "
+                          "will overwrite this stored copy.")
     if mediapath and mediapath.startswith(_IN_PROJECT_PREFIXES):
         stored = mediapath.split("/", 2)[2]
         note = (f"The stored copy in the project folder and the stored path "
@@ -12221,8 +12231,11 @@ def _stored_copy_block(db, mediapath: Optional[str],
                      "REFI-QDA export inside the .qdpx. In QualCoder 3.8.2, "
                      "Delete leaves it behind and Export writes nothing "
                      "after a rename.")
+            note += " " + later_import.format(stored)
+        else:
+            note += " " + later_media_import.format(stored)
         return {"kind": "in_project_folder", "stored_name": stored,
-                "note": note + " " + later_import.format(stored)}
+                "note": note}
     if mediapath and mediapath.startswith(_LINKED_PREFIXES):
         linked = re.split(r"[\\/]", mediapath.split(":", 1)[1])[-1]
         return {"kind": "linked_outside_project", "stored_name": linked,
@@ -12236,24 +12249,35 @@ def _stored_copy_block(db, mediapath: Optional[str],
         return {"kind": "unrecognised",
                 "note": "The stored path has a form this server does not "
                         "recognise; whatever it points at keeps its name."}
-    folder = Path(db.db_path).parent / "documents"
-    for candidate in ([old, f"{old}.txt"] if isinstance(old, str) else []):
-        # Only a plain name is looked up: a legacy name carrying a path
-        # character must not lead the lookup out of the folder.
-        if candidate in ("", ".", "..") or any(
-                ch in candidate for ch in "/\\:\0"):
-            continue
-        try:
-            if os.path.lexists(folder / candidate):
-                return {"kind": "found_by_name", "stored_name": candidate,
-                        "note": (f"The project's documents folder holds "
-                                 f"'{candidate}', which QualCoder finds by "
-                                 f"this entry's name; after the rename it "
-                                 f"will no longer find it, and that file "
-                                 f"keeps the old name. "
-                                 + later_import.format(candidate))}
-        except OSError:
-            continue
+    # A text with no stored path. Names are compared with the listing
+    # under the strictest disk's rules (S-1); nothing is joined into a
+    # path, so a legacy name with a path character or a NUL is harmless.
+    listing = sorted(db.documents_listing()) if isinstance(old, str) else []
+
+    def held(name: str) -> Optional[str]:
+        key = documents_name_key(name)
+        return next((e for e in listing if documents_name_key(e) == key),
+                    None)
+    found = held(old) if listing else None
+    if found is not None:
+        return {"kind": "found_by_name", "stored_name": found,
+                "note": (f"The project's documents folder holds '{found}', "
+                         f"which QualCoder finds by this entry's name; after "
+                         f"the rename it will no longer find it, and that "
+                         f"file keeps the old name. It holds the text as it "
+                         f"was stored there, the original document, "
+                         f"whatever has been rewritten here since. "
+                         + later_import.format(found))}
+    found = held(f"{old}.txt") if listing else None
+    if found is not None:
+        # Master's Import survey writes documents/Survey_<case>.txt beside
+        # the entry (manage_files.py:2764-2769) and nothing in QualCoder
+        # reads it back by the entry's name (QA-3).
+        return {"kind": "named_after_it", "stored_name": found,
+                "note": (f"The project's documents folder holds '{found}', "
+                         f"which carries the old name. QualCoder does not "
+                         f"link it to this entry, so the rename leaves it "
+                         f"as it is.")}
     return {"kind": "none",
             "note": "This text is kept only in the database; nothing on "
                     "disk carries its name."}
@@ -12415,10 +12439,10 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
                                for r in others]}
     mediapath = row["mediapath"]
     if not mediapath or mediapath.startswith(("/docs/", "docs:")):
-        own = db.own_stored_copy(mediapath, old) \
-            if isinstance(old, str) else None
-        if db.documents_name_taken(candidate, own=own):
-            return {"error": documents_clash_message(candidate)}
+        clash = db.documents_clash(
+            candidate, own_names=db.own_stored_names(mediapath, old))
+        if clash is not None:
+            return {"error": documents_clash_message(candidate, clash)}
     recordings = [r["name"] for r in rows
                   if r["av_text_id"] == file_id and r["id"] != file_id]
     ending = file_ending_problem(old if isinstance(old, str) else "",

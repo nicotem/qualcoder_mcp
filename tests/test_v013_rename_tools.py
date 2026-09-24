@@ -781,20 +781,49 @@ class TestWhatKeepsTheOldName:
             assert ("original text" in out["stored_copy"]["note"]) == \
                 (ext == "docx")
 
-    @pytest.mark.parametrize("on_disk, found", [
-        ([], None), (["interview.txt"], "interview.txt"),
-        (["interview.txt.txt"], "interview.txt.txt")])
-    def test_a_text_with_no_stored_path(self, project, on_disk, found):
-        for name in on_disk:
-            _documents_file(project, name)
+    @pytest.mark.parametrize("on_disk, kind, found", [
+        ([], "none", None),
+        (["interview.txt"], "found_by_name", "interview.txt"),
+        # Letter case and a trailing space, whatever this disk does
+        # (the listing is compared under the strictest disk's rules).
+        (["INTERVIEW.TXT "], "found_by_name", "INTERVIEW.TXT "),
+        (["interview.txt.txt"], "named_after_it", "interview.txt.txt")])
+    def test_a_text_with_no_stored_path(self, project, monkeypatch,
+                                        on_disk, kind, found):
+        monkeypatch.setattr(server.QualcoderDatabase, "documents_listing",
+                            lambda self: list(on_disk))
         out = _file(1, "P01.txt", create_backup=False)
-        if found is None:
-            assert out["stored_copy"]["kind"] == "none"
-            assert "stored_name" not in out["stored_copy"]
-        else:
-            assert out["stored_copy"] == {
-                "kind": "found_by_name", "stored_name": found,
-                "note": out["stored_copy"]["note"]}
+        block = out["stored_copy"]
+        assert block["kind"] == kind
+        assert block.get("stored_name") == found
+        if kind == "found_by_name":
+            # Fix round 1, QA-3: a document found by name holds the
+            # original text too, and a later import may delete it.
+            assert "the original document, whatever has been rewritten " \
+                   "here since." in block["note"]
+            assert "may then delete it." in block["note"]
+        if kind == "named_after_it":
+            # No QualCoder code reads documents/<name>.txt back by the
+            # entry's name (QA-3): no "finds it" for this one.
+            assert "finds" not in block["note"]
+            assert "QualCoder does not link it to this entry" in \
+                block["note"]
+
+    @pytest.mark.parametrize("mediapath, deletes", [
+        ("/docs/Thomas.docx", True), ("/docs/Thomas.pdf", True),
+        ("/images/Thomas.jpg", False), ("/audio/Thomas.mp3", False),
+        ("/video/Thomas.mp4", False)])
+    def test_the_later_import_sentence_by_kind(self, project, mediapath,
+                                               deletes):
+        """Master's media import overwrites and never unlinks; only a
+        document or PDF import deletes its rejected copy (QA-3)."""
+        ext = mediapath.rsplit(".", 1)[1]
+        _add_file(project, 5, f"Thomas.{ext}", mediapath=mediapath)
+        _reload()
+        note = _file(5, f"P01.{ext}", create_backup=False)[
+            "stored_copy"]["note"]
+        assert "will overwrite this stored copy" in note
+        assert ("may then delete it" in note) is deletes
 
     def test_the_notes_and_the_counts(self, project):
         _saved_places(project)
@@ -1022,3 +1051,79 @@ class TestNamesWindowsCannotStore:
         from qualcoder_mcp.database import file_name_problem
         assert file_name_problem("P01.txt ").startswith(
             "A file name must not end with a dot or a space")
+
+
+class TestTheDocumentsRuleIsTheStrictestDisks:
+    """Fix round 1, S-1. The documents/ rule compares the new name with
+    the folder's listing under the strictest disk QualCoder may open the
+    project on (NFC, letter case folded, trailing dots and spaces
+    dropped), never this server's own disk: the listing is stood in here,
+    so these pins say the same on a disk that keeps letter case (Linux)
+    and on one that folds it (this Mac, Windows)."""
+
+    @pytest.fixture
+    def listing(self, project, monkeypatch):
+        names = []
+        monkeypatch.setattr(server.QualcoderDatabase, "documents_listing",
+                            lambda self: list(names))
+        _add_file(project, 20, "Alpha_interview.docx",
+                  mediapath="/docs/Alpha_interview.docx")
+        _add_file(project, 21, "Beta_interview.docx",
+                  mediapath="/docs/Beta_interview.docx")
+        _reload()
+        names.extend(["Alpha_interview.docx", "Beta_interview.docx"])
+        return names
+
+    @pytest.mark.parametrize("typed", [
+        "beta_interview.docx", "BETA_INTERVIEW.DOCX", "Beta_Interview.docx"])
+    def test_another_files_copy_in_any_letter_case_is_refused(
+            self, listing, typed):
+        out = _file(20, typed)
+        assert out["error"].startswith(
+            "The project's documents folder already holds "
+            "'Beta_interview.docx', which is the same file as"), out
+
+    def test_a_listing_entry_with_a_trailing_space_or_dot(self, listing):
+        listing.append("Gamma notes.docx ")         # a Linux-only name
+        listing.append("Delta.docx.")
+        for typed in ("Gamma notes.docx", "delta.docx"):
+            out = _file(20, typed)
+            assert out["error"].startswith(
+                "The project's documents folder already holds"), out
+
+    def test_its_own_copy_in_another_letter_case_is_allowed(self, listing):
+        out = _file(20, "ALPHA_interview.docx", create_backup=False)
+        assert out["changed"] is True
+
+    def test_its_own_copy_does_not_excuse_another_files_twin(self, listing):
+        # On a disk that keeps letter case both files exist; on one that
+        # folds it they are one, so the new name is refused.
+        listing.append("ALPHA_INTERVIEW.docx")
+        out = _file(20, "ALPHA_INTERVIEW.docx")
+        assert "already holds a file called 'ALPHA_INTERVIEW.docx'" in \
+            out["error"]
+
+    def test_unicode_form_is_folded_too(self, listing):
+        listing.append(unicodedata.normalize("NFD", "Zo\u00eb.docx"))
+        out = _file(20, "ZO\u00cb.docx")
+        assert out["error"].startswith(
+            "The project's documents folder already holds"), out
+
+    def test_the_import_asks_the_same_question(self, listing):
+        out = json.loads(server.import_text_file("beta_INTERVIEW.docx",
+                                                 "Some text."))
+        assert out["error"].startswith(
+            "The project's documents folder already holds "
+            "'Beta_interview.docx'"), out
+
+    def test_a_legacy_name_with_a_nul_is_compared_not_stat_ed(
+            self, project, listing):
+        """S-7: the own-copy exemption used to stat documents/<stored
+        name>, and a stored name with a NUL raised instead of answering."""
+        _add_file(project, 22, "legacy\x00name.txt")
+        _reload()
+        listing.append("legacy2.txt")
+        out = _file(22, "Legacy2.txt")
+        assert out["error"].startswith(
+            "The project's documents folder already holds 'legacy2.txt'")
+        assert _file(22, "P22.txt", create_backup=False)["changed"] is True

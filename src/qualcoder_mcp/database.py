@@ -1066,14 +1066,29 @@ def stored_path_extension(mediapath: Optional[str]) -> str:
     return '.' + last.rsplit('.', 1)[1] if '.' in last else ''
 
 
-def documents_clash_message(name: str) -> str:
+def documents_name_key(name: str) -> str:
+    """How the strictest disk QualCoder may open a project on compares two
+    file names (fix round 1, S-1): Unicode NFC, letter case folded
+    (macOS and Windows fold it by default), and trailing dots and spaces
+    dropped (Windows drops them)."""
+    folded = unicodedata.normalize(
+        "NFC", unicodedata.normalize("NFC", name).casefold())
+    return folded.rstrip(". ")
+
+
+def documents_clash_message(name: str, entry: Optional[str] = None) -> str:
     """The refusal for a text entry named after a file already in the
     project's documents/ folder (rename dossier 3.3, item 5)."""
-    return (f"The project's documents folder already holds a file called "
-            f"'{name}'. QualCoder finds a text's stored copy there by the "
-            f"entry's name when it deletes, exports or replaces the text, "
-            f"so it would treat that file as this entry's. Choose another "
-            f"name.")
+    if entry is None or entry == name:
+        held = f"a file called '{name}'"
+    else:
+        held = (f"'{entry}', which is the same file as '{name}' on a disk "
+                f"that ignores letter case or drops a trailing dot or "
+                f"space (macOS and Windows by default)")
+    return (f"The project's documents folder already holds {held}. "
+            f"QualCoder finds a text's stored copy there by the entry's "
+            f"name when it deletes, exports or replaces the text, so it "
+            f"would treat that file as this entry's. Choose another name.")
 
 
 # The closing clause of every ending refusal (owner ruling of 2026-09-23,
@@ -5824,8 +5839,9 @@ class QualcoderDatabase:
             raise ValueError(
                 f"A file named '{name}' already exists (id={existing['id']})"
             )
-        if self.documents_name_taken(name):
-            raise ValueError(documents_clash_message(name))
+        clash = self.documents_name_taken(name)
+        if clash is not None:
+            raise ValueError(documents_clash_message(name, clash))
 
         return name
 
@@ -7921,42 +7937,59 @@ class QualcoderDatabase:
                     "SELECT id, name, mediapath, av_text_id FROM source "
                     "ORDER BY id")]
 
-    def documents_name_taken(self, name: str,
-                             own: Optional[Path] = None) -> bool:
-        """True when the project's documents/ folder holds `name` and it
-        is not `own` (this file's own stored copy).
+    def documents_listing(self) -> List[str]:
+        """The names in the project's documents/ folder ([] when it is
+        missing or unreadable). The one place the documents/ rule reads
+        the disk, so a test can stand in any listing."""
+        try:
+            return os.listdir(Path(self.db_path).parent / "documents")
+        except OSError:
+            return []
 
-        QualCoder finds a text document's stored copy by its entry name
-        (3.8.2 delete and export; master delete for no stored path, text
+    def documents_clash(self, name: str,
+                        own_names: Sequence[str] = ()) -> Optional[str]:
+        """The file in documents/ that an entry called `name` would stand
+        for on the strictest disk QualCoder may open the project on, or
+        None; a file in `own_names` (this entry's own copies) excepted.
+
+        QualCoder finds a text's stored copy by its entry name (3.8.2
+        Delete and Export; master's Delete for no stored path, text
         replacement and "move to linked"; the REFI-QDA export for no
         stored path), so an entry named after another file there would be
-        treated as that file. lexists, so a dangling link counts; the
-        disk's own letter-case rule applies, the conservative reading.
-        Called only with a name that passed file_name_problem, so the
-        join cannot leave the folder.
+        treated as that file. The comparison is the worst platform's,
+        never this server's own disk (fix round 1, S-1): a project renamed
+        here on a disk that keeps letter case may be opened by QualCoder
+        on one that folds it (macOS and Windows by default), and Windows
+        drops a trailing dot or space. So both names are compared under
+        documents_name_key. An 8.3 short name (`BETA_I~1.DOC`) is not
+        modelled. Only names are compared: nothing is joined into a path.
         """
-        target = Path(self.db_path).parent / "documents" / name
-        if not os.path.lexists(target):
-            return False
-        if own is not None:
-            try:
-                if os.path.samefile(target, own):
-                    return False
-            except OSError:
-                pass
-        return True
-
-    def own_stored_copy(self, mediapath: Optional[str],
-                        name: str) -> Optional[Path]:
-        """Where QualCoder keeps this text's own copy in documents/: the
-        stored path's file for '/docs/', the entry's name when there is
-        no stored path, and None for a linked 'docs:' file."""
-        folder = Path(self.db_path).parent / "documents"
-        if not mediapath:
-            return folder / name
-        if mediapath.startswith('/docs/'):
-            return folder / mediapath[len('/docs/'):]
+        key = documents_name_key(name)
+        own = {unicodedata.normalize("NFC", n) for n in own_names
+               if isinstance(n, str)}
+        for entry in sorted(self.documents_listing()):
+            if documents_name_key(entry) == key and \
+                    unicodedata.normalize("NFC", entry) not in own:
+                return entry
         return None
+
+    def documents_name_taken(self, name: str) -> Optional[str]:
+        """documents_clash with no own copy (a new entry has none)."""
+        return self.documents_clash(name)
+
+    @staticmethod
+    def own_stored_names(mediapath: Optional[str],
+                         name: Any) -> List[str]:
+        """The names in documents/ that are this text's own copy: the
+        stored path's file for '/docs/', the entry's own name when there
+        is no stored path (QualCoder finds it by that name), none for a
+        linked 'docs:' file. Names only (S-7: a legacy stored name with a
+        NUL or a path character is compared, never joined or stat-ed)."""
+        if not mediapath:
+            return [name] if isinstance(name, str) else []
+        if mediapath.startswith('/docs/'):
+            return [mediapath[len('/docs/'):]]
+        return []
 
     # A file name's stem for the "files named after it" count: the last
     # dot-suffix is dropped only when it looks like an extension (1 to 10

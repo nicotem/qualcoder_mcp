@@ -156,3 +156,18 @@ def test_every_rename_text_keeps_the_house_rules():
         ("a.txt", "a.docx", None, []))]
     assert all(isinstance(t, str) and t for t in texts)
     _house_rules(texts)
+
+
+def test_the_records_this_server_keeps_are_named():
+    """Fix round 1, S-3: this server's own pseudonymisation journal entry
+    and run record keep the file's name as it was at the run."""
+    flat = " ".join(server.RENAME_FILE_NOTE.split())
+    assert "this server's pseudonymisation journal entries and run " \
+           "records, which keep the file's name as it was at the run " \
+           "unless that name carried a name from the mapping" in flat
+    # Fix round 1, QA-5 (Q10): the backup sentence is pinned too.
+    assert "Every backup, including the one just taken, keeps the old " \
+           "name, and so do this server's coding-session files" in flat
+    assert "so do this server's pseudonymisation journal entries and run " \
+           "records, which keep a file's name as it was at the run" \
+           in _flat("PRIVACY.md")

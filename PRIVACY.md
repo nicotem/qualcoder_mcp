@@ -682,7 +682,10 @@ will ask, and the summary above depends on them:
     copy), saved graph labels, and saved table displays and filters.
     Each rename's result counts those places for the case or file it
     renamed. Every backup, this server's session files, QualCoder's
-    search index and QualCoder 4.0's AI chat keep the old name too.
+    search index and QualCoder 4.0's AI chat keep the old name too, and
+    so do this server's pseudonymisation journal entries and run records,
+    which keep a file's name as it was at the run unless that name
+    carried a name from the mapping (they then name the file by its id).
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or
