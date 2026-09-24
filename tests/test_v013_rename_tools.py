@@ -1647,3 +1647,19 @@ class TestSavedRowsQualCoderWrote:
         _reload()
         out = _case(5, "P05 new", create_backup=False)
         assert out.get("changed") is True, out
+
+
+class TestTheSavedPlacesOwnNames:
+    """Fix round 3, B-3: a saved display's or filter's own name is read,
+    also when nothing in its rows names the label."""
+
+    def test_only_the_names_hold_the_label(self, project):
+        _saved_places(project)
+        _save_display(project, "P03 view", [("Case", "=", "someone else")])
+        _save_filter(project, "P03 filter", "BOOLEAN_OR",
+                     [("Age", "case", "numeric", ">", ["18"])])
+        _add_case(project, "P03", 5)
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out["old_name_left_in"] == {
+            "saved_table_displays": 1, "saved_filters": 1}, out
