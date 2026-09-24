@@ -148,9 +148,9 @@ SHORT_FORM_CHARS = 4
 # about two seconds (the six rate lines then read 1.51 to 1.98 s). On
 # the development Mac the dearest shapes measured through the tool take
 # 0.66 to 0.77 s (fix round 3; about one second, as the second
-# re-verification's B2-3 measured under load), and twice that when the
-# file a call names fills the allowance of its own it has had since fix
-# round 3 (ruling 1): 1.25 to 1.38 s. A run of combining marks out of
+# re-verification's B2-3 measured under load); the file a call names is
+# read first from the same budgets (ruling 1 as amended, fix round 4),
+# so nothing is spent outside them. A run of combining marks out of
 # order no longer costs more than its length (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7

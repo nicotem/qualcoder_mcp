@@ -3319,9 +3319,7 @@ class TestTheFileTextCountStaysCheap:
                 f"full budgets "
                 f"about {work_s + check_s + match_s:.2f} s (work "
                 f"{work_s:.2f} s, check {check_s:.2f} s, matches "
-                f"{match_s:.2f} s), and with the named file's own allowance "
-                f"(a work and a match budget, fix round 3) about "
-                f"{2 * work_s + check_s + 2 * match_s:.2f} s")
+                f"{match_s:.2f} s)")
 
     def test_a_megabyte_at_a_hundred_forms(self, record_property):
         """The rate probe, and the worst case ruling 7 is checked on.
@@ -3459,7 +3457,9 @@ class TestTheFileTextCountStaysCheap:
         assert "; insensitive, on the documents' prose, " in lines[0]
         assert "; worst case at the full budgets about " in lines[0]
         assert ", check " in lines[0]
-        assert "and with the named file's own allowance" in lines[0]
+        # One worst case (fix round 4): the named file spends the same
+        # budgets, first.
+        assert "allowance" not in lines[0]
         assert "test passed)" in lines[0]
 
 

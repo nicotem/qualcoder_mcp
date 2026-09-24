@@ -8440,7 +8440,8 @@ class QualcoderDatabase:
         "number of matches. Each is listed in files_not_counted and was "
         "still asked whether any name shows in it, and every one that does "
         "is in the totals and the warnings. Preview them one at a time: the "
-        "file a call names has budgets of its own.")
+        "file a call names is read first, with the first claim on the "
+        "budgets.")
     PSEUDONYMISE_NOT_CHECKED_NOTE = (
         "{count} file(s) were not checked at all: the files read before "
         "them had spent this preview's budget for asking whether a name "
@@ -8454,12 +8455,11 @@ class QualcoderDatabase:
         "({budget} units, its characters times the surface forms and a "
         "little more for every character), so no order of the files could "
         "make room for it. Each is listed in "
-        "files_too_large_for_this_mapping and none is reported clean. The "
-        "file this call rewrites has budgets of its own and, past them, is "
-        "still asked whether any name shows; the rewrite applies to it "
-        "either way. Any other such file is asked only when that question "
-        "fits its own budget, and is otherwise listed in files_not_checked. "
-        "Fewer names (the mapping split in two) would let them be counted.")
+        "files_too_large_for_this_mapping and none is reported clean. Each "
+        "is still asked whether any name shows when that question fits its "
+        "own budget, and is otherwise listed in files_not_checked. The "
+        "rewrite applies to the file this call rewrites either way. Fewer "
+        "names (the mapping split in two) would let them be counted.")
 
     @staticmethod
     def _pseudonymise_spend_words(entries: Sequence[Dict[str, Any]],
@@ -8522,19 +8522,19 @@ class QualcoderDatabase:
         `pseudonymise_plan`, which is built a second time inside the
         write transaction, nor in the signed effect.
 
-        The file this call names is read first, against an allowance of
-        its own (one work budget and one match budget, the lead's ruling
-        1 of fix round 3). Every other file then spends the shared budgets
-        in `source.id` order: the work, characters times (surface forms
-        plus a per-character term), and the matches. Past either, a file
+        The file this call names is read first, from the same budgets as
+        every other file, so it has the first claim on them (the lead's
+        ruling 1 as amended, fix round 4); every other file then spends
+        what it leaves, in `source.id` order: the work, characters times
+        (surface forms plus a per-character term), and the matches. Past either, a file
         gets the cheap question only, "does any name show here", charged
         to a budget of its own, and is listed in `files_not_counted`, and
         so does every file after it; past the question's budget a file is
         listed in `files_not_checked`. A file too large for a budget on
         its own is listed in `files_too_large_for_this_mapping` and never
-        closes a budget for the files after it (ruling 2); the named file
-        past its allowance is still asked. No file is omitted for want of
-        budget and none is reported clean when it is not.
+        closes a budget for the files after it (ruling 2). No file is
+        omitted for want of budget and none is reported clean when it is
+        not.
 
         Compact by default (the owner's ruling of 2026-09-23): full detail
         for the file this call names; for every other file one row per
@@ -8599,7 +8599,7 @@ class QualcoderDatabase:
         too_large_showing = 0
         too_large_not_checked = 0
         named_too_large = False
-        named_shows = False
+        named_shows: Optional[bool] = None
         listed: List[Dict[str, Any]] = []
         full_rows = 0
         compact_rows = 0
@@ -8621,22 +8621,12 @@ class QualcoderDatabase:
             found = None
             # Too large to count with this many names: past a budget on
             # its own, so no other file's count could have made room.
+            # The lead's ruling 1, amended (fix round 4): the file this call
+            # names is read first, from the same shared budgets, so it
+            # has the first claim on them and no allowance of its own;
+            # the other files take what it leaves.
             too_large = False
-            if named:
-                # The lead's ruling 1 (fix round 3): the file this call
-                # names has an allowance of its own, one work budget and
-                # one match budget, spent on it alone, so the file the
-                # researcher is looking at is counted whatever the others
-                # cost, and its count never takes budget from them.
-                if work <= engine.MAX_RESIDUE_SCAN_WORK:
-                    found = engine.names_left_in_text(
-                        compiled, text,
-                        list_longer_words=may_echo_names and full,
-                        rewritten_by_this_run=reason is None,
-                        max_matches=engine.MAX_RESIDUE_SCAN_MATCHES,
-                        max_extra_work=engine.MAX_RESIDUE_SCAN_WORK - work)
-                too_large = found is None
-            elif work > engine.MAX_RESIDUE_SCAN_WORK:
+            if work > engine.MAX_RESIDUE_SCAN_WORK:
                 too_large = True
             elif not past_budget and work_done + work <= \
                     engine.MAX_RESIDUE_SCAN_WORK:
@@ -8658,9 +8648,8 @@ class QualcoderDatabase:
                     or (stopped == ["work"] and work_done == 0))
             compact: Optional[Dict[str, Any]] = None
             if found is not None:
-                if not named:
-                    work_done += work + found["extra_work"]
-                    matches_left -= found["matches"]
+                work_done += work + found["extra_work"]
+                matches_left -= found["matches"]
                 counted += 1
                 occurrences = found["occurrences"]
                 wide_total += occurrences["wide"]
@@ -8709,14 +8698,11 @@ class QualcoderDatabase:
                     too_large_ids.append(fid)
                 else:
                     past_budget = True
-                if named:
-                    # Ruling 1: past its own allowance the named file is
-                    # still asked, charged to nothing the others share.
-                    ask = True
-                elif not past_check and check_done + work <= \
+                if not past_check and check_done + work <= \
                         engine.MAX_RESIDUE_CHECK_WORK:
                     # The cheap question, charged to a budget of its own
-                    # (fix round 2, the lead's ruling on B-2).
+                    # (fix round 2, the lead's ruling on B-2), the named
+                    # file's too (ruling 1, amended).
                     ask = True
                     check_done += work
                 else:
@@ -8726,8 +8712,8 @@ class QualcoderDatabase:
                 if ask:
                     not_counted.append(fid)
                     shows = compiled.carries_a_name(text)
-                    if named and too_large:
-                        named_too_large = True
+                    if named:
+                        named_too_large = True     # first: never "past"
                         named_shows = shows
                     if shows:
                         showing_not_counted += 1
@@ -8744,6 +8730,9 @@ class QualcoderDatabase:
                     # says so where the detail asks for one.
                     not_checked.append(fid)
                     too_large_not_checked += too_large
+                    if named:
+                        named_too_large = True
+                        named_shows = None       # not checked either
                     if not full:
                         continue
                     shows = False

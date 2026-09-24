@@ -4976,9 +4976,9 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "asked whether a name shows, and past a budget for that question "
          "it is not checked, and the warning names it."),
         ("the_named_file_and_the_too_large",             # fix round 3, H1
-         "The file this call names has budgets of its own; a file too large "
-         "to count with this many names on its own is said to be, and fewer "
-         "names would let it be counted."),
+         "The file this call names is read first, with the first claim on "
+         "the budgets; a file too large to count with this many names on its "
+         "own is said to be, and fewer names would let it be counted."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "

@@ -10514,19 +10514,22 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"would still match {whole_word} occurrence(s) of these names "
             f"in the text of {counted_showing} file(s), which the wide "
             f"reading did not count.")
-    # Fix round 3, the lead's rulings 1 to 3: a file too large to count
-    # with this many names is told apart from one passed over because the
-    # files before it spent the budget, each with its own remedy.
+    # Fix rounds 3 and 4, the lead's rulings 1 (amended) to 3: a file too
+    # large to count with this many names is told apart from one passed
+    # over because the files before it spent the budget, each with its
+    # own remedy.
     large = totals.get("files_too_large_for_this_mapping", 0)
     large_showing = totals.get("files_too_large_showing_a_name", 0)
     large_unchecked = totals.get("files_too_large_not_checked", 0)
     named_large = bool(totals.get("named_file_too_large"))
-    named_shows = bool(totals.get("named_file_shows_a_name"))
+    # True, False, or None when it was too large to check as well.
+    named_shows = totals.get("named_file_shows_a_name")
     if named_large:
-        shown = ("and a name would still show in it after this run"
-                 if named_shows else
-                 "and it was asked whether a name would still show in it "
-                 "after this run: none does")
+        shown = {True: "and a name would still show in it after this run",
+                 False: "and it was asked whether a name would still show "
+                        "in it after this run: none does",
+                 None: "or to check whether a name would still show in it "
+                       "after this run"}[named_shows]
         sentences.append(
             f"{'Warning: the' if not sentences else 'The'}"
             f" file this call rewrites is too large to count in full "
@@ -10545,13 +10548,15 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"them (see files_not_counted).")
     others = large - named_large
     if others:
-        others_showing = large_showing - (named_large and named_shows)
+        others_showing = large_showing - (named_large and named_shows is True)
+        others_unchecked = large_unchecked - (named_large
+                                              and named_shows is None)
         parts = []
         if others_showing:
             parts.append(f"{others_showing} of them would still show one "
                          f"of these names")
-        if large_unchecked:
-            parts.append(f"{large_unchecked} were not checked")
+        if others_unchecked:
+            parts.append(f"{others_unchecked} were not checked")
         detail = f" ({' and '.join(parts)})" if parts else ""
         sentences.append(
             f"{'Warning: ' if not sentences else ''}"
@@ -11218,9 +11223,10 @@ def pseudonymise_source(
                  fixed budgets: past them a file is only asked whether a
                  name shows, and past a budget for that question it is
                  not checked, and the warning names it. The file this
-                 call names has budgets of its own; a file too large to
-                 count with this many names on its own is said to be,
-                 and fewer names would let it be counted.
+                 call names is read first, with the first claim on the
+                 budgets; a file too large to count with this many names
+                 on its own is said to be, and fewer names would let it
+                 be counted.
         residue_detail: "file" (default): full detail for the file this
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;

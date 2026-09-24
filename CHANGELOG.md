@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,388 characters (about 39.3k tokens at
+  below included: full = 157,430 characters (about 39.3k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,412 and
+  in the repository's `.venv/`, the same definitions measure 165,458 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -82,27 +82,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a file where no name shows it reads as much as a count: past it a file
   is not checked at all, is listed in `files_not_checked`, the warning
   names it and says to preview such files one at a time, and it is never
-  reported clean. The file this call rewrites has budgets of its own, so
-  the others never crowd it out. A file too large to count with this
-  many names on its own (at 1,000 names, an interview of about 90,000
+  reported clean. The file this call rewrites is read first, with the
+  first claim on the budgets. A file too large to count with this many
+  names on its own (at 1,000 names, an interview of about 90,000
   characters) is told apart, in `files_too_large_for_this_mapping` and
   in the warning, whose remedy for it is fewer names; it never closes a
-  budget for the files after it, and the file this call rewrites is
-  still asked whether any name shows, with the rewrite applied as
-  usual. The three are sized so that, on any text and at any mapping
-  size up to the maximum of 500 entries, the other files take about one
-  second together on the development Mac (0.66 to 0.77 s through the
-  tool for the dearest shapes measured, curly-quoted prose under a
-  case-insensitive mapping) and about two seconds on the slowest CI
-  platform (the six platforms' rate lines read 1.51 to 1.98 s when the
-  budgets were frozen; the line now also prices prose under a
-  case-insensitive mapping). The file this call rewrites has an
-  allowance of the same size of its own, so a preview whose named file
-  fills it takes about twice that: 1.25 to 1.38 s measured on the
-  development Mac, and the rate line prints both figures. Past its
-  allowance the named file is still asked whether a name shows, which
-  takes about six times as long as planning its rewrite (0.5 s for an
-  interview of 90,000 characters at 1,000 names). A row lists at most
+  budget for the files after it, and the rewrite still applies to the
+  file this call rewrites. The three are sized so that, on any text and
+  at any mapping size up to the maximum of 500 entries, a preview's
+  file-text count takes about one second on the development Mac (0.66
+  to 0.77 s through the tool for the dearest shapes measured,
+  curly-quoted prose under a case-insensitive mapping) and about two
+  seconds on the slowest CI platform (the six platforms' rate lines
+  read 1.19 to 2.18 s at the last measurement, prose under a
+  case-insensitive mapping included). A row lists at most
   50 entries, the most frequent first, with its own totals complete. A
   second warning reads the file-text counts out, kept apart from the
   fields warning, and it says so when a file's whole-word count is above
