@@ -8640,18 +8640,22 @@ class QualcoderDatabase:
                 too_large = True
             elif not past_budget and work_done + work <= \
                     engine.MAX_RESIDUE_SCAN_WORK:
-                untouched = (work_done == 0 and matches_left
-                             == engine.MAX_RESIDUE_SCAN_MATCHES)
+                stopped: List[str] = []
                 found = engine.names_left_in_text(
                     compiled, text,
                     list_longer_words=may_echo_names and full,
                     rewritten_by_this_run=reason is None,
                     max_matches=matches_left,
                     max_extra_work=(engine.MAX_RESIDUE_SCAN_WORK
-                                    - work_done - work))
-                # Past the matches (or the work its questions cost) with
-                # the budgets untouched: too large on its own.
-                too_large = found is None and untouched
+                                    - work_done - work),
+                    stopped=stopped)
+                # Past the matches with none spent before it, or past the
+                # work (its questions') with none spent before it: too
+                # large for that budget on its own.
+                too_large = found is None and (
+                    (stopped == ["matches"] and matches_left
+                     == engine.MAX_RESIDUE_SCAN_MATCHES)
+                    or (stopped == ["work"] and work_done == 0))
             compact: Optional[Dict[str, Any]] = None
             if found is not None:
                 if not named:

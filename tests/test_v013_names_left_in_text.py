@@ -1337,15 +1337,19 @@ class TestTheBlockIsBounded:
         out = preview_of(residue_detail="project")
         block = _block(out)
         # The PDF (file 2) has no match and is counted; file 4 passes the
-        # budget halfway through its count.
-        assert block["files_not_counted"] == [4, 5]
+        # match budget halfway through its count with none of it spent
+        # before: too large for it on its own (fix round 3, ruling 2), so
+        # it gets the question and file 5 after it is still counted.
+        assert block["files_not_counted"] == [4]
+        assert block["files_too_large_for_this_mapping"] == [4]
         rows = _rows(out)
         assert rows[4]["counted"] is False and rows[4]["shows_a_name"] is True
-        # Once passed, a budget stays passed: file 5 is small but after it.
-        assert rows[5]["counted"] is False
-        assert block["totals"]["files_showing_a_name_not_counted"] == 2
-        assert "2 file(s) would still show one of these names" in \
-            _file_text_warning(out)
+        assert rows[4]["too_large_for_this_mapping"] is True
+        assert rows[5]["counted"] is True
+        assert block["totals"]["files_showing_a_name_not_counted"] == 1
+        assert ("1 file(s) are too large to count in full with this many "
+                "names (1 of them would still show one of these names)"
+                ) in _file_text_warning(out)
 
     def test_the_engine_stops_at_the_match_budget(self):
         """Ten matches in each of the two passes that run on ASCII text,
@@ -2409,3 +2413,34 @@ class TestALargeFileUnderALargeMapping:
         assert block["files_counted"] == 3                  # 1, 2 and 5
         assert block["files_not_counted"] == [4]            # asked
         assert block["totals"]["files_showing_a_name"] == 2
+
+
+class TestTheQuestionsWorkIsCarriedToTheNextFile:
+    """The second re-verification's PN-3 (P6): the work of the whole
+    detector's questions in one file is charged to the preview's work, so
+    it reduces what the next file may spend. File 4 spends its own work
+    and the work of one question; the budget is the three shared files'
+    work and that question's, less one unit: file 5 is past it."""
+
+    MAPPING = [{"original": "Rene", "pseudonym": "Alex"}]
+
+    def test_the_next_file_is_past_by_one_unit(self, project, monkeypatch):
+        nfd = "Later René̖ arrived."
+        _set_text(project, 1, "Rene met.")
+        _set_text(project, 4, nfd)
+        _set_text(project, 5, "Rene came back.", name="five.txt")
+        compiled = P.Compiled(P.validate_mapping(self.MAPPING))
+        extra = P.names_left_in_text(compiled, nfd, True, False)[
+            "extra_work"]
+        assert extra > 0
+        shared = sum(_work_of(text, self.MAPPING) for text in (
+            "extracted page text", nfd, "Rene came back."))
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", shared + extra - 1)
+        block = _block(preview_of(mapping=self.MAPPING,
+                                  residue_detail="project"))
+        assert block["files_not_counted"] == [5]
+        assert block["files_too_large_for_this_mapping"] == []
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", shared + extra)
+        block = _block(preview_of(mapping=self.MAPPING,
+                                  residue_detail="project"))
+        assert block["files_not_counted"] == []

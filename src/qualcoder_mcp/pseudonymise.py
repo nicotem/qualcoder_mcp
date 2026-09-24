@@ -740,26 +740,135 @@ _UNSEEN_PATTERN: Optional["re.Pattern[str]"] = None
 _MARK_RANGES: Optional[List[List[int]]] = None
 
 
+# The non-starters (fix round 3, the second re-verification's B2-1): the
+# code points that decompose, under NFKD, to combining marks with a
+# non-zero combining class only, which canonical reordering sorts among
+# themselves. Found in the same one sweep, as ranges.
+_NON_STARTER_RANGES: Optional[List[List[int]]] = None
+
+
+def _add_to_ranges(ranges: List[List[int]], code_point: int) -> None:
+    """Append `code_point` to sorted `ranges`, merging a neighbour."""
+    if ranges and code_point == ranges[-1][1] + 1:
+        ranges[-1][1] = code_point
+    else:
+        ranges.append([code_point, code_point])
+
+
 def _sweep_code_points() -> None:
     """One pass over every code point: the Cf characters for the unseen
-    table and the combining marks for `_mark_run_pattern`. Tens of
-    milliseconds once per process, paid on the first text that is not
-    ASCII and never at import."""
-    global _UNSEEN_TABLE, _MARK_RANGES
+    table, the combining marks for `_mark_run_pattern`, and the
+    non-starters for `_ordered_runs`. About a tenth of a second once per
+    process, paid on the first text that is not ASCII and never at
+    import."""
+    global _UNSEEN_TABLE, _MARK_RANGES, _NON_STARTER_RANGES
     table = dict.fromkeys(_DEFAULT_IGNORABLE)
     marks: List[List[int]] = []
+    non_starters: List[List[int]] = []
     category = unicodedata.category
+    combining = unicodedata.combining
+    decomposition = unicodedata.decomposition
     for code_point in range(0x110000):
-        kind = category(chr(code_point))
+        char = chr(code_point)
+        kind = category(char)
         if kind == "Cf":
             table[code_point] = None
         elif kind[0] == "M":
-            if marks and code_point == marks[-1][1] + 1:
-                marks[-1][1] = code_point
-            else:
-                marks.append([code_point, code_point])
+            _add_to_ranges(marks, code_point)
+        if combining(char) or (decomposition(char) and all(
+                combining(part) for part in
+                unicodedata.normalize("NFKD", char))):
+            _add_to_ranges(non_starters, code_point)
     _MARK_RANGES = marks
+    _NON_STARTER_RANGES = non_starters
     _UNSEEN_TABLE = table
+
+
+# A run of non-starters longer than this is put in canonical order before
+# the normalisation (fix round 3, B2-1); UAX #15's stream-safe bound.
+LONG_RUN = 30
+_LONG_RUN_PATTERN: Optional[Tuple["re.Pattern[str]", "re.Pattern[str]"]] = None
+
+
+def _ordered_runs(text: str) -> str:
+    """`text` with every run of more than 30 non-starters decomposed and
+    put in canonical order in advance, so NFKC reads it in one pass.
+
+    Fix round 3 (the second re-verification's B2-1). Canonical reordering
+    inside NFKC is quadratic in the length of a run of combining marks
+    out of order, and no budget saw it: one crafted file of 320,000 such
+    marks cost a preview 36 seconds for 2.8 per cent of the work budget.
+    Each such run is replaced by its own NFKD, character by character,
+    sorted by combining class with a stable sort, which is what NFKD's
+    reordering does to it; so NFKC of the result is NFKC of the text,
+    exactly (pinned), and only the cost changes. A text already in NFKD
+    has every run in order and is returned as it stands; ordinary text
+    never has a run of more than a few marks.
+    """
+    global _LONG_RUN_PATTERN
+    if text.isascii() or unicodedata.is_normalized("NFKD", text):
+        return text
+    patterns = _LONG_RUN_PATTERN
+    if patterns is None:
+        if _NON_STARTER_RANGES is None:
+            _sweep_code_points()
+        # The BMP non-starters exactly, and every astral code point: a
+        # character class with seventy astral ranges is tested range by
+        # range, twenty times dearer per character than this one, and the
+        # few astral code points are sorted out exactly below. More than
+        # `LONG_RUN` (30) in a row: 31 or more.
+        patterns = _LONG_RUN_PATTERN = (
+            re.compile("[" + "".join(
+                re.escape(chr(low)) if low == high
+                else re.escape(chr(low)) + "-" + re.escape(chr(high))
+                for low, high in _NON_STARTER_RANGES
+                if high <= 0xFFFF) + "\U00010000-\U0010ffff]"),
+            re.compile("[" + "".join(
+                re.escape(chr(low)) if low == high
+                else re.escape(chr(low)) + "-" + re.escape(chr(high))
+                for low, high in _NON_STARTER_RANGES
+                if high <= 0xFFFF) + "\U00010000-\U0010ffff]{31,}"))
+    first = patterns[0].search(text)
+    if first is None:
+        return text
+    start = first.start()
+    return text[:start] + patterns[1].sub(_ordered_run, text[start:])
+
+
+def _is_non_starter(char: str) -> bool:
+    """Whether `char` is one of the non-starters of the sweep."""
+    ranges = _NON_STARTER_RANGES or []
+    code_point = ord(char)
+    index = bisect_right(ranges, [code_point, 0x110000]) - 1
+    return index >= 0 and ranges[index][0] <= code_point <= ranges[index][1]
+
+
+def _ordered_run(match: "re.Match[str]") -> str:
+    """Each maximal run of true non-starters in `match` (the superset may
+    have run on across astral code points that are not), when longer
+    than `LONG_RUN`, decomposed character by character and sorted by
+    combining class, stably."""
+    out: List[str] = []
+    segment: List[str] = []
+
+    def flush() -> None:
+        if len(segment) > LONG_RUN:
+            parts = [part for char in segment
+                     for part in unicodedata.normalize("NFKD", char)]
+            parts.sort(key=unicodedata.combining)
+            out.append("".join(parts))
+        else:
+            out.append("".join(segment))
+        segment.clear()
+
+    for char in match.group(0):
+        if _is_non_starter(char):
+            segment.append(char)
+        else:
+            flush()
+            out.append(char)
+    flush()
+    return "".join(out)
 
 
 def _unseen_table() -> Dict[int, None]:
@@ -841,7 +950,7 @@ def _reader_sees(value: str) -> str:
     width are spaces: NFKC turns a thin or hair space into a plain one,
     and a plain one is a separator, not an invisible character.
     """
-    return _strip_unseen(unicodedata.normalize("NFKC", value))
+    return _strip_unseen(unicodedata.normalize("NFKC", _ordered_runs(value)))
 
 
 def _detector_parts(form: str) -> List[str]:
@@ -1484,6 +1593,29 @@ def _residue_key(value: str) -> Tuple[str, str]:
 _NOT_A_WORD_CHARACTER = re.compile(r"[\W_]+")
 
 
+def _direct_key(matched: str) -> Tuple[str, str]:
+    """The attribution key of a match of the DIRECT pattern.
+
+    The direct pattern runs over the reader's reading, already normalised
+    and stripped, and each alternative is a form's words escaped and
+    joined by separator runs, so a match is those words, in any case the
+    pattern accepts, with separators between. Keyed as it stands with the
+    separators taken out, never normalised again: `_residue_key` of the
+    match composed a mark the reading had left apart (an invisible
+    character between a letter and a combining accent stops the
+    composition when the text is read; the strip then removes it, and
+    NFKC of the match composes the two), so the key matched no form and
+    the occurrence was charged to no entry (the second re-verification's
+    CORR2-2, "Mary" U+200B U+0301 "Ann" under {"Mary Ann"}; fix round 2
+    fixed the same mechanism in the folded pass). The key of each form,
+    `_residue_key`, is the same words joined, so this is its key.
+    """
+    words = _NOT_A_WORD_CHARACTER.sub("", matched)
+    if words:
+        return ("words", _word_key(words))
+    return ("literal", _word_key(matched))
+
+
 def _folded_key(folded: str) -> Tuple[str, str]:
     """The attribution key of a match of the FOLDED pattern, and of the
     folded reading of a form.
@@ -1579,7 +1711,7 @@ def _pick(candidates: Sequence[Tuple[str, int, Any]], matched: str
     return candidates[0]
 
 
-def _attributed(matches, lookup_table, key=_residue_key):
+def _attributed(matches, lookup_table, key=_direct_key):
     """Each match of a detector pattern, with the form it is charged to.
 
     Yields `(match, (form, entry) or None, charge)`, `charge` being what
@@ -1591,9 +1723,13 @@ def _attributed(matches, lookup_table, key=_residue_key):
     capture group per alternative made the count cost 82 seconds per
     1.27 MB at the documented ceiling of 2,000 forms, which is the shape
     of the uncapped-form defect `MAX_FORM_CHARS` exists for. A match
-    the lookup cannot place (possible where `re.IGNORECASE` and
-    `str.casefold` disagree on a code point) is yielded with None: it is
-    still counted, and charged to no entry.
+    the lookup cannot place is yielded with None: it is still counted,
+    and charged to no entry. Since fix round 3 both passes key a match
+    as it stands (`_direct_key`, `_folded_key`) and none is known to
+    reach None; the two causes found before, `re.IGNORECASE` against
+    `str.casefold` (fix round 2) and a match normalised again (CORR-1 in
+    the folded pass, CORR2-2 in the direct one), are gone. It stays
+    counted if one is ever found.
     """
     placed: Dict[str, Any] = {}
     for match in matches:
@@ -1761,7 +1897,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
                        list_longer_words: bool,
                        rewritten_by_this_run: bool,
                        max_matches: Optional[int] = None,
-                       max_extra_work: Optional[int] = None
+                       max_extra_work: Optional[int] = None,
+                       stopped: Optional[List[str]] = None
                        ) -> Optional[TextResidue]:
     """Where this mapping's names are left in one file's text.
 
@@ -1819,7 +1956,10 @@ def names_left_in_text(compiled: "Compiled", text: str,
     again. Each such question is charged `residue_work` of the word and
     its marks, and one match; past the allowance the
     function returns None, as past the match budget. The result's
-    `extra_work` is what it charged.
+    `extra_work` is what it charged. When the count stops, `stopped` (a
+    list, if given) is told which allowance it passed, "matches" or
+    "work", so the caller can tell a file too large for a budget on its
+    own from one the files before it left no room for (fix round 3).
     """
     lookup = compiled.text_lookup()
     spent = 0
@@ -1847,6 +1987,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
         direct_total += 1
         spent += charge
         if spent > limit >= 0:
+            if stopped is not None:
+                stopped.append("matches")
             return None
         if candidate is None:
             unattributed += 1
@@ -1901,6 +2043,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
                 lookup.folded, key=_folded_key):
             spent += charge
             if spent > limit >= 0:
+                if stopped is not None:
+                    stopped.append("matches")
                 return None
             if candidate is None:
                 folded_unattributed += 1
@@ -1939,6 +2083,8 @@ def names_left_in_text(compiled: "Compiled", text: str,
         spent += (1 if matched in lookup.rewriter_form
                   else RESIDUE_FIRST_SIGHT_MATCHES)
         if spent > limit >= 0:
+            if stopped is not None:
+                stopped.append("matches")
             return None
         key = _rewriter_form(compiled, lookup, matched)
         row = row_for(key)
@@ -1955,6 +2101,9 @@ def names_left_in_text(compiled: "Compiled", text: str,
                 extra_work += residue_work(compiled, snippet)
                 if spent > limit >= 0 or (
                         extra_limit >= 0 and extra_work > extra_limit):
+                    if stopped is not None:
+                        stopped.append("matches" if spent > limit >= 0
+                                       else "work")
                     return None
                 seen_alone = compiled.detector.contains(snippet)
             detector_sees[snippet] = seen_alone

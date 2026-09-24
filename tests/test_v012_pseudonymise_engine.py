@@ -2209,6 +2209,16 @@ class TestTheCharacterSweepIsTheGeneratorByteForByte:
     def test_ascii_comes_back_as_it_went_in(self, text):
         assert P._strip_unseen(text) == reference_strip_unseen(text) == text
 
+    def test_the_sweep_is_the_character_class_and_not_the_table(self):
+        """The second re-verification's PN-1: the curly ratio guard, which
+        holds B-1 by timing, can go red under load on the unmutated tip,
+        so the choice itself is pinned too: the running `_strip_unseen`
+        applies the compiled character class and never `str.translate`
+        with the table (six times dearer per character, fix round 2)."""
+        names = P._strip_unseen.__code__.co_names
+        assert "_unseen_pattern" in names
+        assert "translate" not in names and "_unseen_table" not in names
+
     def test_the_table_is_the_property_and_the_live_cf_sweep(self):
         """Membership, not a count: an interpreter upgrade that moves the
         Cf set fails here loudly rather than narrowing the reading."""
@@ -2340,7 +2350,11 @@ def _residue_case(draw, max_entries=3, one_form=False):
                    "".join(parts), "_".join(parts), " ".join(parts),
                    "x" + form, form + "b", form.translate(_FULLWIDTH),
                    form[:1] + "\u00ad" + form[1:],
-                   form + "\u0301", form + "\u0308"]
+                   form + "\u0300", form + "\u0301", form + "\u0308"]
+        # Fix round 3: an invisible character, then a mark, between two
+        # words of a form (CORR2-2), which the generator never made.
+        if len(parts) > 1:
+            tokens.append(parts[0] + "\u200b\u0301" + "".join(parts[1:]))
     tokens += ["a", "S", "ß", "ss", "B"]
     pieces = []
     for index in range(draw(st.integers(0, 8))):
@@ -2621,6 +2635,89 @@ class TestNamesLeftInText:
                     for kind in P.TEXT_RESIDUE_REASONS)
         assert kinds == found["occurrences"]["wide"] > 0
 
+    @pytest.mark.parametrize("ignorable", ["\u200b", "\u00ad", "\u200d",
+                                           "\u2060", "\u034f", "\ufe0f"])
+    def test_a_direct_match_across_an_ignorable_and_a_mark_is_attributed(
+            self, ignorable):
+        """The second re-verification's CORR2-2: an invisible character
+        between a name's letter and a combining mark stops NFKC composing
+        them when the text is read, the strip then removes it, and the
+        direct pass's key normalised the match again, composed the two,
+        and placed it nowhere (fix round 3 keys it as it stands). One
+        sample per ignorable the lane's sweep met."""
+        found = _left([{"original": "Mary Ann", "pseudonym": "Sam"}],
+                      f"Mary{ignorable}\u0301Ann came.")
+        assert found["occurrences"]["wide"] == 1
+        assert found["unattributed"] == 0
+        assert sum(entry[kind] for entry in found["entries"]
+                   for kind in P.TEXT_RESIDUE_REASONS) == 1
+
+    # The second re-verification's B2-1: canonical reordering inside NFKC
+    # is quadratic in a run of marks out of order (U+0315, class 232, then
+    # U+0316, class 220), and no budget saw it: 36 s a preview for one
+    # file of 320,000 marks. Fix round 3 reads such a run as UAX #15's
+    # stream-safe format does. Measured 0.09 to 0.17 s for 320,000 marks
+    # after it; the lane measured 9 s for 160,000 before, so the ceiling
+    # of 2 s tells the two apart at 160,000.
+    MARKS_CEILING_SECONDS = 2.0
+
+    @pytest.mark.parametrize("head", ["clean text ", "Thomas"],
+                             ids=["after-clean-text", "after-the-name"])
+    def test_a_run_of_marks_out_of_order_is_read_in_linear_time(self, head):
+        import time
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Thomas", "pseudonym": "Alex"}]))
+        text = head + "\u0315\u0316" * 80_000
+        started = time.perf_counter()
+        found = P.names_left_in_text(compiled, text, True, False)
+        elapsed = time.perf_counter() - started
+        assert found["occurrences"]["whole_word"] == (head == "Thomas")
+        assert elapsed < self.MARKS_CEILING_SECONDS, elapsed
+        started = time.perf_counter()
+        assert compiled.carries_a_name(text) is (head == "Thomas")
+        assert time.perf_counter() - started < self.MARKS_CEILING_SECONDS
+
+    @pytest.mark.parametrize("text", [
+        "a" + "\u0315\u0316" * 40,                  # out of order
+        "a" + "\u0316" * 40 + "\u0301",              # in order, NFKD
+        "Caf\u00e9 Rene" + "\u0316" * 39 + "\u0301 x",  # composes across
+        "\u01d8" + "\u0315\u0316" * 20,               # a starter ending in marks
+        "a" + "\uff9e\u0315" * 20,                  # compatibility, Lm
+        "a" + "\U0001d16d\U0001d165" * 16,          # astral non-starters
+        "a" + "\U0001f600" * 40 + "\u0315\u0316" * 16,  # astral starters
+        "a" + ("\u0315\u0316" * 16 + "\u200d") * 3,      # joiners between
+    ], ids=["out-of-order", "in-order", "composes-across", "starter-marks",
+            "halfwidth", "astral-marks", "emoji", "zwj"])
+    def test_ordering_a_long_run_changes_nothing_nfkc_reads(self, text):
+        """Exact: NFKC of the text with its long runs put in order is
+        NFKC of the text, character for character; only the cost moves."""
+        import unicodedata
+        assert unicodedata.normalize("NFKC", P._ordered_runs(text)) == \
+            unicodedata.normalize("NFKC", text)
+        assert P._reader_sees(text) == P._strip_unseen(
+            unicodedata.normalize("NFKC", text))
+
+    def test_only_a_long_run_out_of_nfkd_is_touched(self):
+        in_order = "a" + "\u0316" * 40 + "\u0301"   # already NFKD
+        assert P._ordered_runs(in_order) is in_order
+        for ordinary in ("caf\u00e9", "cafe\u0301", "\u201cquoted\u201d",
+                         "a" + "\u0315\u0316" * 15):        # 30, not more
+            assert P._ordered_runs(ordinary) == ordinary
+        assert P._ordered_runs("a" + "\u0315\u0316" * 16) == \
+            "a" + "\u0316" * 16 + "\u0315" * 16
+
+    def test_the_run_is_read_from_the_first_mark_there_is(self):
+        """The second re-verification's PN-2: the short cut reads the run
+        of marks only from U+0300 up, the first combining mark there is;
+        a name before a combining grave accent (the decomposed "e" with a
+        grave of French and Italian) is in the wide reading too."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Rene", "pseudonym": "Alex"}]))
+        text = "Later Rene\u0300 arrived."
+        assert not compiled.detector.contains(text)
+        found = P.names_left_in_text(compiled, text, True, False)
+        assert found["occurrences"] == {"wide": 1, "whole_word": 1}
+
     def test_the_whole_run_of_marks_after_a_word_is_read(self):
         """The re-verification's CORR-2: sixteen marks that compose with
         nothing (U+0316) and a seventeenth that composes onto the "e"
@@ -2635,6 +2732,13 @@ class TestNamesLeftInText:
             assert not compiled.detector.contains(text)
             found = P.names_left_in_text(compiled, text, True, False)
             assert found["occurrences"] == {"wide": 1, "whole_word": 1}
+        # The same in a text that is not in NFKD, whose long runs fix
+        # round 3 puts in order before the normalisation (B2-1): the
+        # reading is the same, so the count is.
+        text = f"Caf\u00e9. Later Rene{chr(0x316) * 39}\u0301 arrived."
+        assert not compiled.detector.contains(text)
+        found = P.names_left_in_text(compiled, text, True, False)
+        assert found["occurrences"] == {"wide": 1, "whole_word": 1}
 
     def test_the_whole_detector_question_is_charged(self):
         """A whole word the form's own alternatives do not find in its
@@ -2656,6 +2760,47 @@ class TestNamesLeftInText:
                                     max_extra_work=charged - 1) is None
         assert P.names_left_in_text(compiled(), text, True, False,
                                     max_extra_work=charged) is not None
+        # And one match each (the second re-verification's PN-7): three
+        # whole words of one spelling, "Rene" (5, then 1 and 1), and two
+        # questions, one per snippet: 9; no direct match (the detector
+        # does not read "Rene" here).
+        assert found["matches"] == 9
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=8) is None
+
+    def test_the_count_says_which_allowance_stopped_it(self):
+        """Fix round 3: so the caller can tell a file too large for a
+        budget on its own from one the files before it left no room for,
+        the count says whether it passed the matches or the work."""
+        compiled = P.Compiled(P.validate_mapping(
+            [{"original": "Rene", "pseudonym": "Alex"}]))
+        stopped = []
+        assert P.names_left_in_text(compiled, "Rene " * 10, True, False,
+                                    max_matches=3, stopped=stopped) is None
+        assert stopped == ["matches"]
+        stopped = []
+        assert P.names_left_in_text(
+            P.Compiled(compiled.mapping), "Later Rene\u0316\u0301 arrived.",
+            True, False, max_extra_work=0, stopped=stopped) is None
+        assert stopped == ["work"]
+
+    def test_a_first_sight_is_charged_per_candidate(self):
+        """The second re-verification's PN-6 (FD2-1): a first sight is
+        charged `RESIDUE_FIRST_SIGHT_MATCHES` and one more for each
+        further candidate sharing its key. Exact mode, "Thomas" and
+        "THOMAS": one key, two candidates."""
+        def compiled():
+            return P.Compiled(P.validate_mapping(
+                [{"original": "Thomas", "pseudonym": "Alex"},
+                 {"original": "THOMAS", "pseudonym": "Bob"}]))
+        text = "Thomas THOMAS thomas " * 3
+        found = P.names_left_in_text(compiled(), text, True, False)
+        # Direct: three spellings seen first (6 each, two candidates),
+        # six repeats; whole word: two spellings first (5 each), four
+        # repeats: 18 + 6 + 10 + 4.
+        assert found["matches"] == 38
+        assert P.names_left_in_text(compiled(), text, True, False,
+                                    max_matches=37) is None
 
     # QA-1, fixed at the engine: a name followed by a combining mark (an
     # NFD "René") is a whole word to the rewriter and composed away by the
@@ -2890,11 +3035,11 @@ class TestThePropertiesAreDerandomisedInCI:
     def test_the_environment_picks_the_profile(self):
         import conftest
         pick = conftest.hypothesis_profile_for
-        assert pick({"CI": "true"}) == "ci"
+        assert pick({"CI": "true"}) == "qualcoder_mcp_ci"
         assert pick({}) == "default"
         assert pick({"CI": "true", "HYPOTHESIS_PROFILE": "default"}) == \
             "default"
-        profile = settings.get_profile("ci")
+        profile = settings.get_profile("qualcoder_mcp_ci")
         assert profile.derandomize is True
         assert profile.database is None
         assert profile.deadline is None
@@ -2932,7 +3077,7 @@ class TestThePropertiesAreDerandomisedInCI:
         (so it is this suite's profile doing it, not Hypothesis's own),
         and random when nothing asks for it."""
         assert self._derandomised_in_a_fresh_interpreter(
-            HYPOTHESIS_PROFILE="ci") is True
+            HYPOTHESIS_PROFILE="qualcoder_mcp_ci") is True
         assert self._derandomised_in_a_fresh_interpreter() is False
 
     def test_ci_is_derandomised(self):
@@ -3018,9 +3163,15 @@ class TestTheFileTextCountStaysCheap:
         for compiled in (many, one):
             compiled.text_lookup()
         found, elapsed = cls._timed(many, text)
-        _, one_elapsed = cls._timed(one, text)
         curly_found, curly_elapsed = cls._timed(many, curly)
-        _, curly_one = cls._timed(one, curly)
+        # The two one-form readings the curly ratio guard divides, best of
+        # five taken alternately, so a burst of load lands on both rather
+        # than on one (the second re-verification's PN-1 and DR2-1: one
+        # reading each went red on the unmutated tip under load).
+        one_elapsed = curly_one = float("inf")
+        for _ in range(5):
+            one_elapsed = min(one_elapsed, cls._timed(one, text)[1])
+            curly_one = min(curly_one, cls._timed(one, curly)[1])
         # The other classes the constants probe measured, at one form,
         # where the per-character term is what the count spends: the same
         # megabyte with its common words in Cyrillic, in Japanese and in
@@ -3061,12 +3212,41 @@ class TestTheFileTextCountStaysCheap:
             check_elapsed = time.perf_counter() - started
         finally:
             gc.enable()
+        # The second re-verification's B2-3: prose under an insensitive
+        # mapping costs more per unit than the vocabulary above in exact
+        # mode (1.27 to 1.36 times, the lane measured), and it is what the
+        # worst shapes through the tool are made of. Half a megabyte of
+        # the repository's own documents, curly-quoted, at a hundred
+        # forms and at one, and the question on it.
+        prose = cls._documents_prose(500_000)
+        prose_many = P.Compiled(P.validate_mapping(mapping, "insensitive"))
+        prose_one = P.Compiled(P.validate_mapping(mapping[:1],
+                                                  "insensitive"))
+        for compiled in (prose_many, prose_one):
+            compiled.text_lookup()
+        _, prose_elapsed = cls._timed(prose_many, prose)
+        _, prose_one_elapsed = cls._timed(prose_one, prose)
+        prose_clean = not prose_many.carries_a_name(prose)
+        gc.collect()
+        gc.disable()
+        try:
+            started = time.perf_counter()
+            prose_many.carries_a_name(prose)
+            prose_check_elapsed = time.perf_counter() - started
+        finally:
+            gc.enable()
         pair = P.Compiled(P.validate_mapping(
             [{"original": "Ab", "pseudonym": "Xyz"}]))
         pair.text_lookup()
         dense = "ab" * 50_000
         dense_found, dense_elapsed = cls._timed(pair, dense)
         return {
+            "prose_megabytes": len(prose) / 1e6,
+            "prose_elapsed": prose_elapsed,
+            "prose_one_elapsed": prose_one_elapsed,
+            "prose_check_elapsed": prose_check_elapsed,
+            "prose_check_work": P.residue_work(prose_many, prose),
+            "prose_clean": prose_clean,
             "megabytes": len(text) / 1e6, "curly_megabytes": len(curly) / 1e6,
             "elapsed": elapsed, "one_elapsed": one_elapsed,
             "curly_elapsed": curly_elapsed, "curly_one": curly_one,
@@ -3080,6 +3260,21 @@ class TestTheFileTextCountStaysCheap:
             "curly_wide": curly_found["occurrences"]["wide"],
             "unattributed": found["unattributed"]
             + curly_found["unattributed"]}
+
+    @staticmethod
+    def _documents_prose(size):
+        """`size` characters of the repository's documents, curly-quoted
+        (the lanes' corpus); the fixture's names taken out."""
+        base = ""
+        for name in ("README.md", "PRIVACY.md", "CHANGELOG.md",
+                     "INSTALL.md"):
+            base += (Path(__file__).resolve().parents[1] / name).read_text(
+                encoding="utf-8")
+        base = base.encode("ascii", "ignore").decode("ascii")
+        for name in ("Thomas", "Mary", "Ann", "Ali", "Tom"):
+            base = base.replace(name, "Robert")
+        base = base[:200_000].replace("'", "\u2019").replace('"', "\u201c")
+        return (base * (size // len(base) + 1))[:size]
 
     @staticmethod
     def line(m):
@@ -3100,8 +3295,15 @@ class TestTheFileTextCountStaysCheap:
         check_100 = m["check_elapsed"] * 1000 / m["check_megabytes"]
         per_match = max(m["dense_elapsed"] * 1000 - m["dense_chars"] / 1e6 * (
             1 + P.RESIDUE_WORK_PER_CHARACTER) * unit, 0) / m["dense_matches"]
-        work_s = P.MAX_RESIDUE_SCAN_WORK / 1e6 * max(unit, curly_unit) / 1000
-        check_s = P.MAX_RESIDUE_CHECK_WORK / 1e6 * check_unit / 1000
+        prose_100 = m["prose_elapsed"] * 1000 / m["prose_megabytes"]
+        prose_1 = m["prose_one_elapsed"] * 1000 / m["prose_megabytes"]
+        prose_unit = max((prose_100 - prose_1) / 99, 1e-6)
+        prose_check = m["prose_check_elapsed"] * 1000 / (
+            m["prose_check_work"] / 1e6)
+        work_s = P.MAX_RESIDUE_SCAN_WORK / 1e6 * max(
+            unit, curly_unit, prose_unit) / 1000
+        check_s = P.MAX_RESIDUE_CHECK_WORK / 1e6 * max(
+            check_unit, prose_check) / 1000
         match_s = P.MAX_RESIDUE_SCAN_MATCHES * per_match / 1000
         return (f"{at_100 / 100:.3f} ms per MB per surface form at 100 "
                 f"forms, {at_1:.1f} ms per MB at one form (per-character "
@@ -3111,7 +3313,10 @@ class TestTheFileTextCountStaysCheap:
                 f"per-character term not ASCII {worst_term:.2f}, model "
                 f"{P.RESIDUE_WORK_PER_CHARACTER_NON_ASCII}); the question "
                 f"past the budgets {check_100 / 100:.3f} ms per MB per "
-                f"surface form at 100 forms; worst case at the full budgets "
+                f"surface form at 100 forms; insensitive, on the documents' "
+                f"prose, {prose_100 / 100:.3f} per form and the question "
+                f"{prose_check:.3f} ms per MB per unit; worst case at the "
+                f"full budgets "
                 f"about {work_s + check_s + match_s:.2f} s (work "
                 f"{work_s:.2f} s, check {check_s:.2f} s, matches "
                 f"{match_s:.2f} s)")
@@ -3145,6 +3350,7 @@ class TestTheFileTextCountStaysCheap:
         record_property("file_text_rate", line)
         sys.stderr.write(f"\nfile-text count rate: {line}\n")
         assert m["wide"] > 1000 and m["curly_wide"] > 1000
+        assert m["prose_clean"]           # the question read all of it
         assert m["unattributed"] == 0
         # 50,000 matches of one spelling, whose first sight is charged
         # `RESIDUE_FIRST_SIGHT_MATCHES` (fix round 2).
@@ -3248,6 +3454,7 @@ class TestTheFileTextCountStaysCheap:
         assert ", decomposed accents " in lines[0]
         assert "(the worst per-character term not ASCII " in lines[0]
         assert "; the question past the budgets " in lines[0]
+        assert "; insensitive, on the documents' prose, " in lines[0]
         assert "; worst case at the full budgets about " in lines[0]
         assert ", check " in lines[0]
         assert "test passed)" in lines[0]
@@ -3502,8 +3709,27 @@ class TestTheRateReachesThePublicRunPage:
                         workflow.index("- name: Upload pytest output")]
         closing = step.index('} >> "$GITHUB_STEP_SUMMARY"')
         outside = step[closing:]
-        assert ("sed -n 's/^file-text count rate: "
-                "/::notice title=file-text count rate::/p' "
-                "pytest_output.txt") in outside
-        assert outside.index("::notice title=file-text count rate::") < \
-            outside.index("exit $code")
+        line = next(row.strip() for row in outside.splitlines()
+                    if "::notice title=file-text count rate::" in row)
+        # The whole line (the second re-verification's PN-4: a pin on the
+        # command alone passed with its output sent to /dev/null).
+        assert line == ("sed -n 's/^file-text count rate: "
+                        "/::notice title=file-text count rate::/p' "
+                        "pytest_output.txt | head -3")
+        assert outside.index(line) < outside.index("exit $code")
+        # And its effect, where a shell is at hand: run on a sample log.
+        import shutil
+        import subprocess
+        import tempfile
+        bash = shutil.which("bash")
+        if bash is None:
+            return
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "pytest_output.txt").write_text(
+                "..........\nfile-text count rate: 4.1 ms per MB (sample)\n"
+                "3348 passed\n", encoding="utf-8")
+            result = subprocess.run([bash, "-c", line], cwd=folder,
+                                    capture_output=True, text=True,
+                                    timeout=60)
+        assert result.stdout == ("::notice title=file-text count rate::4.1 "
+                                 "ms per MB (sample)\n"), result.stderr

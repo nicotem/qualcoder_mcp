@@ -33,19 +33,22 @@ from hypothesis import settings as _hypothesis_settings
 # chosen one is `--hypothesis-seed=N`. GitHub Actions sets CI=true on
 # every runner. HYPOTHESIS_PROFILE picks a profile by name either way.
 # Hypothesis itself (6.156.6 as installed here) registers a "ci" profile
-# with these settings and loads it when it sees CI; this one replaces it
-# with the same settings, so the suite's CI behaviour does not rest on
-# the installed version (pyproject allows 6.100 and later), and it can
-# be chosen by name on a machine that is not CI.
+# with these settings and loads it when it sees CI; the suite registers
+# its own under a name Hypothesis does not use (fix round 3, the second
+# re-verification's PN-5: under the same name no pin could tell the two
+# apart), so its CI behaviour does not rest on the installed version
+# (pyproject allows 6.100 and later), and it can be chosen by name on a
+# machine that is not CI.
+SUITE_CI_PROFILE = "qualcoder_mcp_ci"
 _hypothesis_settings.register_profile(
-    "ci", derandomize=True, deadline=None, database=None, print_blob=True,
-    suppress_health_check=[_HealthCheck.too_slow])
+    SUITE_CI_PROFILE, derandomize=True, deadline=None, database=None,
+    print_blob=True, suppress_health_check=[_HealthCheck.too_slow])
 
 
 def hypothesis_profile_for(environ) -> str:
     """The profile this run loads, from its environment."""
     return environ.get("HYPOTHESIS_PROFILE") or (
-        "ci" if environ.get("CI") else "default")
+        SUITE_CI_PROFILE if environ.get("CI") else "default")
 
 
 _hypothesis_settings.load_profile(hypothesis_profile_for(os.environ))
