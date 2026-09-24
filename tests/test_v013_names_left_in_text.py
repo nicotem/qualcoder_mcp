@@ -3051,6 +3051,15 @@ class TestTheBoundsLanesPins:
         out = preview_of(mapping=mapping, residue_detail="project")
         assert _rows(out)[1]["counted"] is True
         assert _block(out)["files_counted_in_part"] == []
+        # And its questions' work is charged to what the others share:
+        # with room for file 2 less one unit after it, file 2 is past the
+        # budget, where it would fit were the questions not charged.
+        pdf = _work_of("extracted page text", mapping)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", whole + pdf - 1)
+        assert pdf >= 1            # so the named file's questions still fit
+        out = preview_of(mapping=mapping, residue_detail="project")
+        assert _rows(out)[1]["counted"] is True
+        assert _block(out)["files_not_counted"][:1] == [2]
 
     def test_the_named_files_matches_are_charged_to_the_shared_budget(
             self, project, monkeypatch):
