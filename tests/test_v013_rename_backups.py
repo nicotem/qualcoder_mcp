@@ -11,6 +11,7 @@ id AND the same date), R1-2 (opened read-only and immutable) and R1-4
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -80,8 +81,12 @@ def _in_a_backup(target):
     """Whether a connection target is a backup's database: by the backup
     folder's own name, not the whole path (a test's temporary folder is
     named after the test)."""
-    folder = str(target).split("?")[0].rstrip("/").split("/")[-2]
-    return "_backup_" in folder or "_BKUP_" in folder
+    # Either separator: the project's own connection is a plain path,
+    # with backslashes on Windows; a backup's is a file: URI.
+    parts = re.split(r"[\\/]", str(target).split("?")[0].rstrip("/\\"))
+    if len(parts) < 2:
+        return False
+    return "_backup_" in parts[-2] or "_BKUP_" in parts[-2]
 
 
 def _spy_connections(monkeypatch):
