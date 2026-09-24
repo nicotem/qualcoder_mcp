@@ -205,9 +205,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   heuristic: the old name as a whole word, ignoring letter case, where
   letters and digits make up a word, so `_` and `.` separate words and a
   short label such as `AS` is not found inside `Case`; in saved displays
-  and filters only the values they filter on are read, so a label such
-  as `OR` is not counted in every filter QualCoder saved as
-  `BOOLEAN_OR`; each count only when it is not zero). `rename_file` adds
+  and filters their names are read, and of their rows only the values
+  they filter on, so a label such as `OR` is not counted in every filter
+  QualCoder saved as `BOOLEAN_OR`, while a row not in QualCoder's exact
+  saved shape is read whole, and one that is not UTF-8 is decoded
+  tolerantly; each count only when it is not zero). `rename_file` adds
   `stored_copy` (an imported file's copy in the project folder and its
   stored path keep the old name, and a document's copy keeps the
   original text, which QualCoder's exports ship), `linked_transcript` or

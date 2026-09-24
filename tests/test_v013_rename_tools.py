@@ -1475,9 +1475,11 @@ class TestSavedDisplaysAndFiltersByTheirValues:
             "saved_table_displays": 1, "saved_filters": 1}
 
     def test_the_note_says_so(self):
-        assert "in saved table displays and filters it reads only the " \
-               "values they filter on, not QualCoder's own words such as " \
-               "BOOLEAN_OR or like." in server.OLD_NAME_LEFT_IN_NOTE
+        assert "in saved table displays and filters it reads their names, " \
+               "and the values they filter on rather than QualCoder's own " \
+               "words such as BOOLEAN_OR or like, reading a row whole when " \
+               "it is not in QualCoder's exact saved shape." in \
+               server.OLD_NAME_LEFT_IN_NOTE
 
     def test_a_text_in_no_saved_shape_is_read_whole(self):
         from qualcoder_mcp.database import (saved_display_values,
@@ -1489,7 +1491,21 @@ class TestSavedDisplaysAndFiltersByTheirValues:
         ) == ["OR"]
         assert saved_display_values("Case\t=\tOR\t\tName\tlike\tP 1") == \
             ["OR", "P 1"]
-        assert saved_display_values("no tabs here") == []
+        # Fix round 3, B-2: read whole, as the test's name says.
+        assert saved_display_values("no tabs here") == ["no tabs here"]
+        for other in ("Case\tThomas_P01", "Case = Thomas_P01",
+                      "Case\tmaybe\tThomas_P01"):
+            assert saved_display_values(other) == [other]
+        for other in ("[['Thomas_P01']]",
+                      "[['BOOLEAN_OR'], ['n', 'case', 'character', '=', "
+                      "\"'Thomas_P01'\"]]",
+                      "[['BOOLEAN_OR'], ['n', 'case', 'character', '=']]",
+                      "[['BOOLEAN_OR'], ['n', 'case', 'character', '=', "
+                      "[], 'Thomas_P01']]",
+                      "['BOOLEAN_OR', 'Thomas_P01']",
+                      "[['BOOLEAN_OR'], ['n', 'case', 'character', '=', "
+                      "[[\"'Thomas_P01'\"]]]]"):
+            assert saved_filter_values(other) == [other], other
 
 
 class TestTheBehavioursR2FoundUnpinned:
@@ -1540,3 +1556,94 @@ class TestTheBehavioursR2FoundUnpinned:
         _reload()
         out = _file(5, "P05.PDF", create_backup=False)
         assert out["old_name_left_in"] == {"file_ids": [6]}
+
+
+# Saved displays and filters exactly as QualCoder 4.0 and 3.8.2 wrote
+# them through their own code (REVERIFY_RENAME_F2_B.md, section 3, its
+# evidence logs/saved40.json; byte for byte the same from 3.8.2).
+QUALCODER_DISPLAYS = [
+    ("saved 1", "Case\t=\tThomas_P01"),
+    ("saved 2", "Name\tlike\tThomas_P01\t\tName\thide\tOR"),
+    ("saved 3", "Case\t=\tZoë;O'Brien"),
+    ("saved 4", "Name\t=\tOR notes.txt"),
+    ("saved 5", "Case\tlike\t\tThomas_P01"),
+    ("saved 6", "Participant\t=\t\tP02"),
+    ("saved 7", "Participant\t=\tAnne\t\tP02"),
+    ("saved 8", "Case\t=\tback\\slash"),
+    ("Thomas_P01 files", "Name\tlike\tThomas_P01"),
+    ("saved 10", "Participant\t=\tThomas_P01"),
+]
+QUALCODER_FILTERS = [
+    ("filter 1", "[['BOOLEAN_OR'], ['case name', 'case', 'character', 'like',"
+               " [\"'Thomas_P01'\"]]]"),
+    ("filter 2", "[['BOOLEAN_AND'], ['case name', 'case', 'character', '=', "
+               "[\"'OR'\"]]]"),
+    ("filter 5", "[['BOOLEAN_OR'], ['Age', 'case', 'numeric', '>', "
+                        "['18']]]"),
+    ("filter 7", "[['BOOLEAN_AND'], ['case name', 'case', "
+                             "'character', 'in', [\"'AND'\", \"'character'\","
+                             " \"'like'\", \"'Case'\"]]]"),
+    ("P02 only", "[['BOOLEAN_OR'], ['Age', 'case', 'numeric', '<', "
+                 "['99']]]"),
+]
+
+
+class TestSavedRowsQualCoderWrote:
+    """Fix round 3, B-1, B-3, B-6, B-8, on rows QualCoder itself wrote."""
+
+    @pytest.fixture
+    def saved(self, project):
+        _saved_places(project)
+        for name, rows in QUALCODER_DISPLAYS:
+            _exec(project, "INSERT INTO manage_files_display (name, "
+                           "tblrows, tblcolumns, owner) VALUES (?, ?, "
+                           "'Name\t220\t\t', 'gui_user')", (name, rows))
+        for name, text in QUALCODER_FILTERS:
+            _exec(project, "INSERT INTO files_filter (name, filter, owner) "
+                           "VALUES (?, ?, 'gui_user')", (name, text))
+        _reload()
+        return project
+
+    @pytest.mark.parametrize("label, expected", [
+        # D5 is counted again (B-1), with D1, D2, D9 (also by its name,
+        # B-3) and D10; F1.
+        ("Thomas_P01", {"saved_table_displays": 5, "saved_filters": 1}),
+        # D6 and D7 (B-1) and the filter named 'P02 only' (B-3).
+        ("P02", {"saved_table_displays": 2, "saved_filters": 1}),
+        ("OR", {"saved_table_displays": 2, "saved_filters": 1}),
+        ("AND", {"saved_filters": 1}),
+        # 'saved 5' is read whole, so 'like' is counted there too: the
+        # conservative direction, for a row QualCoder cannot load back.
+        ("like", {"saved_table_displays": 1, "saved_filters": 1}),
+    ])
+    def test_counted_where_the_label_is(self, saved, label, expected):
+        _add_case(saved, label, 5)
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out["old_name_left_in"] == expected, out
+
+    def test_a_cancelled_like_row_is_read_whole(self, project):
+        """B-8: 3.8.2 writes a cancelled 'Show values like' row with an
+        empty value; the display is then read whole, so a case called
+        'like' is counted there (the conservative direction)."""
+        _saved_places(project)
+        _exec(project, "INSERT INTO manage_files_display (name, tblrows) "
+                       "VALUES ('cancelled', 'Name\tlike\t\t\tName\tlike\t')")
+        _add_case(project, "like", 5)
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out["old_name_left_in"].get("saved_table_displays") == 1
+
+    def test_a_saved_row_that_is_not_utf8_does_not_block_a_rename(
+            self, saved):
+        """B-6: a row stored as text that is not UTF-8 is decoded
+        tolerantly for the count; the rename goes through."""
+        _exec(saved, "INSERT INTO files_filter (name, filter) VALUES "
+                     "(CAST(X'5468FF6F6D61735F503031' AS TEXT), "
+                     "CAST(X'5B27FF546865' AS TEXT))")
+        _exec(saved, "INSERT INTO manage_files_display (name, tblrows) "
+                     "VALUES ('bad', CAST(X'436173650920093D09FF' AS TEXT))")
+        _add_case(saved, "P03", 5)
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out.get("changed") is True, out

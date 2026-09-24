@@ -1071,16 +1071,32 @@ def stored_path_extension(mediapath: Optional[str]) -> str:
     return '.' + last.rsplit('.', 1)[1] if '.' in last else ''
 
 
+# The operators QualCoder writes into a saved display's rows (master
+# manage_files.py:1169, :1176, :1183; 3.8.2 :591, :601, :615).
+_SAVED_DISPLAY_OPERATORS = ("=", "like", "hide")
+
+
 def saved_display_values(tblrows: Any) -> List[str]:
-    """The values a saved Manage Files display filters on (fix round 2,
-    R2-1): QualCoder saves its rows joined by two tabs, each row
-    '<column>\t<operator>\t<value>' (master manage_files.py:745-783,
-    :1165-1186; 3.8.2 the same), so the column names and operators
-    ('Case', 'Name', 'like', 'hide') are never read as a label."""
+    """What a saved Manage Files display is read for (fix round 2, R2-1;
+    fix round 3, B-1, B-2, B-8). QualCoder saves its rows joined by two
+    tabs, each row '<column>\t<operator>\t<value>' (master
+    manage_files.py:751, :1169, :1176, :1183; 3.8.2 :191, :591, :601,
+    :615). When every row has exactly that shape, only the values are
+    read, so the column names and operators ('Case', 'Name', 'like',
+    'hide') are never read as a label. Anything else is read whole, the
+    conservative reading: QualCoder itself writes rows it cannot split
+    back, a value that begins with a tab or holds two tabs in a row, and
+    3.8.2 writes a cancelled 'like' row with an empty value."""
     if not isinstance(tblrows, str):
         return []
-    return [row.split("\t", 2)[2] for row in tblrows.split("\t\t")
-            if row.count("\t") >= 2]
+    values = []
+    for row in tblrows.split("\t\t"):
+        parts = row.split("\t")
+        if len(parts) != 3 or not parts[0] or not parts[2] or \
+                parts[1] not in _SAVED_DISPLAY_OPERATORS:
+            return [tblrows]
+        values.append(parts[2])
+    return values
 
 
 # A saved filter longer than this is read whole rather than parsed: a
@@ -1095,10 +1111,12 @@ def saved_filter_values(text: Any) -> List[str]:
     report_attributes.py:139-161, :265-310): a first item
     ['BOOLEAN_OR'] or ['BOOLEAN_AND'], then one
     [name, 'case' or 'file', type, operator, [values]] per condition,
-    character values in single quotes. Only the values are read, so
-    QualCoder's own words (BOOLEAN_OR, AND, case, character, like) are
-    never read as a label. A text in no such shape is read whole, the
-    conservative reading."""
+    character values in single quotes (3.8.2 report_attributes.py:147,
+    :269-309, the same). When the text has exactly that shape, only the
+    values are read, so QualCoder's own words (BOOLEAN_OR, AND, case,
+    character, like) are never read as a label. Anything else, a list of
+    another shape included, is read whole, the conservative reading
+    (fix round 3, B-2)."""
     if not isinstance(text, str):
         return []
     if len(text) > SAVED_FILTER_PARSE_LIMIT:
@@ -1108,17 +1126,20 @@ def saved_filter_values(text: Any) -> List[str]:
     except (ValueError, SyntaxError, MemoryError, RecursionError,
             TypeError):
         return [text]
-    if not isinstance(parsed, list):
+    if not (isinstance(parsed, list) and parsed and
+            parsed[0] in (["BOOLEAN_OR"], ["BOOLEAN_AND"])):
         return [text]
     values: List[str] = []
     for item in parsed[1:]:
-        if isinstance(item, (list, tuple)) and len(item) >= 5 and \
-                isinstance(item[4], (list, tuple)):
-            for value in item[4]:
-                if isinstance(value, str):
-                    if len(value) >= 2 and value[0] == value[-1] == "'":
-                        value = value[1:-1]
-                    values.append(value)
+        if not (isinstance(item, list) and len(item) == 5
+                and all(isinstance(part, str) for part in item[:4])
+                and isinstance(item[4], list)
+                and all(isinstance(value, str) for value in item[4])):
+            return [text]
+        for value in item[4]:
+            if len(value) >= 2 and value[0] == value[-1] == "'":
+                value = value[1:-1]
+            values.append(value)
     return values
 
 
@@ -8189,11 +8210,14 @@ class QualcoderDatabase:
         present only when not zero, and a table this schema lacks is
         skipped. Saved graph labels are this row's own nodes
         (gr_case_text_item or gr_file_text_item); saved table displays
-        (the value field of each manage_files_display.tblrows row) and
-        saved filters (the values of each files_filter.filter condition)
-        are the whole project's, read without QualCoder's own words
-        (fix round 2, R2-1: a case called OR is not counted in every
-        filter saved as BOOLEAN_OR); file_ids are the
+        (each display's name, and the value field of each of its rows)
+        and saved filters (each filter's name, and the values of each of
+        its conditions) are the whole project's, read without
+        QualCoder's own words where the row has QualCoder's exact saved
+        shape and whole otherwise (fix rounds 2 and 3, R2-1, B-1 to B-3:
+        a case called OR is not counted in every filter saved as
+        BOOLEAN_OR); a saved row that is not UTF-8 is decoded tolerantly
+        (B-6); file_ids are the
         other files whose name holds the old name, for a file with a
         stored path without the stored file's extension ('Thomas.pdf'
         finds its pages 'Thomas_p1.jpg'), otherwise whole ('Thomas.Jones'
@@ -8219,24 +8243,36 @@ class QualcoderDatabase:
 
         table, id_col = {"case": ("gr_case_text_item", "caseid"),
                          "file": ("gr_file_text_item", "fid")}[kind]
+        def text_of(value: Any) -> Any:
+            # Read as bytes and decoded tolerantly (fix round 3, B-6): a
+            # saved row stored as text that is not UTF-8 would otherwise
+            # raise at the read and refuse every rename.
+            if isinstance(value, bytes):
+                return value.decode("utf-8", "replace")
+            return value
+
+        # Each place, and what of a row is read: a saved display's and a
+        # saved filter's own name too (fix round 3, B-3), whole.
         places = (
             ("saved_graph_labels", table,
-             f"SELECT displaytext FROM {table} WHERE {id_col} = ?",
-             (row_id,)),
+             f"SELECT CAST(displaytext AS BLOB) FROM {table} "
+             f"WHERE {id_col} = ?", (row_id,),
+             lambda label: [label]),
             ("saved_table_displays", "manage_files_display",
-             "SELECT tblrows FROM manage_files_display", ()),
+             "SELECT CAST(name AS BLOB), CAST(tblrows AS BLOB) "
+             "FROM manage_files_display", (),
+             lambda name, rows: [name] + saved_display_values(rows)),
             ("saved_filters", "files_filter",
-             "SELECT filter FROM files_filter", ()),
+             "SELECT CAST(name AS BLOB), CAST(filter AS BLOB) "
+             "FROM files_filter", (),
+             lambda name, text: [name] + saved_filter_values(text)),
         )
-        readers = {"saved_graph_labels": lambda text: [text],
-                   "saved_table_displays": saved_display_values,
-                   "saved_filters": saved_filter_values}
-        for label, place, sql, args in places:
+        for label, place, sql, args, parts in places:
             if not present(place):
                 continue
-            hits = sum(1 for (value,) in self.conn.execute(sql, args)
-                       if any(pattern.search(key(part))
-                              for part in readers[label](value)))
+            hits = sum(1 for row in self.conn.execute(sql, args)
+                       if any(pattern.search(key(part)) for part in
+                              parts(*[text_of(value) for value in row])))
             if hits:
                 found[label] = hits
 
