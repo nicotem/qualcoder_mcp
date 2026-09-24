@@ -3597,6 +3597,105 @@ class TestTheNotePassRate:
         assert outside.index(line) < outside.index("exit $code")
 
 
+class TestTheNotesOfHiddenCoders:
+    """Brief 2 fix round 1, QA-B2-2 (the lead's ruling): a note rewrite
+    needs no allow_hidden_coder, and the notes of hidden coders it
+    rewrites are counted in the preview, the result and the run record,
+    warned about when there are any, and never named."""
+
+    HIDDEN = "Hidden Colleague"
+
+    def _plant(self, project):
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("INSERT INTO code_text (ctid,cid,fid,seltext,pos0,pos1,"
+                    "owner,date,memo,important) VALUES (40,1,4,'nothing',0,"
+                    "7,?,'d','Thomas said this.',0)", (self.HIDDEN,))
+        con.execute("INSERT INTO annotation (anid,fid,pos0,pos1,memo,owner,"
+                    "date) VALUES (40,4,0,7,'Tom here.',?,'d')",
+                    (self.HIDDEN,))
+        con.execute("INSERT INTO code_av (avid,id,pos0,pos1,cid,memo,date,"
+                    "owner,important) VALUES (1,3,0,10,1,'Mary Ann on tape.',"
+                    "'d',?,0)", (self.HIDDEN,))
+        con.execute("INSERT INTO code_image (imid,id,x1,y1,width,height,cid,"
+                    "memo,date,owner,important) VALUES (1,2,0,0,10,10,1,"
+                    "'Thomas in the photo.','d',?,0)", (self.HIDDEN,))
+        # A visible coder's note, and a case note, which no coder owns.
+        con.execute("UPDATE source SET memo='Thomas again.' WHERE id=4")
+        con.execute("UPDATE cases SET memo='Thomas, the case.' WHERE "
+                    "caseid=1")
+        con.commit()
+        con.close()
+        hide_coder(project, self.HIDDEN)
+        server.db.close()
+        server.db = QualcoderDatabase(str(project))
+
+    def test_they_are_counted_warned_about_and_never_named(self, project):
+        self._plant(project)
+        out = preview_of(rewrite_memos=True)
+        block = out["preview"]["memo_rewrites"]
+        assert block["memos_of_hidden_coders"] == 4
+        assert block["memos_of_hidden_coders_note"] == (
+            "Of the rows above, this many are notes on codings or "
+            "annotations of a coder currently hidden in QualCoder; their "
+            "names are not shown. Rewriting a note changes no coding "
+            "decision, so it needs no allow_hidden_coder.")
+        warning = [w for w in out["warnings"] if w.startswith(
+            "Warning: 4 note(s) this run would rewrite belong to")]
+        assert len(warning) == 1
+        _house_rules(warning + [block["memos_of_hidden_coders_note"]])
+        assert out["preview"]["hidden_coder_rows"]["override_required"] \
+            is False
+        result = execute_from(out)
+        assert result.get("success") is True, result
+        assert result["memos"]["totals"]["of_hidden_coders"] == 4
+        record = json.loads(Path(result["manifest_path"]).read_text(
+            encoding="utf-8"))
+        assert record["memos_of_hidden_coders"] == 4
+        for payload in (json.dumps(out), json.dumps(result),
+                        json.dumps(record)):
+            assert self.HIDDEN not in payload
+        assert query(project, "SELECT memo FROM code_av WHERE avid=1"
+                     )[0]["memo"] == "Sam on tape."
+
+    def test_none_is_none(self, project):
+        _plant_note(project, "UPDATE cases SET memo=? WHERE caseid=1",
+                    "Thomas, the case.")
+        out = preview_of(rewrite_memos=True)
+        assert out["preview"]["memo_rewrites"]["memos_of_hidden_coders"] \
+            == 0
+        assert not any("hidden in QualCoder; their names are not shown. "
+                       "Rewriting a note" in w for w in out["warnings"])
+
+    def test_the_count_is_signed(self, project):
+        """Hiding a coder between the preview and the execute changes what
+        the researcher was told, so the token is refused."""
+        self._plant(project)
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE coder_names SET visibility=1 WHERE name=?",
+                    (self.HIDDEN,))
+        con.commit()
+        con.close()
+        out = preview_of(rewrite_memos=True)
+        assert out["preview"]["memo_rewrites"]["memos_of_hidden_coders"] \
+            == 0
+        con = sqlite3.connect(str(project / "data.qda"))
+        con.execute("UPDATE coder_names SET visibility=0 WHERE name=?",
+                    (self.HIDDEN,))
+        con.commit()
+        con.close()
+        refused = execute_from(out)
+        assert refused["reason"] == "project_changed", refused
+        assert backups(project) == []
+
+    def test_the_override_entry_says_so(self):
+        flat = " ".join(server.pseudonymise_source.__doc__.split())
+        assert ("A note that rewrite_memos rewrites needs no override "
+                "either, whoever owns it, because it changes no coding "
+                "decision; the preview counts those of hidden coders "
+                "(memo_rewrites.memos_of_hidden_coders), never naming them."
+                in flat)
+
+
 class TestTheRunRecordAndTheJournalOfANoteRewrite:
     """Format 2 (ruling 2) and the journal lines (Brief 2, 4.9, 4.10,
     5.7 and 5.8; tests 34 to 39)."""

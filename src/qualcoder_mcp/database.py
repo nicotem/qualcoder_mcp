@@ -8128,13 +8128,18 @@ class QualcoderDatabase:
         totals = {"rows": 0, "replacements": 0,
                   "rewritten_with_private_part": 0,
                   "not_rewritten_marker_risk": 0,
-                  "journal_entries_from_earlier_runs": 0}
+                  "journal_entries_from_earlier_runs": 0,
+                  "of_hidden_coders": 0}
         by_entry: Dict[int, int] = {}
+        visibility = self.coder_visibility_map()
         for table, column in self.PSEUDONYMISE_MEMO_FIELDS:
             key_column = self.PSEUDONYMISE_MEMO_KEYS[table]
+            owned = table in self.PSEUDONYMISE_MEMO_OWNED
+            owner_column = ", owner" if owned else ""
             try:
                 stored_rows = self.conn.execute(
-                    f"SELECT {key_column}, {column} FROM {table} "
+                    f"SELECT {key_column}, {column}{owner_column} "
+                    f"FROM {table} "
                     f"WHERE {column} IS NOT NULL AND {column} != '' "
                     f"ORDER BY {key_column}").fetchall()
             except sqlite3.Error:
@@ -8147,7 +8152,8 @@ class QualcoderDatabase:
                 "table": table, "column": column, "key_column": key_column,
                 "rows": [], "not_rewritten_marker_risk": [],
                 "replacements": 0}
-            for key, value in stored_rows:
+            for stored_row in stored_rows:
+                key, value = stored_row[0], stored_row[1]
                 if not isinstance(value, str):
                     continue
                 public, private = split_public_private_memo(value)
@@ -8173,6 +8179,8 @@ class QualcoderDatabase:
                             public.split("\n", 1)[0]))
                     totals["journal_entries_from_earlier_runs"] += \
                         row["earlier_run_entry"]
+                if owned and coder_is_hidden(visibility, stored_row[2]):
+                    totals["of_hidden_coders"] += 1
                 field["rows"].append(row)
                 field["replacements"] += len(replacements)
                 totals["rows"] += 1
@@ -8386,6 +8394,7 @@ class QualcoderDatabase:
                     totals["not_rewritten_marker_risk"],
                 "journal_entries_from_earlier_runs":
                     totals["journal_entries_from_earlier_runs"],
+                "of_hidden_coders": totals["of_hidden_coders"],
             }
         return effect
 
@@ -8530,6 +8539,14 @@ class QualcoderDatabase:
     # (`code_av.py:4874`, `:5555`); ruling 9 as recorded, and the lead's
     # night ruling 3, leave `code_av` untouched, a named departure.
     PSEUDONYMISE_MEMO_DATED = ("annotation", "journal")
+    # The note kinds a coder owns and QualCoder can hide: the four tables
+    # with an `owner` column and a `_visible` view (app.py:1518-1561 at
+    # 9bddf17). A note rewrite needs no allow_hidden_coder (it changes no
+    # coding decision, ruling 7.3(3)'s line), and the notes of hidden
+    # coders it rewrites are counted, never named (Brief 2 fix round 1,
+    # QA-B2-2).
+    PSEUDONYMISE_MEMO_OWNED = ("code_text", "annotation", "code_av",
+                               "code_image")
     # The first line `_pseudonymise_journal_body` writes. A journal entry
     # whose public part opens with it is taken to be this server's own
     # record of an earlier run: a HEURISTIC, by its first line, used to
@@ -9642,6 +9659,12 @@ class QualcoderDatabase:
         "project's record of what those runs applied. This is a heuristic "
         "reading of each entry's first line.")
 
+    PSEUDONYMISE_MEMO_HIDDEN_NOTE = (
+        "Of the rows above, this many are notes on codings or annotations of "
+        "a coder currently hidden in QualCoder; their names are not shown. "
+        "Rewriting a note changes no coding decision, so it needs no "
+        "allow_hidden_coder.")
+
     def _pseudonymise_memo_block(self, memo_plan: Dict[str, Any],
                                  pseudonym_of) -> Dict[str, Any]:
         """The readable `memo_rewrites` block, from the note plan.
@@ -9683,6 +9706,9 @@ class QualcoderDatabase:
                 totals["journal_entries_from_earlier_runs"],
             "journal_entries_from_earlier_runs_note":
                 self.PSEUDONYMISE_MEMO_EARLIER_RUNS_NOTE,
+            "memos_of_hidden_coders": totals["of_hidden_coders"],
+            "memos_of_hidden_coders_note":
+                self.PSEUDONYMISE_MEMO_HIDDEN_NOTE,
         }
         if memo_plan["unreadable"]:
             block["unreadable"] = list(memo_plan["unreadable"])
@@ -9911,7 +9937,8 @@ class QualcoderDatabase:
         # journal entry and the run record read one report.
         for key in ("rewritten_with_private_part",
                     "not_rewritten_marker_risk",
-                    "journal_entries_from_earlier_runs"):
+                    "journal_entries_from_earlier_runs",
+                    "of_hidden_coders"):
             totals[key] = memo_plan["totals"][key]
         return {"fields": fields, "totals": totals, "rows": rows}
 

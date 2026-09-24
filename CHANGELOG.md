@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 162,824 characters (about 40.7k tokens at
+  below included: full = 163,098 characters (about 40.8k tokens at
   chars/4) over 71 tools, core = 56,568 (about 14.1k) over 21. `core`
   moved only with `get_current_project`, which gained its report of
   the project's own `pseudonyms.json`; neither the six
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 171,164 and
+  in the repository's `.venv/`, the same definitions measure 171,454 and
   59,520, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -204,6 +204,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the switch on rewrites the entries earlier runs wrote, which the
   preview counts (by each entry's first line, a heuristic) and warns
   about.
+- A note rewrite needs no `allow_hidden_coder`, since it changes no
+  coding decision; the notes of coders hidden in QualCoder that a run
+  rewrites are counted (`memos_of_hidden_coders`) in the preview, the
+  result and the run record, warned about, and never named.
 - The note pass's rate is printed in the test run's summary as
   `note pass rate:` and published by CI as a check-run annotation.
 

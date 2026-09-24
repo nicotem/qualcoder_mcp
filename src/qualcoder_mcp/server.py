@@ -11209,6 +11209,17 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
                 f"names in those notes stay as they are. This happens only "
                 f"when a pseudonym contains hash characters: choose one "
                 f"without, or edit those notes by hand.")
+        hidden_notes = memo_block.get("memos_of_hidden_coders", 0)
+        if hidden_notes:
+            # Brief 2 fix round 1, QA-B2-2: counted, never named; no
+            # override, since a note rewrite changes no coding decision.
+            warnings.append(
+                f"Warning: {hidden_notes} note(s) this run would rewrite "
+                f"belong to codings or annotations of coder(s) currently "
+                f"hidden in QualCoder; their names are not shown. Rewriting "
+                f"a note changes no coding decision, so allow_hidden_coder "
+                f"is not needed for it; tell the user, since those are other "
+                f"coders' notes.")
         earlier = memo_block.get("journal_entries_from_earlier_runs", 0)
         if earlier:
             warnings.append(
@@ -11794,6 +11805,9 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         manifest["memos"] = rows
         manifest["memos_not_rewritten_marker_risk"] = \
             memos["totals"]["not_rewritten_marker_risk"]
+        # Counted, never named (Brief 2 fix round 1, QA-B2-2).
+        manifest["memos_of_hidden_coders"] = \
+            memos["totals"]["of_hidden_coders"]
         manifest["memos_not_rewritten_marker_risk_note"] = (
             QualcoderDatabase.PSEUDONYMISE_MEMO_MARKER_RISK_NOTE
             + " They are not in the memos list above.")
@@ -12019,7 +12033,11 @@ def pseudonymise_source(
                  decision; a coding that grew to swallow a pseudonym,
                  one that would be deleted, or one that had to be
                  clamped because its stored end lay past the end of the
-                 text, does.
+                 text, does. A note that rewrite_memos rewrites needs no
+                 override either, whoever owns it, because it changes no
+                 coding decision; the preview counts those of hidden
+                 coders (memo_rewrites.memos_of_hidden_coders), never
+                 naming them.
         record_in_journal: Write a journal entry in the project recording
                  the run (default true). It carries counts, pseudonyms
                  and file ids, never an original name. This argument is
