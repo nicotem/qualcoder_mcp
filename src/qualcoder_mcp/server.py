@@ -12404,6 +12404,45 @@ def _transcript_blocks(rows, file_id: int, old: Optional[str],
     return out
 
 
+def stored_file_name(mediapath: Optional[str]) -> Optional[str]:
+    """The stored file's own name (the last part of the stored path),
+    which is the name the file was imported or linked under, or None."""
+    if not mediapath:
+        return None
+    tail = mediapath.split(":", 1)[1] if mediapath.startswith(
+        _LINKED_PREFIXES) else mediapath
+    return re.split(r"[\\/]", tail)[-1] or None
+
+
+def _is_a_rename_back(rows, file_id: int, clash: str,
+                      earlier: List[str]) -> bool:
+    """Whether the documents/ file `clash` is this text's own copy under
+    a name it had before (the lead's ruling on QA-4).
+
+    A text with no stored path owns `documents/<its name>`; a backup that
+    shows this entry with a name matching `clash` is the evidence that
+    the file was its copy. Refused all the same when any other entry
+    claims the file now, by its stored path or by its own name, compared
+    as the documents/ rule compares.
+    """
+    key = documents_name_key(clash)
+    if not any(documents_name_key(name) == key for name in earlier):
+        return False
+    for other in rows:
+        if other["id"] == file_id:
+            continue
+        path = other["mediapath"]
+        if path and path.startswith("/docs/"):
+            claim = path[len("/docs/"):]
+        elif not path:
+            claim = other["name"]
+        else:
+            continue
+        if isinstance(claim, str) and documents_name_key(claim) == key:
+            return False
+    return True
+
+
 def _file_rename_precheck(db, file_id: int, candidate: str):
     """A result to answer without writing, or None to proceed.
 
@@ -12438,15 +12477,42 @@ def _file_rename_precheck(db, file_id: int, candidate: str):
                 "candidates": [{"id": r["id"], "name": r["name"]}
                                for r in others]}
     mediapath = row["mediapath"]
+    earlier_cache: List[List[str]] = []
+
+    def earlier() -> List[str]:
+        """This file's earlier names, read from the project's backups
+        only when a rule would refuse (QA-4: a rename back)."""
+        if not earlier_cache:
+            earlier_cache.append(db.earlier_names(file_id))
+        return earlier_cache[0]
+
     if not mediapath or mediapath.startswith(("/docs/", "docs:")):
-        clash = db.documents_clash(
+        clashes = db.documents_clashes(
             candidate, own_names=db.own_stored_names(mediapath, old))
+        clash = clashes[0] if clashes else None
+        # Two files there that one disk folds into one cannot both be
+        # this entry's copy, so a rename back needs exactly one.
+        if len(clashes) == 1 and not mediapath and \
+                _is_a_rename_back(rows, file_id, clash, earlier()):
+            clash = None
         if clash is not None:
-            return {"error": documents_clash_message(candidate, clash)}
+            message = documents_clash_message(candidate, clash)
+            if not mediapath:
+                message += (" If it was this entry's own copy under a name "
+                            "it had before, restore_backup or QualCoder's "
+                            "own Rename can put that name back; this server "
+                            "recognises a rename back only from a backup "
+                            "that shows this entry with that name.")
+            return {"error": message}
     recordings = [r["name"] for r in rows
                   if r["av_text_id"] == file_id and r["id"] != file_id]
-    ending = file_ending_problem(old if isinstance(old, str) else "",
-                                 candidate, mediapath, recordings)
+    old_name = old if isinstance(old, str) else ""
+    ending = file_ending_problem(old_name, candidate, mediapath, recordings)
+    if ending is not None:
+        stored = stored_file_name(mediapath)
+        ending = file_ending_problem(
+            old_name, candidate, mediapath, recordings,
+            earlier=([stored] if stored else []) + earlier())
     if ending is not None:
         return {"error": ending}
     for other in rows:
@@ -12475,7 +12541,8 @@ def rename_file(file_id: int, new_name: str,
     kept (they are by id). The name is trimmed at both ends and
     normalised to Unicode NFC. The identical current name answers
     `changed: false, reason: unchanged` before any rule, with nothing
-    written and no backup made.
+    written and no backup made; a name stored with spaces at its ends or
+    in another Unicode form is rewritten in normal form when retyped.
 
     Refused, each with its reason: an empty, spaces-only or dots-only
     name; control, line-separator or invisible formatting characters;
@@ -12492,7 +12559,12 @@ def rename_file(file_id: int, new_name: str,
     stored file's extension; a text with no stored file whose name ends
     in '.txt' or has no dot keeps it that way. QualCoder's own Rename can
     still make those changes. Any other name changes freely
-    ('Thomas.Jones' to 'P01').
+    ('Thomas.Jones' to 'P01'). A rename back is not refused: an ending
+    the file had before (its stored file's own name shows one, and so
+    does any of the project's backups, which this tool reads for that)
+    may be restored, except a transcript losing both endings or a media
+    file its extension; and a text with no stored file may take back its
+    own copy in the documents folder under a name a backup shows it with.
 
     The result carries `changed: true`, `old_name`, `file_type`, and
     what kept the old name: `stored_copy` (an imported file's copy in the

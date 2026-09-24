@@ -1127,3 +1127,156 @@ class TestTheDocumentsRuleIsTheStrictestDisks:
         assert out["error"].startswith(
             "The project's documents folder already holds 'legacy2.txt'")
         assert _file(22, "P22.txt", create_backup=False)["changed"] is True
+
+
+class TestARenameBack:
+    """Fix round 1, QA-4 (the lead's ruling): renaming back to a name
+    whose documents/ file is this entry's own copy is allowed, and
+    restoring an ending the entry had is not refused. The evidence is the
+    project's backups (every earlier name is in one) and the stored
+    file's own name; without it, the refusal says what can do it."""
+
+    @pytest.fixture
+    def listing(self, monkeypatch):
+        names = []
+        monkeypatch.setattr(server.QualcoderDatabase, "documents_listing",
+                            lambda self: list(names))
+        return names
+
+    def test_a_legacy_text_takes_back_its_own_found_copy(self, project,
+                                                          listing):
+        _add_file(project, 5, "legacy.txt")
+        _reload()
+        listing.append("legacy.txt")
+        assert _file(5, "legacy2.txt")["changed"] is True   # with a backup
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert out["changed"] is True, out
+
+    def test_without_a_backup_the_refusal_says_what_can(self, project,
+                                                        listing):
+        _add_file(project, 5, "legacy.txt")
+        _reload()
+        listing.append("legacy.txt")
+        assert _file(5, "legacy2.txt", create_backup=False)["changed"]
+        out = _file(5, "legacy.txt")
+        assert out["error"].startswith(
+            "The project's documents folder already holds a file called "
+            "'legacy.txt'.")
+        assert out["error"].endswith(
+            "If it was this entry's own copy under a name it had before, "
+            "restore_backup or QualCoder's own Rename can put that name "
+            "back; this server recognises a rename back only from a "
+            "backup that shows this entry with that name.")
+
+    def test_not_when_another_entry_claims_that_file_now(self, project,
+                                                          listing):
+        _add_file(project, 5, "legacy.txt")
+        _reload()
+        listing.append("legacy.txt")
+        assert _file(5, "legacy2.txt")["changed"] is True
+        _add_file(project, 6, "Other.txt", mediapath="/docs/LEGACY.txt")
+        _reload()
+        assert "already holds" in _file(5, "legacy.txt")["error"]
+
+    def test_not_when_two_files_there_match(self, project, listing):
+        _add_file(project, 5, "legacy.txt")
+        _reload()
+        listing.extend(["legacy.txt", "LEGACY.txt"])
+        assert _file(5, "legacy2.txt")["changed"] is True
+        assert "already holds" in _file(5, "legacy.txt")["error"]
+
+    @pytest.mark.parametrize("first, second", [
+        ("Thomas.Jones", "P01 notes"),               # a declared type
+        ("stray.transcribed", "stray.txt"),          # '.transcribed'
+    ])
+    def test_an_ending_it_had_is_restored(self, project, first, second):
+        _add_file(project, 5, first)
+        _reload()
+        assert _file(5, second)["changed"] is True          # a backup
+        assert _file(5, first, create_backup=False)["changed"] is True
+
+    @pytest.mark.parametrize("first, second, opening", [
+        ("Thomas.Jones", "P01 notes", "This text has no stored file"),
+        ("stray.transcribed", "stray.txt",
+         "The name would gain the ending '.transcribed'"),
+    ])
+    def test_not_without_the_evidence(self, project, first, second,
+                                      opening):
+        _add_file(project, 5, first)
+        _reload()
+        assert _file(5, second, create_backup=False)["changed"] is True
+        assert _file(5, first)["error"].startswith(opening)
+
+    @pytest.mark.parametrize("name, mediapath, restored", [
+        # QA-13: a PDF whose entry lost '.pdf' in QualCoder, and a
+        # document whose entry gained it, go back to the stored file's.
+        ("report", "/docs/report.pdf", "report.pdf"),
+        ("notes.pdf", "/docs/notes.docx", "notes.docx"),
+    ])
+    def test_the_stored_files_own_name_is_evidence_too(
+            self, project, name, mediapath, restored):
+        _add_file(project, 5, name, mediapath=mediapath)
+        _reload()
+        assert _file(5, restored, create_backup=False)["changed"] is True
+
+
+class TestTheTranscriptRefusalByCase:
+    """Fix round 1, QA-2: a swap of '.txt' and '.transcribed' keeps
+    QualCoder 4.0's link, so its refusal names what QualCoder does act on,
+    the by-name '.transcribed' pairing; losing both endings keeps the
+    link text. And a swap back to an ending the transcript had is a
+    restore (QA-4); losing both endings never is."""
+
+    @pytest.fixture
+    def av(self, project):
+        _add_file(project, 10, "P01.mp3", mediapath="/audio/P01.mp3",
+                  av_text_id=11, fulltext=None)
+        _add_file(project, 11, "P01.mp3.transcribed")
+        _reload()
+        return project
+
+    @pytest.mark.parametrize("typed, ending, other", [
+        ("P01.mp3.txt", ".transcribed", ".txt")])
+    def test_a_swap_names_the_pairing(self, av, typed, ending, other):
+        out = _file(11, typed)
+        assert out["error"].startswith(
+            f"This file is the transcript of 'P01.mp3', and its name must "
+            f"keep the ending '{ending}': QualCoder's REFI-QDA export and "
+            f"file summary pair a recording with an entry ending in "
+            f"'.transcribed' by name"), out
+        assert f"swapping '{ending}' for '{other}'" in out["error"]
+        assert "broken link" not in out["error"]
+        assert out["error"].endswith(STILL_POSSIBLE)
+
+    def test_the_other_swap_too(self, project):
+        _add_file(project, 10, "P01.mp3", mediapath="/audio/P01.mp3",
+                  av_text_id=11, fulltext=None)
+        _add_file(project, 11, "P01.mp3.txt")
+        _reload()
+        out = _file(11, "P01.mp3.transcribed")
+        assert "swapping '.txt' for '.transcribed'" in out["error"]
+        assert "broken link" not in out["error"]
+
+    def test_losing_both_keeps_the_link_text(self, av):
+        out = _file(11, "P01 transcript")
+        assert "treats a transcript whose name does not end in '.txt' or " \
+               "'.transcribed' as a broken link" in out["error"]
+
+    def test_a_swap_back_is_a_restore(self, av):
+        # QualCoder's own Rename made the swap; a backup shows the
+        # transcript's earlier '.txt'.
+        _exec(av, "UPDATE source SET name = 'P01.mp3.txt' WHERE id = 11")
+        _reload()
+        assert _file(11, "P09.mp3.txt")["changed"] is True   # a backup
+        _exec(av, "UPDATE source SET name = 'P01.mp3.transcribed' "
+                  "WHERE id = 11")
+        _reload()
+        out = _file(11, "P01.mp3.txt", create_backup=False)
+        assert out["changed"] is True, out
+
+    def test_losing_both_is_never_a_restore(self, av):
+        _exec(av, "UPDATE source SET name = 'P01 transcript' WHERE id = 11")
+        _reload()
+        assert _file(11, "P01.mp3.txt")["changed"] is True   # a backup
+        out = _file(11, "P01 transcript")
+        assert "as a broken link" in out["error"], out

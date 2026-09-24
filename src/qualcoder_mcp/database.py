@@ -17,7 +17,8 @@ import unicodedata
 import uuid
 import shutil
 from datetime import datetime
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+import glob
 
 from .memo_privacy import (
     PERSONAL_NOTE_MARK,
@@ -1100,7 +1101,8 @@ _ENDING_STILL_POSSIBLE = (
 
 
 def file_ending_problem(old: str, new: str, mediapath: Optional[str],
-                        recording_names: Sequence[str]) -> Optional[str]:
+                        recording_names: Sequence[str],
+                        earlier: Sequence[str] = ()) -> Optional[str]:
     """The ending rule of rename_file, or None: refuse only a change of an
     ending QualCoder acts on (owner ruling of 2026-09-23, option b).
 
@@ -1108,10 +1110,24 @@ def file_ending_problem(old: str, new: str, mediapath: Optional[str],
     link (av_text_id) points at this file; empty when it is no
     transcript. Every other name changes freely: a name with no
     recognised ending ('Thomas.Jones') has no rule.
+
+    `earlier` are names this file had before (its stored file's own name,
+    and its names in the project's backups): restoring an ending one of
+    them had is not refused (the lead's ruling on QA-4), where the rule
+    is about gaining an ending ('.pdf' either way, '.transcribed', a
+    declared file type) or swapping a transcript's '.txt' and
+    '.transcribed'. Losing both of a transcript's endings, or a media
+    file's stored extension, is refused whatever came before, because
+    that is the change that breaks QualCoder's link or export.
     """
+    earlier = [e for e in earlier if isinstance(e, str)]
     if recording_names:
-        for ending in (".txt", ".transcribed"):
-            if old.endswith(ending) and not new.endswith(ending):
+        endings = (".txt", ".transcribed")
+        for ending in endings:
+            if not old.endswith(ending) or new.endswith(ending):
+                continue
+            other = endings[1 - endings.index(ending)]
+            if not new.endswith(other):
                 return (f"This file is the transcript of "
                         f"'{recording_names[0]}', and its name must keep "
                         f"the ending '{ending}' exactly, letter case "
@@ -1120,12 +1136,28 @@ def file_ending_problem(old: str, new: str, mediapath: Optional[str],
                         f"broken link, drops it, and gives the recording a "
                         f"new, empty transcript the next time it is opened."
                         + _ENDING_STILL_POSSIBLE)
-    if old.lower().endswith('.pdf') != new.lower().endswith('.pdf'):
-        verb = "lose" if old.lower().endswith('.pdf') else "gain"
+            if not any(e.endswith(other) for e in earlier):
+                # The swap keeps QualCoder 4.0's link (both endings pass
+                # its test); what QualCoder acts on is the by-name
+                # '.transcribed' pairing (fix round 1, QA-2).
+                return (f"This file is the transcript of "
+                        f"'{recording_names[0]}', and its name must keep "
+                        f"the ending '{ending}': QualCoder's REFI-QDA export "
+                        f"and file summary pair a recording with an entry "
+                        f"ending in '.transcribed' by name, and export a "
+                        f"'.transcribed' entry only as that pairing, so "
+                        f"swapping '{ending}' for '{other}' changes how "
+                        f"QualCoder exports and pairs this transcript."
+                        + _ENDING_STILL_POSSIBLE)
+    new_pdf = new.lower().endswith('.pdf')
+    if old.lower().endswith('.pdf') != new_pdf and not any(
+            e.lower().endswith('.pdf') == new_pdf for e in earlier):
+        verb = "gain" if new_pdf else "lose"
         return (f"The name would {verb} the ending '.pdf': QualCoder's "
                 f"REFI-QDA export decides from that ending whether a "
                 f"document is exported as a PDF." + _ENDING_STILL_POSSIBLE)
-    if new.endswith('.transcribed') and not old.endswith('.transcribed'):
+    if (new.endswith('.transcribed') and not old.endswith('.transcribed')
+            and not any(e.endswith('.transcribed') for e in earlier)):
         return ("The name would gain the ending '.transcribed': QualCoder's "
                 "REFI-QDA export exports such an entry only as the "
                 "transcript of the recording whose name it extends, and "
@@ -1143,7 +1175,9 @@ def file_ending_problem(old: str, new: str, mediapath: Optional[str],
     if not mediapath:
         before = refi_declared_text_type(old)
         after = refi_declared_text_type(new)
-        if before.lower() == 'txt' and after.lower() != 'txt':
+        if (before.lower() == 'txt' and after.lower() != 'txt'
+                and not any(refi_declared_text_type(e).lower()
+                            == after.lower() for e in earlier)):
             return (f"This text has no stored file, and QualCoder's REFI-QDA "
                     f"export declares its file type from the name: it is "
                     f"declared plain text now, and '{new}' would declare it "
@@ -7964,18 +7998,66 @@ class QualcoderDatabase:
         documents_name_key. An 8.3 short name (`BETA_I~1.DOC`) is not
         modelled. Only names are compared: nothing is joined into a path.
         """
+        clashes = self.documents_clashes(name, own_names)
+        return clashes[0] if clashes else None
+
+    def documents_clashes(self, name: str,
+                          own_names: Sequence[str] = ()) -> List[str]:
+        """Every file documents_clash could answer, sorted."""
         key = documents_name_key(name)
         own = {unicodedata.normalize("NFC", n) for n in own_names
                if isinstance(n, str)}
-        for entry in sorted(self.documents_listing()):
-            if documents_name_key(entry) == key and \
-                    unicodedata.normalize("NFC", entry) not in own:
-                return entry
-        return None
+        return [entry for entry in sorted(self.documents_listing())
+                if documents_name_key(entry) == key
+                and unicodedata.normalize("NFC", entry) not in own]
 
     def documents_name_taken(self, name: str) -> Optional[str]:
         """documents_clash with no own copy (a new entry has none)."""
         return self.documents_clash(name)
+
+    # How many of the project's backups, newest first, are read to
+    # recognise a rename back (fix round 1, QA-4).
+    EARLIER_NAMES_BACKUP_LIMIT = 200
+
+    def earlier_names(self, file_id: int) -> List[str]:
+        """The names this file (the same id) has in the project's backups,
+        newest first, each once: this server's `<project>_backup_*` and
+        QualCoder's `<project>_BKUP_*` copies beside the project, at most
+        EARLIER_NAMES_BACKUP_LIMIT of them, each read-only.
+
+        The evidence rename_file uses to recognise a rename back (the
+        lead's ruling on QA-4): a backup keeps every earlier name, so a
+        name this entry had there is its own. Nothing is written; a
+        backup that cannot be read is skipped.
+        """
+        folder = Path(self.db_path).parent
+        backups = []
+        for prefix in (f"{folder.stem}_backup_", f"{folder.stem}_BKUP_"):
+            try:
+                for entry in folder.parent.glob(glob.escape(prefix) + "*.qda"):
+                    try:
+                        if entry.is_dir() and entry != folder:
+                            backups.append((entry.stat().st_mtime, entry))
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        backups.sort(key=lambda item: item[0], reverse=True)
+        found: List[str] = []
+        for _mtime, entry in backups[:self.EARLIER_NAMES_BACKUP_LIMIT]:
+            data = entry / "data.qda"
+            try:
+                if not data.is_file():
+                    continue
+                with closing(sqlite3.connect(_sqlite_ro_uri(data),
+                                             uri=True)) as con:
+                    row = con.execute("SELECT name FROM source WHERE id = ?",
+                                      (file_id,)).fetchone()
+            except (sqlite3.Error, OSError, ValueError):
+                continue
+            if row and isinstance(row[0], str) and row[0] not in found:
+                found.append(row[0])
+        return found
 
     @staticmethod
     def own_stored_names(mediapath: Optional[str],

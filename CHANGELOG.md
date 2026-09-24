@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 163,555 characters (about 40.9k tokens at
+  below included: full = 164,048 characters (about 41.0k tokens at
   chars/4) over 72 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools, nor `pseudonymise_source`,
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 171,875 and
+  in the repository's `.venv/`, the same definitions measure 172,392 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -248,9 +248,9 @@ reason:
 | Over 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes (a text with no stored path is exported as `<name>.txt`), under the usual 255-byte file-name limit; and a paging cursor carrying the name stays under its 1,024-character cap. The limit is in bytes because both reasons are: there is no limit in characters |
 | A text's new name already present in `documents/` refused, compared as the strictest disk compares names (letter case folded, Unicode form and a trailing dot or space ignored), never as this server's own disk does | QualCoder finds a text's stored copy there by the entry's name and would act on that other file; a project renamed on a disk that keeps letter case may be opened on one that folds it |
 | `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
-| An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`) | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
+| An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`), and restoring an ending the file had before is not refused, except a transcript losing both endings or a media file its extension | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
 | The identical name answers "unchanged", before any rule | Same outcome as "This already exists", in the house shape |
-| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup` |
+| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup`. A rename back is recognised from the project's backups (and, for an ending, from the stored file's own name), so the ending and `documents/` rules do not refuse it; when no backup shows the earlier name (a rename made with `create_backup=false`, or pruned backups), the rules apply and `restore_backup` or QualCoder's own Rename can make it |
 | QualCoder's search index is not refreshed | It belongs to QualCoder, which re-indexes on the next open with AI on; stated in the result |
 | No bulk rename | QualCoder's drops every extension and breaks transcript links; call `rename_file` per file |
 | The result reports the stored copy, transcripts, pairings and saved places | Reporting only |
