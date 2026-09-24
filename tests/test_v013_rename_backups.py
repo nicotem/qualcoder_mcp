@@ -247,3 +247,40 @@ class TestTheBackupsAreReadOnlyWhenNeededAndOnce:
         seen = _spy_connections(monkeypatch)
         assert _file(5, "legacy.txt", create_backup=False)["changed"]
         assert len(seen) == 1, seen
+
+
+class TestTheCarriedAnswerIsCheckedAgain:
+    """Fix round 3, F2A-1: the answer carried from the pre-check into the
+    re-check under BEGIN IMMEDIATE is tested again against the question
+    the re-check asks. Checker A's probe h4, adopted."""
+
+    def test_h4_a_recording_linked_before_the_lock(self, setup_server,
+                                                   qualcoder_db_path,
+                                                   monkeypatch):
+        project = Path(qualcoder_db_path)
+        _add(project, 5, "old.pdf")
+        _exec(project, "INSERT INTO source (id, name, fulltext, mediapath, "
+                       "memo, owner, date) VALUES (10, 'a', NULL, "
+                       "'/audio/a.mp3', '', 'gui_user', "
+                       "'2024-01-15 10:00:00')")
+        bk = project.parent / f"{project.stem}_BKUP_20240101_10.qda"
+        shutil.copytree(project, bk)                  # 5 was 'old.pdf'
+        _exec(project, "UPDATE source SET name = 'a.txt' WHERE id = 5")
+        _reload()
+        real = database.QualcoderDatabase.begin_immediate
+
+        def link_then_begin(self):
+            # QualCoder's View AV relinks a recording by name (master
+            # view_av.py:205-212), here in the window before the lock.
+            _exec(project, "UPDATE source SET av_text_id = 5 WHERE id = 10")
+            real(self)
+        monkeypatch.setattr(database.QualcoderDatabase, "begin_immediate",
+                            link_then_begin)
+        out = _file(5, "a.pdf", create_backup=False)
+        assert "as a broken link" in out.get("error", ""), out
+        con = sqlite3.connect(str(project / "data.qda"))
+        try:
+            assert con.execute("SELECT name FROM source WHERE id = 5"
+                               ).fetchone()[0] == "a.txt"
+        finally:
+            con.close()

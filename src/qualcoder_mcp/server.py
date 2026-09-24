@@ -12511,7 +12511,13 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
         tag = (tag, row.get("date"))
         if tag not in evidence:
             evidence[tag] = db.earlier_name(file_id, row.get("date"), accept)
-        return evidence[tag]
+        name = evidence[tag]
+        # A name carried from the pre-check counts only if it still
+        # answers the question as the re-check asks it (fix round 3,
+        # F2A-1): the project may have changed in between, for example
+        # a recording linked to this text, and then an earlier ending
+        # must not license a transcript losing both of its own.
+        return name if name is not None and accept(name) else None
 
     if not mediapath or mediapath.startswith(("/docs/", "docs:")):
         clashes = db.documents_clashes(
