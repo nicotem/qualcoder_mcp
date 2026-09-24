@@ -3166,6 +3166,23 @@ def _note_of(project, table, column="memo"):
                           f"{table} ORDER BY {key}")
 
 
+def _raise_takes_an_expression():
+    """Whether this SQLite accepts an expression as RAISE's second
+    argument (`RAISE(ABORT, NEW.memo)`), tried on a throwaway database:
+    3.49.1 and 3.50.4 do, 3.43.2 (the macOS system Python's) refuses it
+    at `CREATE TRIGGER`. Asked of SQLite itself, never of a version."""
+    con = sqlite3.connect(":memory:")
+    try:
+        con.execute("CREATE TABLE t (memo TEXT)")
+        con.execute("CREATE TRIGGER leak BEFORE UPDATE OF memo ON t "
+                    "BEGIN SELECT RAISE(ABORT, NEW.memo); END;")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        con.close()
+
+
 class TestTheNoteRewriteIsWritten:
 
     @pytest.mark.parametrize("table,sql", NOTE_PLANTERS,
@@ -3496,6 +3513,10 @@ class TestTheNoteRewriteIsWritten:
             "nothing was rewritten and no backup was taken.")
         assert backups(project) == []
 
+    @pytest.mark.skipif(
+        not _raise_takes_an_expression(),
+        reason=f"SQLite {sqlite3.sqlite_version} refuses an expression as "
+               f"RAISE's second argument; the case below runs everywhere")
     def test_a_failed_note_write_logs_no_note_text(self, project, caplog):
         """Security S-6: SQLite takes `RAISE(ABORT, NEW.memo)` in a trigger,
         so the error's message can be the note itself, its private part
@@ -3524,6 +3545,65 @@ class TestTheNoteRewriteIsWritten:
                                   "(notes): IntegrityError")
         assert query(project, "SELECT memo FROM source WHERE id=1"
                      )[0]["memo"].startswith("Met Thomas.")
+
+    def test_a_failed_note_statement_logs_no_note_text_on_any_sqlite(
+            self, project, caplog, monkeypatch):
+        """Security S-6 on every platform, whatever the SQLite: the note
+        statement itself raises the error a leaking trigger would, an
+        IntegrityError whose message is the note being written, private
+        part included. Only the connection the note statements run on is
+        wrapped, and only for their duration."""
+        import logging
+        _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
+                    "Met Thomas.\n#####PRIVATE-SENTINEL words")
+        before = self._snapshot(project)
+        text = query(project, "SELECT fulltext FROM source WHERE id=1")
+        raised = []
+
+        class NoteStatementRaises:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, parameters=()):
+                if sql.startswith("UPDATE source SET memo = ?"):
+                    error = sqlite3.IntegrityError(parameters[0])
+                    error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+                    raised.append(parameters[0])
+                    raise error
+                return self._conn.execute(sql, parameters)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        original = QualcoderDatabase._pseudonymise_write_memos
+
+        def on_a_raising_statement(self, *args, **kwargs):
+            conn, self.conn = self.conn, NoteStatementRaises(self.conn)
+            try:
+                return original(self, *args, **kwargs)
+            finally:
+                self.conn = conn
+
+        monkeypatch.setattr(QualcoderDatabase, "_pseudonymise_write_memos",
+                            on_a_raising_statement)
+        out = preview_of(rewrite_memos=True)
+        caplog.set_level(logging.DEBUG)
+        refused = execute_from(out)
+        assert raised and "PRIVATE-SENTINEL" in raised[0], raised
+        assert refused["error"] == ("Could not rewrite this project's notes; "
+                                    "nothing was written.")
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        for leaked in ("PRIVATE-SENTINEL", "Met Alex", "Met Thomas"):
+            assert leaked not in logged, leaked
+        line = [r.getMessage() for r in caplog.records
+                if "pseudonymise_write (notes)" in r.getMessage()]
+        assert line == ["Database error in pseudonymise_write (notes): "
+                        "IntegrityError SQLITE_CONSTRAINT_TRIGGER"]
+        # Rolled back: every note, and the file's text, as they were.
+        assert self._snapshot(project) == before
+        assert query(project, "SELECT fulltext FROM source WHERE id=1"
+                     ) == text
+        assert server.db.read_only is True
 
     def test_a_fault_after_the_note_statements_rolls_back_the_notes_too(
             self, project, monkeypatch):
