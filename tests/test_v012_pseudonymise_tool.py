@@ -4980,7 +4980,8 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "The file this call names is read first, with the first claim on "
          "the budgets. A count that stops part-way found a name and gives a "
          "lower bound; a file too large to count with this many names is "
-         "said to be, and fewer names would let it be counted."),
+         "said to be, and fewer names would let it be counted, and one too "
+         "large for any mapping is said so."),
         ("the_four_bound_arguments",                     # v0.13 decision A
          "The four that ARE bound are mapping, file_id, case_mode and "
          "overlap_policy, and they must be repeated identically on the "
@@ -5125,8 +5126,10 @@ class TestTheDocumentsTellTheTruth:
         "`files_counted_in_part` with a lower bound, a file too large to "
         "count with this many names, decided before counting, is listed in "
         "`files_too_large_for_this_mapping`, where fewer names is the "
-        "remedy, and a PDF source, which cannot be named for a preview, is "
-        "never told to be previewed on its own.",
+        "remedy, one too large for any mapping in "
+        "`files_too_large_for_any_mapping`, where there is none, and a PDF "
+        "source, which cannot be named for a preview, is never told to be "
+        "previewed on its own.",
         "a pseudonym that carries one of its names is withheld by entry "
         "number",
     ])
@@ -5217,6 +5220,9 @@ class TestTheDocumentsTellTheTruth:
         "A file too large to count with this many names is told apart "
         "before anything is counted, because its estimated cost passes the "
         "whole budget",
+        "A file too large to count even with one name is listed in "
+        "`files_too_large_for_any_mapping` instead, and fewer names is not "
+        "offered for it.",
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")

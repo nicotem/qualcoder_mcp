@@ -80,6 +80,7 @@ def _file_text_warning(out):
              or "were not checked; preview them one at a time" in w
              or "too large to count in full with this many names" in w
              or "found before counting them stopped" in w
+             or "too large to count in a preview with any mapping" in w
              or "a PDF source cannot be named for a preview" in w]
     assert len(found) <= 1, found
     return found[0] if found else None
@@ -484,10 +485,12 @@ class TestTheWorkBudget:
         assert note.startswith("4 file(s) were not counted in full, "
                                "because the files read before them had "
                                "spent one of this preview's two budgets")
-        assert note.endswith("Preview them one at a time: the file a call "
-                             "names is read first, with the first claim on "
-                             "the budgets, and none of these is too large "
-                             "to be counted there.")
+        assert note.endswith(
+            "Preview each on its own to count more of it: the file a call "
+            "names is read first, with the first claim on the budgets, and "
+            "none of these is too large for them, so each is counted there, "
+            "in full or, if it holds more matches than the budget allows, in "
+            "part.")
         assert "files_too_large_note" not in block
         _house_rules([note], ["files_not_counted_note"])
         # Deterministic: the same preview twice is the same block.
@@ -497,8 +500,9 @@ class TestTheWorkBudget:
     def test_a_budget_cannot_make_a_quiet_preview(self, project,
                                                   monkeypatch):
         """With no budget at all nothing is counted: every file is too
-        large for it on its own, the named one is still asked, and the
-        warning says, out loud, which files show a name."""
+        large for it even under one name (the coordinator's follow-on to
+        fix round 5: fewer names is not offered), the named one is still
+        asked, and the warning says, out loud, which files show a name."""
         self._several(project)
         monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 0)
         out = preview_of()
@@ -506,19 +510,20 @@ class TestTheWorkBudget:
         assert block["files_counted"] == 0
         assert block["totals"]["occurrences"]["wide"] == 0
         assert block["totals"]["files_showing_a_name"] == 3
-        assert block["files_too_large_for_this_mapping"] == [1, 2, 4, 5, 6,
-                                                             7]
+        assert block["files_too_large_for_this_mapping"] == []
+        assert block["files_too_large_for_any_mapping"] == [1, 2, 4, 5, 6, 7]
         warning = _file_text_warning(out)
         assert warning == (
             "Warning: the file this call rewrites is too large to count in "
-            "full with this many names, and it was asked whether a name "
-            "would still show in it after this run: none does. The rewrite "
-            "still applies to it, and fewer names would let it be counted "
-            "(see files_too_large_for_this_mapping). 5 other file(s) are "
-            "too large to count in full with this many names (3 of them "
-            "would still show one of these names); fewer names would let "
-            "them be counted (see files_too_large_for_this_mapping). See "
+            "a preview with any mapping, even of one name, and it was asked "
+            "whether a name would still show in it after this run: none "
+            "does. The rewrite still applies to it (see "
+            "files_too_large_for_any_mapping). 5 other file(s) are too "
+            "large to count in a preview with any mapping, even of one name "
+            "(3 of them would still show one of these names); no preview "
+            "can count them (see files_too_large_for_any_mapping). See "
             "residue.file_text, which names the files.")
+        assert "fewer names" not in warning
 
     def test_the_other_files_take_what_the_named_file_leaves(
             self, project, monkeypatch):
@@ -1388,7 +1393,7 @@ class TestTheBlockIsBounded:
             "files_counted_in_part). 1 further file(s) would still show one "
             "of these names in their text, and were not counted in full "
             "because the files before them spent this preview's budget; "
-            "preview them one at a time to count them (see "
+            "preview each on its own to count more of it (see "
             "files_not_counted). See residue.file_text, which names the "
             "files.")
         note = block["files_counted_in_part_note"]
@@ -1446,7 +1451,9 @@ class TestTheBlockIsBounded:
         assert 1 not in block["files_not_counted"]
         monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", len(after) * forms)
         block = _block(preview_of())
-        assert block["files_too_large_for_this_mapping"][:1] == [1]
+        # Below one name's work too (forms 3, the term 3): too large for
+        # any mapping.
+        assert block["files_too_large_for_any_mapping"][:1] == [1]
         assert block["files_not_counted"][:1] == [1]
         assert P.RESIDUE_WORK_PER_CHARACTER == 3
 
@@ -1512,7 +1519,7 @@ class TestTheFileTextWarningsArithmetic:
     PAST = ("Warning: after this run, {n} file(s) would still show one of "
             "these names in their text, and were not counted in full "
             "because the files before them spent this preview's budget; "
-            "preview them one at a time to count them (see "
+            "preview each on its own to count more of it (see "
             "files_not_counted).")
 
     def test_the_budget_and_the_cap_together(self, project, monkeypatch):
@@ -1568,8 +1575,8 @@ class TestTheFileTextWarningsArithmetic:
             "is). The split by kind is a heuristic; the total is not. 5 "
             "further file(s) would still show one of these names in their "
             "text, and were not counted in full because the files before "
-            "them spent this preview's budget; preview them one at a time "
-            "to count them (see files_not_counted). See residue.file_text, "
+            "them spent this preview's budget; preview each on its own to "
+            "count more of it (see files_not_counted). See residue.file_text, "
             "which names the files.")
 
     def test_a_counted_file_shows_a_name_on_either_reading(self, project,
@@ -1706,6 +1713,28 @@ def _after(project, fid=1, mapping=MAPPING):
     return P.apply_replacements(text, P.find_replacements(compiled, text))
 
 
+# The fixture's mapping and thirty entries no text holds: 33 surface forms,
+# so a file costs about nine times more under it than under one name, and
+# a work budget can make every fixture file too large for this mapping and
+# none too large for any (the coordinator's follow-on to fix round 5).
+PADDED = MAPPING + [
+    {"original": f"Zyx{chr(97 + i // 26)}{chr(97 + i % 26)}q",
+     "pseudonym": f"Pp{i:03d}"} for i in range(30)]
+
+
+def _room_for_one_name(project, mapping=PADDED):
+    """The least work budget every file with text fits under ONE name;
+    each is asserted too large for `mapping` at it."""
+    compiled = P.Compiled(P.validate_mapping(mapping))
+    texts = [_after(project, 1, mapping)] + [
+        row["fulltext"] for row in query(
+            project, "SELECT fulltext FROM source WHERE id != 1 AND "
+            "fulltext IS NOT NULL AND fulltext != ''")]
+    budget = max(P.residue_work_at_one_form(text) for text in texts)
+    assert all(P.residue_work(compiled, text) > budget for text in texts)
+    return budget
+
+
 class TestTheCheckBudget:
     """B-2 and the lead's ruling on it: past the count's budgets a file is
     asked the cheap question, which costs a count on a file where no name
@@ -1761,14 +1790,14 @@ class TestTheCheckBudget:
             "files_not_checked and are not reported clean: preview them one "
             "at a time, or use fewer names, to check them. The file a call "
             "names is read first, and none of these is too large to be "
-            "counted there.")
+            "counted there, in full or in part.")
         _house_rules([block["files_not_checked_note"]],
                      ["files_not_checked_note"])
         assert _file_text_warning(out) == (
             "Warning: after this run, 1 file(s) would still show one of "
             "these names in their text, and were not counted in full "
             "because the files before them spent this preview's budget; "
-            "preview them one at a time to count them (see "
+            "preview each on its own to count more of it (see "
             "files_not_counted). 2 file(s) were not checked; preview them "
             "one at a time, or use fewer names, to check them (see "
             "files_not_checked). See residue.file_text, which names the "
@@ -2438,7 +2467,8 @@ class TestALargeFileUnderALargeMapping:
         and the question's budget as it is): the named file is asked,
         charged to the question's shared budget, and the warning says
         what the question found."""
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 1)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            _work_of(_after(project)) - 1)
         out = preview_of(residue_detail="project")
         block = _block(out)
         assert block["files_too_large_for_this_mapping"][:1] == [1]
@@ -2563,8 +2593,9 @@ class TestEveryWordingThroughTheTool:
     each reached through the tool by a shape of its own and pinned
     verbatim (the report lists them). The fixture: file 1 is the file
     the call names, file 2 a PDF source, file 4 a text file; the rest are
-    added per shape. A work budget of one unit makes every file too large
-    for this mapping; the question's budget is set per shape."""
+    added per shape. A padded mapping (33 forms) and a work budget each
+    file fits under one name make every file too large for this mapping
+    and none for any; the question's budget is set per shape."""
 
     END = " See residue.file_text, which names the files."
     NAMED = ("the file this call rewrites is too large to count in full "
@@ -2586,19 +2617,29 @@ class TestEveryWordingThroughTheTool:
     NOT_CHECKED = ("{} file(s) were not checked; preview them one at a "
                    "time, or use fewer names, to check them (see "
                    "files_not_checked).")
+    NAMED_BEYOND = ("the file this call rewrites is too large to count in a "
+                    "preview with any mapping, even of one name, {}. The "
+                    "rewrite still applies to it (see "
+                    "files_too_large_for_any_mapping).")
+    BEYOND = ("{} other file(s) are too large to count in a preview with "
+              "any mapping, even of one name{}; no preview can count them "
+              "(see files_too_large_for_any_mapping).")
 
     def test_the_named_file_shows_a_name_and_is_not_an_other(
             self, project, monkeypatch):
         """Shape D of the third correctness lane (X7, X8): every file too
-        large and every file asked. After the run a name shows inside a
-        longer word in the named file: it is said to, and it is not
-        counted again among the other files that show one."""
+        large for this mapping (not for one name) and every file asked.
+        After the run a name shows inside a longer word in the named file:
+        it is said to, and it is not counted again among the other files
+        that show one."""
         _set_text(project, 1, "Thomas said Thomasson.")
         _set_text(project, 4, "THOMAS in four.")
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 1)
-        out = preview_of(residue_detail="project")
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            _room_for_one_name(project))
+        out = preview_of(mapping=PADDED, residue_detail="project")
         block = _block(out)
         assert block["files_too_large_for_this_mapping"] == [1, 2, 4]
+        assert block["files_too_large_for_any_mapping"] == []
         assert block["files_not_counted"] == [1, 2, 4]
         totals = block["totals"]
         assert totals["named_file_shows_a_name"] is True
@@ -2614,8 +2655,9 @@ class TestEveryWordingThroughTheTool:
             self, project, monkeypatch):
         """The named file asked, none shows; the other files too large,
         asked and clean: the sentence says so with no detail."""
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 1)
-        out = preview_of(residue_detail="project")
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            _room_for_one_name(project))
+        out = preview_of(mapping=PADDED, residue_detail="project")
         assert _block(out)["totals"]["named_file_shows_a_name"] is False
         assert _file_text_warning(out) == (
             "Warning: " + self.NAMED.format(self.NONE_DOES) + " "
@@ -2626,9 +2668,10 @@ class TestEveryWordingThroughTheTool:
         """X1: every file too large for both budgets. The named file is
         not checked, and it is not counted again among the other files
         not checked."""
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 1)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            _room_for_one_name(project))
         monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", 1)
-        out = preview_of(residue_detail="project")
+        out = preview_of(mapping=PADDED, residue_detail="project")
         block = _block(out)
         assert block["files_not_checked"] == [1, 2, 4]
         assert block["totals"]["named_file_shows_a_name"] is None
@@ -2640,16 +2683,19 @@ class TestEveryWordingThroughTheTool:
     def test_the_others_both_ways_beside_the_named_file(
             self, project, monkeypatch):
         """The other too-large files' two sub-counts at once: file 4 is
-        asked and shows a name, file 5 is too large for the question's
-        budget on its own and is not checked; file 2 is asked, clean."""
+        asked and shows a name, file 5 is past the question's budget and
+        is not checked; file 2 is asked, clean."""
         _set_text(project, 4, "THOMAS in four.")
-        _set_text(project, 5, "a clean note. " * 40, name="five.txt")
-        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", 1)
-        room = (_work_of(_after(project)) + _work_of("extracted page text")
-                + _work_of("THOMAS in four."))
-        assert _work_of("a clean note. " * 40) > room
-        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", room)
-        out = preview_of(residue_detail="project")
+        _set_text(project, 5, "a clean note.", name="five.txt")
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            _room_for_one_name(project))
+        # Room to ask files 1, 2 and 4 and none after them: file 5 is past
+        # the question's budget.
+        monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", sum(
+            _work_of(text, PADDED) for text in (
+                _after(project, 1, PADDED), "extracted page text",
+                "THOMAS in four.")))
+        out = preview_of(mapping=PADDED, residue_detail="project")
         block = _block(out)
         assert block["files_not_counted"] == [1, 2, 4]
         assert block["files_not_checked"] == [5]
@@ -2664,8 +2710,9 @@ class TestEveryWordingThroughTheTool:
         """The named file too large while the smaller files after it are
         counted: its sentence follows the counted one, "The file"."""
         _set_text(project, 4, "THOMAS in four.")
-        budget = _work_of("extracted page text") + _work_of("THOMAS in four.")
-        assert _work_of(_after(project)) > budget
+        budget = P.residue_work_at_one_form(_after(project))
+        assert _work_of(_after(project)) > budget >= _work_of(
+            "extracted page text") + _work_of("THOMAS in four.")
         monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", budget)
         out = preview_of(residue_detail="project")
         block = _block(out)
@@ -2697,8 +2744,8 @@ class TestEveryWordingThroughTheTool:
             "stopped at this preview's budget (see files_counted_in_part). "
             "1 further file(s) would still show one of these names in their "
             "text, and were not counted in full because the files before "
-            "them spent this preview's budget; preview them one at a time "
-            "to count them (see files_not_counted)." + self.END)
+            "them spent this preview's budget; preview each on its own to "
+            "count more of it (see files_not_counted)." + self.END)
 
     def _pdf(self, project, monkeypatch, check=None):
         """File 2, the PDF source, carries a name; the budget is the
@@ -2780,24 +2827,27 @@ class TestEveryWordingThroughTheTool:
         """Shape G of the third correctness lane, under fix round 5's
         rules: counted (2, 4), counted in part (5), the named file too
         large and not checked (1), past the budget and showing (6), too
-        large and not checked (7), past both budgets (8), and a PDF source
-        past both (9). Every sentence once, in order, the numbers agreeing
-        with the lists."""
+        large and not checked (7), past both budgets (8), a PDF source
+        past both (9), and too large for any mapping (10). Every sentence
+        once, in order, the numbers agreeing with the lists."""
         _set_text(project, 1, "Thomas said so. " + "and then more. " * 30)
         _set_text(project, 4, "THOMAS in four.")
         _set_text(project, 5, "Thomas " * 40, name="five.txt")
         _set_text(project, 6, "Thomasin in six.", name="six.txt")
-        _set_text(project, 7, "nothing much. " * 60, name="seven.txt")
+        _set_text(project, 7, "nothing much. " * 25, name="seven.txt")
         _set_text(project, 8, "a clean note, longer than the paper.",
                   name="eight.txt")
         _set_text(project, 9, "Thomas in the paper.", name="nine.pdf",
                   mediapath="/docs/nine.pdf")
+        _set_text(project, 10, "quiet words. " * 50, name="ten.txt")
         work = _work_of("extracted page text") + _work_of(
             "THOMAS in four.") + _work_of("Thomas " * 40)
         check = _work_of("Thomasin in six.") + _work_of(
             "Thomas in the paper.")
-        for big in (_after(project), "nothing much. " * 60):
+        for big in (_after(project), "nothing much. " * 25):
             assert _work_of(big) > max(work, check)
+            assert P.residue_work_at_one_form(big) <= work
+        assert P.residue_work_at_one_form("quiet words. " * 50) > work
         monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK", work)
         monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", check)
         monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_MATCHES", 30)
@@ -2806,8 +2856,10 @@ class TestEveryWordingThroughTheTool:
         assert block["files_counted"] == 2
         assert block["files_counted_in_part"] == [5]
         assert block["files_not_counted"] == [6]
-        assert block["files_not_checked"] == [1, 7, 8, 9]
+        assert block["files_not_checked"] == [1, 7, 8, 9, 10]
         assert block["files_too_large_for_this_mapping"] == [1, 7]
+        assert block["files_too_large_for_any_mapping"] == [10]
+        assert _rows(out)[10]["too_large_for_any_mapping"] is True
         at_least = block["totals"]["occurrences_at_least"]
         assert at_least == _rows(out)[5]["occurrences_at_least"] >= 1
         warning = _file_text_warning(out)
@@ -2823,13 +2875,15 @@ class TestEveryWordingThroughTheTool:
             + self.NAMED[3:].format(self.UNCHECKED)
             + " 1 further file(s) would still show one of these names in "
             "their text, and were not counted in full because the files "
-            "before them spent this preview's budget; preview them one at "
-            "a time to count them (see files_not_counted). 1 PDF source(s) "
+            "before them spent this preview's budget; preview each on its "
+            "own to count more of it (see files_not_counted). 1 PDF source(s) "
             "were not checked" + self.PDF.format("files_not_checked") + " "
             + self.OTHERS.format(1, " (1 were not checked)") + " "
+            + self.BEYOND.format(1, " (1 were not checked)") + " "
             + self.NOT_CHECKED.format(1) + self.END)
         for key in ("files_counted_in_part_note", "files_not_counted_note",
-                    "files_not_checked_note", "pdf_sources_not_counted_note"):
+                    "files_not_checked_note", "pdf_sources_not_counted_note",
+                    "files_too_large_for_any_mapping_note"):
             assert block[key].startswith("1 ")
         assert block["files_too_large_note"].startswith("2 file(s) are too")
         assert "on its own checks" not in json.dumps(block)
@@ -2837,41 +2891,55 @@ class TestEveryWordingThroughTheTool:
 
 class TestTheWarningsGrammar:
     """Fix round 5, K1 (after the third correctness lane's sweep, its
-    section 3.5): `_pseudonymise_file_text_warning` on every consistent
-    combination of the totals it reads, each count 0 or 1 and the named
-    file absent or in each of its three states: 4,096 warnings. Each is
-    well formed, says every cause exactly when its count is non-zero, and
-    says the right number, "further" and "other" where they belong; the
-    whole-word-only sentence, which no known text reaches, is pinned here
-    too. Never "on its own checks", never "one at a time" for a PDF."""
+    section 3.5), widened by the coordinator's follow-on:
+    `_pseudonymise_file_text_warning` on every consistent combination of
+    the totals it reads, each count 0 or 1, and the named file absent or
+    too large (for this mapping, or for any) in each of its three states:
+    57,344 warnings. Each is well formed, says every cause exactly when
+    its count is non-zero, and says the right number, "further" and
+    "other" where they belong. "Fewer names" is never offered for a file
+    too large for any mapping; the remedy for a file past the budget is
+    "each on its own to count more of it", never a full count, and never
+    for a PDF; "on its own checks" is never said."""
 
     @staticmethod
     def _combinations():
         import itertools
+        named_states = ["absent"] + [(kind, shows) for kind in ("this", "any")
+                                     for shows in (True, False, None)]
         for (wide, whole, in_part, past_show, past_unch, pdf_show, pdf_unch,
-             o_show, o_unch, o_clean, named) in itertools.product(
-                 *[range(2)] * 10, ["absent", True, False, None]):
+             o_show, o_unch, o_clean, b_show, b_unch, b_clean,
+             named) in itertools.product(*[range(2)] * 13, named_states):
             large = named != "absent"
-            shows = None if not large else named
-            large_showing = o_show + (large and shows is True)
-            large_unchecked = o_unch + (large and shows is None)
+            kind, shows = named if large else (None, None)
+            here, beyond = kind == "this", kind == "any"
+            large_showing = o_show + (here and shows is True)
+            large_unchecked = o_unch + (here and shows is None)
+            b_showing = b_show + (beyond and shows is True)
+            b_unchecked = b_unch + (beyond and shows is None)
             totals = {
                 "occurrences": {"wide": wide, "whole_word": whole},
                 "by_reason": {"whole_word_in_a_file_not_rewritten": wide},
                 "files_showing_a_name": int(bool(wide or whole)) + in_part
-                + past_show + pdf_show + large_showing,
+                + past_show + pdf_show + large_showing + b_showing,
                 "files_showing_a_name_not_counted":
-                    past_show + pdf_show + large_showing,
+                    past_show + pdf_show + large_showing + b_showing,
                 "files_counted_in_part": in_part,
                 "occurrences_at_least": 7 * in_part,
-                "files_not_checked": past_unch + pdf_unch + large_unchecked,
+                "files_not_checked": past_unch + pdf_unch + large_unchecked
+                + b_unchecked,
                 "files_too_large_for_this_mapping":
-                    o_show + o_unch + o_clean + large,
+                    o_show + o_unch + o_clean + here,
                 "files_too_large_showing_a_name": large_showing,
                 "files_too_large_not_checked": large_unchecked,
+                "files_too_large_for_any_mapping":
+                    b_show + b_unch + b_clean + beyond,
+                "files_too_large_for_any_mapping_showing_a_name": b_showing,
+                "files_too_large_for_any_mapping_not_checked": b_unchecked,
                 "pdf_sources_past_the_budget_showing_a_name": pdf_show,
                 "pdf_sources_past_the_budget_not_checked": pdf_unch,
                 "named_file_too_large": large,
+                "named_file_too_large_for_any_mapping": beyond,
                 "files_whole_word_above_wide": 0}
             if large:
                 totals["named_file_shows_a_name"] = shows
@@ -2879,7 +2947,18 @@ class TestTheWarningsGrammar:
                         past_show=past_show, past_unch=past_unch,
                         pdf_show=pdf_show, pdf_unch=pdf_unch, o_show=o_show,
                         o_unch=o_unch, others=o_show + o_unch + o_clean,
-                        large=large, shows=shows), totals)
+                        b_show=b_show, b_unch=b_unch,
+                        b_others=b_show + b_unch + b_clean, large=large,
+                        here=here, beyond=beyond, shows=shows), totals)
+
+    @staticmethod
+    def _detail(w, head, closing):
+        """The count and the parenthesised detail of one too-large
+        sentence, or None when it is not said."""
+        import re
+        d = re.search(r"(\d+) (other )?file\(s\) are too large to count "
+                      + head + r"( \(([^)]*)\))?; " + closing, w)
+        return d and (int(d.group(1)), bool(d.group(2)), d.group(4) or "")
 
     def test_every_combination(self):
         import re
@@ -2889,51 +2968,67 @@ class TestTheWarningsGrammar:
             w = server._pseudonymise_file_text_warning({"totals": totals})
             anything = any(c[k] for k in (
                 "wide", "whole", "in_part", "past_show", "past_unch",
-                "pdf_show", "pdf_unch", "others", "large"))
+                "pdf_show", "pdf_unch", "others", "b_others", "large"))
             assert (w is not None) == anything, c
             if w is None:
                 continue
             assert w.startswith("Warning") and w.count("Warning") == 1, w
             assert not re.search(r"(^|[.(;] |\(| )0 ", w), w
             assert "  " not in w and " ." not in w and ".." not in w, w
-            assert "on its own" not in w, w
+            assert "on its own checks" not in w, w
+            assert "one at a time to count" not in w, w
             said = {
                 "whole": "own whole-word rule would still match" in w,
                 "in_part": "1 {}file(s) would still show at least 7".format(
                     "further " if c["wide"] or c["whole"] else "") in w,
                 "past_show": "1 {}file(s) would still show one of these "
-                "names in their text, and were not counted".format(
+                "names in their text, and were not counted in full because "
+                "the files before them spent this preview's budget; preview "
+                "each on its own to count more of it (see "
+                "files_not_counted).".format(
                     "further " if c["wide"] or c["whole"] or c["in_part"]
                     else "") in w,
                 "pdf": "PDF source(s)" in w,
                 "past_unch": "1 file(s) were not checked; preview" in w,
-                "large": "file this call rewrites is too large" in w,
+                "named_here": "file this call rewrites is too large to count "
+                "in full with this many names" in w,
+                "named_beyond": "file this call rewrites is too large to "
+                "count in a preview with any mapping, even of one name" in w,
             }
             assert said["whole"] == bool(c["whole"] and not c["wide"]), w
             assert said["in_part"] == bool(c["in_part"]), w
             assert said["past_show"] == bool(c["past_show"]), w
             assert said["pdf"] == bool(c["pdf_show"] or c["pdf_unch"]), w
             assert said["past_unch"] == bool(c["past_unch"]), w
-            assert said["large"] == c["large"], w
+            assert said["named_here"] == c["here"], w
+            assert said["named_beyond"] == c["beyond"], w
+            if c["beyond"]:
+                named = w[w.index("file this call rewrites"):].split(").")[0]
+                assert "fewer names" not in named, w
             if said["pdf"]:
                 pdf = w[w.index("PDF source(s)") - 2:].split(").")[0]
                 assert ("would still show" in pdf) == bool(c["pdf_show"]), w
                 assert ("were not checked" in pdf) == bool(c["pdf_unch"]), w
-                assert "one at a time" not in pdf, w
-            d = re.search(r"(\d+) (other )?file\(s\) are too large to count "
-                          r"in full with this many names( \(([^)]*)\))?;", w)
-            assert bool(d) == bool(c["others"]), w
-            if d:
-                assert int(d.group(1)) == c["others"], w
-                assert bool(d.group(2)) == c["large"], w
-                detail = d.group(4) or ""
-                assert ("1 of them would still show" in detail) == bool(
-                    c["o_show"]), w
-                assert ("1 were not checked" in detail) == bool(
-                    c["o_unch"]), w
-                assert not re.search(r"[2-9] (of them|were)", detail), w
-        assert seen == 4096
-
+                assert "on its own" not in pdf, w
+            for key, head, closing, show, unch in (
+                    ("others", "in full with this many names",
+                     "fewer names would let them be counted", "o_show",
+                     "o_unch"),
+                    ("b_others", "in a preview with any mapping, even of one "
+                     "name", "no preview can count them", "b_show",
+                     "b_unch")):
+                found = self._detail(w, head, closing)
+                assert bool(found) == bool(c[key]), (key, w)
+                if found:
+                    count, other, detail = found
+                    assert count == c[key], w
+                    assert other == c["large"], w
+                    assert ("1 of them would still show" in detail) == bool(
+                        c[show]), w
+                    assert ("1 were not checked" in detail) == bool(
+                        c[unch]), w
+                    assert not re.search(r"[2-9] (of them|were)", detail), w
+        assert seen == 57344
 
     def test_the_whole_word_sentence_no_known_text_reaches(self):
         """The whole-word-only sentence (fix round 2's CORR-2 keeps it so
@@ -3079,3 +3174,98 @@ class TestTheBoundsLanesPins:
         assert block["files_counted_in_part"] == [5]
         assert block["files_not_counted"] == []
         assert block["files_too_large_for_this_mapping"] == []
+
+
+class TestAFileTooLargeForAnyMapping:
+    """The coordinator's follow-on to fix round 5, from FD5-7: a text too
+    large even for a mapping of one name (more than 11,250,000 characters
+    that are not ASCII, 22,500,000 that are, at the frozen budget) is not
+    told "fewer names": it has a list, a note and wordings of its own,
+    "too large to count in a preview with any mapping", and the rewrite
+    still applies to the file this call rewrites."""
+
+    NAMED = TestEveryWordingThroughTheTool.NAMED_BEYOND
+    END = TestEveryWordingThroughTheTool.END
+
+    def test_the_threshold_at_the_real_budgets(self, project):
+        """Two further files either side of the threshold, the fixture's
+        mapping (3 forms): 11,250,000 characters fit one name exactly and
+        are too large for this mapping; one more character is too large
+        for any. Neither is checked (the question's budget is smaller)."""
+        at = _documents_prose(11_250_000)
+        assert not at.isascii()
+        assert P.residue_work_at_one_form(at) == P.MAX_RESIDUE_SCAN_WORK
+        _set_text(project, 100, at, name="at_100.txt")
+        _set_text(project, 101, at + "x", name="past_101.txt")
+        del at
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        assert block["files_too_large_for_this_mapping"] == [100]
+        assert block["files_too_large_for_any_mapping"] == [101]
+        assert block["files_not_checked"] == [100, 101]
+        rows = _rows(out)
+        assert rows[101]["too_large_for_any_mapping"] is True
+        assert "too_large_for_this_mapping" not in rows[101]
+        assert rows[100]["too_large_for_this_mapping"] is True
+        totals = block["totals"]
+        assert totals["files_too_large_for_any_mapping"] == 1
+        assert totals["files_too_large_for_any_mapping_not_checked"] == 1
+        assert totals["named_file_too_large_for_any_mapping"] is False
+        assert _file_text_warning(out) == (
+            "Warning: 1 file(s) are too large to count in full with this "
+            "many names (1 were not checked); fewer names would let them be "
+            "counted (see files_too_large_for_this_mapping). 1 file(s) are "
+            "too large to count in a preview with any mapping, even of one "
+            "name (1 were not checked); no preview can count them (see "
+            "files_too_large_for_any_mapping)." + self.END)
+        note = block["files_too_large_for_any_mapping_note"]
+        assert note == (
+            "1 file(s) are too large to count in a preview with any "
+            "mapping: even with one name, each one's estimated cost, its "
+            "characters times one surface form and a little more for every "
+            "character, is more than this preview's whole budget "
+            "(90,000,000 units), so fewer names would not let it be "
+            "counted. Each is listed in files_too_large_for_any_mapping and "
+            "none is reported clean: each is asked whether any name shows "
+            "only when that question fits its own budget (27,000,000 "
+            "units), and is otherwise listed in files_not_checked. The "
+            "rewrite applies to the file this call rewrites either way.")
+        _house_rules([note], ["files_too_large_for_any_mapping_note"])
+        assert block["files_too_large_note"].startswith("1 file(s) are too")
+        # Neither is past the budget, so neither note of that cause is
+        # given, with its remedy of previewing one at a time.
+        assert "files_not_checked_note" not in block
+        assert "files_not_counted_note" not in block
+
+    @pytest.mark.parametrize("text,check,shown", [
+        ("Thomas said Thomasson, and a good deal more was said after "
+         "that.", None, TestEveryWordingThroughTheTool.SHOWS),
+        (None, None, TestEveryWordingThroughTheTool.NONE_DOES),
+        (None, 1, TestEveryWordingThroughTheTool.UNCHECKED),
+    ], ids=["shows", "none-does", "not-checked"])
+    def test_the_file_this_call_rewrites(self, project, monkeypatch, text,
+                                         check, shown):
+        """A work budget one unit short of the named file's work under one
+        name: it is too large for any mapping, never told "fewer names",
+        and the rewrite still applies; files 2 and 4 are counted."""
+        if text is not None:
+            _set_text(project, 1, text)
+        after = _after(project)
+        monkeypatch.setattr(P, "MAX_RESIDUE_SCAN_WORK",
+                            P.residue_work_at_one_form(after) - 1)
+        assert _work_of("extracted page text") + _work_of(
+            "nothing to see here") <= P.MAX_RESIDUE_SCAN_WORK
+        if check is not None:
+            monkeypatch.setattr(P, "MAX_RESIDUE_CHECK_WORK", check)
+        out = preview_of(residue_detail="project")
+        block = _block(out)
+        assert block["files_too_large_for_any_mapping"] == [1]
+        assert block["files_too_large_for_this_mapping"] == []
+        assert block["files_counted"] == 2
+        assert block["totals"]["named_file_too_large_for_any_mapping"] is True
+        row = _rows(out)[1]
+        assert row["too_large_for_any_mapping"] is True
+        assert row["rewritten_by_this_run"] is True
+        warning = _file_text_warning(out)
+        assert warning == "Warning: " + self.NAMED.format(shown) + self.END
+        assert "fewer names" not in warning

@@ -654,8 +654,10 @@ will ask, and the summary above depends on them:
     `files_too_large_for_this_mapping`, it is asked whether a name shows
     when that question fits its own budget and is not checked otherwise,
     the rewrite still applies to the file this call rewrites, and the
-    warning says that fewer names would let them be counted. No file is
-    ever reported clean when it was not read.
+    warning says that fewer names would let them be counted. A file too
+    large to count even with one name is listed in
+    `files_too_large_for_any_mapping` instead, and fewer names is not
+    offered for it. No file is ever reported clean when it was not read.
     On a mapping you type, it also lists the longer words a name sits
     inside (`Thomas_P01`, `Thomasson`), which are words of the file
     text, so an exact entry can be added for one; on the

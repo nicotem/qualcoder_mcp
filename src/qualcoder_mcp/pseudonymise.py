@@ -1865,6 +1865,16 @@ def residue_work(compiled: "Compiled", text: str) -> int:
     return len(text) * (len(compiled.forms) + term)
 
 
+def residue_work_at_one_form(text: str) -> int:
+    """`residue_work` of `text` under a mapping of one surface form, the
+    least any mapping costs: a file whose work passes the budget even so
+    cannot be counted in a preview with any mapping, and fewer names
+    cannot help it (the lead's follow-on to fix round 5)."""
+    term = (RESIDUE_WORK_PER_CHARACTER if text.isascii()
+            else RESIDUE_WORK_PER_CHARACTER_NON_ASCII)
+    return len(text) * (1 + term)
+
+
 def in_a_no_separator_script(char: str) -> bool:
     """Whether `char` belongs to one of `NO_SEPARATOR_RANGES`."""
     code_point = ord(char)

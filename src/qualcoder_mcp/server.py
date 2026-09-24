@@ -10534,7 +10534,16 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
     large_unchecked = totals.get("files_too_large_not_checked", 0)
     pdf_showing = totals.get("pdf_sources_past_the_budget_showing_a_name", 0)
     pdf_unchecked = totals.get("pdf_sources_past_the_budget_not_checked", 0)
+    beyond = totals.get("files_too_large_for_any_mapping", 0)
+    beyond_showing = totals.get(
+        "files_too_large_for_any_mapping_showing_a_name", 0)
+    beyond_unchecked = totals.get(
+        "files_too_large_for_any_mapping_not_checked", 0)
     named_large = bool(totals.get("named_file_too_large"))
+    # Too large even for a mapping of one name: fewer names cannot help.
+    named_beyond = named_large and bool(
+        totals.get("named_file_too_large_for_any_mapping"))
+    named_here = named_large and not named_beyond
     # True, False, or None when it was too large to check as well.
     named_shows = totals.get("named_file_shows_a_name")
     if named_large:
@@ -10543,22 +10552,34 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
                         "in it after this run: none does",
                  None: "or to check whether a name would still show in it "
                        "after this run"}[named_shows]
-        sentences.append(
-            f"{'Warning: the' if not sentences else 'The'}"
-            f" file this call rewrites is too large to count in full "
-            f"with this many names, {shown}. The rewrite still applies to "
-            f"it, and fewer names would let it be counted (see "
-            f"files_too_large_for_this_mapping).")
-    past_showing = uncounted_showing - large_showing - pdf_showing
+        if named_beyond:
+            sentences.append(
+                f"{'Warning: the' if not sentences else 'The'}"
+                f" file this call rewrites is too large to count in a "
+                f"preview with any mapping, even of one name, {shown}. The "
+                f"rewrite still applies to it (see "
+                f"files_too_large_for_any_mapping).")
+        else:
+            sentences.append(
+                f"{'Warning: the' if not sentences else 'The'}"
+                f" file this call rewrites is too large to count in full "
+                f"with this many names, {shown}. The rewrite still applies "
+                f"to it, and fewer names would let it be counted (see "
+                f"files_too_large_for_this_mapping).")
+    past_showing = (uncounted_showing - large_showing - beyond_showing
+                    - pdf_showing)
     if past_showing:
         further = wide or whole_word or in_part
+        # Not "to count them": on its own a file dense enough to pass the
+        # match budget alone is counted in part (the coordinator's
+        # follow-on to fix round 5), so the remedy promises more, not all.
         sentences.append(
             f"{'Warning: after this run, ' if not sentences else ''}"
             f"{past_showing} {'further ' if further else ''}file(s) "
             f"would still show one of these names in their text, and "
             f"were not counted in full because the files before them spent "
-            f"this preview's budget; preview them one at a time to count "
-            f"them (see files_not_counted).")
+            f"this preview's budget; preview each on its own to count more "
+            f"of it (see files_not_counted).")
     if pdf_showing or pdf_unchecked:
         parts = []
         if pdf_showing:
@@ -10578,25 +10599,41 @@ def _pseudonymise_file_text_warning(file_text: Dict[str, Any]
             f"this preview's budget; a PDF source cannot be named for a "
             f"preview, so only a preview with fewer names, which costs less "
             f"for every file, could reach them (see {see}).")
-    others = large - named_large
-    if others:
-        others_showing = large_showing - (named_large and named_shows is True)
-        others_unchecked = large_unchecked - (named_large
-                                              and named_shows is None)
+    def detail(showing: int, not_checked: int) -> str:
         parts = []
-        if others_showing:
-            parts.append(f"{others_showing} of them would still show one "
-                         f"of these names")
-        if others_unchecked:
-            parts.append(f"{others_unchecked} were not checked")
-        detail = f" ({' and '.join(parts)})" if parts else ""
+        if showing:
+            parts.append(f"{showing} of them would still show one of "
+                         f"these names")
+        if not_checked:
+            parts.append(f"{not_checked} were not checked")
+        return f" ({' and '.join(parts)})" if parts else ""
+
+    others = large - named_here
+    if others:
+        others_showing = large_showing - (named_here and named_shows is True)
+        others_unchecked = large_unchecked - (named_here
+                                              and named_shows is None)
         sentences.append(
             f"{'Warning: ' if not sentences else ''}"
             f"{others} {'other ' if named_large else ''}file(s) are too "
-            f"large to count in full with this many names{detail}; fewer "
-            f"names would let them be counted (see "
-            f"files_too_large_for_this_mapping).")
-    past_unchecked = unchecked - large_unchecked - pdf_unchecked
+            f"large to count in full with this many names"
+            f"{detail(others_showing, others_unchecked)}; fewer names would "
+            f"let them be counted (see files_too_large_for_this_mapping).")
+    beyond_others = beyond - named_beyond
+    if beyond_others:
+        # No remedy: not even a mapping of one name would let them be
+        # counted in a preview.
+        showing = beyond_showing - (named_beyond and named_shows is True)
+        not_checked = beyond_unchecked - (named_beyond
+                                          and named_shows is None)
+        sentences.append(
+            f"{'Warning: ' if not sentences else ''}"
+            f"{beyond_others} {'other ' if named_large else ''}file(s) are "
+            f"too large to count in a preview with any mapping, even of one "
+            f"name{detail(showing, not_checked)}; no preview can count them "
+            f"(see files_too_large_for_any_mapping).")
+    past_unchecked = (unchecked - large_unchecked - beyond_unchecked
+                      - pdf_unchecked)
     if past_unchecked:
         # The lead's ruling on B-2, in its own words.
         sentences.append(
@@ -11260,7 +11297,7 @@ def pseudonymise_source(
                  count that stops part-way found a name and gives a
                  lower bound; a file too large to count with this many
                  names is said to be, and fewer names would let it be
-                 counted.
+                 counted, and one too large for any mapping is said so.
         residue_detail: "file" (default): full detail for the file this
                  call names and, for up to 1,000 other files that still
                  show a name, one row with its id, name and two counts;

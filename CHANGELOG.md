@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 157,551 characters (about 39.4k tokens at
+  below included: full = 157,597 characters (about 39.4k tokens at
   chars/4) over 70 tools, core = 56,317 (about 14.1k) over 21. `core`
   is unchanged to the character by every change in this release,
   because neither the six token-gated tools nor `pseudonymise_source`
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name, description and input schema of every registered tool,
   serialised together with `json.dumps` defaults, under Python 3.13.5
   with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 165,587 and
+  in the repository's `.venv/`, the same definitions measure 165,633 and
   59,253, because 3.10 to 3.12 keep the docstring indentation 3.13
   strips at compile time.
 
@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `files_too_large_for_this_mapping` and in the warning, whose remedy
   for it is fewer names; it never closes a budget for the files after
   it, and the rewrite still applies to the file this call rewrites. A
+  file too large even for a mapping of one name (more than 11,250,000
+  characters of text that is not plain ASCII, 22,500,000 that is) is
+  listed in `files_too_large_for_any_mapping` instead, and the warning
+  says no preview can count it rather than offer fewer names. A
   PDF source, which cannot be named for a preview, is never told to be
   previewed on its own and has a sentence of its own. The three are
   sized so that, on any text and at any mapping size up to the maximum
