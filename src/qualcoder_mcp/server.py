@@ -10711,6 +10711,19 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
             "somewhere (see overlap_conflicts); the longer surface form "
             "won and the other did not fire there. Show the user the "
             "conflicts.")
+    capped = [str(item["file_id"]) for item in preview.get("files", [])
+              if item.get("overlap_conflicts_capped")]
+    if capped:
+        # Fix round 6, the fourth re-verification's B4-3: the diagnostic's
+        # work is capped, so its silence past the cap is not a finding.
+        warnings.append(
+            f"Warning: the check for mapping entries competing for the same "
+            f"characters stopped early in file(s) {', '.join(capped)} (see "
+            f"overlap_conflicts_capped): it examines every form that could "
+            f"start near each match, and stops after "
+            f"{pseudo.MAX_OVERLAP_CANDIDATES:,}, so a "
+            f"conflict past that point is not listed. The rewrite itself is "
+            f"not affected.")
     if preview.get("shared_pseudonyms"):
         warnings.append(
             "Warning: two or more mapping entries share one pseudonym, so "

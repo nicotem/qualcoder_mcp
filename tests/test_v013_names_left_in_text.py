@@ -3308,3 +3308,46 @@ class TestLongFormsArePricedByTheirLength:
                                   residue_detail="project"))
         assert block["files_too_large_for_this_mapping"] == [100]
         assert block["files_not_checked"] == [100]
+
+
+class TestTheOverlapCheckIsCapped:
+    """Fix round 6, the fourth re-verification's B4-3, through the tool:
+    past `MAX_OVERLAP_CANDIDATES` forms examined the overlap diagnostic
+    stops and says so, in the file's row and a warning, the preview and
+    the execute call cap it at the same place (it is signed), and the
+    rewrite is the same."""
+
+    MAPPING = [{"original": "Ann Marie", "pseudonym": "Sam"},
+               {"original": "Marie Curie", "pseudonym": "Pat"}]
+    TEXT = "Ann Marie Curie spoke. Ann Marie Curie spoke."
+
+    def _preview(self, project):
+        _set_text(project, 1, self.TEXT)
+        return preview_of(mapping=self.MAPPING)
+
+    def test_capped_it_says_so_and_the_run_is_the_same(self, project,
+                                                        monkeypatch):
+        whole = self._preview(project)
+        monkeypatch.setattr(P, "MAX_OVERLAP_CANDIDATES", 20)
+        capped = self._preview(project)
+        row = capped["preview"]["files"][0]
+        assert row["overlap_conflicts_capped"] is True
+        assert len(row["overlap_conflicts"]) == 1
+        assert whole["preview"]["files"][0]["overlap_conflicts_capped"] \
+            is False
+        assert len(whole["preview"]["files"][0]["overlap_conflicts"]) == 2
+        warning = [w for w in capped["warnings"]
+                   if "stopped early" in w]
+        assert warning == [
+            "Warning: the check for mapping entries competing for the "
+            "same characters stopped early in file(s) 1 (see "
+            "overlap_conflicts_capped): it examines every form that could "
+            "start near each match, and stops after 20, so a conflict past "
+            "that point is not listed. The rewrite itself is not affected."]
+        assert not [w for w in whole["warnings"] if "stopped early" in w]
+        assert capped["preview"]["files"][0]["replacements"] == \
+            whole["preview"]["files"][0]["replacements"]
+        result = execute_from(capped, mapping=self.MAPPING)
+        assert result.get("success") is True, result
+        assert query(project, "SELECT fulltext FROM source WHERE id=1")[0][
+            "fulltext"] == "Sam Curie spoke. Sam Curie spoke."

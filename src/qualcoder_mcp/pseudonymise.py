@@ -103,6 +103,19 @@ MAX_SPANS_PER_ENTRY = 500
 # is part of the signed effect block, so its size must be the same on the
 # preview call and on the execute call.
 MAX_OVERLAP_CONFLICTS = 200
+# Ours (fix round 6, the fourth re-verification's B4-3). The overlap
+# diagnostic examines, for every match in the file a call rewrites, every
+# position within the longest form's reach and there every form starting
+# with that position's letter: about 0.2 microseconds a form examined on
+# the development Mac, so at 2,000 names a transcript with a speaker's
+# label on every line examined 17 million a megabyte (3.4 s), and a
+# mapping of long forms sharing a prefix 200 ms a match. Past this many
+# the diagnostic stops, lists what it found and says it was capped
+# (`overlap_conflicts_capped`); about half a second here. Counted, not
+# timed, so the preview and the execute call cap it at the same place:
+# the diagnostic is part of the signed effect. The rewrite is not
+# affected: it never reads the diagnostic.
+MAX_OVERLAP_CANDIDATES = 2_000_000
 # Ours, a WARNING threshold and not a limit. The residue block reads a
 # name as a bare substring, and QualCoder's own two-character minimum
 # is well below the length at which that reading stops being exact: a
@@ -1530,7 +1543,7 @@ def pre_existing_pseudonym_occurrences(
 
 def overlap_conflicts(compiled: Compiled, text: str,
                       replacements: Sequence[Replacement]
-                      ) -> Tuple[List[Dict[str, Any]], bool]:
+                      ) -> Tuple[List[Dict[str, Any]], bool, bool]:
     """Surface forms that lost the competition for the same characters.
 
     "Ann Marie" and "Marie Curie" over "Ann Marie Curie": leftmost and
@@ -1541,14 +1554,24 @@ def overlap_conflicts(compiled: Compiled, text: str,
     Only the neighbourhood of each chosen match is examined: a form can
     only conflict with a match it overlaps, so the scan is bounded by the
     number of matches times the longest surface form, never by the text.
+    That can still be a great deal (the fourth re-verification's B4-3),
+    so the forms examined are counted, and past
+    `MAX_OVERLAP_CANDIDATES` the scan stops with what it has found.
 
-    Returns (conflicts, truncated).
+    Returns (conflicts, truncated, capped): truncated when
+    `MAX_OVERLAP_CONFLICTS` conflicts were found, capped when the scan
+    stopped at `MAX_OVERLAP_CANDIDATES` forms examined first.
     """
     conflicts: List[Dict[str, Any]] = []
     truncated = False
+    examined = 0
+    by_first = compiled._by_first
     for item in replacements:
         first = max(0, item.start - compiled.max_form_len + 1)
         for position in range(first, item.end):
+            examined += 1 + len(by_first.get(_fold(text[position]), ()))
+            if examined > MAX_OVERLAP_CANDIDATES:
+                return conflicts, truncated, True
             for form, index in compiled.forms_at(text, position):
                 end = position + len(form)
                 if end <= item.start:
@@ -1558,7 +1581,7 @@ def overlap_conflicts(compiled: Compiled, text: str,
                 if position == item.start and end == item.end:
                     continue                  # the very match that was chosen
                 if len(conflicts) >= MAX_OVERLAP_CONFLICTS:
-                    return conflicts, True
+                    return conflicts, True, False
                 conflicts.append({
                     "entry": index,
                     "form": form,
@@ -1566,7 +1589,7 @@ def overlap_conflicts(compiled: Compiled, text: str,
                     "loses_to_entry": item.entry,
                     "chosen_span": [item.start, item.end],
                 })
-    return conflicts, truncated
+    return conflicts, truncated, False
 
 
 def short_forms(mapping: Mapping) -> List[Dict[str, Any]]:

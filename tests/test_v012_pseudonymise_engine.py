@@ -1039,9 +1039,9 @@ class TestDiagnostics:
         ]))
         text = "Ann Marie Curie spoke"
         replacements = P.find_replacements(compiled, text)
-        conflicts, truncated = P.overlap_conflicts(compiled, text,
-                                                   replacements)
-        assert not truncated
+        conflicts, truncated, capped = P.overlap_conflicts(
+            compiled, text, replacements)
+        assert not truncated and not capped
         assert conflicts == [{"entry": 1, "form": "Marie Curie",
                               "span": [4, 15], "loses_to_entry": 0,
                               "chosen_span": [0, 9]}]
@@ -1053,7 +1053,8 @@ class TestDiagnostics:
         ]))
         text = "Tom and Ann"
         assert P.overlap_conflicts(
-            compiled, text, P.find_replacements(compiled, text)) == ([], False)
+            compiled, text, P.find_replacements(compiled, text)) == (
+                [], False, False)
 
     def test_a_form_that_is_not_a_whole_word_is_not_a_conflict(self):
         """The competing form has to be a WORD where it sits, or the
@@ -1069,14 +1070,15 @@ class TestDiagnostics:
         text = "Ann Marie spoke"
         replacements = P.find_replacements(compiled, text)
         assert [(r.start, r.end) for r in replacements] == [(0, 9)]
-        assert P.overlap_conflicts(compiled, text, replacements) == ([], False)
+        assert P.overlap_conflicts(compiled, text, replacements) == (
+            [], False, False)
 
     def test_a_variant_of_the_same_entry_is_not_a_conflict(self):
         compiled = P.Compiled(P.validate_mapping(
             [{"original": "Ann Marie", "pseudonym": "Sam",
               "variants": ["Marie"]}]))
         text = "Ann Marie spoke"
-        conflicts, _ = P.overlap_conflicts(
+        conflicts, _, _ = P.overlap_conflicts(
             compiled, text, P.find_replacements(compiled, text))
         assert conflicts == []
 
@@ -1086,11 +1088,45 @@ class TestDiagnostics:
             {"original": "Marie Curie", "pseudonym": "Pat"},
         ]))
         text = "Ann Marie Curie spoke. " * (P.MAX_OVERLAP_CONFLICTS + 5)
-        conflicts, truncated = P.overlap_conflicts(
+        conflicts, truncated, capped = P.overlap_conflicts(
             compiled, text, P.find_replacements(compiled, text))
-        assert truncated is True
+        assert truncated is True and capped is False
         assert len(conflicts) == P.MAX_OVERLAP_CONFLICTS
 
+    def test_the_scan_is_capped_by_the_forms_it_examines(self, monkeypatch):
+        """Fix round 6, the fourth re-verification's B4-3: the forms
+        examined are counted, and past `MAX_OVERLAP_CANDIDATES` the scan
+        stops with what it has, and says so. "Ann Marie Curie" twice: the
+        first conflict is found within 20 positions and forms examined,
+        the second not (about 30 in all)."""
+        assert P.MAX_OVERLAP_CANDIDATES == 2_000_000
+        compiled = P.Compiled(P.validate_mapping([
+            {"original": "Ann Marie", "pseudonym": "Sam"},
+            {"original": "Marie Curie", "pseudonym": "Pat"},
+        ]))
+        text = "Ann Marie Curie spoke. Ann Marie Curie spoke."
+        replacements = P.find_replacements(compiled, text)
+        whole = P.overlap_conflicts(compiled, text, replacements)
+        assert len(whole[0]) == 2 and whole[1:] == (False, False)
+        monkeypatch.setattr(P, "MAX_OVERLAP_CANDIDATES", 20)
+        conflicts, truncated, capped = P.overlap_conflicts(
+            compiled, text, replacements)
+        assert conflicts == whole[0][:1]
+        assert truncated is False and capped is True
+
+    def test_the_cap_bounds_the_long_forms(self):
+        """At the real cap the bounds lane's long forms (fifty-two matches
+        of forms sharing 197 characters, about 10 s uncapped on the
+        development Mac) stop within it: counted, not timed, since inside
+        the full suite the same scan reads several times slower."""
+        forms = TestTheFormsArePricedByTheirLength._long_mapping(100)
+        compiled = P.Compiled(P.validate_mapping(forms, "insensitive"))
+        text = " ".join(form for entry in forms[:13]
+                        for form in [entry["original"], *entry["variants"]])
+        replacements = P.find_replacements(compiled, text)
+        assert len(replacements) == 52
+        _, _, capped = P.overlap_conflicts(compiled, text, replacements)
+        assert capped is True
 
 
 # =============================================================================

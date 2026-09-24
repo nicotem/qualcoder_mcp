@@ -8072,7 +8072,7 @@ class QualcoderDatabase:
                         hideable and coder_is_hidden(visibility, row["owner"]))
                     row["map"] = mapper.map_row(row["pos0"], row["pos1"],
                                                 overlap_policy, anchor)
-            conflicts, truncated = engine.overlap_conflicts(
+            conflicts, truncated, capped = engine.overlap_conflicts(
                 compiled, text, replacements)
             files.append({
                 "file_id": source["file_id"],
@@ -8085,6 +8085,7 @@ class QualcoderDatabase:
                 "rows": rows,
                 "overlap_conflicts": conflicts,
                 "overlap_conflicts_truncated": truncated,
+                "overlap_conflicts_capped": capped,
                 "collisions": self._pseudonymise_collisions(
                     source["file_id"], rows),
             })
@@ -8251,6 +8252,7 @@ class QualcoderDatabase:
                 "overlap_conflicts": conflicts,
                 "overlap_conflicts_truncated":
                     item["overlap_conflicts_truncated"],
+                "overlap_conflicts_capped": item["overlap_conflicts_capped"],
                 "unique_constraint_collisions": item["collisions"],
                 "hidden_coder_rows": self.pseudonymise_hidden_rows(item),
                 "null_position_rows": self._pseudonymise_null_rows(item),
@@ -9292,6 +9294,7 @@ class QualcoderDatabase:
                         item["overlap_conflicts"])),
                 "overlap_conflicts_truncated":
                     item["overlap_conflicts_truncated"],
+                "overlap_conflicts_capped": item["overlap_conflicts_capped"],
                 "case_variants_seen": (
                     variants if may_echo_names else
                     self._pseudonymise_without_forms(variants)),
