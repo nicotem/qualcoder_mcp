@@ -5119,10 +5119,14 @@ class TestTheDocumentsTellTheTruth:
         "the warnings are the same either way.",
         "past a budget for that question it is not checked, is listed in "
         "`files_not_checked` and is never reported clean.",
-        # Fix round 3 (H1).
-        "a file too large to count with this many names on its own is "
-        "listed in `files_too_large_for_this_mapping`, where fewer names is "
-        "the remedy.",
+        # Fix rounds 3 (H1) and 5 (the lead's four rules).
+        "and everything it spends is charged to them;",
+        "A count that stops part-way has found a name and is listed in "
+        "`files_counted_in_part` with a lower bound, a file too large to "
+        "count with this many names, decided before counting, is listed in "
+        "`files_too_large_for_this_mapping`, where fewer names is the "
+        "remedy, and a PDF source, which cannot be named for a preview, is "
+        "never told to be previewed on its own.",
         "a pseudonym that carries one of its names is withheld by entry "
         "number",
     ])
@@ -5202,6 +5206,17 @@ class TestTheDocumentsTellTheTruth:
         "each file's own name (including every file the residue's "
         "file-text block names), the backup path and the note that names "
         "the backup",
+        # Fix round 5: the lead's four rules, as PRIVACY.md states them.
+        "The count has fixed budgets, and everything it spends is charged "
+        "to them, a count that stops part-way too, so its time is bounded.",
+        "A count that stops part-way has found a name: the file is listed "
+        "in `files_counted_in_part`, with a lower bound on its occurrences.",
+        "the warning says to preview such files one at a time, except a "
+        "PDF source, which cannot be named for a preview and has a sentence "
+        "of its own.",
+        "A file too large to count with this many names is told apart "
+        "before anything is counted, because its estimated cost passes the "
+        "whole budget",
     ])
     def test_privacy_says_it(self, sentence):
         assert " ".join(sentence.split()) in self._flat("PRIVACY.md")
