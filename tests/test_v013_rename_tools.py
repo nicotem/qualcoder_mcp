@@ -1474,3 +1474,53 @@ class TestSavedDisplaysAndFiltersByTheirValues:
         assert saved_display_values("Case\t=\tOR\t\tName\tlike\tP 1") == \
             ["OR", "P 1"]
         assert saved_display_values("no tabs here") == []
+
+
+class TestTheBehavioursR2FoundUnpinned:
+    """Fix round 2, R2-2 (D1 to D5 of REVERIFY_RENAME_R2.md)."""
+
+    @pytest.fixture
+    def av(self, project):
+        _add_file(project, 10, "V02.mp4", mediapath="/video/V02.mp4",
+                  av_text_id=11, fulltext=None)
+        _add_file(project, 11, "V02.mp4.transcribed")
+        _reload()
+        return project
+
+    def test_d1_only_the_other_ending_licenses_a_swap(self, av):
+        # A backup shows the transcript under another name with the SAME
+        # ending; that is no evidence for the other ending.
+        assert _file(11, "V03.mp4.transcribed")["changed"] is True
+        out = _file(11, "V03.mp4.txt")
+        assert "swapping '.transcribed' for '.txt'" in out["error"], out
+
+    def test_d3_a_letter_case_variant_is_no_swap(self, project):
+        _add_file(project, 10, "P01.mp3", mediapath="/audio/P01.mp3",
+                  av_text_id=11, fulltext=None)
+        _add_file(project, 11, "P01.mp3.txt")
+        _reload()
+        out = _file(11, "P01.mp3.Transcribed")
+        # QualCoder 4.0's test is case-sensitive: this loses both endings.
+        assert "as a broken link" in out["error"], out
+        assert "swapping" not in out["error"]
+
+    def test_d2_the_renamed_file_is_not_named_after_itself(self, project):
+        _add_file(project, 5, "Thomas notes")
+        _add_file(project, 6, "Dr. Thomas notes")
+        _reload()
+        out = _file(5, "Thomas notes v2", create_backup=False)
+        assert out["old_name_left_in"] == {"file_ids": [6]}
+
+    def test_d4_the_import_says_the_comparison_folds_letter_case(self):
+        flat = " ".join(server.import_text_file.__doc__.split())
+        assert "not a name already in the project's documents folder " \
+               "(compared ignoring letter case), which QualCoder would " \
+               "take for this text's stored copy" in flat
+
+    def test_d5_the_stored_extension_is_cut_in_any_letter_case(self,
+                                                               project):
+        _add_file(project, 5, "Thomas.PDF", mediapath="/docs/Thomas.pdf")
+        _add_file(project, 6, "Thomas_p1.jpg", mediapath="/images/t.jpg")
+        _reload()
+        out = _file(5, "P05.PDF", create_backup=False)
+        assert out["old_name_left_in"] == {"file_ids": [6]}
