@@ -90,17 +90,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   budget for the files after it, and the file this call rewrites is
   still asked whether any name shows, with the rewrite applied as
   usual. The three are sized so that, on any text and at any mapping
-  size up to the maximum of 500 entries, they take under one second
-  together on the development Mac (about 0.95 s at worst, Python 3.11.13,
-  curly-quoted text with a case-insensitive mapping) and about two
-  seconds on the slowest CI platform. Worst case at the full budgets as
-  the test suite's rate line reports it, per CI platform: macOS 3.10
-  1.42 s, macOS 3.13 1.50 s, Ubuntu 3.13 1.80 s, Windows 3.13 1.82 s,
-  Ubuntu 3.10 1.98 s, Windows 3.10 1.99 s (measured at budgets 1/0.45
-  times larger and scaled). A row lists at most 50 entries, the most
-  frequent first, with its own totals complete. A second warning reads
-  the file-text counts out, kept apart from the fields warning, and it
-  says so when a file's whole-word count is above its wide one. A part
+  size up to the maximum of 500 entries, the other files take about one
+  second together on the development Mac (0.66 to 0.77 s through the
+  tool for the dearest shapes measured, curly-quoted prose under a
+  case-insensitive mapping) and about two seconds on the slowest CI
+  platform (the six platforms' rate lines read 1.51 to 1.98 s when the
+  budgets were frozen; the line now also prices prose under a
+  case-insensitive mapping). The file this call rewrites has an
+  allowance of the same size of its own, so a preview whose named file
+  fills it takes about twice that: 1.25 to 1.38 s measured on the
+  development Mac, and the rate line prints both figures. Past its
+  allowance the named file is still asked whether a name shows, which
+  takes about six times as long as planning its rewrite (0.5 s for an
+  interview of 90,000 characters at 1,000 names). A row lists at most
+  50 entries, the most frequent first, with its own totals complete. A
+  second warning reads the file-text counts out, kept apart from the
+  fields warning, and it says so when a file's whole-word count is above
+  its wide one. A part
   of the project the report could not read is named in a warning of its
   own.
 - **A pseudonym that contains a name from the mapping is found and

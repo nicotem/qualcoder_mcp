@@ -145,10 +145,13 @@ SHORT_FORM_CHARS = 4
 # million, 60 million and 150,000): macOS 3.10 3.15 s, macOS 3.13 3.34,
 # Ubuntu 3.13 4.00, Windows 3.13 4.05, Ubuntu 3.10 4.41, Windows 3.10
 # 4.43. All three budgets were scaled by 0.45 to bring the slowest to
-# about two seconds (Windows 3.10 about 1.99 s); on the development Mac
-# the three together, with preparing a 2,000-form mapping, are under
-# one second (about 0.95 s at the worst rates measured). So the work budget's worst case here is about 90 x
-# 5.97 ms, 0.54 seconds, at any number of forms and on any text.
+# about two seconds (the six rate lines then read 1.51 to 1.98 s). On
+# the development Mac the dearest shapes measured through the tool take
+# 0.66 to 0.77 s (fix round 3; about one second, as the second
+# re-verification's B2-3 measured under load), and twice that when the
+# file a call names fills the allowance of its own it has had since fix
+# round 3 (ruling 1): 1.25 to 1.38 s. A run of combining marks out of
+# order no longer costs more than its length (`_ordered_runs`).
 RESIDUE_WORK_PER_CHARACTER = 3
 RESIDUE_WORK_PER_CHARACTER_NON_ASCII = 7
 MAX_RESIDUE_SCAN_WORK = 90_000_000
