@@ -6781,6 +6781,33 @@ class TestTheSidecarKeepsItsNamesOutOfTheConversation:
 # pseudonyms.json
 # =============================================================================
 
+def _on_the_file(path):
+    """Whether a descriptor is open on `path`. `os.read` and `os.fstat`
+    patched on the module are patched for the whole process, and a
+    thread another test left behind (a subprocess read, 50000 bytes then
+    32768 at a time) once landed in a count; the reader pins count and
+    fake the file's own descriptor only."""
+    target, real_fstat = os.stat(path), os.fstat
+
+    def on_the_file(fd):
+        try:
+            return os.path.samestat(real_fstat(fd), target)
+        except OSError:
+            return False
+    return on_the_file
+
+
+def _counting_read(on_the_file, requested):
+    """`os.read`, recording the bytes asked of the file's descriptor."""
+    real_read = os.read
+
+    def read(fd, n):
+        if on_the_file(fd):
+            requested.append(n)
+        return real_read(fd, n)
+    return read
+
+
 class TestProjectPseudonyms:
 
     def test_the_sidecar_is_read_and_reported_with_its_encoding(
@@ -6956,24 +6983,28 @@ class TestProjectPseudonyms:
         """At most the limit and one byte are read, so a file whose size
         was checked and which then grew is refused without being read
         whole: `fstat` is made to report a small file over a large one,
-        and the bytes asked of `os.read` are counted."""
+        and the bytes asked of `os.read` are counted. Both patches act on
+        the file's own descriptor only (`_on_the_file`)."""
         from qualcoder_mcp import database as db_module
         limit = db_module.PSEUDONYMS_JSON_MAX_BYTES
         with open(project / "pseudonyms.json", "wb") as handle:
             handle.truncate(64 * limit)
-        real_fstat, real_read = os.fstat, os.read
+        real_fstat = os.fstat
+        on_the_file = _on_the_file(project / "pseudonyms.json")
 
         class Small:
             def __init__(self, info):
                 self.st_mode = info.st_mode
                 self.st_size = 5
 
+        def fstat(fd):
+            info = real_fstat(fd)
+            return Small(info) if on_the_file(fd) else info
+
         requested = []
-        monkeypatch.setattr(db_module.os, "fstat",
-                            lambda fd: Small(real_fstat(fd)))
+        monkeypatch.setattr(db_module.os, "fstat", fstat)
         monkeypatch.setattr(db_module.os, "read",
-                            lambda fd, n: requested.append(n)
-                            or real_read(fd, n))
+                            _counting_read(on_the_file, requested))
         out = json.loads(server.get_current_project())
         monkeypatch.undo()
         assert out["pseudonyms_json"]["error"] == (
@@ -6987,10 +7018,8 @@ class TestProjectPseudonyms:
         with open(project / "pseudonyms.json", "wb") as handle:
             handle.truncate(2 * limit)
         requested = []
-        real_read = os.read
-        monkeypatch.setattr(db_module.os, "read",
-                            lambda fd, n: requested.append(n)
-                            or real_read(fd, n))
+        monkeypatch.setattr(db_module.os, "read", _counting_read(
+            _on_the_file(project / "pseudonyms.json"), requested))
         out = json.loads(server.get_current_project())
         monkeypatch.undo()
         assert out["pseudonyms_json"]["error"] == (
