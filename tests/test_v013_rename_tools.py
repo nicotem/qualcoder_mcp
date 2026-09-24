@@ -1344,3 +1344,62 @@ class TestWhereTheOldNameStaysByWholeWords:
         assert server.OLD_NAME_LEFT_IN_NOTE.startswith(
             "old_name_left_in is a heuristic: it looks for the old name as "
             "a whole word, ignoring letter case")
+
+
+class TestTheFiveBehavioursQAFoundUnpinned:
+    """Fix round 1, QA-5: five behaviours the QA's mutations changed with
+    the full suite green (Q1, Q2, Q5, Q6, Q10). Q10, the note's backup
+    sentence, is pinned in test_v013_rename_beside_pseudonymise.py."""
+
+    def test_q1_rename_files_gate_comes_first(self, project):
+        _add_file(project, 5, "no extension")
+        _reload()
+        lock = validate_qda_path(str(project)).parent / \
+            QUALCODER_LOCK_FILENAME
+        lock.write_text(f"gui_user\n{time.time()}", encoding="utf-8")
+        try:
+            # The identical name, an unknown id, a name the rules refuse,
+            # an ending the rule refuses and a valid name: each would get
+            # a pre-check answer of its own after the gate.
+            for args in ((5, "no extension"), (99, "x.txt"), (1, "a/b"),
+                         (1, "interview.pdf"), (1, "P01.txt")):
+                out = _file(*args)
+                assert out == {"error": "This project is open in QualCoder "
+                                        "(user gui_user). Close the project "
+                                        "in QualCoder, then retry."}, args
+        finally:
+            lock.unlink()
+        assert _backups(project) == []
+
+    def test_q2_the_declared_type_rule_is_for_texts_with_no_stored_file(
+            self, project):
+        # A /docs/ document's declared type comes from its stored path, so
+        # its name may change type freely.
+        _add_file(project, 5, "field notes.txt",
+                  mediapath="/docs/field notes.txt")
+        _reload()
+        assert _file(5, "field notes.docx",
+                     create_backup=False)["changed"] is True
+
+    def test_q5_a_legacy_text_keeps_its_own_found_copy(self, project,
+                                                        monkeypatch):
+        monkeypatch.setattr(server.QualcoderDatabase, "documents_listing",
+                            lambda self: ["legacy.txt"])
+        _add_file(project, 5, "legacy.txt")
+        _reload()
+        assert _file(5, "LEGACY.txt", create_backup=False)["changed"] is True
+
+    @pytest.mark.parametrize("stored, typed, written", [
+        ("loose notes.txt ", "loose notes.txt ", "loose notes.txt"),
+        (unicodedata.normalize("NFD", "café.txt"),
+         unicodedata.normalize("NFD", "café.txt"),
+         unicodedata.normalize("NFC", "café.txt")),
+    ])
+    def test_q6_a_stored_name_outside_normal_form_is_rewritten(
+            self, project, stored, typed, written):
+        _add_file(project, 5, stored)
+        _reload()
+        out = _file(5, typed, create_backup=False)
+        assert out["changed"] is True and out["new_name"] == written
+        assert _rows(project, "SELECT name FROM source WHERE id = 5") == \
+            [{"name": written}]
