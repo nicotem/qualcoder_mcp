@@ -6955,25 +6955,57 @@ class TestProjectPseudonyms:
             f"bytes and was not read.")
         assert peak < 8 * PSEUDONYMS_JSON_MAX_BYTES, peak
 
-    def test_a_file_that_grows_past_the_limit_is_refused(self, project,
-                                                         monkeypatch):
-        """At most the limit and one byte are read, so a file whose
-        size was checked and which then grew is still refused."""
+    def test_a_file_that_grows_past_the_limit_is_refused_after_a_bounded_read(
+            self, project, monkeypatch):
+        """At most the limit and one byte are read, so a file whose size
+        was checked and which then grew is refused without being read
+        whole: `fstat` is made to report a small file over a large one."""
+        import tracemalloc
         from qualcoder_mcp import database as db_module
-        _sidecar_file(project, [{"original": "Thomas", "pseudonym": "Alex"}])
-        monkeypatch.setattr(db_module, "PSEUDONYMS_JSON_MAX_BYTES", 10)
-        real_fstat = os.fstat
+        limit = db_module.PSEUDONYMS_JSON_MAX_BYTES
+        with open(project / "pseudonyms.json", "wb") as handle:
+            handle.truncate(64 * limit)
+        real_fstat, real_read = os.fstat, os.read
 
         class Small:
             def __init__(self, info):
                 self.st_mode = info.st_mode
                 self.st_size = 5
 
+        requested = []
         monkeypatch.setattr(db_module.os, "fstat",
                             lambda fd: Small(real_fstat(fd)))
-        out = json.loads(server.get_current_project())
+        monkeypatch.setattr(db_module.os, "read",
+                            lambda fd, n: requested.append(n)
+                            or real_read(fd, n))
+        tracemalloc.start()
+        try:
+            out = json.loads(server.get_current_project())
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        monkeypatch.undo()
         assert out["pseudonyms_json"]["error"] == (
-            "pseudonyms.json is larger than 10 bytes and was not read.")
+            f"pseudonyms.json is larger than {limit} bytes and was not read.")
+        assert sum(requested) <= limit + 1, requested
+        assert peak < 8 * limit, peak
+
+    def test_the_size_is_checked_before_anything_is_read(self, project,
+                                                          monkeypatch):
+        from qualcoder_mcp import database as db_module
+        limit = db_module.PSEUDONYMS_JSON_MAX_BYTES
+        with open(project / "pseudonyms.json", "wb") as handle:
+            handle.truncate(2 * limit)
+        requested = []
+        real_read = os.read
+        monkeypatch.setattr(db_module.os, "read",
+                            lambda fd, n: requested.append(n)
+                            or real_read(fd, n))
+        out = json.loads(server.get_current_project())
+        monkeypatch.undo()
+        assert out["pseudonyms_json"]["error"] == (
+            f"pseudonyms.json is larger than {limit} bytes and was not read.")
+        assert requested == []
 
     def test_the_sidecar_is_never_written_unless_asked(self, project):
         """Owner ruling Q6 held that the file, the reverse key in plain
