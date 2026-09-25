@@ -1380,13 +1380,18 @@ class TestResourcesLogNothingOverTheWire:
 
 class TestTheSchemaVersionInTheLog:
 
-    def test_a_version_holding_a_note_is_not_logged(self, project, caplog):
+    @pytest.mark.parametrize("planted", [NOTE, f"v14 {NOTE}"],
+                             ids=["a_note", "a_note_after_a_version"])
+    def test_a_version_holding_a_note_is_not_logged(self, project, caplog,
+                                                    planted):
         """Security secB-2: `databaseversion` is the project's own text;
         a trigger copying a note into it put the note, private part
         included, into the WARNING every connection writes. Set directly
         and then by the trigger QualCoder's own memo edit fires, across a
-        selection, a write (whose downgrade reconnects) and a read."""
-        _ddl(project, f"UPDATE project SET databaseversion = '{NOTE}'")
+        selection, a write (whose downgrade reconnects) and a read. The
+        second value starts as a version does, so only the whole shape
+        lets a value through."""
+        _ddl(project, f"UPDATE project SET databaseversion = '{planted}'")
         caplog.set_level(logging.DEBUG)
         server.select_project(str(project))
         server.get_current_project()
@@ -1458,3 +1463,49 @@ class TestPseudonymsJsonErrorsAreAnsweredByKind:
             assert "Failed to get project info" not in raw
         else:
             assert answer["error"] == expected
+
+
+class TestOpeningADatabaseChainsNothing:
+    """The six raises in `QualcoderDatabase.__init__` that wrap a SQLite
+    error are `from None` (fix round 1): a chained cause is printed
+    whole by any traceback, and a traceback is what a library logs."""
+
+    STAGES = {
+        "open": "PRAGMA foreign_keys = ON",
+        "schema": "SELECT name FROM sqlite_master WHERE type='table'",
+        "required_columns": "PRAGMA table_info(code_text)",
+    }
+
+    @pytest.mark.parametrize("kind", ["operational", "other"])
+    @pytest.mark.parametrize("stage", sorted(STAGES))
+    def test_the_wrapper_carries_no_cause(self, project, monkeypatch,
+                                          stage, kind):
+        import traceback
+        real_connect = sqlite3.connect
+        target = self.STAGES[stage]
+        error = (sqlite3.OperationalError if kind == "operational"
+                 else sqlite3.DatabaseError)
+
+        class Faulty:
+            def __init__(self, real):
+                object.__setattr__(self, "_real", real)
+
+            def execute(self, sql, *args):
+                if sql == target:
+                    raise error(NOTE)
+                return self._real.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def __setattr__(self, name, value):
+                setattr(self._real, name, value)
+
+        monkeypatch.setattr(dbmod.sqlite3, "connect",
+                            lambda *a, **k: Faulty(real_connect(*a, **k)))
+        with pytest.raises(RuntimeError) as raised:
+            QualcoderDatabase(str(project))
+        assert raised.value.__cause__ is None
+        assert raised.value.__suppress_context__ is True
+        printed = "".join(traceback.format_exception(raised.value))
+        assert SENTINEL not in printed and "Met Thomas" not in printed
