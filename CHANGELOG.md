@@ -36,10 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Why.** qualcoder-mcp is a separate program that reads and writes
   QualCoder project files, but it contains a small number of routines
   and values taken from QualCoder so that its results match QualCoder's
-  exactly: twelve routines, among them its "Kappa" value and coder
-  comparison percentages (`compare_coders`), its palette matcher and
-  its coding editor's span walk (`pseudonymise_source`), and thirteen
-  sets of values, among them its colour palette. QualCoder's licence
+  exactly: fourteen routines, among them its "Kappa" value and coder
+  comparison percentages (`compare_coders`), its palette matcher, its
+  coding editor's span walk (`pseudonymise_source`) and its test for an
+  invalid file name (`rename_file`), and fifteen sets of values, among
+  them its colour palette and two of its menu labels. QualCoder's licence
   applies to them. The new `NOTICE` file lists every one, with the
   QualCoder file and lines it comes from and why it was copied, and
   also the facts of QualCoder's file format the code restates so
@@ -51,17 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conditions apply only to someone who distributes the software, and in
   practice they matter for a modified version: whoever distributes one
   must make its source available under the same licence.
-- **Earlier releases stay MIT.** Every release up to and including
-  0.12.1 was published under the MIT License and remains available under
-  those terms.
+- **Earlier releases.** Every release up to and including 0.12.1 was
+  published under the MIT License, and this project's own code in those
+  releases remains available under those terms. Those releases also
+  contained some of the QualCoder-derived items listed in NOTICE; those
+  items were always under QualCoder's licence, LGPL-3.0-or-later,
+  whatever those releases declared. Nothing is withdrawn: the earlier
+  releases stay on PyPI and GitHub as published.
 - Every `.py` file under `src/`, `tests/` and `scripts/` now opens with
   the line `# SPDX-License-Identifier: LGPL-3.0-or-later`, and
   `tests/test_licence.py` pins the header, the declared expression, the
   three files, NOTICE's own licence grant, and NOTICE's entries: every
   file and name they list still exists, and none is removed unnoticed.
-  No code changed: the header is a comment, two docstrings now say
-  which code is QualCoder's, and no tool description, argument or
-  result moved.
+  The licence change itself changed no code: the header is a comment,
+  two docstrings now say which code is QualCoder's, and no tool
+  description, argument or result moved.
 
 ### Removed: the inert `confirm` argument on the six token-gated tools
 
