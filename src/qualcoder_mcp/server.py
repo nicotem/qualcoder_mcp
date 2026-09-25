@@ -7286,6 +7286,7 @@ def prune_backups(keep_last: Optional[int] = None,
                                              to_remove)
     if only_copies["copies"]:
         notes.append(_prune_only_copies_note(only_copies, done=False))
+    removes_newest_prerestore = False
     prerestore_removed = [b for b in to_remove if "_prerestore" in b["name"]]
     if prerestore_removed:
         newest_prerestore = next(
@@ -7293,10 +7294,8 @@ def prune_backups(keep_last: Optional[int] = None,
         if newest_prerestore and any(
                 b["name"] == newest_prerestore["name"]
                 for b in prerestore_removed):
-            notes.append(
-                "This removes your most recent pre-restore safety snapshot, "
-                "the state saved just before the last restore_backup."
-            )
+            removes_newest_prerestore = True
+            notes.append(_prune_prerestore_note(done=False))
 
     if not to_remove:
         return json.dumps({
@@ -7375,12 +7374,14 @@ def prune_backups(keep_last: Optional[int] = None,
         result["failed_to_remove"] = failed
         result["error"] = ("Some backup folders could not be removed; "
                            "check permissions.")
+    # The execute is refused unless the set is the one the preview named,
+    # so its notes say what was done, in the past tense, in the preview's
+    # order.
+    notes = []
     if only_copies["copies"]:
-        # The execute is refused unless the set is the one the preview
-        # named, so this says what was done, in the past tense.
-        notes = [_prune_only_copies_note(only_copies, done=True)
-                 if note.startswith("Backups this would remove hold")
-                 else note for note in notes]
+        notes.append(_prune_only_copies_note(only_copies, done=True))
+    if removes_newest_prerestore:
+        notes.append(_prune_prerestore_note(done=True))
     if notes:
         result["notes"] = notes
     return json.dumps(result, indent=2)
@@ -7415,27 +7416,46 @@ def _prune_only_mapping_copies(project_folder: Path,
 def _prune_only_copies_note(only_copies: Dict[str, List[Any]],
                             done: bool) -> str:
     """The prune's note on the only copies, before (`done` False) or
-    after the removal. Folder names only."""
-    names = ", ".join(name for name, _ in only_copies["copies"])
-    held = ("held" if done else "hold")
-    note = (f"{'Backups this removed' if done else 'Backups this would remove'}"
-            f" {held} a pseudonyms.json that the project does not hold now, "
-            f"byte for byte, and that no backup this server keeps holds: "
-            f"{names}. "
-            + ("This server now knows of no other lasting copy."
-               if done else
-               "Once they are removed, this server knows of no other "
-               "lasting copy.")
-            + " It may be the only record of a pseudonymisation mapping (a "
-              "pseudonymise_source run's save writes one, and a restore of "
-              "an earlier backup leaves it in the pre-restore safety "
-              "backup)")
-    if only_copies["qualcoder"]:
-        note += (f"; QualCoder's own backups "
-                 f"{', '.join(only_copies['qualcoder'])} hold a copy for now, "
-                 f"until QualCoder rotates them away when a project closes")
+    after the removal, in the singular where one backup is named. Folder
+    names only."""
+    named = [name for name, _ in only_copies["copies"]]
+    one = len(named) == 1
+    if done:
+        subject = ("The backup this removed held" if one
+                   else "Backups this removed held")
+        after = ("This server now knows of no other lasting copy. "
+                 + ("It" if one else "They")
+                 + " may have held the only record")
+    else:
+        subject = ("The backup this would remove holds" if one
+                   else "Backups this would remove hold")
+        after = ("Once " + ("it is" if one else "they are")
+                 + " removed, this server knows of no other lasting copy. "
+                 "It may be the only record")
+    note = (f"{subject} a pseudonyms.json that the project does not hold "
+            f"now, byte for byte, and that no backup this server keeps "
+            f"holds: {', '.join(named)}. {after} of a pseudonymisation "
+            f"mapping (a pseudonymise_source run's save writes one, and a "
+            f"restore of an earlier backup leaves it in the pre-restore "
+            f"safety backup)")
+    qualcoder = only_copies["qualcoder"]
+    if qualcoder:
+        note += ("; QualCoder's own "
+                 + (f"backup {qualcoder[0]} holds a copy for now, until "
+                    f"QualCoder rotates it away" if len(qualcoder) == 1 else
+                    f"backups {', '.join(qualcoder)} hold a copy for now, "
+                    f"until QualCoder rotates them away")
+                 + " when a project closes")
     return note + ("." if done else
                    "; copy it somewhere safe first if it is still needed.")
+
+
+def _prune_prerestore_note(done: bool) -> str:
+    """The prune's note when it removes the newest pre-restore safety
+    backup, before (`done` False) or after the removal."""
+    return (f"This {'removed' if done else 'removes'} your most recent "
+            f"pre-restore safety snapshot, the state saved just before the "
+            f"last restore_backup.")
 
 
 def _project_is_write_locked(data_qda: Path) -> bool:

@@ -5113,14 +5113,30 @@ class TestTheMappingAcrossARestore:
         assert "pseudonyms_json_note" not in restored
 
     ONLY_COPY = (
-        "Backups this would remove hold a pseudonyms.json that the project "
+        "{subject} a pseudonyms.json that the project "
         "does not hold now, byte for byte, and that no backup this server "
-        "keeps holds: {names}. Once they are removed, this server knows of "
+        "keeps holds: {names}. Once {pronoun} removed, this server knows of "
         "no other lasting copy. It may be the only record of a "
         "pseudonymisation mapping (a pseudonymise_source run's save writes "
         "one, and a restore of an earlier backup leaves it in the "
         "pre-restore safety backup){qualcoder}; copy it somewhere safe "
         "first if it is still needed.")
+    # v0.13 release preparation (the mapping-gaps check, item 6): the
+    # singular where one backup is named, the plural where several are.
+    ONE = {"subject": "The backup this would remove holds", "pronoun": "it is"}
+    SEVERAL = {"subject": "Backups this would remove hold",
+               "pronoun": "they are"}
+    DONE = (
+        "{subject} a pseudonyms.json that the project does not hold now, "
+        "byte for byte, and that no backup this server keeps holds: "
+        "{names}. This server now knows of no other lasting copy. {pronoun} "
+        "may have held the only record of a pseudonymisation mapping (a "
+        "pseudonymise_source run's save writes one, and a restore of an "
+        "earlier backup leaves it in the pre-restore safety "
+        "backup){qualcoder}.")
+    PRERESTORE_DONE = (
+        "This removed your most recent pre-restore safety snapshot, the "
+        "state saved just before the last restore_backup.")
 
     @staticmethod
     def _only(out):
@@ -5134,7 +5150,8 @@ class TestTheMappingAcrossARestore:
         safety = Path(result["safety_backup"]).name
         out = json.loads(server.prune_backups(keep_last=0))
         only = self._only(out)
-        assert only == [self.ONLY_COPY.format(names=safety, qualcoder="")]
+        assert only == [self.ONLY_COPY.format(names=safety, qualcoder="",
+                                              **self.ONE)]
         _house_rules(only)
         # With the same file back in the project, no backup holds the
         # only copy, and the preview says nothing of it.
@@ -5174,9 +5191,9 @@ class TestTheMappingAcrossARestore:
         only = self._only(out)
         assert only == [self.ONLY_COPY.format(
             names=safety.name,
-            qualcoder=f"; QualCoder's own backups {twin.name} hold a copy "
-                      f"for now, until QualCoder rotates them away when a "
-                      f"project closes")]
+            qualcoder=f"; QualCoder's own backup {twin.name} holds a copy "
+                      f"for now, until QualCoder rotates it away when a "
+                      f"project closes", **self.ONE)]
         _house_rules(only)
         assert twin.exists()
 
@@ -5187,14 +5204,42 @@ class TestTheMappingAcrossARestore:
         _, done = _confirmed(server.prune_backups, keep_last=0)
         assert done["success"] is True, done
         assert safety in done["removed"]
-        assert self._only(done) == [
-            f"Backups this removed held a pseudonyms.json that the project "
-            f"does not hold now, byte for byte, and that no backup this "
-            f"server keeps holds: {safety}. This server now knows of no "
-            f"other lasting copy. It may be the only record of a "
-            f"pseudonymisation mapping (a pseudonymise_source run's save "
-            f"writes one, and a restore of an earlier backup leaves it in "
-            f"the pre-restore safety backup)."]
+        assert self._only(done) == [self.DONE.format(
+            subject="The backup this removed held", names=safety,
+            pronoun="It", qualcoder="")]
+        # The safety backup is the newest pre-restore one, so the other
+        # note is there too, and in the past tense as well.
+        assert done["notes"] == self._only(done) + [self.PRERESTORE_DONE]
+
+    def test_several_backups_are_named_in_the_plural(self, project):
+        """Two of this server's backups and two of QualCoder's hold the
+        only copy: the preview and the execute name each pair in the
+        plural."""
+        backup, saved = self._saved_run(project)
+        _, result = _confirmed(server.restore_backup, backup_path=str(backup))
+        safety = Path(result["safety_backup"])
+        older = project.parent / f"{project.stem}_backup_20000101_000000.qda"
+        shutil.copytree(safety, older)
+        os.utime(older, (946684800, 946684800))
+        twins = [project.parent / f"{project.stem}_BKUP_2026092{day}.qda"
+                 for day in (4, 5)]
+        for twin in twins:
+            shutil.copytree(safety, twin)
+        named = ", ".join(sorted([safety.name, older.name]))
+        clause = (f"; QualCoder's own backups "
+                  f"{', '.join(t.name for t in twins)} hold a copy for "
+                  f"now, until QualCoder rotates them away when a project "
+                  f"closes")
+        out = json.loads(server.prune_backups(keep_last=0))
+        assert self._only(out) == [self.ONLY_COPY.format(
+            names=named, qualcoder=clause, **self.SEVERAL)]
+        done = json.loads(server.prune_backups(
+            **out["execute_with"]["arguments"]))
+        assert done.get("success") is True, done
+        assert self._only(done) == [self.DONE.format(
+            subject="Backups this removed held", names=named,
+            pronoun="They", qualcoder=clause)]
+        _house_rules(self._only(out) + self._only(done))
 
     def test_the_changelog_names_both_notes(self):
         text = (Path(__file__).resolve().parents[1] / "CHANGELOG.md"
@@ -8465,8 +8510,17 @@ class TestTheDocumentsTellTheTruth:
         "changes, and the one the project had stays in the pre-restore "
         "safety backup, which `prune_backups` can remove; its preview names "
         "any backup it would remove that holds a `pseudonyms.json` which "
-        "neither the project nor a backup that stays holds, as the only "
-        "copy this server knows of.",
+        "neither the project nor a backup this server keeps holds, byte for "
+        "byte, as the only lasting copy this server knows of.",
+        # The v0.13 release preparation: the mapping gaps' two refinements.
+        "QualCoder's own `_BKUP_` backups do not count as keeping a copy, "
+        "because QualCoder deletes them past its `backup_num` when a project "
+        "closes, so a copy in one of them does not stop a backup being "
+        "named;",
+        "The approval token signs that set of only copies, so a prune whose "
+        "set changed after its preview (the project's own file removed "
+        "outside this server, for example) is refused as a changed project "
+        "and removes nothing,",
         # Brief 2 fix round 1, Security's ruling (S-1): the departure,
         # named.
         "A file the save creates is owner-only (0600) on macOS and Linux, "

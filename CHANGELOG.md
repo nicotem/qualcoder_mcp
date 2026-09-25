@@ -499,8 +499,10 @@ reason:
   when a project closes; one that holds a copy is named as holding it
   for now. The approval token signs that set, so a prune whose set
   changed after its preview (a file removed outside this server) is
-  refused as a changed project, and the execute's note is in the past
-  tense. Files are compared by fingerprint and never read out.
+  refused as a changed project, and the execute's notes are in the past
+  tense, this one and the note on the newest pre-restore safety backup
+  alike, each in the singular where it names one backup. Files are
+  compared by fingerprint and never read out.
 
 ### Changed: the run record is format 2
 

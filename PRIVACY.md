@@ -632,7 +632,16 @@ will ask, and the summary above depends on them:
     the project had stays in the pre-restore safety backup, which
     `prune_backups` can remove; its preview names any backup it would
     remove that holds a `pseudonyms.json` which neither the project nor
-    a backup that stays holds, as the only copy this server knows of.
+    a backup this server keeps holds, byte for byte, as the only lasting
+    copy this server knows of. QualCoder's own `_BKUP_` backups do not
+    count as keeping a copy, because QualCoder deletes them past its
+    `backup_num` when a project closes, so a copy in one of them does
+    not stop a backup being named; the preview names those that hold a
+    copy for now. The approval token signs that set of only copies, so
+    a prune whose set changed after its preview (the project's own file
+    removed outside this server, for example) is refused as a changed
+    project and removes nothing, and the execute's note says, in the
+    past tense, which backups held the copy.
     Since v0.13 a run on a mapping you typed is refused unless the call
     either asks for the mapping to be saved into this file
     (`save_mapping_to_project`, which the preview must be run
