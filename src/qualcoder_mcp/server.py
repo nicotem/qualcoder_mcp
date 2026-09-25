@@ -7252,7 +7252,8 @@ def prune_backups(keep_last: Optional[int] = None,
         return json.dumps({"error": "older_than_days must be a non-negative number"})
 
     project_folder = validate_qda_path(current_project_path).parent
-    mcp_backups = [b for b in _collect_backups(project_folder)
+    all_backups = _collect_backups(project_folder)   # one walk, both kinds
+    mcp_backups = [b for b in all_backups
                    if b["kind"] == "mcp"]  # newest first; _BKUP_ never touched
 
     # Apply the policy. With both criteria, a backup is pruned only if it
@@ -7280,17 +7281,10 @@ def prune_backups(keep_last: Optional[int] = None,
     reclaimed_mb = round(sum(b["size_mb"] for b in to_remove), 2)
 
     notes = []
-    only_copies = _prune_only_mapping_copies(project_folder, to_remove)
-    if only_copies:
-        notes.append(
-            f"Backups this would remove hold a pseudonyms.json that the "
-            f"project does not hold now, byte for byte, and that no backup "
-            f"kept holds: {', '.join(only_copies)}. Once they are removed, "
-            f"this server knows of no other copy. It may be the only record "
-            f"of a pseudonymisation mapping (a pseudonymise_source run's "
-            f"save writes one, and a restore of an earlier backup leaves it "
-            f"in the pre-restore safety backup); copy it somewhere safe "
-            f"first if it is still needed.")
+    only_copies = _prune_only_mapping_copies(project_folder, all_backups,
+                                             to_remove)
+    if only_copies["copies"]:
+        notes.append(_prune_only_copies_note(only_copies, done=False))
     prerestore_removed = [b for b in to_remove if "_prerestore" in b["name"]]
     if prerestore_removed:
         newest_prerestore = next(
@@ -7335,7 +7329,11 @@ def prune_backups(keep_last: Optional[int] = None,
                 {"keep_last": keep_last, "older_than_days": older_than_days},
                 state_preview={
                     "would_remove": [b["name"] for b in to_remove],
-                    "would_keep": [b["name"] for b in kept]})
+                    "would_keep": [b["name"] for b in kept],
+                    # Signed, so a set that changes before the execute (a
+                    # file removed outside this server) refuses it rather
+                    # than removing a copy the preview did not name.
+                    "only_copies": only_copies["copies"]})
         except PreviewSecretUnavailable:
             return json.dumps(
                 _token_error("preview_secret_unavailable", "prune_backups"))
@@ -7345,7 +7343,8 @@ def prune_backups(keep_last: Optional[int] = None,
 
     state = fingerprint_rows(
         {"would_remove": [b["name"] for b in to_remove],
-         "would_keep": [b["name"] for b in kept]}, fingerprint)
+         "would_keep": [b["name"] for b in kept],
+         "only_copies": only_copies["copies"]}, fingerprint)
     try:
         outcome = verify(preview_token, "prune_backups", token_args,
                          _token_project(), state)
@@ -7375,25 +7374,67 @@ def prune_backups(keep_last: Optional[int] = None,
         result["failed_to_remove"] = failed
         result["error"] = ("Some backup folders could not be removed; "
                            "check permissions.")
+    if only_copies["copies"]:
+        # The execute is refused unless the set is the one the preview
+        # named, so this says what was done, in the past tense.
+        notes = [_prune_only_copies_note(only_copies, done=True)
+                 if note.startswith("Backups this would remove hold")
+                 else note for note in notes]
     if notes:
         result["notes"] = notes
     return json.dumps(result, indent=2)
 
 
 def _prune_only_mapping_copies(project_folder: Path,
-                               to_remove: List[Dict[str, Any]]) -> List[str]:
-    """The backups a prune would remove whose pseudonyms.json the project
-    does not hold now, byte for byte, and no backup that stays holds
-    either (this server's kept ones and QualCoder's own, which a prune
-    never touches). By folder name; compared by fingerprint, never read
-    out (Brief 2, merge fix M3)."""
+                               backups: List[Dict[str, Any]],
+                               to_remove: List[Dict[str, Any]]
+                               ) -> Dict[str, List[Any]]:
+    """The backups a prune would remove whose pseudonyms.json neither the
+    project nor a backup this server keeps holds, byte for byte, as
+    `copies`: sorted `[folder name, fingerprint]` pairs, which the token
+    signs. QualCoder's own backups do not count as keeping a copy,
+    because QualCoder deletes them past its `backup_num` when a project
+    closes (mapping gaps, item 1); those that hold one of these files are
+    listed apart, as `qualcoder`. Compared by fingerprint, never read out
+    (Brief 2, merge fix M3)."""
     removing = {b["name"] for b in to_remove}
-    held = {pseudonyms_json_fingerprint(project_folder)}
-    held |= {pseudonyms_json_fingerprint(b["path"])
-             for b in _collect_backups(project_folder)
-             if b["name"] not in removing}
-    return [b["name"] for b in to_remove
-            if pseudonyms_json_fingerprint(b["path"]) not in held | {None}]
+    held = {pseudonyms_json_fingerprint(project_folder), None}
+    held |= {pseudonyms_json_fingerprint(b["path"]) for b in backups
+             if b["kind"] == "mcp" and b["name"] not in removing}
+    copies = sorted(
+        [b["name"], fingerprint] for b in to_remove
+        for fingerprint in [pseudonyms_json_fingerprint(b["path"])]
+        if fingerprint not in held)
+    named = {fingerprint for _, fingerprint in copies}
+    qualcoder = sorted(b["name"] for b in backups if b["kind"] == "qualcoder"
+                       and pseudonyms_json_fingerprint(b["path"]) in named)
+    return {"copies": copies, "qualcoder": qualcoder}
+
+
+def _prune_only_copies_note(only_copies: Dict[str, List[Any]],
+                            done: bool) -> str:
+    """The prune's note on the only copies, before (`done` False) or
+    after the removal. Folder names only."""
+    names = ", ".join(name for name, _ in only_copies["copies"])
+    held = ("held" if done else "hold")
+    note = (f"{'Backups this removed' if done else 'Backups this would remove'}"
+            f" {held} a pseudonyms.json that the project does not hold now, "
+            f"byte for byte, and that no backup this server keeps holds: "
+            f"{names}. "
+            + ("This server now knows of no other lasting copy."
+               if done else
+               "Once they are removed, this server knows of no other "
+               "lasting copy.")
+            + " It may be the only record of a pseudonymisation mapping (a "
+              "pseudonymise_source run's save writes one, and a restore of "
+              "an earlier backup leaves it in the pre-restore safety "
+              "backup)")
+    if only_copies["qualcoder"]:
+        note += (f"; QualCoder's own backups "
+                 f"{', '.join(only_copies['qualcoder'])} hold a copy for now, "
+                 f"until QualCoder rotates them away when a project closes")
+    return note + ("." if done else
+                   "; copy it somewhere safe first if it is still needed.")
 
 
 def _project_is_write_locked(data_qda: Path) -> bool:

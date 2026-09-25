@@ -441,6 +441,20 @@ reason:
   themselves; its description says first that this sends the real names
   to the AI provider, and each call writes one log line with the count
   and no name.
+- The saved file across a restore and a prune. A `restore_backup` that
+  makes the project's `pseudonyms.json` appear, disappear or change says
+  so in the result's `pseudonyms_json_note`, naming the pre-restore
+  safety backup that holds the one the project had; what a restore
+  restores is unchanged. `prune_backups`' preview notes any backup it
+  would remove whose `pseudonyms.json` neither the project nor a backup
+  this server keeps holds, byte for byte, as the only lasting copy this
+  server knows of. QualCoder's own `_BKUP_` backups do not count as
+  keeping a copy, because QualCoder deletes them past its `backup_num`
+  when a project closes; one that holds a copy is named as holding it
+  for now. The approval token signs that set, so a prune whose set
+  changed after its preview (a file removed outside this server) is
+  refused as a changed project, and the execute's note is in the past
+  tense. Files are compared by fingerprint and never read out.
 
 ### Changed: the run record is format 2
 
