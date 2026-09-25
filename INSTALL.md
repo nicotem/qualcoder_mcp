@@ -280,11 +280,21 @@ variable is optional.
   If the path does not exist the server refuses to start and prints
   "Error: Database file not found: <path>" to stderr. Without it, select
   a project with the tools (Option A).
-- `QUALCODER_MCP_TOOLSET`: `full` (default) registers all 73 tools;
+- `QUALCODER_MCP_TOOLSET`: `full` (default) registers 73 tools;
   `core` registers the 21-tool supervised coding set for local models
-  (see the LM Studio recipe). Any other value stops the server at
-  start-up with an error naming the valid values. Resources and prompts
-  are not affected.
+  (see the LM Studio recipe); `lifecycle` (Experimental, v0.14)
+  registers the full set plus `create_project`, 74 tools, so that a
+  study can be started from the conversation (README.md, "Starting a
+  project from the conversation"). Creating projects stays out of the
+  default set so that researchers opt in to a tool that makes folders on
+  their disk. Any other value stops the server at start-up with an error
+  naming the valid values. Resources and prompts are not affected.
+  In Claude Desktop, add `"QUALCODER_MCP_TOOLSET": "lifecycle"` to the
+  server's `env` block; for Claude Code:
+
+  ```bash
+  claude mcp add qualcoder -e QUALCODER_MCP_TOOLSET=lifecycle -- ~/Documents/qualcoder_mcp/venv/bin/python -m qualcoder_mcp.server
+  ```
 - `QUALCODER_MCP_AI_CODER_NAME`: this HOST's DECLARATION of the AI
   coder name it would like to write under. Since v0.12 the name that
   rows actually carry is the PROJECT's setting, which the researcher

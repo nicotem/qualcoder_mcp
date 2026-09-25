@@ -7,7 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Creating a project from the conversation** (Experimental, opt-in):
+  `create_project(name, directory, coder_name, coder_name_not_known)`
+  makes a new, empty project in QualCoder 4.0's format, exactly as 4.0's
+  own New Project makes it (the folder, its four subfolders, and the
+  database at schema v17: 28 tables, the four coder-visibility views,
+  the first rows), from this project's own table definitions, proven
+  identical in everything QualCoder reads by a fixture taken from a
+  project 4.0 created, and in one transaction, so a failure or a crash
+  leaves nothing committed. It then selects the project, without the
+  process-scan warning that cannot apply to a project made seconds ago,
+  and says what QualCoder 4.0 and 3.8.2 each do when they first open it.
+  It creates in the server's workspace, or an existing folder the
+  researcher names; it refuses a name already used there in any letter
+  case or accent form, names QualCoder cannot open (`|`) or Windows
+  cannot store, names holding `_backup_` or `_BKUP_`, and a name whose
+  older backup folders sit there; it asks for the researcher's own
+  QualCoder coder name after every other check, or accepts an explicit
+  "not known" with a warning; it never reads QualCoder's settings file
+  and never replaces or deletes anything. Its failures are worded by the
+  tool, and clean-up removes only what it made.
+- **A third toolset, `lifecycle`** (`QUALCODER_MCP_TOOLSET=lifecycle`):
+  the full set plus `create_project`, 74 tools. The default `full` (73)
+  and `core` (21) are unchanged; creating projects stays out of them so
+  that researchers opt in.
+- **The project memo**: `set_memo` takes `target_type` `project`
+  (`target_id` null). Only the public part is replaced; the private part
+  after `#####` survives and is never returned. QualCoder 4.0's own
+  assistant reads the public part as the study's context.
+
 ### Changed
+
+- `set_project_ai_coder_name` refuses QualCoder's speaker coder name,
+  which every project lists, and warns when the project's own coder name
+  is not known, since its refusal of the researcher's name cannot then
+  be made.
+- `select_project` warns when the project's path holds `|` (QualCoder
+  cannot open such a project), and names a folder whose `data.qda` is
+  missing or empty as the remains of an unfinished creation;
+  `list_available_projects` marks such folders. A database whose project
+  table has no row is refused plainly, as QualCoder refuses it, instead
+  of write refusals advising an upgrade.
+- The recently modified chat history signal is no longer presented as a
+  QualCoder 4.0 AI signal: both 3.8.2 and 4.0 rewrite that file on every
+  open.
+- The process scan counts only a process that is QualCoder itself (its
+  own program, or a Python running QualCoder's package), and never this
+  server's own process: a shell, editor or test run whose command line
+  merely mentioned QualCoder made every selection say the project
+  "APPEARS to be open in QualCoder".
+- `scripts/create_test_project.py` is rebuilt on the creation code: it
+  takes a new folder, refuses one that exists and deletes nothing (it
+  used to delete `~/Documents/QDA Projects/test_project.qda` first, and
+  built a project neither QualCoder nor this server would open).
 
 - The GPL text moved from `COPYING` to `legal/GPL-3.0.txt`, so that
   GitHub shows the project's licence as the LGPL; the text still ships

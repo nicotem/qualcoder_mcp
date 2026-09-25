@@ -456,10 +456,11 @@ the format dictates.
     Here: src/qualcoder_mcp/database.py,
     QualcoderDatabase.PSEUDONYMISE_MEMO_FIELDS,
     QualcoderDatabase.PSEUDONYMISE_MEMO_KEYS,
-    QualcoderDatabase.PSEUDONYMISE_MEMO_DATED and
-    QualcoderDatabase._pseudonymise_write_memos.
-    From: __main__.py, lines 1788-1826 and 1953; attributes.py, line
-    202; code_text.py, lines 1017-1020; journals.py, lines 636-639.
+    QualcoderDatabase.PSEUDONYMISE_MEMO_DATED,
+    QualcoderDatabase._pseudonymise_write_memos and
+    QualcoderDatabase._set_project_memo.
+    From: __main__.py, lines 1788-1826, 1952 and 1953; attributes.py,
+    line 202; code_text.py, lines 1017-1020; journals.py, lines 636-639.
 
 47. The tables, columns, keys, unique groups and views of a new
     project in QualCoder 4.0's format, their order, and its first rows.

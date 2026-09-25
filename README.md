@@ -421,6 +421,57 @@ you want a file under your own name in QualCoder, import it in
 QualCoder rather than through this server.
 
 
+## Starting a project from the conversation (Experimental)
+
+The server can create a new, empty QualCoder project, so a study can
+begin in the conversation. It is off by default: add
+`QUALCODER_MCP_TOOLSET=lifecycle` to the server's environment (INSTALL.md
+shows where), which registers the full set of tools plus
+`create_project`.
+
+- **The format.** The project is made in QualCoder 4.0's format, exactly
+  as 4.0's own New Project makes it (the folder `<name>.qda` with its
+  four subfolders, and the database at schema v17), in one step: if
+  anything fails, nothing half-made is left. Its "about" line reads
+  `qualcoder-mcp <version> (QualCoder schema v17)`.
+- **Where.** In the server's workspace, `~/Documents/Qualcoder MCP
+  Projects`, unless you name an existing folder. Keep projects on a
+  local disk that is not synced (iCloud, OneDrive, Dropbox): sync
+  services can copy the database and its journal separately. On Windows
+  where Documents has been moved (to OneDrive, say), the workspace may
+  not be where QualCoder's Open dialog starts; the result gives the full
+  path.
+- **Your coder name.** The assistant asks for the coder name you use in
+  QualCoder (Settings, Coder name), after every other check, so you are
+  asked once. If you do not know it or do not use QualCoder yet, say so:
+  the project is created, and the check that keeps the AI's codings
+  apart from yours stays off until QualCoder records your name, the
+  first time you open the project there. The server never reads
+  QualCoder's settings file, which holds API keys.
+- **Names.** A name already used in that folder is refused, never given
+  a "_1", and so is one that differs from it only in letter case or
+  accents (a project copied to macOS or Windows would otherwise merge
+  with it). Names QualCoder cannot open (with `|`), names Windows cannot
+  store, names holding `_backup_` or `_BKUP_`, and a name whose older
+  backup folders sit in that folder are refused too, each with the
+  reason. Short names, in folders near the top of the disk, travel
+  better.
+- **Opening it in QualCoder.** QualCoder 4.0 opens it without a message
+  and without changing its format (Project, Open Project, then the
+  folder). QualCoder 3.8.2 opens it without any warning and keeps
+  everything in it, but cannot show what 4.0 added: sub-codes appear
+  there as ordinary codes, and the labels, arrows and memo notes on
+  graphs do not appear. If the project is edited in 3.8.2, three things
+  change without a message the next time 4.0 opens it: a sub-code moved
+  into a category goes back under its parent code; the sub-codes of a
+  code deleted in 3.8.2 become ordinary codes with no category; and a
+  graph saved after another was deleted can show the deleted graph's
+  memo notes. Work on such a project in QualCoder 4.0.
+- **The project memo** starts empty, as QualCoder leaves it;
+  `set_memo` with the target `project` writes it (research questions,
+  methodology, participants), and QualCoder 4.0's own assistant reads it
+  as the study's context. Text after a `#####` line stays private.
+
 ## Working alongside QualCoder 4.0
 
 QualCoder 4.0's AI subsystem defines conventions that live in the

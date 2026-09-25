@@ -138,7 +138,10 @@ keeps the same promise:
   zone.
 - **Writes**: memo-writing tools (set_memo, update_annotation, and the
   provenance notes merge_codes and merge_category append) replace only
-  the public text. An existing private zone survives every memo write
+  the public text. Since v0.14 that includes the project memo (set_memo
+  with the target `project`), whose public part QualCoder 4.0's own
+  assistant also reads as the study's context; keep a participant's
+  details below its `#####` line. An existing private zone survives every memo write
   verbatim, and a `#####` in AI-supplied text is not written (code and
   category names and coder names copied into provenance notes are
   neutralised too), so the AI can never create, read, replace, or
@@ -413,8 +416,10 @@ Two further rules touch files on your disk:
   preview, which is the call without a preview_token) also looks at the
   list of processes running on this machine (`ps` or `tasklist`, or
   psutil when installed). The listing is filtered in memory for
-  process names and command lines that mention QualCoder (this
-  server's own name is blanked out first) and only the NUMBER of
+  processes that are QualCoder itself (its own program, or a Python
+  running QualCoder's package; since v0.14 a command line that merely
+  mentions QualCoder no longer counts, and this server's own process is
+  left out) and only the NUMBER of
   matches is reported into the conversation; process names, command
   lines and other users' processes never leave the server, the
   filtered matches are held in memory for at most five seconds so that
@@ -427,8 +432,24 @@ Two further rules touch files on your disk:
   modified; only presence and timestamps are read, never contents.
   This is a heuristic: it can miss an open window (an idle 4.0 window
   with no recent AI activity leaves no file trace, so only the process
-  scan can see it) and it can count an unrelated process whose command
-  line mentions QualCoder.
+  scan can see it; on Windows without psutil, a QualCoder run through
+  `python.exe` is not seen), and a recently modified chat history file
+  means a recent open by either QualCoder build, not only AI use.
+  `create_project` runs no process scan for the project it has just
+  made.
+- **Creating a project** (`create_project`, only with
+  `QUALCODER_MCP_TOOLSET=lifecycle`, v0.14). It writes a new folder
+  with four empty subfolders and a new `data.qda`, and nothing else: no
+  backup, no `qualcoder_mcp.json`, no entry in QualCoder's recent-project
+  list. The database holds the researcher's QualCoder coder name when
+  they give it (and QualCoder's speaker coder), and an "about" line
+  naming this server and its version. The coder name is asked for,
+  never read: the server does not open QualCoder's settings file
+  (`~/.qualcoder/config.ini`, which holds API keys in plain text), and a
+  test pins that. To refuse a name already in use, it lists the target
+  folder's entries and opens an existing project's database read-only;
+  the log line says only that a project was created, with no name or
+  path.
 
 ## Your governance options, from default to fully local (Experimental)
 
