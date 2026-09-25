@@ -549,3 +549,76 @@ class TestBothTextGuards:
                                 lambda name: name == "legacy.txt",
                                 same_text=True, text=text)
         assert found is None
+
+
+class _RecordingConnection:
+    """Stands in for a QualcoderDatabase's connection: records each SQL
+    statement, and can make the first one matching `fail` raise."""
+
+    def __init__(self, con, fail=None):
+        self._con, self.sql, self._fail = con, [], fail
+
+    def execute(self, sql, args=()):
+        self.sql.append(sql)
+        if self._fail and self._fail in sql:
+            raise sqlite3.OperationalError("simulated read failure")
+        return self._con.execute(sql, args)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+class TestHowTheTextAndTheSavedRowsAreRead:
+    """Fix round 4, F3A-2 and F3B-1: the two read paths pinned as reads."""
+
+    def test_a_text_read_that_fails_is_unreadable_not_an_error(self,
+                                                                legacy):
+        db = server.get_db()
+        real = db.conn
+        db.conn = _RecordingConnection(real, fail="CAST(fulltext AS BLOB)")
+        try:
+            assert db.current_text(5) is db.TEXT_UNREADABLE
+        finally:
+            db.conn = real
+
+    def test_saved_rows_are_read_as_text_first(self, legacy):
+        con = sqlite3.connect(str(legacy / "data.qda"))
+        con.execute("CREATE TABLE files_filter (filterid integer primary "
+                    "key, name text, filter text, owner text)")
+        con.execute("INSERT INTO files_filter (name, filter) VALUES "
+                    "('f', 'legacy.txt only')")
+        con.commit()
+        con.close()
+        _reload()
+        db = server.get_db()
+        real = db.conn
+        db.conn = _RecordingConnection(real)
+        try:
+            found = db.old_name_left_in("file", 5, "legacy.txt")
+            sql = db.conn.sql
+        finally:
+            db.conn = real
+        assert found.get("saved_filters") == 1
+        assert not [s for s in sql if "CAST(" in s], sql
+
+    def test_the_bytes_only_when_the_text_read_raises(self, legacy):
+        con = sqlite3.connect(str(legacy / "data.qda"))
+        con.execute("CREATE TABLE files_filter (filterid integer primary "
+                    "key, name text, filter text, owner text)")
+        con.execute("INSERT INTO files_filter (name, filter) VALUES "
+                    "('f', 'legacy.txt only')")
+        con.commit()
+        con.close()
+        _reload()
+        db = server.get_db()
+        real = db.conn
+        db.conn = _RecordingConnection(real,
+                                       fail="SELECT name, filter FROM")
+        try:
+            found = db.old_name_left_in("file", 5, "legacy.txt")
+            sql = db.conn.sql
+        finally:
+            db.conn = real
+        assert found.get("saved_filters") == 1
+        assert any("CAST(name AS BLOB), CAST(filter AS BLOB)" in s
+                   for s in sql), sql
