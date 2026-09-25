@@ -1799,6 +1799,29 @@ def _read_pseudonyms_json_bytes(path: Path) -> Tuple[bytes, int]:
     return raw, stat.S_IMODE(info.st_mode)
 
 
+def pseudonyms_json_fingerprint(folder: Union[str, Path]) -> Optional[str]:
+    """What the `pseudonyms.json` in `folder` is, for comparison only.
+
+    None when there is none; the SHA-256 of its bytes when it is a
+    regular file this reader takes (`_read_pseudonyms_json_bytes`: no
+    FIFO, nothing past the size limit); "link" for a symbolic link,
+    which is not followed; "unreadable" for anything else there. The
+    bytes are never returned. Used to say when a restore makes the
+    project's file appear, disappear or change, and which backups hold
+    one the project does not (Brief 2, merge fix M3). Never raises.
+    """
+    try:
+        path = Path(folder) / PSEUDONYMS_JSON_NAME
+        if not os.path.lexists(str(path)):
+            return None
+        if path.is_symlink():
+            return "link"
+        raw, _mode = _read_pseudonyms_json_bytes(path)
+        return hashlib.sha256(raw).hexdigest()
+    except Exception:                                   # noqa: BLE001
+        return "unreadable"
+
+
 def read_project_pseudonyms(project_folder: Union[str, Path]
                             ) -> Tuple[List[Dict[str, str]], str]:
     """QualCoder's own `pseudonyms.json`, read the way it is written.

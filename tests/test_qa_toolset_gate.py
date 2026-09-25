@@ -135,7 +135,7 @@ class TestRegistryIsolation:
 
     def test_double_apply_and_restore_in_one_process(self):
         """Contamination guard: apply core twice with restoration between,
-        and confirm the registry returns to the identical 67-tool state
+        and confirm the registry returns to the identical full state
         (same objects, not lookalikes)."""
         before = dict(server.mcp._tool_manager._tools)
         assert len(before) == 73

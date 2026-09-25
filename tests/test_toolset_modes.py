@@ -1,6 +1,6 @@
 """QUALCODER_MCP_TOOLSET modes (EXPERIMENTAL, multi-host plan section 3.1).
 
-Default full = backward compatible 67-tool surface. core = the 20-tool
+Default full = the backward-compatible full surface. core = the 21-tool
 supervised-coding-loop subset for local-model hosts. Unknown values fail
 loudly at startup. The functional smoke drives a core-mode server over the
 REAL stdio transport through the whole suggest -> apply loop, proving the
@@ -120,7 +120,7 @@ class TestToolsetResolution:
         assert "banana" in msg and "core" in msg and "full" in msg
 
     def test_default_surface_is_backward_compatible(self):
-        """No env var -> the full 67-tool surface, untouched."""
+        """No env var -> the full surface, untouched."""
         tools = asyncio.run(server.mcp.list_tools())
         assert len(tools) == EXPECTED_FULL
 
@@ -326,8 +326,8 @@ class TestThePublishedSchemaBudget:
     # What the loose half does NOT do, stated plainly because the
     # previous version of this comment claimed the opposite: away from
     # the reference interpreter it does not report a single tool added
-    # or removed. The average tool contributes 2,081 characters, about
-    # 1.5 per cent, which is INSIDE two per cent; two tools, about 2.9
+    # or removed. The average tool contributes 2,343 characters, about
+    # 1.4 per cent, which is INSIDE two per cent; two tools, about 2.7
     # per cent, are outside it. So away from 3.13 this is an alarm for
     # large drift and not a gate on the figure.
     #
@@ -454,7 +454,7 @@ class TestThePublishedSchemaBudget:
 
         The comment above used to say a tool added or removed without
         re-measuring is reported. It is not, away from the reference
-        interpreter: one average tool is about 1.5 per cent and the band
+        interpreter: one average tool is about 1.4 per cent and the band
         is two. Two tools are outside it. What catches one tool is the
         exact half, on 3.13, which CI runs on all three platforms.
         """

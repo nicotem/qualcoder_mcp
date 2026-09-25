@@ -1203,7 +1203,9 @@ class TestARenameBack:
         assert out["error"].endswith(
             "If it was this entry's own copy under a name it had before, "
             "restore_backup or QualCoder's own Rename can put that name "
-            "back; this server recognises a rename back only from a "
+            "back (restoring an earlier backup undoes everything done after "
+            "it, any pseudonymisation run included); this server recognises "
+            "a rename back only from a "
             "backup that shows this entry with that name and, for its "
             "documents copy, the same text.")
 

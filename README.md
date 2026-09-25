@@ -1228,6 +1228,9 @@ Contributions are welcome! Some ideas for enhancements:
   entries under `rewrite_memos`, and a mapping you type is kept: saved
   into the project's own `pseudonyms.json` or attested as kept by the
   researcher
+- ✅ `rename_case` and `rename_file` rename a case or a file's entry the
+  way QualCoder does, so a label named after a participant can be
+  changed without leaving the conversation
 
 **Planned for v0.13 and later:**
 - 🎯 Quote-anchored writes with a fuzzy fallback, and a persistent change

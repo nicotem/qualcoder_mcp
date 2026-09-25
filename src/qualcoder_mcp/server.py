@@ -23,6 +23,7 @@ from mcp.server.fastmcp import Context
 from .database import (
     QualcoderDatabase,
     sqlite_error_label,
+    pseudonyms_json_fingerprint,
     CoderVisibilityUnreadable,
     coder_is_hidden,
     DatabaseLockedError,
@@ -7279,6 +7280,17 @@ def prune_backups(keep_last: Optional[int] = None,
     reclaimed_mb = round(sum(b["size_mb"] for b in to_remove), 2)
 
     notes = []
+    only_copies = _prune_only_mapping_copies(project_folder, to_remove)
+    if only_copies:
+        notes.append(
+            f"Backups this would remove hold a pseudonyms.json that the "
+            f"project does not hold now, byte for byte, and that no backup "
+            f"kept holds: {', '.join(only_copies)}. Once they are removed, "
+            f"this server knows of no other copy. It may be the only record "
+            f"of a pseudonymisation mapping (a pseudonymise_source run's "
+            f"save writes one, and a restore of an earlier backup leaves it "
+            f"in the pre-restore safety backup); copy it somewhere safe "
+            f"first if it is still needed.")
     prerestore_removed = [b for b in to_remove if "_prerestore" in b["name"]]
     if prerestore_removed:
         newest_prerestore = next(
@@ -7368,6 +7380,22 @@ def prune_backups(keep_last: Optional[int] = None,
     return json.dumps(result, indent=2)
 
 
+def _prune_only_mapping_copies(project_folder: Path,
+                               to_remove: List[Dict[str, Any]]) -> List[str]:
+    """The backups a prune would remove whose pseudonyms.json the project
+    does not hold now, byte for byte, and no backup that stays holds
+    either (this server's kept ones and QualCoder's own, which a prune
+    never touches). By folder name; compared by fingerprint, never read
+    out (Brief 2, merge fix M3)."""
+    removing = {b["name"] for b in to_remove}
+    held = {pseudonyms_json_fingerprint(project_folder)}
+    held |= {pseudonyms_json_fingerprint(b["path"])
+             for b in _collect_backups(project_folder)
+             if b["name"] not in removing}
+    return [b["name"] for b in to_remove
+            if pseudonyms_json_fingerprint(b["path"]) not in held | {None}]
+
+
 def _project_is_write_locked(data_qda: Path) -> bool:
     """Probe whether another process holds a write lock on the database."""
     conn = None
@@ -7384,6 +7412,43 @@ def _project_is_write_locked(data_qda: Path) -> bool:
                 conn.close()
             except Exception:
                 pass
+
+
+def _restore_pseudonyms_json_note(before: Optional[str],
+                                  after: Optional[str],
+                                  safety_backup: Path) -> Optional[str]:
+    """What a restore did to the project's pseudonyms.json, when it did
+    anything: the file appeared, disappeared or changed. The one the
+    project had is said to be in the safety backup only when that
+    backup's own file is the same (a link is not copied into a backup).
+    Names no file's content; the safety backup by its folder name."""
+    if before == after:
+        return None
+    kept = (before is not None
+            and pseudonyms_json_fingerprint(safety_backup) == before)
+    where = (f"The one the project had is in the safety backup "
+             f"{safety_backup.name}; keep that backup, or copy the file "
+             f"back into the project folder, while it is still needed: "
+             f"prune_backups removes safety backups too."
+             if kept else
+             f"The safety backup {safety_backup.name} holds no copy of the "
+             f"one the project had (a symbolic link is not copied into a "
+             f"backup).")
+    if after is None:
+        return (f"This project had a pseudonyms.json before the restore and "
+                f"the backup restored has none, so the project no longer "
+                f"has one. That file may be the only record of a "
+                f"pseudonymisation mapping (a pseudonymise_source run's save "
+                f"writes one). {where}")
+    if before is None:
+        return (f"The backup restored carries a pseudonyms.json that this "
+                f"project did not have before the restore; QualCoder applies "
+                f"it on every later text or transcript import (not a PDF). "
+                f"The safety backup {safety_backup.name} holds the project "
+                f"as it was, without one.")
+    return (f"The backup restored carries a pseudonyms.json that differs "
+            f"from the one this project had before the restore, which may "
+            f"be the only record of a pseudonymisation mapping. {where}")
 
 
 @mcp.tool()
@@ -7545,6 +7610,11 @@ def restore_backup(backup_path: str,
     # project folder, sidecar included, so the setting reverts to the
     # backup's version and the result has to say so (B1.14).
     name_before = read_sidecar(project_folder).name
+    # The same for pseudonyms.json, which the swap replaces with the
+    # backup's (or removes): the result says so, because the file the
+    # project had may be the only record of a pseudonymisation mapping
+    # (Brief 2, merge fix M3). A fingerprint only, never the bytes.
+    mapping_before = pseudonyms_json_fingerprint(project_folder)
 
     # Safety backup of the current state (rename to mark it as pre-restore)
     safety_report: Dict[str, Any] = {}
@@ -7686,6 +7756,11 @@ def restore_backup(backup_path: str,
                                          f"the restore)." if name_before else
                                          " (this project had none before the "
                                          "restore)."))
+        note = _restore_pseudonyms_json_note(
+            mapping_before, pseudonyms_json_fingerprint(project_folder),
+            safety_backup)
+        if note:
+            result["pseudonyms_json_note"] = note
         _attach_skipped_symlinks(result, safety_report,
                                  prefix="safety_backup_")
     except Exception as e:                        # noqa: BLE001
@@ -10549,7 +10624,8 @@ def _pseudonyms_json_new_entries(validated
 
     Each entry's original and each of its variants becomes an entry of
     its own with the same pseudonym. QualCoder's text and transcript
-    imports apply the file one entry at a time, in file order and
+    imports (not PDFs, which its text import skips) apply the file one
+    entry at a time, in file order and
     case-sensitively, each a whole-word `re.sub`
     (`manage_files.py:3344-3349`, `:2510-2512` and `view_av.py:714-715`
     the same, at the pin; its survey import and text-file replacement
@@ -11380,10 +11456,10 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         warnings.append(
             f"Warning: entry {if_saved['pre_empted_by_existing']} holds, as "
             f"a word, a name that pseudonyms.json already lists. "
-            f"QualCoder's text and transcript imports apply the file one "
-            f"entry at a time, in file order, so on the next one the entry "
-            f"already in the file replaces that "
-            f"word first and the longer name is never matched (an Ann "
+            f"QualCoder's text and transcript imports (not PDFs) apply the "
+            f"file one entry at a time, in file order, so on the next one "
+            f"the entry already in the file replaces that word first and "
+            f"the longer name is never matched (an Ann "
             f"listed before Mary Ann turns Mary Ann into Mary and Ann's "
             f"pseudonym). After the save, edit pseudonyms.json so that the "
             f"longer name comes first (see "
@@ -11393,7 +11469,8 @@ def _pseudonymise_warnings(preview: Dict[str, Any]) -> List[str]:
         warnings.append(
             f"Warning: this run replaces the names in any letter case "
             f"(case_mode {preview.get('case_mode')}), and QualCoder's text "
-            f"and transcript imports apply pseudonyms.json case-sensitively: "
+            f"and transcript imports (not PDFs) apply pseudonyms.json "
+            f"case-sensitively: "
             f"the next one replaces only the spellings saved, so a THOMAS or "
             f"a thomas in a new transcript stays as it is. Add each "
             f"spelling you expect as a variant, or check the next import by "
@@ -13099,7 +13176,9 @@ RENAME_CASE_NOTE = (
     "Only the case's name changed, as in QualCoder's Manage Cases; its "
     "date, notes, file links and attributes are kept. The old name stays "
     "in notes, journal entries, file text and attribute values (the "
-    "pseudonymisation preview counts those); in QualCoder's saved graph "
+    "pseudonymisation preview counts those, notes and journal entries in "
+    "their public part; the preview does not read private parts); in "
+    "QualCoder's saved graph "
     "labels, table displays and filters (counted in old_name_left_in) "
     "and its saved SQL queries (not read here); "
     "in the names of files named after the case (their ids are in "
@@ -13215,7 +13294,9 @@ RENAME_FILE_NOTE = (
     "queries that name it (not read here), and so do this server's "
     "pseudonymisation journal entries and run records, which keep the "
     "file's name as it was at the run unless that name carried a name "
-    "from the mapping (they then name the file by its id). A Merge "
+    "from the mapping (they then name the file by its id), though a later "
+    "run with rewrite_memos rewrites the public part of those journal "
+    "entries. A Merge "
     "Projects with a copy of the project that still has the old name "
     "brings the file in as a second file. " + OLD_NAME_LEFT_IN_NOTE)
 RENAME_FILE_SEARCH_INDEX_NOTE = (
@@ -13559,10 +13640,12 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
             if not mediapath:
                 message += (" If it was this entry's own copy under a name "
                             "it had before, restore_backup or QualCoder's "
-                            "own Rename can put that name back; this server "
-                            "recognises a rename back only from a backup "
-                            "that shows this entry with that name and, for "
-                            "its documents copy, the same text.")
+                            "own Rename can put that name back (restoring "
+                            "an earlier backup undoes everything done after "
+                            "it, any pseudonymisation run included); this "
+                            "server recognises a rename back only from a "
+                            "backup that shows this entry with that name "
+                            "and, for its documents copy, the same text.")
             return {"error": message}
     recordings = [r["name"] for r in rows
                   if r["av_text_id"] == file_id and r["id"] != file_id]

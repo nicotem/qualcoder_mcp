@@ -624,9 +624,18 @@ will ask, and the summary above depends on them:
     import-time list and it is the reverse key in plain text at the
     project root, so it travels into every backup either tool makes.
     This server writes it only when asked, in QualCoder's own format,
-    and never deletes it: since v0.13 a run on a mapping you typed is
-    refused unless the call either asks for the mapping to be saved into
-    this file (`save_mapping_to_project`, which the preview must be run
+    and removes or replaces it only by a restore: `restore_backup` rolls
+    the whole folder back, this file with it, so restoring a backup taken
+    before a save takes the file out of the project, and restoring one
+    that holds another version puts that one back. The restore result
+    says so when the file appears, disappears or changes, and the one
+    the project had stays in the pre-restore safety backup, which
+    `prune_backups` can remove; its preview names any backup it would
+    remove that holds a `pseudonyms.json` which neither the project nor
+    a backup that stays holds, as the only copy this server knows of.
+    Since v0.13 a run on a mapping you typed is refused unless the call
+    either asks for the mapping to be saved into this file
+    (`save_mapping_to_project`, which the preview must be run
     with) or attests that the researcher keeps their own record
     (`researcher_keeps_mapping`), because a typed mapping exists nowhere
     else and is half of the reverse key. A save merges with what is
@@ -753,7 +762,9 @@ will ask, and the summary above depends on them:
     QualCoder 4.0's AI chat keep the old name too, and
     so do this server's pseudonymisation journal entries and run records,
     which keep a file's name as it was at the run unless that name
-    carried a name from the mapping (they then name the file by its id).
+    carried a name from the mapping (they then name the file by its id),
+    though a later run with `rewrite_memos` rewrites the public part of
+    those journal entries.
     To recognise a rename back, `rename_file` reads this file's earlier
     name from the project's backups (see "Backups, project copies, and
     the `ai_data/` folder").

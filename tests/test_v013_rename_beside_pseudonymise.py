@@ -231,3 +231,31 @@ def test_the_fix_round_3_wording():
     assert "at most once per call" not in unreleased
     for note in (server.RENAME_CASE_NOTE, server.RENAME_FILE_NOTE):
         assert "saved SQL queries" in note and "(not read here)" in note
+
+
+def test_the_rename_notes_say_what_a_notes_run_leaves():
+    """The Brief 2 merge fix (M2, M1): after a run with rewrite_memos the
+    old name stays in a note only in its private part, which the
+    preview never reads; and a later run with rewrite_memos rewrites
+    the public part of the journal entries earlier runs wrote."""
+    case_note = " ".join(server.RENAME_CASE_NOTE.split())
+    assert ("in notes, journal entries, file text and attribute values "
+            "(the pseudonymisation preview counts those, notes and journal "
+            "entries in their public part; the preview does not read "
+            "private parts);") in case_note
+    assert "(the pseudonymisation preview counts those);" not in case_note
+    tail = ("(they then name the file by its id), though a later run with "
+            "{} rewrites the public part of those journal entries.")
+    file_note = " ".join(server.RENAME_FILE_NOTE.split())
+    assert tail.format("rewrite_memos") in file_note
+    assert tail.format("`rewrite_memos`") in _flat("PRIVACY.md")
+
+
+def test_the_roadmap_counts_the_rename_tools_as_done():
+    """The Brief 2 merge fix (N3): README's list of what v0.13 completed
+    names the rename tools beside the two pseudonymisation items."""
+    readme = _flat("README.md")
+    done = readme[readme.index("**Completed in v0.13:**"):
+                  readme.index("**Planned for v0.13 and later:**")]
+    assert "`rename_case` and `rename_file` rename a case or a file's " \
+           "entry the way QualCoder does" in done

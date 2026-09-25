@@ -5028,6 +5028,128 @@ class TestSavingTheMappingIntoPseudonymsJson:
 # =============================================================================
 
 # =============================================================================
+# The merge fix (M3): the mapping across a restore and a prune
+# =============================================================================
+
+def _confirmed(tool, **kwargs):
+    """A two-step tool, previewed and then executed from its own recipe."""
+    out = json.loads(tool(**kwargs))
+    assert out.get("requires_confirmation") is True, out
+    return out, json.loads(tool(**out["execute_with"]["arguments"]))
+
+
+def _backup_paths(folder):
+    return [folder.parent / name for name in backups(folder)]
+
+
+class TestTheMappingAcrossARestore:
+    """A restore rolls pseudonyms.json back with the rest of the folder.
+    The result says when the file appears, disappears or changes, and a
+    prune's preview names a backup that holds the only copy this server
+    knows of. What a restore restores is unchanged."""
+
+    NO_NAME = ("Thomas", "Alex", "Mary Ann", "Sam", "Tom")
+
+    def _saved_run(self, project):
+        """A run whose save writes pseudonyms.json after its backup."""
+        _, result = _save_run()
+        assert result["mapping_saved"] is True, result
+        (backup,) = _backup_paths(project)
+        return backup, _written(project)
+
+    def test_a_restore_that_removes_the_file_says_where_it_is(self,
+                                                              project):
+        backup, saved = self._saved_run(project)
+        assert not (backup / "pseudonyms.json").exists()
+        _, result = _confirmed(server.restore_backup, backup_path=str(backup))
+        assert result["success"] is True, result
+        assert not (project / "pseudonyms.json").exists()
+        safety = Path(result["safety_backup"])
+        assert (safety / "pseudonyms.json").read_bytes() == saved
+        assert result["pseudonyms_json_note"] == (
+            f"This project had a pseudonyms.json before the restore and the "
+            f"backup restored has none, so the project no longer has one. "
+            f"That file may be the only record of a pseudonymisation mapping "
+            f"(a pseudonymise_source run's save writes one). The one the "
+            f"project had is in the safety backup {safety.name}; keep that "
+            f"backup, or copy the file back into the project folder, while "
+            f"it is still needed: prune_backups removes safety backups too.")
+        for name in self.NO_NAME:
+            assert name not in result["pseudonyms_json_note"]
+        _house_rules([result["pseudonyms_json_note"]])
+        # Restoring the safety backup brings the file back, and says so.
+        _, again = _confirmed(server.restore_backup, backup_path=str(safety))
+        assert _written(project) == saved
+        assert again["pseudonyms_json_note"].startswith(
+            "The backup restored carries a pseudonyms.json that this project "
+            "did not have before the restore; QualCoder applies it on every "
+            "later text or transcript import (not a PDF).")
+
+    def test_a_restore_that_changes_the_file_says_so(self, project):
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        before = _written(project)
+        backup, saved = self._saved_run(project)
+        assert (backup / "pseudonyms.json").read_bytes() == before != saved
+        _, result = _confirmed(server.restore_backup, backup_path=str(backup))
+        assert _written(project) == before
+        safety = Path(result["safety_backup"])
+        assert (safety / "pseudonyms.json").read_bytes() == saved
+        assert result["pseudonyms_json_note"].startswith(
+            "The backup restored carries a pseudonyms.json that differs from "
+            "the one this project had before the restore, which may be the "
+            "only record of a pseudonymisation mapping. The one the project "
+            f"had is in the safety backup {safety.name};")
+
+    def test_no_note_when_the_file_is_the_same(self, project):
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        result = execute_from(preview_of(),
+                              researcher_keeps_mapping=True)
+        assert result.get("success") is True, result
+        (backup,) = _backup_paths(project)
+        _, restored = _confirmed(server.restore_backup,
+                                 backup_path=str(backup))
+        assert restored["success"] is True
+        assert "pseudonyms_json_note" not in restored
+
+    def test_a_prune_names_the_backup_that_holds_the_only_copy(self,
+                                                               project):
+        backup, saved = self._saved_run(project)
+        _, result = _confirmed(server.restore_backup, backup_path=str(backup))
+        safety = Path(result["safety_backup"]).name
+        out = json.loads(server.prune_backups(keep_last=0))
+        notes = out["preview"].get("notes", [])
+        only = [n for n in notes if "hold a pseudonyms.json" in n]
+        assert only == [
+            f"Backups this would remove hold a pseudonyms.json that the "
+            f"project does not hold now, byte for byte, and that no backup "
+            f"kept holds: {safety}. Once they are removed, this server knows "
+            f"of no other copy. It may be the only record "
+            f"of a pseudonymisation mapping (a pseudonymise_source run's "
+            f"save writes one, and a restore of an earlier backup leaves it "
+            f"in the pre-restore safety backup); copy it somewhere safe "
+            f"first if it is still needed."]
+        _house_rules(only)
+        # With the same file back in the project, no backup holds the
+        # only copy, and the preview says nothing of it.
+        (project / "pseudonyms.json").write_bytes(saved)
+        again = json.loads(server.prune_backups(keep_last=0))
+        assert not any("hold a pseudonyms.json" in n
+                       for n in again["preview"].get("notes", []))
+
+    def test_a_prune_keeping_a_backup_with_the_same_file_names_none(
+            self, project, tmp_path):
+        backup, saved = self._saved_run(project)
+        _, result = _confirmed(server.restore_backup, backup_path=str(backup))
+        safety = Path(result["safety_backup"])
+        # QualCoder's own backup, never pruned, holds the same file.
+        twin = project.parent / f"{project.stem}_BKUP_20260925.qda"
+        shutil.copytree(safety, twin)
+        out = json.loads(server.prune_backups(keep_last=0))
+        assert not any("hold a pseudonyms.json" in n
+                       for n in out["preview"].get("notes", []))
+
+
+# =============================================================================
 # Brief 2 fix round 1, QA-B2-1: QualCoder's own application of the saved file
 # =============================================================================
 
@@ -5144,7 +5266,8 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
         assert warning == [
             "Warning: this run replaces the names in any letter case "
             "(case_mode insensitive), and QualCoder's text and transcript "
-            "imports apply pseudonyms.json case-sensitively: the next one "
+            "imports (not PDFs) apply pseudonyms.json case-sensitively: the "
+            "next one "
             "replaces only the "
             "spellings saved, so a THOMAS or a thomas in a new transcript "
             "stays as it is. Add each spelling you expect as a variant, or "
@@ -5169,9 +5292,9 @@ class TestQualCoderAppliesTheSavedFileAsThisRunDid:
             "Warning: entry [1] holds, as a word, a name that "
             "pseudonyms.json already lists.")
         # Fix round 2, B2P-N1: said of the imports that match this way.
-        assert ("QualCoder's text and transcript imports apply the file one "
-                "entry at a time, in file order, so on the next one the "
-                "entry already in the file replaces that word first"
+        assert ("QualCoder's text and transcript imports (not PDFs) apply "
+                "the file one entry at a time, in file order, so on the next "
+                "one the entry already in the file replaces that word first"
                 in warning[0])
         assert "Pnine" not in json.dumps(out)
         _house_rules(warning)
@@ -8248,7 +8371,14 @@ class TestTheDocumentsTellTheTruth:
         "A second run with `rewrite_memos` on also rewrites the journal "
         "entries this server wrote for earlier runs",
         "This server writes it only when asked, in QualCoder's own format, "
-        "and never deletes it",
+        "and removes or replaces it only by a restore",
+        # The merge fix (M3): what a restore and a prune do to it.
+        "The restore result says so when the file appears, disappears or "
+        "changes, and the one the project had stays in the pre-restore "
+        "safety backup, which `prune_backups` can remove; its preview names "
+        "any backup it would remove that holds a `pseudonyms.json` which "
+        "neither the project nor a backup that stays holds, as the only "
+        "copy this server knows of.",
         # Brief 2 fix round 1, Security's ruling (S-1): the departure,
         # named.
         "A file the save creates is owner-only (0600) on macOS and Linux, "
