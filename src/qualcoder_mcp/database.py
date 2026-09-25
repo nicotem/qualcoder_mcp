@@ -2607,12 +2607,14 @@ class QualcoderDatabase:
         arrived = getattr(self, "_visibility_arrived", None)
         if arrived is not None:
             return arrived
-        if not self._visibility_is_declared_now():
+        if not self._visibility_is_declared_now(say_a_lock=True):
             return None
         try:
             views = {row[0] for row in self.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'view'")}
         except sqlite3.Error as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             logger.error("Could not read the coder-visibility views: %s",
                          sqlite_error_label(e))
             raise CoderVisibilityUnreadable(
@@ -2886,7 +2888,7 @@ class QualcoderDatabase:
                 return str(row[0])
         return None
 
-    def _visibility_is_declared_now(self) -> bool:
+    def _visibility_is_declared_now(self, say_a_lock: bool = False) -> bool:
         """Whether `coder_names` declares per-coder visibility, re-read.
 
         The capability set is probed once, when the connection opens
@@ -2944,6 +2946,12 @@ class QualcoderDatabase:
             columns = {row[1] for row in self.conn.execute(
                 "PRAGMA table_info(coder_names)").fetchall()}
         except sqlite3.Error as e:
+            # A read asks for a lock to be said as one (v0.14: every read
+            # now re-reads this, and a locked database is not a damaged
+            # one); the decisions that name a coder keep the posture
+            # below, which they handle as "cannot be decided".
+            if say_a_lock and _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             logger.error(f"Could not re-read the coder visibility "
                          f"declaration: {sqlite_error_label(e)}")
             raise CoderVisibilityUnreadable(

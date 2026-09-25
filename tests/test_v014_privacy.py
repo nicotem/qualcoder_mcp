@@ -1068,9 +1068,33 @@ class TestEveryReadRechecksWhoIsHidden:
         _arrive(arriving)
         assert server.db.code_text_source() == "code_text_visible"
         monkeypatch.setattr(QualcoderDatabase, "_visibility_is_declared_now",
-                            lambda self: False)
+                            lambda self, **kwargs: False)
         assert server.db.code_text_source() == "code_text_visible"
         assert HIDDEN not in server.get_coded_segments(code_id=1)
+
+    def test_a_lock_on_the_reread_is_said_as_a_lock(self, arriving,
+                                                   monkeypatch):
+        """Every read now re-reads the declaration; a locked database met
+        there is answered as locked, as it is everywhere else, and
+        nothing is read."""
+        class Locked:
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args):
+                if "PRAGMA table_info(coder_names)" in sql:
+                    raise sqlite3.OperationalError("database is locked")
+                return self._real.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        server.db.conn = Locked(server.db.conn)
+        try:
+            answer = json.loads(server.get_coded_segments(code_id=1))
+        finally:
+            server.db.conn = server.db.conn._real
+        assert answer == {"error": dbmod.DB_LOCKED_MESSAGE}
 
     def test_a_project_declaring_it_at_connect_is_not_reread(
             self, arriving, monkeypatch):
@@ -1083,6 +1107,6 @@ class TestEveryReadRechecksWhoIsHidden:
         reread = []
         monkeypatch.setattr(
             QualcoderDatabase, "_visibility_is_declared_now",
-            lambda self: reread.append(1) or True)
+            lambda self, **kwargs: reread.append(1) or True)
         assert HIDDEN not in server.get_coded_segments(code_id=1)
         assert reread == []

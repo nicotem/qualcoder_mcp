@@ -516,9 +516,16 @@ def _filtered_page_query_shape(project, sessions_dir, pattern, code_ids,
                 limit=5, cursor=cursor))
             timings.append((time.perf_counter() - started) * 1000)
         assert _err(json.dumps(page)) is None, page
+        # v0.14: every read re-reads whether the project hides coders,
+        # one PRAGMA each time on a project that did not declare it at
+        # connect, as this one does not; counted apart, so the shape
+        # the filter itself costs is still what is pinned.
+        rereads = [s for s in tally.statements
+                   if "PRAGMA table_info(coder_names)" in s]
         shapes.append((len(tally.reading("code_text")),
                        len(tally.reading("source")),
-                       len(tally.statements)))
+                       len(tally.statements) - len(rereads),
+                       len(rereads)))
         cursor = page["page"]["next_cursor"]
         if not page["page"]["has_more"]:
             break
@@ -536,10 +543,11 @@ def test_the_filtered_search_costs_one_mask_and_one_file_query_per_page(
     shapes, timings = _filtered_page_query_shape(
         proj, scratch / "sess_novelty", "the", [1])
     assert len(shapes) >= 2, "the walk must cover more than one page"
-    for mask_queries, file_queries, total in shapes:
+    for mask_queries, file_queries, total, rereads in shapes:
         assert mask_queries == 1, shapes
         assert file_queries == 1, shapes
         assert total == 4, shapes      # plus the two code_name lookups
+        assert rereads == 3, shapes    # the source, the count, the note
     print("novelty-filter page times (ms):",
           [round(ms, 1) for ms in timings])
 
@@ -570,7 +578,7 @@ def test_giant_novelty_filter_query_count(giant_scale, scratch):
     proj, stats = giant_scale
     shapes, timings = _filtered_page_query_shape(
         proj, scratch / "sess_giant_novelty", "the", [1])
-    for mask_queries, file_queries, total in shapes:
+    for mask_queries, file_queries, total, rereads in shapes:
         assert mask_queries == 1, shapes
         assert file_queries == 1, shapes
         assert total == 4, shapes
