@@ -698,9 +698,9 @@ will ask, and the summary above depends on them:
     copy in the project folder keeps the name it was imported under and,
     for a document, the original text, and QualCoder's exports ship that
     copy), saved graph labels, saved table displays and filters, and
-    QualCoder's saved SQL queries (which nothing in this server reads).
-    Each rename's result counts those places for the case or file it
-    renamed. Every backup, this server's session files, QualCoder's
+    QualCoder's saved SQL queries. Each rename's result counts the saved
+    graph labels, table displays and filters for the case or file it
+    renamed; the saved SQL queries nothing in this server reads. Every backup, this server's session files, QualCoder's
     search index and QualCoder 4.0's AI chat keep the old name too, and
     so do this server's pseudonymisation journal entries and run records,
     which keep a file's name as it was at the run unless that name

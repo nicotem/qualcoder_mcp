@@ -228,8 +228,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The pseudonymisation preview's notes and PRIVACY.md name the two tools
   where they used to say a case label is "renamed by hand", and say
   which places a rename cannot reach and the preview does not read: an
-  imported file's stored copy and stored path, saved graph labels, and
-  saved table displays and filters. The case ambiguity hint now names
+  imported file's stored copy and stored path, saved graph labels, saved
+  table displays and filters, and QualCoder's saved SQL queries. The case
+  ambiguity hint now names
   `rename_case`.
 
 Departures from QualCoder's Manage Cases, each with its reason:

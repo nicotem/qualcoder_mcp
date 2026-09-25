@@ -63,8 +63,8 @@ def test_the_preview_says_what_a_rename_cannot_reach(project):
             "block does not read, the stored copy and stored path of an "
             "imported file (the copy in the project folder keeps the name "
             "it was imported under and, for a document, the original "
-            "text), saved graph labels, or saved table displays and "
-            "filters.") in note
+            "text), saved graph labels, saved table displays and filters, "
+            "or QualCoder's saved SQL queries.") in note
     assert "renamed with rename_case, and a file named after the person " \
            "with rename_file." in residue["file_text"]["reading_note"]
     assert "by hand" not in json.dumps(residue)
@@ -103,8 +103,15 @@ def test_privacy_says_what_a_rename_cannot_reach():
             "in the project folder keeps the name it was imported under "
             "and, for a document, the original text, and QualCoder's "
             "exports ship that copy), saved graph labels, saved table "
-            "displays and filters, and QualCoder's saved SQL queries (which "
-            "nothing in this server reads).") in flat
+            "displays and filters, and QualCoder's saved SQL queries. Each "
+            "rename's result counts the saved graph labels, table displays "
+            "and filters for the case or file it renamed; the saved SQL "
+            "queries nothing in this server reads.") in flat
+    # Fix round 4, F3B-5: the three lists name the same places.
+    unreleased = _flat("CHANGELOG.md").split("## [0.12")[0]
+    assert "imported file's stored copy and stored path, saved graph " \
+           "labels, saved table displays and filters, and QualCoder's " \
+           "saved SQL queries." in unreleased
 
 
 def test_the_guide_readme_and_changelog_name_the_tools():

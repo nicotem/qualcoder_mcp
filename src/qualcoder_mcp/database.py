@@ -9816,8 +9816,9 @@ class QualcoderDatabase:
             "does not reach, and this block does not read, the stored "
             "copy and stored path of an imported file (the copy in the "
             "project folder keeps the name it was imported under and, for "
-            "a document, the original text), saved graph labels, or saved "
-            "table displays and filters.")
+            "a document, the original text), saved graph labels, saved "
+            "table displays and filters, or QualCoder's saved SQL "
+            "queries.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
