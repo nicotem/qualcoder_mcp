@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.13.0-alpha] - 2026-09-DD
+## [0.13.0-alpha] - 2026-09-25
 
 v0.13, the pseudonymisation follow-ups, as ruled from 2026-09-22 to
 2026-09-25. The housekeeping batch: `confirm` removed from the six

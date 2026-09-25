@@ -11,7 +11,7 @@ authors:
 repository-code: "https://github.com/nicotem/qualcoder_mcp"
 license: LGPL-3.0-or-later
 version: "0.13.0-alpha"
-date-released: '2026-09-DD'
+date-released: '2026-09-25'
 keywords:
   - "qualitative research"
   - "QualCoder"
