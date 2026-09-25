@@ -16,6 +16,9 @@ Each class is one item of the v0.14 privacy brief:
 3. No names or paths in the log file: creating things logs ids; the
    selection, start-up and connection lines name no project folder; the
    backup, lock-file, prune and copy lines carry no path.
+4. Every read re-checks whether the project hides coders, so a read
+   cannot return a hidden coder's row after the project gains that
+   setting while this server is connected.
 
 The fixture and helpers are the flagship's own
 (`test_v012_pseudonymise_tool.py`), imported so this file drives exactly
@@ -972,3 +975,114 @@ class TestTheDocumentsSayWhatTheLogCarries:
         assert "It does carry project file names" not in install
         assert ("It names no project, file, code, category, case, journal "
                 "entry or attribute and no path") in install
+
+
+# =============================================================================
+# 4. EVERY READ RE-CHECKS WHETHER THE PROJECT HIDES CODERS
+# =============================================================================
+
+HIDDEN = "Hidden Helga"
+
+
+@pytest.fixture
+def arriving(project):
+    """Connected before the project could hide a coder; then QualCoder
+    opened it and hid one: the column and the four views, as its routine
+    makes them, under this server's live connection."""
+    add_coding(project, 5, 1, 19, 22, owner=HIDDEN)
+    add_coding(project, 6, 2, 63, 68, owner=HIDDEN)
+    server.db.close()
+    server.db = QualcoderDatabase(str(project))
+    assert server.db.capabilities.visibility_declared() is False
+    assert server.db.code_text_source() == "code_text"
+    return project
+
+
+def _arrive(project, views=None):
+    from test_v012_pseudonymise_tool import (VISIBILITY_COLUMN,
+                                             VISIBILITY_VIEWS)
+    con = sqlite3.connect(str(project / "data.qda"))
+    con.execute(VISIBILITY_COLUMN)
+    for ddl in (VISIBILITY_VIEWS if views is None else views):
+        con.execute(ddl)
+    con.executemany("INSERT OR REPLACE INTO coder_names (name, visibility) "
+                    "VALUES (?, ?)", [("TestCoder", 1), (HIDDEN, 0)])
+    con.commit()
+    con.close()
+
+
+class TestEveryReadRechecksWhoIsHidden:
+
+    def test_a_read_after_the_setting_arrives_filters_the_hidden_coder(
+            self, arriving):
+        before = server.get_coded_segments(code_id=1)
+        assert HIDDEN in before        # nobody hidden yet: hers is shown
+        _arrive(arriving)
+        after = json.loads(server.get_coded_segments(code_id=1))
+        assert HIDDEN not in json.dumps(after)
+        assert after["coder_visibility"]["hidden_coders"] == 1
+        assert server.db.code_text_source() == "code_text_visible"
+
+    @pytest.mark.parametrize("read", [
+        "get_coded_segments", "search_coded_text", "get_coding_frequencies",
+        "find_cooccurring_codes", "analyze_file_with_coding",
+        "get_project_summary"])
+    def test_every_read_of_codings_answers_as_a_fresh_connection_would(
+            self, arriving, read):
+        """From the next call on, each read answers exactly what it would
+        on a connection opened after the coder was hidden; and the case
+        is one where hiding her changes the answer."""
+        call = {
+            "get_coded_segments": lambda: server.get_coded_segments(
+                code_id=1),
+            "search_coded_text": lambda: server.search_coded_text(
+                query="Tom"),
+            "get_coding_frequencies": lambda: server.get_coding_frequencies(),
+            "find_cooccurring_codes": lambda: server.find_cooccurring_codes(
+                code_id=1),
+            "analyze_file_with_coding": lambda:
+                server.analyze_file_with_coding(file_id=1),
+            "get_project_summary": lambda: server.get_project_summary(),
+        }[read]
+        before = json.loads(call())
+        _arrive(arriving)
+        after = json.loads(call())
+        server.db.close()
+        server.db = QualcoderDatabase(str(arriving))
+        assert server.db.capabilities.visibility_declared() is True
+        fresh = json.loads(call())
+        assert after == fresh
+        assert after != before
+
+    def test_the_setting_arriving_without_its_views_is_refused(
+            self, arriving):
+        from test_v012_pseudonymise_tool import VISIBILITY_VIEWS
+        _arrive(arriving, views=VISIBILITY_VIEWS[:2])
+        answer = json.loads(server.get_coded_segments(code_id=1))
+        assert HIDDEN not in json.dumps(answer)
+        assert "coder-visibility views is missing" in answer["error"]
+
+    def test_the_recheck_is_one_way(self, arriving, monkeypatch):
+        """Once seen, the setting is kept: a declaration that disappears
+        under a live connection is damage, not "nobody is hidden"."""
+        _arrive(arriving)
+        assert server.db.code_text_source() == "code_text_visible"
+        monkeypatch.setattr(QualcoderDatabase, "_visibility_is_declared_now",
+                            lambda self: False)
+        assert server.db.code_text_source() == "code_text_visible"
+        assert HIDDEN not in server.get_coded_segments(code_id=1)
+
+    def test_a_project_declaring_it_at_connect_is_not_reread(
+            self, arriving, monkeypatch):
+        """The cost falls only where the answer can change: with the
+        setting present when the connection opened, no read re-reads it."""
+        _arrive(arriving)
+        server.db.close()
+        server.db = QualcoderDatabase(str(arriving))
+        assert server.db.capabilities.visibility_declared() is True
+        reread = []
+        monkeypatch.setattr(
+            QualcoderDatabase, "_visibility_is_declared_now",
+            lambda self: reread.append(1) or True)
+        assert HIDDEN not in server.get_coded_segments(code_id=1)
+        assert reread == []

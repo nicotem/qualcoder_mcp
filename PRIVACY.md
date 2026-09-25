@@ -356,34 +356,29 @@ project has the coder-visibility capability:
   counts, for parity with QualCoder's own report.
 - **When the capability arrives while this server is connected.**
   QualCoder creates the visibility column and its views when it opens a
-  project, which can be after this server connected to it. Every
-  decision that puts a coder's NAME into a result re-reads the
-  declaration from the project at the time it is made: the
-  pseudonymisation preview's owner breakdown and hidden-row counts, the
-  cascade previews' `by_owner` and `discarded_by_owner` lists and their
-  masked row owner, the coder comparison's refusal and its hidden
+  project, which can be after this server connected to it. Since v0.14
+  every read re-reads the declaration from the project when it is made,
+  as every decision that puts a coder's NAME into a result already did
+  (the pseudonymisation preview's owner breakdown and hidden-row counts,
+  the cascade previews' `by_owner` and `discarded_by_owner` lists and
+  their masked row owner, the coder comparison's refusal and its hidden
   count, the frequencies export's coder list and the AI coder name
-  setter. So a coder hidden after this server connected is treated as
-  hidden by all of them. That re-read is one way: a declaration that
-  was there when the connection opened is never withdrawn by it,
-  because a column that disappears under a live connection is damage
-  or a concurrent rebuild, and the answer to those is the "cannot be
-  determined" posture above; and if the declaration itself cannot be
-  read, the answer is the same posture rather than "nobody is hidden".
-  What is NOT re-read is which table each READ goes to. That is settled
-  when the connection opens, so on a project that gained the capability
-  afterwards the read tools (coded segments, searches, the file view,
-  frequencies and the rest of the list above) go to the base tables
-  until the project is selected again, and can return a hidden coder's
-  row with its owner; the hidden-coder count those results disclose
-  keys on the same connect-time answer, so it does not claim a filter
-  that was not applied. Reopening the project (`select_project`, or
-  restarting the server) settles it, and so does any write that opens
-  the database, because such a write opens a fresh connection
-  (`prune_backups` opens no fresh project connection and settles nothing).
-  If you hide a coder in QualCoder
-  while a conversation is in progress, re-select the project before
-  relying on what the read tools return.
+  setter). So a coder hidden after this server connected is filtered out
+  of the read tools (coded segments, searches, the file view,
+  frequencies and the rest of the list above) from the next call on,
+  and counted in the hidden-coder count they disclose, without selecting
+  the project again. The re-read is one query of the project's schema
+  per read, and only on a project that did not declare visibility when
+  the connection opened: 5 to 6 microseconds each on the development
+  Mac, and a read tool makes a few per call. That re-read is one way: a
+  declaration that was there when the connection opened, or that a read
+  has seen arrive since, is never withdrawn by it, because a column that
+  disappears under a live connection is damage or a concurrent rebuild,
+  and the answer to those is the "cannot be determined" posture above;
+  and if the declaration itself cannot be read, the answer is the same
+  posture rather than "nobody is hidden". A declaration that arrives
+  without all four of QualCoder's views is refused by every read it
+  would shape, as one present when the connection opened is.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.

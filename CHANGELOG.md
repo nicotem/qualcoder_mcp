@@ -72,6 +72,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did. The session and export lines drop their paths too. A
   test reads every log call in the source and fails on one that carries
   a caught error other than by its kind.
+- **Every read re-checks whether the project hides coders.** QualCoder
+  creates the visibility column and its four views when it opens a
+  project, which can be after this server connected. The decisions that
+  name a coder already re-read that; the reads did not, and went on
+  returning a hidden coder's rows, with the owner, until the project was
+  selected again. Now every read re-reads the declaration, one way as
+  before (a declaration seen is never withdrawn), so a coder hidden in
+  QualCoder mid-conversation is filtered from the next call; a
+  declaration that arrives without all four views is refused, as at
+  connect. The cost is one schema query per read on a project that did
+  not declare visibility when the connection opened, 5 to 6
+  microseconds each on the development Mac and a few per read tool
+  call (about 11 to 25 microseconds on the reads measured), and nothing
+  on a project that did.
 - `pseudonymise_source`'s list of what it does not rewrite names an
   imported document's stored copy in the project's `documents/` folder,
   which keeps the original text and which QualCoder's exports ship.

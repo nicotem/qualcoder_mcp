@@ -8489,10 +8489,12 @@ class TestTheDocumentsTellTheTruth:
         assert claim not in self._flat("README.md")
 
     @pytest.mark.parametrize("sentence", [
-        # B3: the promise, scoped to what re-reads, and the residual.
-        "Every decision that puts a coder's NAME into a result re-reads "
-        "the declaration from the project at the time it is made",
-        "What is NOT re-read is which table each READ goes to.",
+        # B3: the promise, scoped to what re-reads; v0.14 closes the
+        # residual (every read re-reads).
+        "as every decision that puts a coder's NAME into a result already "
+        "did",
+        "Since v0.14 every read re-reads the declaration from the project "
+        "when it is made",
         "if the declaration itself cannot be read, the answer is the same "
         "posture rather than \"nobody is hidden\"",
         # S6 and S7: what the residue reads, and what it cannot reach.
@@ -8580,12 +8582,9 @@ class TestTheDocumentsTellTheTruth:
         "keyed) and by the field names",
         "Since v0.14 so are the per-file digests",
         "the run's result carries no digest of the text before the run",
-        # Fix round 4, L3, worded exactly in fix round 5: prune_backups
-        # probes data.qda read-only through validate_qda_path and
-        # constructs no fresh project connection, so it settles nothing.
-        "and so does any write that opens the database, because such a "
-        "write opens a fresh connection (`prune_backups` opens no fresh "
-        "project connection and settles nothing)",
+        # (Fix round 4, L3's sentence, that a write settles which table
+        # the reads go to and `prune_backups` does not, went with the
+        # residual it qualified: v0.14, every read re-reads.)
         # Fix round 4, R3: the symlink route.
         "On `pseudonymise_source`'s result the name of a skipped symlink "
         "is withheld where a reader of it would see a name from the "
@@ -8983,7 +8982,9 @@ class TestTheOlderTokenGatedToolsRereadTheDeclarationToo:
         assert server.db.capabilities.visibility_declared() is False
         hide_coder(folder, "Hidden Helga")
         assert server.db.capabilities.visibility_declared() is False
-        assert server.db.code_text_source() == "code_text"     # the residual
+        # v0.14: every read re-checks, so the read tools filter her too
+        # (test_v014_privacy.py); until then this was the residual
+        assert server.db.code_text_source() == "code_text_visible"
         return folder
 
     def test_delete_code_counts_her_and_gates_the_execute(

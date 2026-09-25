@@ -2084,6 +2084,11 @@ class QualcoderDatabase:
         # Validate path before opening
         self.db_path = validate_qda_path(db_path)
         self.read_only = read_only
+        # Whether coder visibility arrived after this connection opened:
+        # None until a read sees it arrive, then whether its whole view
+        # set was there (v0.14, `_visibility_in_force`).
+        self._visibility_arrived: Optional[bool] = None
+        self._arrived_views: frozenset = frozenset()
 
         try:
             if read_only:
@@ -2558,16 +2563,75 @@ class QualcoderDatabase:
         caller can opt out, which is the point: one rule, decided here,
         never at the call sites (fix round 4).
         """
+        if not honor_visibility:
+            return base
+        whole = self._visibility_in_force()
+        if whole is None:
+            return base
         caps = getattr(self, "capabilities", None)
-        if honor_visibility and caps is not None and caps.visibility_declared():
-            if not (caps.has_coder_visibility and caps.table_exists(view)):
-                raise CoderVisibilityUnreadable(
-                    "Could not determine coder visibility for this project "
-                    "(one of its coder-visibility views is missing). Open "
-                    "the project in QualCoder, which recreates them, and "
-                    "try again")
-            return view
-        return base
+        present = (caps.table_exists(view) if caps is not None
+                   and caps.visibility_declared()
+                   else view in getattr(self, "_arrived_views", ()))
+        if not (whole and present):
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(one of its coder-visibility views is missing). Open "
+                "the project in QualCoder, which recreates them, and "
+                "try again")
+        return view
+
+    def _visibility_in_force(self) -> Optional[bool]:
+        """Whether this project can hide a coder, asked on every read.
+
+        None: it declares no visibility, and nothing is hidden. True: it
+        declares it and has QualCoder's whole view set. False: it
+        declares it without the whole set, which every read refuses.
+
+        A declaration present when the connection opened is the probe's
+        answer and is never withdrawn (the one-way rule of
+        `_visibility_is_declared_now`). Without one, the declaration is
+        re-read here, on every read (v0.14): QualCoder creates the
+        column and its four views on every project open, under this
+        server's long-lived connection, and until then a read went to
+        the base tables and could return a hidden coder's row, with its
+        owner, until the project was selected again. The cost is that
+        re-read, one `PRAGMA table_info(coder_names)` per read on a
+        project without the declaration. When it arrives, the views
+        present are read once and kept, one way as well: a view dropped
+        afterwards fails the read that selects from it, as it does for a
+        declaration present at connect.
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.visibility_declared():
+            return caps.has_coder_visibility
+        arrived = getattr(self, "_visibility_arrived", None)
+        if arrived is not None:
+            return arrived
+        if not self._visibility_is_declared_now():
+            return None
+        try:
+            views = {row[0] for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'view'")}
+        except sqlite3.Error as e:
+            logger.error("Could not read the coder-visibility views: %s",
+                         sqlite_error_label(e))
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(its coder-visibility views could not be read)") from None
+        self._arrived_views = frozenset(views & VISIBILITY_VIEWS)
+        self._visibility_arrived = VISIBILITY_VIEWS <= views
+        return self._visibility_arrived
+
+    def visibility_applies(self) -> bool:
+        """Whether reads on this project are shaped by coder visibility
+        now: declared when the connection opened, or since."""
+        return self._visibility_in_force() is not None
+
+    def has_coder_visibility_now(self) -> bool:
+        """The capability `has_coder_visibility` as it stands now: the
+        declaration with QualCoder's whole view set, when the connection
+        opened or since (v0.14)."""
+        return bool(self._visibility_in_force())
 
     def code_text_source(self, honor_visibility: bool = True) -> str:
         return self._visible_source("code_text", "code_text_visible",
@@ -2576,59 +2640,25 @@ class QualcoderDatabase:
     def _naming_source(self, base: str, view: str) -> str:
         """The table or view a decision that NAMES a coder reads from.
 
-        `_visible_source` keeps the connect-time answer, and the reads
-        that go through it are the arrival-state residual PRIVACY.md
-        discloses: on a project that gained the capability after this
-        server connected, a read tool returns a hidden coder's row
-        until the project is re-selected. A decision that puts a
-        coder's NAME into a preview cannot stand on that answer, because
-        "never name a hidden coder" is owner-ruled (X1) and the
-        pseudonymisation preview already re-reads the declaration per
-        call; the cascade previews' `by_owner` and `discarded_by_owner`
-        did not, and named the coder the flagship withheld, on one
-        project in one session (fix round 3, B3).
-
-        So: with a declaration present at connect, exactly
-        `_visible_source` (the one-way rule and the view-set rule are
-        both there). With none, the declaration is re-read
-        (`_visibility_is_declared_now`, one way); still none, the base
-        table, where nothing is hidden. Arrived since, the view has to
-        exist NOW, because a declaration without its view cannot be
-        filtered as QualCoder filters it, and the answer is the refusal
-        `_visible_source` gives for the same state. That is a full
-        re-read of exactly the two facts this decision needs, and no
-        others: which table every OTHER read goes to is still settled
-        when the connection opens.
+        Since v0.14 exactly `_visible_source`, which re-reads the
+        declaration on every read. Until then `_visible_source` kept the
+        connect-time answer and only the decisions that name a coder
+        re-read it here (the pseudonymisation preview's owner breakdown,
+        the cascade previews' `by_owner` and `discarded_by_owner`: fix
+        round 3, B3), so a read tool returned a hidden coder's row after
+        the project gained the capability. Kept as a name so those call
+        sites still say what they decide. One tightening against the
+        v0.13 form: a declaration that arrived without QualCoder's whole
+        view set is refused whichever view is asked for, as it is for a
+        declaration present at connect.
         """
-        caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.visibility_declared():
-            return self._visible_source(base, view)
-        if not self._visibility_is_declared_now():
-            return base
-        try:
-            row = self.conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'view' "
-                "AND name = ?", (view,)).fetchone()
-        except sqlite3.Error as e:
-            logger.error(f"Could not check for the coder-visibility view "
-                         f"{view}: {sqlite_error_label(e)}")
-            raise CoderVisibilityUnreadable(
-                "Could not determine coder visibility for this project "
-                "(its coder-visibility views could not be read)") from None
-        if row is None:
-            raise CoderVisibilityUnreadable(
-                "Could not determine coder visibility for this project "
-                "(one of its coder-visibility views is missing). Open "
-                "the project in QualCoder, which recreates them, and "
-                "try again")
-        return view
+        return self._visible_source(base, view)
 
     def hidden_coder_count(self) -> int:
         """How many coders this project currently hides (0 without the
         visibility capability). Used for result disclosure; hidden
         coders' NAMES are never disclosed."""
-        caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.visibility_declared():
+        if not self.visibility_applies():
             return 0
         try:
             # DISTINCT, for the same reason coder_visibility_map folds:

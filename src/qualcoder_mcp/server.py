@@ -739,11 +739,10 @@ def _coder_visibility_note(coder: Optional[str] = None,
     instead (methodological transparency either way).
 
     `hidden` lets a caller that has already read the visibility map
-    supply the count from it; without it the count keys on the
-    connect-time probe, which is right for the reads this note
-    describes, because their rows come from the same connect-time
-    source and a fresh count beside a stale read would claim a filter
-    that was not applied.
+    supply the count from it; without it the count keys on the same
+    answer the read's source did (since v0.14 re-read on every read, so
+    a coder hidden after this server connected is filtered and counted
+    alike).
     """
     coder = normalize_coder(coder)  # blank means no filter (F10)
     if hidden is None:
@@ -895,9 +894,14 @@ def _schema_block() -> Dict[str, Any]:
     db = get_db()
     supported, reason, overridden = db.write_support()
     caps = getattr(db, "capabilities", None)
+    capabilities = caps.to_dict() if caps is not None else {}
+    if capabilities:
+        # As it stands now, as the reads it decides are (v0.14): coder
+        # visibility can arrive after the connection opened.
+        capabilities["has_coder_visibility"] = db.has_coder_visibility_now()
     block: Dict[str, Any] = {
         "databaseversion": getattr(db, "db_version", None),
-        "capabilities": caps.to_dict() if caps is not None else {},
+        "capabilities": capabilities,
         "write_support": supported,
     }
     if reason:
@@ -3314,8 +3318,8 @@ def _novelty_block(db_, code_ids: List[int], coder: Optional[str],
     (which reads the base table, ai_mcp_server.py:5228) and the deviation
     is what keeps the filter from becoming an oracle for hidden work.
     """
-    caps = getattr(db_, "capabilities", None)
-    if caps is None or not caps.visibility_declared():
+    # Asked of the project now, as the read it describes was (v0.14)
+    if not db_.visibility_applies():
         visibility = "not_applicable"
     elif coder is not None:
         visibility = "honoured_plus_named_coder"
@@ -4678,8 +4682,8 @@ def _hidden_count_in(visibility: Optional[Dict[str, int]]) -> int:
     """How many coders a `coder_visibility_map()` result hides (a count).
 
     The map is keyed by name, so this is the DISTINCT count
-    `hidden_coder_count` computes, taken from the fresh read rather than
-    from the connect-time probe that `hidden_coder_count` keys on.
+    `hidden_coder_count` computes, taken from the map a caller already
+    holds (both re-read the declaration since v0.14).
     """
     if not visibility:
         return 0
