@@ -336,6 +336,26 @@ class TestCoreModeEndToEnd:
         assert len(rows) == 1
 
 
+class TestTheReadmeToolList:
+    """The tool counts, the measured size and the README's tool list are
+    updated together (v0.14 brief C): every tool the widest set
+    registers has an entry, named as it is called."""
+
+    def test_every_tool_has_an_entry(self):
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        section = readme[readme.index("## Available Tools"):]
+        section = section[:section.index("\n## ", 5)]
+        server._apply_toolset("lifecycle")
+        names = [t.name for t in asyncio.run(server.mcp.list_tools())]
+        assert len(names) == EXPECTED_LIFECYCLE
+        missing = [n for n in names if f"`{n}(" not in section]
+        assert missing == []
+        assert f"registers {EXPECTED_FULL} tools" in section
+        assert f"`QUALCODER_MCP_TOOLSET=lifecycle`" in section
+        assert f"plus `create_project`, {EXPECTED_LIFECYCLE} tools" in \
+            " ".join(section.replace("\n>", " ").split())
+
+
 class TestLifecycleModeEndToEnd:
 
     def test_lifecycle_mode_creates_a_project_over_stdio(self, tmp_path):
@@ -616,6 +636,19 @@ class TestThePublishedSchemaBudget:
         entry = self._current_entry()
         assert f"{self.FULL_MEASURED_310:,}" in entry
         assert f"{self.CORE_MEASURED_310:,}" in entry
+
+    LIFECYCLE_ROUNDED = "174,000"
+    LIFECYCLE_TOKENS = "44k"
+
+    def test_the_readme_quotes_the_lifecycle_measurement(self):
+        readme = self._read("README.md")
+        assert (f"the `lifecycle` definitions run to about "
+                f"{self.LIFECYCLE_ROUNDED} characters, roughly "
+                f"{self.LIFECYCLE_TOKENS} tokens") in readme
+        assert round(self.LIFECYCLE_MEASURED / 1000) * 1000 == int(
+            self.LIFECYCLE_ROUNDED.replace(",", ""))
+        assert round(self.LIFECYCLE_MEASURED / 4000) == int(
+            self.LIFECYCLE_TOKENS[:-1])
 
     def test_the_readme_quotes_the_same_measurement(self):
         readme = self._read("README.md")

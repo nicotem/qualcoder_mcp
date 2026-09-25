@@ -705,7 +705,8 @@ class TestFailures:
         assert list(locked.iterdir()) == []
 
     def test_the_workspace_cannot_be_made(self):
-        (Path.home() / "Documents").write_text("a file, not a folder")
+        # the sandbox's Documents (the workspace's parent) as a file
+        workspace().parent.write_text("a file, not a folder")
         text = refused(create("NoWorkspace"))
         assert text.startswith("The workspace folder")
         assert "Nothing was created" in text
@@ -812,3 +813,145 @@ class TestWhatACrashLeaves:
         text = refused(create("Cold", folder.parent))
         assert "remains of a project creation that did not finish" in text
         assert self._bytes(folder) == before
+
+
+# ---------------------------------------------------------------------------
+# Part 8: a round trip from creation to coding
+# ---------------------------------------------------------------------------
+
+INTERVIEW = ("I: How do you cope?\n\nP: I go for a run after work, and I "
+             "talk to colleagues who understand. Deadlines still keep me "
+             "awake some nights.")
+
+
+class TestRoundTrip:
+
+    def test_from_creation_to_coding(self, monkeypatch):
+        """Create, select (no process-scan warning), set the AI coder
+        name, import, a category, a code in it and a sub-code under it,
+        suggest, approve and apply two codings, read them back; the
+        project is still 4.0's format in everything QualCoder reads."""
+        monkeypatch.setattr(database, "_qualcoder_process_hits",
+                            lambda: ["/usr/bin/python3 -m qualcoder"])
+        made = create("Round trip", coder_name="carol")
+        assert made["selected"] and "APPEARS" not in json.dumps(made)
+        folder = Path(made["project_path"])
+        # the first write asks for the AI coder name, as on any project
+        asked = json.loads(server.create_code("Coping"))
+        assert asked.get("action_required") == "set_project_ai_coder_name"
+        assert json.loads(server.set_project_ai_coder_name(
+            "AI Coding Assistant"))["success"] is True
+        imported = json.loads(server.import_text_file(
+            "interview.txt", INTERVIEW))
+        assert imported["success"] is True, imported
+        file_id = imported["file"]["id"] if "file" in imported else \
+            imported["file_id"]
+        assert json.loads(server.create_category("Responses"))["created"]
+        parent = json.loads(server.create_code("Coping",
+                                               category="Responses"))
+        child = json.loads(server.create_code(
+            "Exercise", parent_code_id=parent["code"]["id"]))
+        assert child["created"] is True, child
+        session = server.analyze_for_coding([file_id])
+        assert session.lstrip().startswith("{"), session[:300]
+        sid = json.loads(session)["coding_session_id"]
+        recorded = json.loads(server.record_suggestions(sid, [
+            {"file_id": file_id, "code_name": "Coping",
+             "segment_text": "talk to colleagues who understand",
+             "reasoning": "social support", "confidence": 0.9},
+            {"file_id": file_id, "code_name": "Exercise",
+             "segment_text": "I go for a run after work",
+             "reasoning": "exercise", "confidence": 0.9}]))
+        guids = [r["guid"] for r in recorded["recorded"]]
+        assert "error" not in server.update_suggestion_status(
+            sid, approve=guids).lower()
+        applied = server.apply_codings(sid)
+        assert "CODINGS APPLIED" in applied, applied
+        for code in (parent, child):
+            segments = json.loads(server.get_coded_segments(
+                code["code"]["id"]))
+            assert segments["segments"], segments
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        try:
+            rows = conn.execute(
+                "SELECT c.name, t.owner, t.seltext FROM code_text t "
+                "JOIN code_name c ON c.cid = t.cid ORDER BY c.name"
+            ).fetchall()
+            sub = conn.execute("SELECT supercid, catid FROM code_name "
+                               "WHERE name = 'Exercise'").fetchone()
+            coders = [r[0] for r in conn.execute(
+                "SELECT name FROM coder_names ORDER BY rowid")]
+        finally:
+            conn.close()
+        assert rows == [
+            ("Coping", "AI Coding Assistant",
+             "talk to colleagues who understand"),
+            ("Exercise", "AI Coding Assistant", "I go for a run after work")]
+        assert sub == (parent["code"]["id"], None)
+        assert coders[:2] == ["carol", server.SPEAKER_SYSTEM_CODER]
+        # still 4.0's format in everything QualCoder reads
+        from qc40_format_facts import structure
+        oracle = json.loads((Path(__file__).parent / "fixtures" /
+                             "qc40_new_project.json").read_text("utf-8"))
+        facts = structure(folder)
+        for key in ("order", "columns", "indexes", "triggers", "header"):
+            assert facts[key] == oracle["structure"][key], key
+
+
+# ---------------------------------------------------------------------------
+# Part 8: Windows' path limits, on the Windows CI jobs
+# ---------------------------------------------------------------------------
+
+def _extended(path: Path) -> str:
+    """The extended-length form Windows accepts past 260 characters."""
+    return "\\\\?\\" + str(path)
+
+
+def _deep_folder(base: Path, length: int) -> Path:
+    """A folder under `base` whose own path is `length` characters long,
+    made with the extended-length prefix so the test does not depend on
+    the limit it is about."""
+    folder = base
+    while len(str(folder)) < length:
+        room = length - len(str(folder)) - 1
+        folder = folder / ("d" * max(1, min(50, room)))
+    os.makedirs(_extended(folder), exist_ok=True)
+    return folder
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows' own path limits")
+class TestWindowsPathLimits:
+    """Creation where data.qda's path is about 250 and about 270
+    characters long (the study's check asked for both, to settle what
+    Windows and SQLite do before the wording is fixed). Whatever the
+    runner's long-path setting, the answer is either a created project
+    this server opens, or the tool's own refusal or failure with nothing
+    left behind; the outcome is written into the CI log."""
+
+    @pytest.mark.parametrize("data_path_length", [250, 270])
+    def test_near_the_limit(self, tmp_path, data_path_length,
+                            record_property):
+        tail = len("\\Study.qda\\data.qda")
+        parent = _deep_folder(tmp_path.resolve(),
+                              data_path_length - tail)
+        answer = json.loads(server.create_project(
+            "Study", directory=str(parent), coder_name="carol"))
+        long_paths = new_project.windows_long_paths_enabled()
+        folder = parent / "Study.qda"
+        outcome = ("created" if answer.get("created") else
+                   "refused: " + answer.get("error", "")[:160])
+        record_property("windows_path_probe", (
+            f"data.qda at {len(str(folder / 'data.qda'))} characters, long "
+            f"paths {'on' if long_paths else 'off'}: {outcome}"))
+        if answer.get("created"):
+            db = database.QualcoderDatabase(str(folder))
+            try:
+                assert db.db_version == "v17"
+            finally:
+                db.close()
+            return
+        text = answer["error"]
+        assert ("too long for Windows" in text
+                or text.startswith("The project could not be created"))
+        assert server.DB_UNAVAILABLE_ERROR not in text
+        assert not os.path.lexists(_extended(folder))

@@ -188,7 +188,11 @@ class TestWriteRowContracts:
 
     def test_w14_project_row_and_coder_names_untouched(self, setup_server,
                                                        qualcoder_db_path):
-        """W14: the MCP never writes project/coder_names."""
+        """W14: the MCP never writes project/coder_names, apart from the
+        project memo (v0.14: the lead's ruling gives set_memo the project
+        memo as a target, written with QualCoder's own `update project
+        set memo=?`). create_project writes both tables into a NEW
+        project, in new_project.py, never here."""
         before = _sql(qualcoder_db_path, "SELECT * FROM project")
         _apply_one()
         json.loads(server.import_text_file("w14.txt", "x", create_backup=False))
@@ -200,9 +204,11 @@ class TestWriteRowContracts:
         # coder_names (the W14 invariant). Codebook/memo edits legitimately
         # UPDATE code_name/code_cat/code_text/source/cases.
         src = (SRC_DIR / "database.py").read_text(encoding="utf-8")
-        updated_tables = {t for t, _ in
-                          re.findall(r"UPDATE\s+(\w+)\s+SET\s+([^\n]+)", src)}
-        assert "project" not in updated_tables
+        updates = re.findall(r"UPDATE\s+(\w+)\s+SET\s+([^\n]+)", src)
+        updated_tables = {t for t, _ in updates}
+        project_updates = [cols for t, cols in updates if t == "project"]
+        assert len(project_updates) == 1, project_updates
+        assert re.match(r'memo = \?"', project_updates[0]), project_updates
         assert "coder_names" not in updated_tables
 
 

@@ -809,6 +809,14 @@ Claude can use these tools to analyse your data. The full toolset
 argument lists below are abbreviated, and each tool's own description
 carries the complete list.
 
+> **Creating projects (Experimental, opt-in):** with
+> `QUALCODER_MCP_TOOLSET=lifecycle` the server registers the full set
+> plus `create_project`, 74 tools. Creating projects stays out of the
+> default set so that researchers opt in to a tool that makes folders on
+> their disk; it is not in `core` either. Measured as below, the
+> `lifecycle` definitions run to about 174,000 characters, roughly 44k
+> tokens.
+
 > **Reduced toolset for local models (Experimental):** with
 > `QUALCODER_MCP_TOOLSET=core` in the server's environment, only the
 > 21-tool supervised coding set is registered: list_available_projects,
@@ -836,6 +844,8 @@ carries the complete list.
 - `list_available_projects(search_directories)` - Discover Qualcoder projects on your system
 - `select_project(project_path)` - Open/switch to a different project (reports `qualcoder_gui_signals` and remembers the selection for the recovery hint)
 - `get_current_project()` - Show which project is open, whether a released QualCoder has it open (`qualcoder_open`), and the 4.0 heuristics (`qualcoder_gui_signals`); `pseudonyms_json` says whether the project's own `pseudonyms.json` is present and how many entries it has, never a name
+- `create_project(name, directory, coder_name, coder_name_not_known)` - **Creates a folder and a database** (the `lifecycle` toolset only): a new, empty project in QualCoder 4.0's format, exactly as 4.0's own New Project makes it, in the server's workspace or an existing folder, then selects it. Asks for the researcher's own QualCoder coder name (or an explicit "not known") after every other check; refuses a name already used there in any letter case, names QualCoder cannot open or Windows cannot store, and names whose backups sit beside it; never replaces or deletes anything
+- `set_project_ai_coder_name(name, note, allow_hidden_coder)` - Set the coder name this project's AI writes are stored under (stored beside the project in `qualcoder_mcp.json`); refuses the researcher's own coder name, QualCoder's `default` and its speaker coder, and warns when the researcher's name is not known yet
 - `read_pseudonym_list()` - **Sends real names to the AI provider**: returns the entries of the project's own `pseudonyms.json` (the researcher's reverse key), for use only when the researcher asks to see or check the list; each call writes one log line with the count and no name. In the full toolset only. QualCoder's Pseudonyms dialog (the button in Manage Files) shows the same list without sending it anywhere
 
 **Core Data Analysis:**
@@ -916,7 +926,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `export_case_code_matrix_csv(output_path, sanitize_formulas, overwrite)` - Case by code cross-tab as CSV
 
 **Memos, Annotations & Journal (Write Operations):**
-- `set_memo(target_type, target_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Write or clear the public part of a memo on a code, category, file, coding, or case (an existing `#####` private section survives; content-only, matching QualCoder, never rewrites date/owner)
+- `set_memo(target_type, target_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Write or clear the public part of a memo on a code, category, file, coding, or case, or the project memo (`target_type` `project`, `target_id` null), which QualCoder 4.0's assistant reads as the study's context (an existing `#####` private section survives; content-only, matching QualCoder, never rewrites date/owner)
 - `add_journal_entry(name, entry, create_backup)` - **WRITES TO DATABASE** - Add or update a research journal entry
 - `add_annotation(file_id, start_pos, end_pos, memo, create_backup)` - **WRITES TO DATABASE** - Attach a note to a text span of a file
 - `update_annotation(annotation_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Edit an annotation's note (an empty note deletes the annotation, as in QualCoder, unless a private section keeps the row)

@@ -76,6 +76,9 @@ jobs:
             # v0.13 Brief 2: the note pass's rate, outside the budgets,
             # published so the slowest platform's figure can be stated.
             grep -E "^note pass rate: " pytest_output.txt | head -3
+            # v0.14 brief C: what Windows and SQLite do when a project is
+            # created near Windows' path limit (the Windows jobs only).
+            grep -E "^Windows path probe: " pytest_output.txt | head -3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # The same line as a check-run annotation: a job's step summary
@@ -85,6 +88,7 @@ jobs:
           # rights (v0.13 fix round 2).
           sed -n 's/^file-text count rate: /::notice title=file-text count rate::/p' pytest_output.txt | head -3
           sed -n 's/^note pass rate: /::notice title=note pass rate::/p' pytest_output.txt | head -3
+          sed -n 's/^Windows path probe: /::notice title=Windows path probe::/p' pytest_output.txt | head -3
           # The failures themselves as annotations, for the same reason:
           # a signed-out reader cannot open the job log, and can read
           # these through the API. Up to ten FAILED or ERROR lines, each

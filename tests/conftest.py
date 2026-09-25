@@ -148,8 +148,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # v0.13 Brief 2 (the lead's third answer to its hand-off note): the
     # note pass is outside the budgets and its rate is published the same
     # way, under its own prefix.
+    # v0.14 brief C: what Windows and SQLite do when a project is created
+    # near Windows' path limit, from the Windows jobs.
     prefixes = {"file_text_rate": "file-text count rate",
-                "note_pass_rate": "note pass rate"}
+                "note_pass_rate": "note pass rate",
+                "windows_path_probe": "Windows path probe"}
     for key in ("passed", "failed"):
         for report in terminalreporter.stats.get(key, []):
             for name, value in getattr(report, "user_properties", []):
