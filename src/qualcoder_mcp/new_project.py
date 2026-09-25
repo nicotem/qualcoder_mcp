@@ -665,3 +665,86 @@ def scan_parent(parent: Path, folder_name: str,
     if siblings:
         return backup_siblings_refusal(siblings, stem)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Path lengths. Windows, unless long paths are switched on (it leaves them
+# off by default), cannot make a folder at a path of more than 247
+# characters (MAX_PATH less room for a short name) or open a file at more
+# than 259 (MAX_PATH less the closing null). A project is refused on
+# Windows when it could not be made there; everywhere, a path that leaves
+# little room for the names of imported files draws a warning, since a
+# project may be moved to Windows.
+# ---------------------------------------------------------------------------
+
+WINDOWS_MAX_FOLDER_PATH = 247
+WINDOWS_MAX_FILE_PATH = 259
+# The room a file name inside documents/ should have (file names may be
+# up to 200 bytes; 100 characters holds most real ones).
+FILE_NAME_ROOM = 100
+_LONGEST_SUBFOLDER = max(SUBFOLDERS, key=len)
+_LONGEST_DATABASE_FILE = max(_DATABASE_SIDE_FILES + (DATABASE_FILE,),
+                             key=len)
+
+
+def windows_long_paths_enabled() -> bool:
+    """Whether Windows has long paths switched on (False elsewhere, and
+    False when the setting cannot be read)."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\FileSystem"
+                            ) as key:
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+        return value == 1
+    except (ImportError, OSError):
+        return False
+
+
+def path_lengths(folder: Path) -> Tuple[int, int]:
+    """(the longest folder path creation makes, the longest file path)."""
+    return (len(str(folder / _LONGEST_SUBFOLDER)),
+            len(str(folder / _LONGEST_DATABASE_FILE)))
+
+
+def windows_path_refusal(folder: Path, on_windows: bool,
+                         long_paths: bool) -> Optional[str]:
+    """The refusal for a project Windows could not make, or None."""
+    if not on_windows or long_paths:
+        return None
+    longest_folder, longest_file = path_lengths(folder)
+    if (longest_folder <= WINDOWS_MAX_FOLDER_PATH
+            and longest_file <= WINDOWS_MAX_FILE_PATH):
+        return None
+    return (f"The project's paths would be too long for Windows: its "
+            f"'{_LONGEST_SUBFOLDER}' folder would be {longest_folder} "
+            f"characters and its database's journal {longest_file}, and "
+            f"Windows cannot make a folder beyond "
+            f"{WINDOWS_MAX_FOLDER_PATH} characters or open a file beyond "
+            f"{WINDOWS_MAX_FILE_PATH} unless long paths are switched on. "
+            f"Choose a shorter name, or a folder nearer the top of the "
+            f"disk.")
+
+
+def file_name_room(folder: Path) -> int:
+    """How many characters a file name inside documents/ may have before
+    its path passes Windows' 259."""
+    return WINDOWS_MAX_FILE_PATH - len(str(folder / "documents")) - 1
+
+
+def long_path_warning(folder: Path) -> Optional[str]:
+    """A warning when the project's path leaves little room for the names
+    of the files imported into it, or None."""
+    room = file_name_room(folder)
+    if room >= FILE_NAME_ROOM:
+        return None
+    return (f"This project's folder path is {len(str(folder))} characters "
+            f"long, which leaves room for file names of only {max(room, 0)} "
+            f"characters inside it before a path passes the "
+            f"{WINDOWS_MAX_FILE_PATH} characters Windows allows (unless "
+            f"long paths are switched on there). Importing a file with a "
+            f"longer name, or opening the project on Windows, could fail. "
+            f"Short names, in folders near the top of the disk, travel "
+            f"better.")

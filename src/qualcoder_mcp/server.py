@@ -14942,14 +14942,24 @@ def create_project(name: str, directory: Optional[str] = None,
     problem = new_project.project_name_problem(stem)
     if problem is not None:
         return _create_project_refusal(problem)
+    folder_name = f"{stem}{new_project.PROJECT_SUFFIX}"
     try:
         parent, is_default = new_project.resolve_parent_folder(
             directory, default_workspace())
         new_project.check_parent_folder(
             parent, Path(preview_tokens_state_home()).resolve(), is_default)
-    except new_project.Refusal as refusal:
-        return _create_project_refusal(str(refusal))
-    folder = parent / f"{stem}{new_project.PROJECT_SUFFIX}"
+        folder = parent / folder_name
+        refusal = (new_project.windows_path_refusal(
+            folder, os.name == "nt", new_project.windows_long_paths_enabled())
+            or new_project.scan_parent(parent, folder_name, stem))
+    except new_project.Refusal as error:
+        refusal = str(error)
+    if refusal is not None:
+        return _create_project_refusal(refusal)
+    warnings: List[str] = []
+    too_long = new_project.long_path_warning(folder)
+    if too_long:
+        warnings.append(too_long)
 
     if coder_name is None and not coder_name_not_known:
         return _create_project_refusal(
@@ -14966,9 +14976,15 @@ def create_project(name: str, directory: Optional[str] = None,
             parent.mkdir(parents=True, exist_ok=True)
         data_path = new_project.write_project(folder, statements)
     except FileExistsError:
-        return _create_project_refusal(
-            f"Something called '{folder.name}' already exists there. "
-            f"Choose another name.")
+        # Made by someone else between the look and the claim: say what
+        # is there now, as the look would have.
+        try:
+            again = new_project.scan_parent(parent, folder_name, stem)
+        except new_project.Refusal as error:
+            again = str(error)
+        return _create_project_refusal(again or (
+            f"Something called '{folder_name}' already exists there. "
+            f"Choose another name."))
     logger.info("Created a new project (schema %s)",
                 new_project.SCHEMA_VERSION)
 
@@ -14986,6 +15002,7 @@ def create_project(name: str, directory: Optional[str] = None,
         "coder_name_known": bool(stored_coder),
         "selected": True,
         "previous_project": previous,
+        "warnings": warnings,
     }, indent=2)
 
 
