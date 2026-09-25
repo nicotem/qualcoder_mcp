@@ -341,8 +341,9 @@ the format dictates.
 34. The project folder layout and the project table's "about" marker.
     Here: src/qualcoder_mcp/database.py, validate_qda_path and
     QualcoderDatabase._check_version.
+    Here: src/qualcoder_mcp/new_project.py, SUBFOLDERS and about_line.
     From: 3.8.2 __main__.py, lines 306, 2635 and 2700-2702; __main__.py,
-    lines 1991 and 2011-2015.
+    lines 1767-1776, 1991 and 2011-2015.
 
 35. The name, entry shape and write format of pseudonyms.json.
     Here: src/qualcoder_mcp/database.py, PSEUDONYMS_JSON_NAME,
@@ -460,6 +461,20 @@ the format dictates.
     From: __main__.py, lines 1788-1826 and 1953; attributes.py, line
     202; code_text.py, lines 1017-1020; journals.py, lines 636-639.
 
+47. The tables, columns, keys, unique groups and views of a new
+    project in QualCoder 4.0's format, their order, and its first rows.
+    Here: src/qualcoder_mcp/new_project.py, SCHEMA_VERSION, TABLES,
+    CODER_NAMES_TABLE, VISIBILITY_VIEW_TABLES, PROJECT_COLUMNS,
+    SPEAKER_CODER_NAME, DATE_FORMAT, creation_statements,
+    table_statement and view_statement.
+    From: __main__.py, lines 1787-1867; app.py, lines 1448-1561;
+    speakers.py, line 47.
+    Why: a project this server creates must be, in everything QualCoder
+    reads, the project QualCoder 4.0's own New Project creates. The
+    statements are generated from this project's own column table, not
+    copied: QualCoder never reads a table's stored text, and the tests
+    compare everything it does read with a project 4.0 created.
+
 
 Tests and fixtures
 ------------------
@@ -470,32 +485,32 @@ code with QualCoder's own, rather than with a restatement of it; the
 fixtures restate QualCoder's schema so that test projects are real
 QualCoder projects.
 
-47. The palette, pinned to QualCoder's (copied values)
+48. The palette, pinned to QualCoder's (copied values)
     Here: tests/test_v012_palette_idempotent.py, UPSTREAM_COLORS and
     TestPaletteParity.test_palette_identical_to_pinned_upstream.
     From: color_selector.py, lines 52-65.
     Why: to pin item 15 to QualCoder's palette.
 
-48. The palette matcher oracle (copied verbatim)
+49. The palette matcher oracle (copied verbatim)
     Here: tests/test_v012_palette_idempotent.py, upstream_color_matcher.
     From: color_selector.py, lines 144-162.
     Why: item 5 is compared with QualCoder's own function.
 
-49. The palette matcher's named cases (copied values)
+50. The palette matcher's named cases (copied values)
     Here: tests/test_v012_palette_idempotent.py,
     TestPaletteParity.test_named_cases.
     From: the results of color_selector.py, lines 144-162, on lines
     52-65.
     Why: named parity cases, computed with QualCoder's function.
 
-50. The editor walk oracle (copied verbatim)
+51. The editor walk oracle (copied verbatim)
     Here: tests/test_v012_pseudonymise_engine.py, MasterEditWalk.
     From: code_text.py, lines 5893-5927.
     Why: item 6 is checked against QualCoder's walk kept in QualCoder's
     own shape (every row walked per edit, where item 6 walks every edit
     per row), not against itself.
 
-51. The whole-word replacement pattern oracles (copied verbatim)
+52. The whole-word replacement pattern oracles (copied verbatim)
     Here: tests/test_v012_pseudonymise_engine.py, master_boundary_spans,
     legacy_boundary_spans,
     TestNonChaining.test_why_that_mapping_is_refused_although_one_pass_survives_it
@@ -505,19 +520,19 @@ QualCoder projects.
     Why: to test where QualCoder's own whole-word replacement fires, now
     and in its older form.
 
-52. The coder-name harvest statement (copied verbatim)
+53. The coder-name harvest statement (copied verbatim)
     Here: tests/test_v012_ai_coder_setting.py, TestUpstreamParity.HARVEST_SQL.
     From: app.py, lines 1479-1495.
     Why: parity tests run QualCoder's own harvest.
 
-53. The open-time repair statements (copied verbatim)
+54. The open-time repair statements (copied verbatim)
     Here: tests/test_v17_support.py, replay_master_open_repair.
     Here: tests/test_qa_v17_gate_core.py, master_repair_rowcount.
     From: __main__.py, lines 2377-2381.
     Why: fixtures and oracles replay the hierarchy repair QualCoder runs
     when it opens a project.
 
-54. The delete twins, QualCoder 3.8.2 (copied verbatim)
+55. The delete twins, QualCoder 3.8.2 (copied verbatim)
     Here: tests/test_qa_memo_codebook_gotchas.py,
     TestQualCoderFidelityDifferential.test_delete_code_differential and
     TestQualCoderFidelityDifferential.test_delete_category_differential_with_grandchildren.
@@ -525,26 +540,26 @@ QualCoder projects.
     Why: differential tests apply QualCoder's own statements to a copy
     of a project and compare the two databases.
 
-55. The merge twin, QualCoder 3.8.2 (closely ported)
+56. The merge twin, QualCoder 3.8.2 (closely ported)
     Here: tests/test_qa_memo_codebook_gotchas.py, _qualcoder_merge.
     From: 3.8.2 code_text.py, lines 2791-2821.
     Why: the differential test for merge.
 
-56. The merge and delete twins, QualCoder master (closely ported)
+57. The merge and delete twins, QualCoder master (closely ported)
     Here: tests/test_qa_v17_gate_core.py,
     TestSubcodeWriteDifferentials.test_merge_differential_provenance_reparent_graphs
     and TestSubcodeWriteDifferentials.test_delete_branch_preview_refuse_and_cascade_differential.
     From: code_tree.py, lines 850-858 and 1521-1571.
     Why: the differential tests for master's merge and cascade delete.
 
-57. The move twins, QualCoder master (file-format facts)
+58. The move twins, QualCoder master (file-format facts)
     Here: tests/test_qa_v17_gate_core.py,
     TestSubcodeWriteDifferentials.test_move_dual_pointer_differential_and_oracle
     and TestSubcodeWriteDifferentials.test_v14_projects_hierarchy_inert.
     From: code_tree.py, lines 1235 and 1245.
     Why: the differential test for move.
 
-58. The rename, recolour and move twins, QualCoder 3.8.2 (file-format
+59. The rename, recolour and move twins, QualCoder 3.8.2 (file-format
     facts)
     Here: tests/test_qa_memo_codebook_gotchas.py,
     TestQualCoderFidelityDifferential.test_rename_recolor_move_differential
@@ -552,40 +567,40 @@ QualCoder projects.
     From: 3.8.2 code_text.py, lines 1905, 2740, 3092, 3125 and 3156.
     Why: differential tests.
 
-59. The coder-visibility views fixture (file-format facts)
+60. The coder-visibility views fixture (file-format facts)
     Here: tests/test_qc40_visibility.py, _VIEW_DDL, _VISIBILITY_COLUMN_DDL
     and _BROKEN_VIEWS.
     From: app.py, lines 1472 and 1518-1561.
     Why: fixtures build QualCoder's coder-visibility views.
 
-60. The coder_names table fixture (file-format facts)
+61. The coder_names table fixture (file-format facts)
     Here: tests/test_v012_ai_coder_setting.py,
     TestUpstreamParity.CODER_NAMES_DDL and
     TestUpstreamParity.test_a_name_absent_from_coder_names_is_visible.
     From: app.py, lines 1470-1473 and 1529-1539.
     Why: coder_names and one view, recreated as QualCoder makes them.
 
-61. The pseudonymisation fixture schema (file-format facts)
+62. The pseudonymisation fixture schema (file-format facts)
     Here: tests/test_v012_pseudonymise_tool.py, SCHEMA, VISIBILITY_COLUMN
     and VISIBILITY_VIEWS.
     From: 3.8.2 __main__.py, lines 2347-2388; app.py, lines 1472 and
     1518-1561.
     Why: a fixture with QualCoder's real tables and constraints.
 
-62. The schema-version ladder fixture (file-format facts)
+63. The schema-version ladder fixture (file-format facts)
     Here: tests/test_v17_support.py, BASE_SCHEMA, _migrate_v15,
     _migrate_v16 and _migrate_v17.
     From: 3.8.2 __main__.py, lines 2348-2418; __main__.py, lines
     2308-2343.
     Why: fixtures at QualCoder's schema versions 15, 16 and 17.
 
-63. The scale and media fixture schema (file-format facts)
+64. The scale and media fixture schema (file-format facts)
     Here: tests/track6_build.py, DDL.
     From: 3.8.2 __main__.py, lines 2348-2388; __main__.py, lines
     1813-1828.
     Why: the scale and media test builders.
 
-64. The shared fixture schemas (file-format facts)
+65. The shared fixture schemas (file-format facts)
     Here: tests/conftest.py.
     Here: tests/test_database_reads.py.
     Here: tests/test_database_writes.py.
@@ -602,7 +617,16 @@ QualCoder projects.
     lines 47-107.
     Why: each of these builds its own QualCoder project fixture.
 
-65. Planted rows and old-version markers (file-format facts)
+66. A project QualCoder 4.0 created, as an oracle (file-format facts)
+    Here: tests/fixtures/qc40_new_project.json.
+    From: the project QualCoder 4.0's own New Project (__main__.py,
+    lines 1745-1896) wrote at the verified commit, recorded as facts
+    (objects, columns, indexes, header fields, first rows and what the
+    views return); it holds no QualCoder source text.
+    Why: the format tests compare every project this server creates
+    with it.
+
+67. Planted rows and old-version markers (file-format facts)
     Here: tests/test_v012_pseudonymise_tool.py.
     Here: tests/test_v012_duplicate_inserts.py.
     Here: tests/test_fix_wave.py.
@@ -621,7 +645,7 @@ QualCoder projects.
     rows and old schema versions in fixtures; similar one-line
     statements occur elsewhere in tests/.
 
-66. The backup and merge-label pins (copied values)
+68. The backup and merge-label pins (copied values)
     Here: tests/test_qc40_backup_parity.py,
     TestIgnoreSetPinned.test_qualcoder_set_is_byte_exact_with_upstream.
     Here: tests/test_qc40_memo_privacy.py,
@@ -629,7 +653,7 @@ QualCoder projects.
     From: app.py, lines 1619-1625; code_tree.py, lines 1413-1417.
     Why: to pin items 16 and 10 to QualCoder's.
 
-67. The Manage Cases name-edit oracle (copied verbatim)
+69. The Manage Cases name-edit oracle (copied verbatim)
     Here: tests/test_v013_rename_tools.py, upstream_manage_cases.
     From: cases.py, lines 706 and 710-715 (3.8.2 cases.py, lines
     637-644).
@@ -638,7 +662,7 @@ QualCoder projects.
     Why: rename_case is compared with Manage Cases' own rule, and every
     difference must be one of the departures the CHANGELOG names.
 
-68. The "Rename database entry" oracle (closely ported)
+70. The "Rename database entry" oracle (closely ported)
     Here: tests/test_v013_rename_tools.py, upstream_rename_entry.
     From: manage_files.py, lines 1492-1494; add_item_name.py, lines
     58-59 and 76-77 (3.8.2 manage_files.py, lines 777-779; 3.8.2
@@ -649,7 +673,7 @@ QualCoder projects.
     Why: rename_file is compared with QualCoder's rename and its
     dialog's duplicate check.
 
-69. The saved display and saved filter builders, and saved rows
+71. The saved display and saved filter builders, and saved rows
     QualCoder wrote (file-format facts)
     Here: tests/test_v013_rename_tools.py, _save_display, _save_filter,
     QUALCODER_DISPLAYS and QUALCODER_FILTERS.
@@ -662,7 +686,7 @@ QualCoder projects.
     their own code, so the reading of item 43 is tested on QualCoder's
     own format.
 
-70. QualCoder's pseudonym import loop (copied verbatim)
+72. QualCoder's pseudonym import loop (copied verbatim)
     Here: tests/test_v012_pseudonymise_tool.py, upstream_apply and
     TestSavingTheMappingIntoPseudonymsJson.test_qualcoder_applying_the_written_file_gives_this_runs_text.
     From: manage_files.py, lines 2510-2512 and 3344-3349.
@@ -670,7 +694,7 @@ QualCoder projects.
     this server saves, one entry at a time in file order, gives the text
     this server's run gave, rather than a restatement of that loop.
 
-71. QualCoder's pseudonyms.json write statement (file-format facts)
+73. QualCoder's pseudonyms.json write statement (file-format facts)
     Here: tests/test_v012_pseudonymise_tool.py,
     TestSavingTheMappingIntoPseudonymsJson.test_pseudonyms_json_is_byte_identical_to_qualcoders_own_write.
     From: pseudonyms.py, lines 92-93.
@@ -688,19 +712,19 @@ Documents
 
 These are in the repository only; no package contains them.
 
-72. A REFI-QDA coded-segment example (copied verbatim)
+74. A REFI-QDA coded-segment example (copied verbatim)
     Here: QUALCODER_IMPORT_CAPABILITIES.md.
     From: refi.py, lines 1660-1669 (the example in load_codings_for_text's
     docstring).
     Why: to show the REFI-QDA coded-segment format.
 
-73. A case CSV example (copied values)
+75. A case CSV example (copied values)
     Here: QUALCODER_IMPORT_CAPABILITIES.md.
     From: 3.8.2 Examples/cases.csv, lines 1-4, at the root of
     QualCoder's repository.
     Why: to show the case CSV import format.
 
-74. Notes on QualCoder's schema (file-format facts)
+76. Notes on QualCoder's schema (file-format facts)
     Here: RESEARCH_SUMMARY.md.
     From: __main__.py, lines 1788-1828; 3.8.2 __main__.py, lines
     2347-2417.
