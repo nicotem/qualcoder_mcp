@@ -133,7 +133,17 @@ and which answer a fixed text when the database fails, and for an error
 of a kind this server does not expect, which is reported by its kind
 alone. This server's own error texts, which it writes, are answered as
 they are; some repeat what the caller supplied, such as a code name that
-is already taken.
+is already taken. Since v0.14 the log also names no project, file,
+code, category, case, journal entry or attribute, and carries no path:
+creating a code, a category, a case or a journal entry, or importing a
+file, logs its id, and an attribute type or value is logged without its
+name; the lines that select a project, start the server and connect to
+the database name no project folder; and the lines about taking,
+listing, restoring, pruning and copying backups and projects name no
+path (a backup by the part of its name after the project folder's). A
+file-system error in the log is its kind and the system's short name
+for it (for example `PermissionError EACCES`), never the file it names.
+The results still name what they name, as each tool says.
 
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and

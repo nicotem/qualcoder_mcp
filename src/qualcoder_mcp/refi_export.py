@@ -518,7 +518,7 @@ class RefiQdaExporter:
             file_guids = self.db.get_file_guids()
 
             # Create .qdpx file (ZIP archive)
-            logger.info(f"Creating .qdpx archive: {output_file}")
+            logger.info("Creating a .qdpx archive")
             with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 # project.qde at the root, lowercase (QualCoder's importer
                 # hard-codes this name). Python str -> UTF-8, never a BOM:
@@ -538,9 +538,10 @@ class RefiQdaExporter:
                         continue  # validated above; defensive only
                     member = f"sources/{file_guids[file_id]}.txt"
                     zipf.writestr(member, content)
-                    logger.debug(f"Added source file: {member}")
+                    logger.debug("Added a source file to the archive")
 
-            logger.info(f"Successfully exported {len(suggestions)} suggestions to {output_file}")
+            logger.info("Exported %s suggestion(s) to a .qdpx archive",
+                        len(suggestions))
             return str(output_file)
 
         except ValueError:

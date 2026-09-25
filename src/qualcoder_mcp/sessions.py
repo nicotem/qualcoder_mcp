@@ -539,7 +539,7 @@ class SessionManager:
         # created on the first save; every read path copes with its
         # absence (a glob over a missing directory yields nothing).
         self.storage_dir = Path(storage_dir).expanduser()
-        logger.debug(f"SessionManager storage: {self.storage_dir}")
+        logger.debug("SessionManager storage ready")
 
     def _ensure_storage_dir(self) -> None:
         """Create the storage directory; called before every write."""
@@ -611,7 +611,7 @@ class SessionManager:
             with handle as f:
                 json.dump(session.to_dict(), f, indent=2)
             os.replace(str(tmp), str(filepath))
-            logger.info(f"Saved session {session.session_id} to {filepath}")
+            logger.info(f"Saved session {session.session_id}")
         except Exception as e:
             if tmp is not None:
                 try:
@@ -643,7 +643,7 @@ class SessionManager:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             session = AICodingSession.from_dict(data)
-            logger.info(f"Loaded session {session_id} from {filepath}")
+            logger.info(f"Loaded session {session_id}")
             return session
         except Exception as e:
             logger.error(f"Failed to load session {session_id}: {error_label(e)}")
@@ -719,7 +719,8 @@ class SessionManager:
                         'project_path': data['project_path']
                     })
                 except Exception as e:
-                    logger.warning(f"Skipping invalid session file {filepath}: {error_label(e)}")
+                    logger.warning(f"Skipping invalid session file "
+                                   f"{filepath.name}: {error_label(e)}")
                     continue
 
             # Sort by last modified (most recent first)
@@ -779,7 +780,8 @@ class SessionManager:
                         deleted += 1
                         logger.info(f"Deleted old session {data['session_id']}")
                 except Exception as e:
-                    logger.warning(f"Error processing {filepath} during cleanup: {error_label(e)}")
+                    logger.warning(f"Error processing {filepath.name} during "
+                                   f"cleanup: {error_label(e)}")
                     continue
         except Exception as e:
             logger.error(f"Error during session cleanup: {error_label(e)}")

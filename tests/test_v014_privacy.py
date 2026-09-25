@@ -13,6 +13,9 @@ Each class is one item of the v0.14 privacy brief:
    SQLite's short error name, never SQLite's message, which a trigger in
    the project, or a note or a name stored as bytes that are not UTF-8,
    can fill with a note's text, private part included.
+3. No names or paths in the log file: creating things logs ids; the
+   selection, start-up and connection lines name no project folder; the
+   backup, lock-file, prune and copy lines carry no path.
 
 The fixture and helpers are the flagship's own
 (`test_v012_pseudonymise_tool.py`), imported so this file drives exactly
@@ -730,3 +733,242 @@ class TestTheDocumentsSayTheRule:
         assert "the SQLite error text" not in install
         assert ("The log carries no memo text, and since v0.14 no SQLite "
                 "message") in install
+
+
+# =============================================================================
+# 3. NO NAMES OR PATHS IN THE LOG FILE
+# =============================================================================
+
+# Everything the flow below names starts with this, the project folder
+# included, so one search finds any of them in any log record.
+MARK = "Zebedee"
+
+
+@pytest.fixture
+def marked(tmp_path, monkeypatch):
+    """A project whose folder is named after a participant, selected the
+    way a researcher selects one, with every log record kept."""
+    from test_v012_pseudonymise_tool import build_project
+    from track5_helpers import write_fixture_sidecar
+    folder = build_project(tmp_path / f"{MARK} study.qda")
+    write_fixture_sidecar(str(folder))
+    original = (server.db, server.current_project_path)
+    yield folder
+    if server.db is not None:
+        try:
+            server.db.close()
+        except Exception:
+            pass
+    server.db, server.current_project_path = original
+
+
+def _log_names(caplog):
+    return [line for line in _logged(caplog) if MARK in line]
+
+
+class TestNoNamesOrPathsInTheLog:
+
+    def test_selecting_creating_and_connecting_log_no_name(
+            self, marked, caplog, monkeypatch):
+        caplog.set_level(logging.DEBUG)
+        assert json.loads(server.select_project(str(marked))).get(
+            "success") is not False
+        answers = [
+            server.create_code(name=f"{MARK} code", create_backup=False),
+            server.create_category(name=f"{MARK} category",
+                                   create_backup=False),
+            server.create_case(name=f"{MARK} case", create_backup=False),
+            server.add_journal_entry(name=f"{MARK} journal", entry="x",
+                                     create_backup=False),
+            server.import_text_file(filename=f"{MARK}_interview.txt",
+                                    content="Some words.",
+                                    create_backup=False),
+            server.create_attribute_type(name=f"{MARK} attribute",
+                                         applies_to="case",
+                                         create_backup=False),
+            server.set_attribute(target_type="case", target_id=1,
+                                 attribute_name=f"{MARK} attribute",
+                                 value="yes", create_backup=False),
+        ]
+        for answer in answers:
+            assert "error" not in json.loads(answer), answer
+        # The connection lines: a lost connection, and a project set in
+        # the host's configuration.
+        server.db.close()
+        server.db = None
+        assert "error" not in json.loads(server.get_current_project())
+        server.db.close()
+        server.db, server.current_project_path = None, None
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH", str(marked))
+        assert "error" not in json.loads(server.get_project_summary())
+        assert _log_names(caplog) == []
+        logged = _logged(caplog)
+        assert "Added code: cid=3, category=None" in logged
+        assert "Added case: caseid=2" in logged
+        assert "Connected to the project set in QUALCODER_PROJECT_PATH" \
+            in logged
+
+    def test_a_failed_selection_logs_the_kind_only(self, marked, caplog):
+        caplog.set_level(logging.DEBUG)
+        answer = json.loads(server.select_project(
+            str(marked.parent / f"{MARK} missing.qda")))
+        assert answer["success"] is False
+        assert _log_names(caplog) == []
+        assert "Failed to select project: FileNotFoundError" in \
+            _logged(caplog)
+
+    def test_the_start_up_lines_name_no_project(self, marked, caplog,
+                                                monkeypatch, capsys):
+        monkeypatch.setattr(server.mcp, "run", lambda **kwargs: None)
+        monkeypatch.setattr(server, "_print_tty_notice_if_interactive",
+                            lambda: None)
+        monkeypatch.setattr(server, "_apply_toolset", lambda mode: {})
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH", str(marked))
+        server.main([])
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH",
+                           str(marked.parent / f"{MARK} missing.qda"))
+        with pytest.raises(SystemExit):
+            server.main([])
+        printed = capsys.readouterr()
+        assert MARK not in printed.err + printed.out
+        assert "QUALCODER_PROJECT_PATH was not found" in printed.err
+        assert _log_names(caplog) == []
+        assert ("Starting Qualcoder MCP server with the project set in "
+                "QUALCODER_PROJECT_PATH") in _logged(caplog)
+
+    def _backups(self, marked):
+        return sorted(marked.parent.glob(f"{MARK} study_backup_*.qda"))
+
+    def test_the_backup_restore_prune_and_copy_lines_name_no_project(
+            self, marked, caplog, monkeypatch):
+        import shutil
+        assert json.loads(server.select_project(str(marked))).get(
+            "success") is not False
+        caplog.set_level(logging.DEBUG)
+        for name in ("First", "Second"):
+            assert "error" not in json.loads(server.create_code(
+                name=name, create_backup=True))
+        backups = self._backups(marked)
+        assert len(backups) == 2
+        # Every restore: the swap has already removed the lock file.
+        preview = json.loads(server.restore_backup(str(backups[0])))
+        restored = json.loads(server.restore_backup(
+            str(backups[0]), preview_token=preview["preview_token"]))
+        assert restored.get("success") is True, restored
+        assert [line for line in _logged(caplog)
+                if line.startswith("Could not remove project lock file")] \
+            == ["Could not remove project lock file: FileNotFoundError "
+                "ENOENT"]
+        # The prune's error line, with a removal refused.
+        def refuse(path, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(path))
+        preview = json.loads(server.prune_backups(keep_last=0))
+        monkeypatch.setattr(shutil, "rmtree", refuse)
+        json.loads(server.prune_backups(
+            keep_last=0, preview_token=preview["preview_token"]))
+        monkeypatch.undo()
+        failed = [line for line in _logged(caplog)
+                  if line.startswith("Failed to remove backup")]
+        assert failed and all(
+            line.startswith("Failed to remove backup (project folder name "
+                            "withheld)_backup_")
+            and line.endswith(": PermissionError EACCES")
+            for line in failed), failed
+        # A copy into the workspace.
+        copied = json.loads(server.copy_project_to_workspace(
+            source_path=str(marked)))
+        assert "error" not in copied, copied
+        assert _log_names(caplog) == []
+
+    @pytest.mark.parametrize("error", [
+        FileExistsError(17, "File exists", f"/x/{MARK} study_backup_1.qda"),
+        PermissionError(13, "Permission denied", f"/x/{MARK} study.qda")],
+        ids=["exists", "refused"])
+    def test_the_two_backup_failure_lines_name_no_path(
+            self, marked, caplog, monkeypatch, error):
+        import shutil
+        assert json.loads(server.select_project(str(marked))).get(
+            "success") is not False
+
+        def fails(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(shutil, "copytree", fails)
+        caplog.set_level(logging.DEBUG)
+        answer = json.loads(server.create_code(name="Third",
+                                               create_backup=True))
+        assert "error" in answer
+        assert _log_names(caplog) == []
+        label = dbmod.error_label(error)
+        assert f"Failed to create backup: {label}" in _logged(caplog)
+
+
+def _errors_logged_whole(tree):
+    """Every log call, in any handler, that carries the caught error
+    other than by its kind (`error_label`, `sqlite_error_label`, or its
+    class): an error's text can be a path, a name or a note."""
+    import ast
+    parents = {child: node for node in ast.walk(tree)
+               for child in ast.iter_child_nodes(node)}
+    found = []
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler) or not handler.name:
+            continue
+        for statement in handler.body:
+            for node in ast.walk(statement):
+                if not (isinstance(node, ast.Name) and node.id == handler.name
+                        and isinstance(node.ctx, ast.Load)):
+                    continue
+                up, in_log = node, False
+                while up is not handler:
+                    up = parents[up]
+                    if isinstance(up, ast.Call) and \
+                            ast.unparse(up.func).startswith("logger."):
+                        in_log = True
+                        break
+                if not in_log:
+                    continue
+                parent = parents[node]
+                if isinstance(parent, ast.Call) and ast.unparse(
+                        parent.func) in ("error_label", "sqlite_error_label",
+                                         "type"):
+                    continue
+                found.append(f"line {node.lineno}: {ast.unparse(up)[:80]}")
+    return found
+
+
+class TestNoLogLineCarriesAnErrorsText:
+
+    def test_the_checker_finds_an_error_logged_whole(self):
+        import ast
+        tree = ast.parse(
+            "try:\n    pass\nexcept OSError as e:\n"
+            "    logger.warning(f'Could not remove the lock: {e}')\n"
+            "try:\n    pass\nexcept OSError as e:\n"
+            "    logger.warning('Could not: %s', e)\n"
+            "try:\n    pass\nexcept OSError as e:\n"
+            "    logger.warning('Could not: %s', error_label(e))\n"
+            "    answer = {'error': str(e)}\n")
+        assert len(_errors_logged_whole(tree)) == 2
+
+    @pytest.mark.parametrize("module", sorted(
+        p.name for p in SOURCE.glob("*.py")))
+    def test_no_log_line_carries_an_errors_text(self, module):
+        import ast
+        tree = ast.parse((SOURCE / module).read_text(encoding="utf-8"))
+        assert _errors_logged_whole(tree) == []
+
+
+class TestTheDocumentsSayWhatTheLogCarries:
+
+    def test_privacy_says_the_log_names_nothing(self):
+        privacy = _flat("PRIVACY.md")
+        assert ("Since v0.14 the log also names no project, file, code, "
+                "category, case, journal entry or attribute, and carries no "
+                "path") in privacy
+
+    def test_install_no_longer_says_the_log_carries_names(self):
+        install = _flat("INSTALL.md")
+        assert "It does carry project file names" not in install
+        assert ("It names no project, file, code, category, case, journal "
+                "entry or attribute and no path") in install

@@ -628,7 +628,8 @@ def hold_project_lock(project_dir: Union[str, Path]):
                 raise DatabaseLockedError(qualcoder_open_message(holder2)) from None
             # stale — leave the file alone and proceed unheld
         except OSError as e:
-            logger.warning(f"Could not create project lock file: {e}")
+            logger.warning("Could not create project lock file: %s",
+                           error_label(e))
 
     try:
         yield held
@@ -637,7 +638,11 @@ def hold_project_lock(project_dir: Union[str, Path]):
             try:
                 lock.unlink()
             except OSError as e:
-                logger.warning(f"Could not remove project lock file: {e}")
+                # The kind only (v0.14): the error's text is the lock
+                # file's path, the project folder's name in it, and this
+                # line fires on every restore.
+                logger.warning("Could not remove project lock file: %s",
+                               error_label(e))
 
 
 def position_safe(fulltext: str) -> bool:
@@ -1654,10 +1659,10 @@ def backup_project(project_path: Union[str, Path],
     # and that is what is kept. The folder lives beside the project, so
     # nothing that could be found before is unfindable now.
     #
-    # Still open, deliberately, and carried as a written item: the two
-    # `Failed to create backup` lines below log the exception, whose
-    # text can carry the whole path. They fire only when the backup
-    # failed, and there the path is the diagnostic.
+    # The two `Failed to create backup` lines below log the error's kind
+    # only (v0.14): its text can carry the whole path, and the kind with
+    # the system's name for it (`PermissionError EACCES`) says what
+    # failed.
     suffix = backup_name[len(project_path.stem):]
     logger.info("Creating backup: (project folder name withheld)%s", suffix)
 
@@ -1676,8 +1681,8 @@ def backup_project(project_path: Union[str, Path],
         # copytree's makedirs failed before anything was written: the
         # folder appeared under someone else's hand and is never ours to
         # remove (S-H5)
-        logger.error(f"Failed to create backup: {e}")
-        raise OSError(f"Backup failed: {e}") from None
+        logger.error("Failed to create backup: %s", error_label(e))
+        raise OSError(f"Backup failed: {error_label(e)}") from None
     except Exception as e:
         logger.error(f"Failed to create backup: {error_label(e)}")
         # Never leave a partial tree behind: list_backups would present
@@ -1772,7 +1777,9 @@ def copy_project_to_workspace(
             workspace_resolved not in dest_resolved.parents:
         raise ValueError("refusing to copy the project outside the workspace")
 
-    logger.info(f"Copying project to workspace: {dest_path}")
+    # The destination's name is the project's (or one the caller chose),
+    # so it stays out of the log (v0.14); the result names it.
+    logger.info("Copying project to workspace (folder name withheld)")
 
     skipped: List[str] = []
     try:
@@ -1780,15 +1787,15 @@ def copy_project_to_workspace(
             source_path, dest_path,
             ignore=_copy_ignore(source_path, skipped)
         )
-        logger.info(f"Project copied successfully: {dest_path}")
+        logger.info("Project copied successfully (folder name withheld)")
         if report is not None:
             report["skipped_symlinks"] = skipped
         return dest_path
     except FileExistsError as e:
         # The destination appeared under someone else's hand between the
         # existence check and the copy; never touch it (S-H5)
-        logger.error(f"Failed to copy project: {e}")
-        raise OSError(f"Copy failed: {e}") from None
+        logger.error("Failed to copy project: %s", error_label(e))
+        raise OSError(f"Copy failed: {error_label(e)}") from None
     except Exception as e:
         logger.error(f"Failed to copy project: {error_label(e)}")
         # Never leave a partial project copy behind (S-H5)
@@ -5881,7 +5888,7 @@ class QualcoderDatabase:
                 self.conn.commit()
 
             cid = cursor.lastrowid
-            logger.info(f"Added code: cid={cid}, name={name}, category={category_id}")
+            logger.info("Added code: cid=%s, category=%s", cid, category_id)
             return cid
 
         except sqlite3.IntegrityError as e:
@@ -6241,10 +6248,8 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
 
-            logger.info(
-                f"Imported text file: id={file_id}, name={name}, "
-                f"length={len(content)}"
-            )
+            logger.info("Imported text file: id=%s, length=%s", file_id,
+                        len(content))
             return {
                 "id": file_id,
                 "name": name,
@@ -6595,7 +6600,7 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
             jid = cursor.lastrowid
-            logger.info(f"Added journal entry: jid={jid}, name={name}")
+            logger.info("Added journal entry: jid=%s", jid)
         except sqlite3.IntegrityError as e:
             self._rollback_own_transaction(auto_commit)
             if "unique" in str(e).lower():
@@ -7148,7 +7153,7 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
             catid = cursor.lastrowid
-            logger.info(f"Added category: catid={catid}, name={name}")
+            logger.info("Added category: catid=%s", catid)
         except sqlite3.IntegrityError as e:
             try:
                 self.conn.rollback()
@@ -8140,7 +8145,7 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Added case: caseid={case_id}, name={name}")
+            logger.info("Added case: caseid=%s", case_id)
         except ValueError:
             raise
         except sqlite3.IntegrityError:
@@ -8645,10 +8650,8 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(
-                f"Added attribute type '{name}' ({applies_to}/{value_type}), "
-                f"{len(entity_ids)} placeholder(s)"
-            )
+            logger.info("Added an attribute type (%s/%s), %s placeholder(s)",
+                        applies_to, value_type, len(entity_ids))
         except ValueError:
             raise
         except sqlite3.IntegrityError:
@@ -8784,10 +8787,8 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(
-                f"Set {target_type} attribute '{attr_name}' on "
-                f"{target_type} {target_id}"
-            )
+            logger.info("Set an attribute on %s %s", target_type,
+                        target_id)
         except ValueError:
             raise
         except sqlite3.Error as e:

@@ -593,11 +593,12 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
                         "modified": stat.st_mtime
                     })
                 except (OSError, PermissionError) as e:
-                    logger.debug(f"Cannot access {qda_file}: {e}")
+                    logger.debug("Cannot access a project found: %s",
+                                 error_label(e))
                     continue
 
         except (PermissionError, OSError) as e:
-            logger.debug(f"Cannot search {search_path}: {e}")
+            logger.debug("Cannot search a folder: %s", error_label(e))
             continue
 
     # Sort by most recently modified
@@ -632,7 +633,9 @@ def switch_project(project_path: str, read_only: bool = True) -> None:
     # Connect to new project (read-only by default)
     db = QualcoderDatabase(project_path, read_only=read_only)
     current_project_path = project_path
-    logger.info(f"Switched to project: {Path(project_path).name} (read_only={read_only})")
+    # No project folder name in the log (v0.14): a single-case study is
+    # often named after its participant, and the host keeps the log.
+    logger.info("Switched to the selected project (read_only=%s)", read_only)
 
 
 def get_db(read_only: bool = True) -> QualcoderDatabase:
@@ -665,10 +668,11 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
 
     # If we have a project path set but db is None, try to reconnect
     if db is None and current_project_path is not None:
-        logger.warning(f"Database connection lost but project path exists: {Path(current_project_path).name}. Attempting to reconnect...")
+        logger.warning("Database connection lost; reconnecting to the "
+                       "selected project")
         try:
             db = QualcoderDatabase(current_project_path, read_only=read_only)
-            logger.info(f"Successfully reconnected to: {Path(current_project_path).name}")
+            logger.info("Reconnected to the selected project")
             return db
         except Exception as e:
             logger.error("Failed to reconnect to database: %s",
@@ -685,10 +689,12 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
         try:
             db = QualcoderDatabase(db_path, read_only=read_only)
             current_project_path = db_path
-            # Log only filename, not full path (security best practice)
-            logger.info(f"Connected to Qualcoder database: {Path(db_path).name}")
+            # Neither the path nor the folder's name (v0.14)
+            logger.info("Connected to the project set in "
+                        "QUALCODER_PROJECT_PATH")
         except (ValueError, FileNotFoundError, RuntimeError) as e:
-            logger.error(f"Failed to connect to database: {e}")
+            logger.error("Failed to connect to database: %s",
+                         error_label(e))
             raise
 
     return db
@@ -2651,20 +2657,22 @@ def select_project(project_path: str) -> str:
         return _ai_json(result, indent=2)
 
     except DatabaseLockedError as e:
-        logger.error(f"Project locked during select: {e}")
+        logger.error("Project locked during select: %s", error_label(e))
         return json.dumps({
             "success": False,
             "error": str(e)
         })
     except UnsupportedSchemaError as e:
-        logger.error(f"Unsupported schema during select: {e}")
+        logger.error("Unsupported schema during select: %s",
+                     error_label(e))
         return json.dumps({
             "success": False,
             "error": str(e)
         })
     except (ValueError, FileNotFoundError) as e:
-        # Log full error for debugging, but don't expose internal paths to user
-        logger.error(f"Failed to select project: {e}")
+        # The kind only (v0.14): the message is the path, the project
+        # folder's name in it
+        logger.error("Failed to select project: %s", error_label(e))
         if isinstance(e, DatabaseOpenError):
             # The path IS a well-formed project, but SQLite refused its
             # data.qda at validation time: a hot journal left by a 4.0
@@ -2685,7 +2693,8 @@ def select_project(project_path: str) -> str:
                      error_label(e))
         return json.dumps(_project_open_failure_result(project_path))
     except RuntimeError as e:
-        logger.error(f"Failed to open project database: {e}")
+        logger.error("Failed to open project database: %s",
+                     error_label(e))
         return json.dumps({
             "success": False,
             "error": "Failed to open project database"
@@ -2883,7 +2892,8 @@ def _keep_unreadable_sidecar_aside(folder: Path) -> Tuple[Optional[Path],
     try:
         os.replace(str(path), str(target))
     except OSError as e:
-        logger.error(f"Could not move the unreadable sidecar aside: {e}")
+        logger.error("Could not move the unreadable sidecar aside: %s",
+                     error_label(e))
         return None, UNREADABLE_MESSAGE
     return target, None
 
@@ -7224,6 +7234,18 @@ def list_backups() -> str:
     }, indent=2)
 
 
+def _backup_log_name(name: str, project_folder: Path) -> str:
+    """A backup as a log line may name it (v0.14): the part after the
+    project folder's name, which is what tells one backup from another,
+    as the lines that take a backup name it. A backup's folder is named
+    after the project's, and a single-case study after its participant.
+    """
+    stem = Path(project_folder).stem
+    if name.startswith(stem):
+        return "(project folder name withheld)" + name[len(stem):]
+    return "(name withheld)"
+
+
 def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
     """Collect both backup families next to the project, newest first.
 
@@ -7254,7 +7276,9 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
                     "size_mb": round(size_bytes / (1024 * 1024), 2),
                 })
             except OSError as e:
-                logger.debug(f"Cannot stat backup {entry}: {e}")
+                logger.debug("Cannot stat backup %s: %s",
+                             _backup_log_name(entry.name, project_folder),
+                             error_label(e))
                 continue
 
     backups.sort(key=lambda b: b["created"], reverse=True)
@@ -7447,7 +7471,11 @@ def prune_backups(keep_last: Optional[int] = None,
             shutil.rmtree(backup["path"])
             removed.append(backup["name"])
         except OSError as e:
-            logger.error(f"Failed to remove backup {backup['name']}: {e}")
+            # The backup's own name carries the project folder's, as the
+            # lines that take a backup already knew (v0.14)
+            logger.error("Failed to remove backup %s: %s",
+                         _backup_log_name(backup["name"], project_folder),
+                         error_label(e))
             failed.append(backup["name"])
 
     result: Dict[str, Any] = {
@@ -15179,9 +15207,12 @@ def main(argv: Optional[List[str]] = None):
     if db_path:
         # Option B: Fixed project path provided
         if not Path(db_path).exists():
-            print(f"Error: Database file not found: {db_path}", file=sys.stderr)
+            print("Error: the project set in QUALCODER_PROJECT_PATH was not "
+                  "found; check the path in the host's configuration.",
+                  file=sys.stderr)
             sys.exit(1)
-        logger.info(f"Starting Qualcoder MCP server with pre-configured project: {Path(db_path).name}")
+        logger.info("Starting Qualcoder MCP server with the project set in "
+                    "QUALCODER_PROJECT_PATH")
     else:
         # Option A: Dynamic project selection
         logger.info("Starting Qualcoder MCP server in dynamic mode (no project pre-configured)")

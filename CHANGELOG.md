@@ -56,6 +56,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the library answered with its message, is now answered by its
   kind. A test reads every handler in the source that can catch a
   SQLite error and fails on any use of its message.
+- **No names or paths in the log.** Creating a code, a category or a
+  case, adding a journal entry and importing a file log the id, not the
+  name, and an attribute type or value is logged without its name. The
+  lines that select a project, start the server with a configured
+  project and connect or reconnect to it no longer name the project
+  folder (and the start-up error for a configured path that does not
+  exist no longer prints the path). The two backup-failure lines, the
+  lock-file warning every restore writes, the prune's line for a backup
+  it could not remove, the backup listing's line for one it could not
+  read, and the lines that copy a project to the workspace carry no
+  path: a file-system error is logged as its kind and the system's name
+  for it (`PermissionError EACCES`), and a backup by the part of its
+  name after the project folder's, as the lines that take a backup
+  already did. The session and export lines drop their paths too. A
+  test reads every log call in the source and fails on one that carries
+  a caught error other than by its kind.
 - `pseudonymise_source`'s list of what it does not rewrite names an
   imported document's stored copy in the project's `documents/` folder,
   which keeps the original text and which QualCoder's exports ship.

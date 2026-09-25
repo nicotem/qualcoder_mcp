@@ -710,8 +710,9 @@ log carries no memo text, and since v0.14 no SQLite message: a database
 error is logged by its kind and SQLite's short name for it, so a project
 built to put a note into an error (with a database trigger), or a
 damaged one (with a note that is not UTF-8), no longer makes a tool log
-that note, private part included. It does carry project file names and
-code and case names.
+that note, private part included. It names no project, file, code,
+category, case, journal entry or attribute and no path: it carries ids,
+counts and the kinds of errors.
 
 ---
 
