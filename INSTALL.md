@@ -707,9 +707,10 @@ Developer > Show Logs. LM Studio on macOS persists it into
 `qualcoder_mcp` to find the server's start-up lines (which report the
 toolset mode and the number of tools registered) and any errors. In
 ordinary use the log carries no memo text (a project built to do it,
-with a database trigger, can make one of the older write tools log a
-database message that quotes a note; closing that is on the list for
-v0.14); it does carry project file names, code and case names and, for
+with a database trigger, or a damaged one, with a note that is not
+UTF-8, can make several tools log a database message that quotes a
+note, private part included; closing that is on the list for v0.14);
+it does carry project file names, code and case names and, for
 a database that will not open, the SQLite error text.
 
 ---

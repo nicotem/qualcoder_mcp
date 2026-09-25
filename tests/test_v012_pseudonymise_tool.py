@@ -8405,12 +8405,13 @@ class TestTheDocumentsTellTheTruth:
         # v0.13, Brief 2 (its hand-off note, H.2.8, and the lead's first
         # answer): the tool entry's wording is conditional now and is
         # pinned here; the v0.12 sentence stays only in the "Completed in
-        # v0.12.0" block, which is history.
+        # v0.12.0" block, which is history. The release's fix round 1
+        # (QA m2) adds journal entry names, counted and never rewritten.
         "Notes and journal entries are scanned and counted, and are "
         "rewritten, in their public part only and across the whole "
         "project, only when `rewrite_memos` is on; case, file, code, "
-        "category and attribute-type names and attribute values are "
-        "scanned and counted, never rewritten",
+        "category and attribute-type names, journal entry names and "
+        "attribute values are scanned and counted, never rewritten",
         "On a mapping you type, the execute is refused unless "
         "`save_mapping_to_project` (given on the preview, because the "
         "token binds it) writes the mapping into the project's own "
@@ -8557,6 +8558,18 @@ class TestTheDocumentsTellTheTruth:
         "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
         "both keyed with the per-user token secret rather than plain "
         "digests",
+        # v0.13 release fix round 1 (S-REL-1): the per-file digests are
+        # plain, in the manifest and in the result, and they confirm a
+        # guessed name beside the pseudonymised text.
+        "and, for each file, the length and plain SHA-256 of its text "
+        "before and after the run (`old_fingerprint`, `new_fingerprint`). "
+        "Those two are not keyed: together with the pseudonymised text "
+        "they confirm a guessed original name, so the manifest must not "
+        "be shared",
+        "each file's length and plain SHA-256 before and after the run are "
+        "in the manifest (`old_fingerprint`, `new_fingerprint`) and in the "
+        "run's result (`old_length`, `old_sha256`, `new_length`, "
+        "`new_sha256`), so they reach the AI provider as well.",
         # Fix round 4, L3, worded exactly in fix round 5: prune_backups
         # probes data.qda read-only through validate_qda_path and
         # constructs no fresh project connection, so it settles nothing.
@@ -8626,6 +8639,18 @@ class TestTheDocumentsTellTheTruth:
         assert "reverse a run over spans" not in flat
         assert "This server never writes it and never deletes it" not in flat
         assert "Scanned and counted, never rewritten." not in flat
+
+    def test_privacy_no_longer_says_the_manifest_confirms_no_guess(self):
+        """v0.13 release fix round 1 (S-REL-1): the manifest's per-file
+        digests are plain SHA-256 and confirm a guessed name beside the
+        pseudonymised text, so "neither confirms" covers the two keyed
+        digests only, and the inventory lists the plain ones."""
+        flat = self._flat("PRIVACY.md")
+        assert ("keyed with the per-user token secret rather than plain "
+                "digests, so neither confirms a guessed name" not in flat)
+        assert ("and two digests keyed with the preview-token secret "
+                "(`token_bind`, `mapping_hmac_sha256`). Never an original "
+                "name" not in flat)
 
     def test_privacy_no_longer_makes_the_unqualified_promise(self):
         flat = self._flat("PRIVACY.md")

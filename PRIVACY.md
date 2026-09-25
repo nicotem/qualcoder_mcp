@@ -77,8 +77,13 @@ What stays local, always:
   one JSON file per `pseudonymise_source` run, created owner-only on
   POSIX systems): the pseudonyms applied, the replacement spans, the
   row ids and the old and new offsets of every row the run moved, the
-  case mode and overlap policy, and two digests keyed with the
-  preview-token secret (`token_bind`, `mapping_hmac_sha256`). Never an
+  case mode and overlap policy, two digests keyed with the
+  preview-token secret (`token_bind`, `mapping_hmac_sha256`), and, for
+  each file, the length and plain SHA-256 of its text before and after
+  the run (`old_fingerprint`, `new_fingerprint`). Those two are not
+  keyed: together with the pseudonymised text they confirm a guessed
+  original name, so the manifest must not be shared, not even as an
+  audit record beside the pseudonymised data. Never an
   original name: the project path, the backup path and a file's name
   are withheld where a reader would see one, and "Practical
   mitigations" below says how. Since v0.13 the record is format 2: it
@@ -813,8 +818,17 @@ will ask, and the summary above depends on them:
     not, and neither the test nor the rewrite matches such a spelling.
     The manifest's `token_bind` and its `mapping_hmac_sha256` are both
     keyed with the per-user token secret rather than plain digests, so
-    neither confirms a guessed name to anyone who holds the manifest or
-    the preview without also holding that secret.
+    neither of those two confirms a guessed name to anyone who holds the
+    manifest or the preview without also holding that secret. The
+    per-file digests are not keyed: each file's length and plain
+    SHA-256 before and after the run are in the manifest
+    (`old_fingerprint`, `new_fingerprint`) and in the run's result
+    (`old_length`, `old_sha256`, `new_length`, `new_sha256`), so they
+    reach the AI provider as well. With the pseudonymised text beside
+    them, a guessed name can be put back where a pseudonym sits and
+    checked against the digest of the text before the run: they do
+    confirm a guessed name, to anyone who holds them and that text. The
+    manifest must not be shared.
   - **The preview's own reply.** On the `use_project_pseudonyms` path
     the mapping is the researcher's own reverse key and the model never
     supplied it, so no diagnostic and no refusal quotes a name from it

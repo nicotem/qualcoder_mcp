@@ -26,9 +26,9 @@ where the old name stays. Brief 2: the public part of notes rewritten
 under its own switch, `rewrite_memos`; the run record versioned as
 format 2; a typed mapping kept, either saved into the project's own
 `pseudonyms.json` or attested as kept by the researcher; the name list
-as a tool of its own, `read_pseudonym_list`; and a restore note and a
-prune warning that protect the mapping's last copy. The licence moves
-to LGPL-3.0-or-later, QualCoder's own. Three tools added,
+as a tool of its own, `read_pseudonym_list`; and the mapping's last
+copy warned about, by a restore note and a prune warning. The licence
+moves to LGPL-3.0-or-later, QualCoder's own. Three tools added,
 `rename_case`, `rename_file` and `read_pseudonym_list`: 73 in the full
 toolset, 21 in `core`. The dependency floor is unchanged,
 `mcp>=1.17.0,<2`. Parity claims cite QualCoder master at pinned commit
@@ -278,10 +278,11 @@ the project database and QualCoder's source, not in a QualCoder window.
   count takes about one second on the development Mac and about two
   seconds on the slowest CI platform: its worst case is the three
   budgets' cost, which each CI platform's rate line prints (1.16 to
-  2.22 s on the six platforms at the last measurement, prose under a
-  case-insensitive mapping included) and which reads 0.93 to 0.96 s on
-  the development Mac. Through the tool there, the dearest realistic
-  shape measured, which fills all three budgets, takes 0.80 to 0.86 s;
+  2.22 s on the six platforms when measured on 24 September 2026, prose
+  under a case-insensitive mapping included) and which reads about one
+  second on the development Mac (0.93 to 1.1 s in the measurements so
+  far). Through the tool there, the dearest realistic shape measured,
+  which fills all three budgets, takes 0.80 to 0.86 s;
   twelve files too dense for the match budget 0.59 to 0.60 s, and
   forty-eight chat exports with a name on every line 0.22 to 0.26 s.
   Crafted input stays bounded, and linear in the size of the text and
