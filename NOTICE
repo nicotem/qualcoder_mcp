@@ -46,7 +46,8 @@ QualCoder is copyright Colin Curtain and contributors (its source file
 headers name the authors as Colin Curtain, Kai Dröge, Justin
 Missaghieh--Poncet and Lorenzo Salomón), and is licensed under the GNU
 Lesser General Public License, version 3 or (at your option) any later
-version (LGPL-3.0-or-later). The items below remain under that licence.
+version (LGPL-3.0-or-later). This project uses the items below under
+that licence.
 
 How to read an entry. "Here" is the file in this repository and the
 functions, classes or names that carry the item. "From" is the
@@ -75,7 +76,7 @@ Routines in the package
 2. QualCoder's "Kappa" value (copied verbatim)
    Here: src/qualcoder_mcp/coder_comparison.py, kappa_qualcoder.
    From: reports.py, lines 1140-1151 (the same expression is at
-   report_compare_coder_file.py, lines 818-830).
+   report_compare_coder_file.py, lines 817-829).
    Author: Colin Curtain (QualCoder's git history, 9 of the 12 lines).
    Why: the value must be the number QualCoder's Coder comparison report
    displays, and a floating-point result is identical only when the same
@@ -246,7 +247,7 @@ Values in the package
 
 23. QualCoder's frequencies CSV headings
     Here: src/qualcoder_mcp/server.py, export_frequencies_csv.
-    From: reports.py, lines 233, 338 and 394.
+    From: reports.py, lines 226, 233, 338 and 394.
     Why: the frequencies CSV (file name, headings and cid:/catid: cells)
     reads like QualCoder's frequencies export.
 
@@ -354,7 +355,7 @@ the format dictates.
     QualcoderDatabase.fingerprint_rows_category, QualcoderDatabase.add_code
     and QualcoderDatabase.import_text_file.
     From: view_graph.py, line 4492; code_tree.py, lines 753-755;
-    ai_mcp_server.py, lines 1522-1525; __main__.py, lines 1791 and
+    ai_mcp_server.py, lines 1522-1525; __main__.py, lines 1791-1792 and
     1816-1824.
 
 37. Where QualCoder's own writers leave attribute placeholder rows.
@@ -373,7 +374,7 @@ the format dictates.
     QualcoderDatabase._rename_row, QualcoderDatabase.rename_case and
     QualcoderDatabase.rename_file.
     Here: src/qualcoder_mcp/pseudonymise.py, unique_constraint_collisions.
-    From: __main__.py, lines 1790-1791, 1800-1801, 1813-1814 and
+    From: __main__.py, lines 1790-1792, 1800-1801, 1813-1814 and
     1819-1821; code_tree.py, line 1245; cases.py, line 718;
     manage_files.py, line 1502; 3.8.2 manage_files.py, lines 762-764
     and 787; 3.8.2 case_file_manager.py, lines 207-211; 3.8.2 cases.py,
@@ -393,7 +394,7 @@ the format dictates.
     QualcoderDatabase.search_files, QualcoderDatabase.list_attribute_types,
     QualcoderDatabase._pseudonymise_rows and
     QualcoderDatabase.add_attribute_type.
-    From: __main__.py, lines 1791 and 1819; app.py, line 1530;
+    From: __main__.py, lines 1791-1792 and 1819; app.py, line 1530;
     attributes.py, line 78; code_text.py, lines 6174 and 6181;
     ai_mcp_server.py, line 3089.
 
@@ -420,9 +421,9 @@ the format dictates.
     Here: src/qualcoder_mcp/server.py, OLD_NAME_LEFT_IN_NOTE.
     From: __main__.py, lines 1835-1838 and 1861-1862; manage_files.py,
     lines 745-783 and 1165-1186; report_attributes.py, lines 139-161,
-    265-310 and 710-712 (3.8.2 __main__.py, lines 2395-2398 and
+    265-308 and 710-712 (3.8.2 __main__.py, lines 2395-2398 and
     2416-2417; 3.8.2 manage_files.py, lines 184-223 and 591-615; 3.8.2
-    report_attributes.py, lines 143-165, 264-309 and 710-712).
+    report_attributes.py, lines 143-165, 264-307 and 710-712).
 
 44. The documents folder that holds a text's stored copy, and how
     QualCoder finds that copy: by the stored path "/docs/<name>" or,
@@ -436,16 +437,16 @@ the format dictates.
     _is_a_rename_back.
     From: __main__.py, lines 1775-1776; manage_files.py, lines 2955 and
     3700-3707; refi.py, lines 2111-2117 (3.8.2 manage_files.py, lines
-    2206 and 2358-2366).
+    2206-2207 and 2358-2366).
 
 45. That a file entry's id can be given again to a later entry, and
     that its date is set when the entry is created and is left as it is
     by a rename.
     Here: src/qualcoder_mcp/database.py, QualcoderDatabase.file_name_rows
     and QualcoderDatabase.earlier_name.
-    From: __main__.py, lines 1790-1791; manage_files.py, lines
+    From: __main__.py, lines 1790-1792; manage_files.py, lines
     2600-2608; cases.py, line 718; manage_files.py, line 1502 (3.8.2
-    __main__.py, lines 2350-2351).
+    __main__.py, lines 2350-2352).
 
 46. The note columns of QualCoder's tables, the key each note is
     updated by, and the two kinds of note QualCoder dates when one is
@@ -611,10 +612,10 @@ QualCoder projects.
     Here: tests/test_v013_rename_backups.py.
     Here: tests/test_v08_attributes.py.
     Here: tests/test_qa_v08_d1d2_attack.py.
-    From: __main__.py, lines 1788-1828 and 1953; app.py, lines 1611-1612;
-    code_text.py, line 4319; pseudonyms.py, lines 64, 90 and 93; 3.8.2
-    __main__.py, lines 2985-2992; 3.8.2 case_file_manager.py, lines
-    208-222.
+    From: __main__.py, lines 1788-1828, 1862 and 1953; app.py, lines
+    1611-1612; code_text.py, line 4319; pseudonyms.py, lines 64, 90 and
+    93; 3.8.2 __main__.py, lines 2985-2992; 3.8.2 case_file_manager.py,
+    lines 208-222.
     Why: statements that name QualCoder's tables and columns to plant
     rows and old schema versions in fixtures; similar one-line
     statements occur elsewhere in tests/.
@@ -652,7 +653,9 @@ QualCoder projects.
     Here: tests/test_v013_rename_tools.py, _save_display, _save_filter,
     QUALCODER_DISPLAYS and QUALCODER_FILTERS.
     From: manage_files.py, lines 752, 1169, 1176 and 1183;
-    report_attributes.py, lines 143 and 270-310.
+    report_attributes.py, lines 143 and 270-308 (3.8.2 manage_files.py,
+    lines 191, 591, 601 and 615; 3.8.2 report_attributes.py, lines 147
+    and 269-307).
     Why: fixtures hold saved displays and filters in the text QualCoder
     writes, and saved rows that QualCoder 4.0 and 3.8.2 wrote through
     their own code, so the reading of item 43 is tested on QualCoder's

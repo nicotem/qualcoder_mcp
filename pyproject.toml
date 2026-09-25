@@ -4,7 +4,8 @@ version = "0.13.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
 authors = [{name = "Niccolò Tempini", email = "n.tempini@exeter.ac.uk"}]
 # PEP 639 SPDX licence expression (setuptools >= 77). LGPL-3.0-or-later
-# from v0.13, QualCoder's own licence; releases up to 0.12.1 were MIT.
+# from v0.13, QualCoder's own licence; releases up to 0.12.1 were
+# published under MIT (see NOTICE).
 # COPYING.LESSER is the LGPL text and COPYING the GPL text it incorporates;
 # NOTICE names the code derived from QualCoder. PEP 639 supersedes licence
 # classifiers with the expression, and setuptools refuses a

@@ -97,7 +97,7 @@ Qualcoder is a free, open-source qualitative data analysis (QDA) application wri
 - **GUI**: PyQt6
 - **Database**: SQLite
 - **Repository**: https://github.com/ccbogel/QualCoder
-- **License**: LGPL-3.0
+- **License**: LGPL-3.0-or-later
 
 ### Database Schema
 

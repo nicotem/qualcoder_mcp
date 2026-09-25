@@ -200,3 +200,7 @@ its code is the owner's (2026-09-23):
   name NOTICE gives no longer exists, so a rename or a rewrite updates
   NOTICE in the same change. It also holds NOTICE's entries as a
   snapshot, so an entry is removed only by editing the test as well.
+
+The items NOTICE lists were copied before this rule was made; some of
+them could be written afresh, and each is kept as it is until its code
+is next changed.

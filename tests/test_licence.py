@@ -197,6 +197,23 @@ class TestTheFilesShip:
         paragraphs = [" ".join(p.split()) for p in grant.split("\n\n")]
         assert self.RELEASES_ALREADY_PUBLISHED in paragraphs
 
+    def test_the_owners_two_sentences_on_the_listed_items(self):
+        """The owner's rulings of 2026-09-25: NOTICE says this project
+        uses the listed items under QualCoder's licence, taking no
+        position on whether each item is copyrightable, and CONTRIBUTING
+        says the listed items were copied before the copying rule."""
+        notice = " ".join(
+            (REPO / "NOTICE").read_text(encoding="utf-8").split())
+        assert ("(LGPL-3.0-or-later). This project uses the items below "
+                "under that licence." in notice)
+        assert "The items below remain under that licence." not in notice
+        contributing = " ".join(
+            (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
+        assert ("The items NOTICE lists were copied before this rule was "
+                "made; some of them could be written afresh, and each is "
+                "kept as it is until its code is next changed."
+                in contributing)
+
     def test_the_mit_licence_file_is_gone(self):
         """MIT stays in git history and in every release up to 0.12.1;
         a LICENSE file in the tree would say it still applies."""
