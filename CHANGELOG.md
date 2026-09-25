@@ -68,11 +68,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   UTF-8 logs the kind. Python 3.10, which has no SQLite names, gives
   the kind alone. Two routes that bypassed the tool guard are closed:
   the resources (`qualcoder://...`), which the MCP library reads and
-  whose errors it answered and logged in full, now raise a fixed text
-  with nothing chained; and an error of a kind the guard did not name,
-  which the library answered with its message, is now answered by its
-  kind. A test reads every handler in the source that can catch a
-  SQLite error and fails on any use of its message.
+  whose errors it answered and logged in full with a traceback, now
+  answer an error as a tool does, as their content, so the library logs
+  nothing (a resource read before any project was selected had put the
+  last-used project's path into the host's log, and a misconfigured
+  `QUALCODER_PROJECT_PATH` the configured one); and an error of a kind
+  the guard did not name, which the library answered with its message,
+  is now answered by its kind. A test reads every handler in the source
+  that can catch a SQLite error and fails on any use of its message,
+  and four tests read every resource on a real server over standard
+  input and output, its standard error searched line by line. The rule
+  closes one channel: Python's own messages can still quote a stored
+  value, and PRIVACY.md says so. When `pseudonyms.json` cannot be
+  read, the answers give the kind of error, not the system's text,
+  which named the file's path (a link that loops included, which
+  pathlib reports differently before Python 3.13), and
+  `get_current_project` no longer fails whole on such a file.
 - **No names or paths in the log.** Creating a code, a category or a
   case, adding a journal entry and importing a file log the id, not the
   name, and an attribute type or value is logged without its name. The
@@ -86,9 +97,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path: a file-system error is logged as its kind and the system's name
   for it (`PermissionError EACCES`), and a backup by the part of its
   name after the project folder's, as the lines that take a backup
-  already did. The session and export lines drop their paths too. A
-  test reads every log call in the source and fails on one that carries
-  a caught error other than by its kind.
+  already did. The session and export lines drop their paths too, and
+  a project's schema version is logged only when it has QualCoder's
+  form (`v` and digits): the field is the project's own, and a trigger
+  could copy a note or a participant's name into it. A test reads every
+  log call in the source and fails on one that carries a caught error
+  other than by its kind. What the log covers is the lines this server
+  writes and the MCP library's beside them; INSTALL.md and PRIVACY.md
+  now say that a host may record more in the same file (Claude
+  Desktop's server log records every request and answer).
 - **Every read re-checks whether the project hides coders.** QualCoder
   creates the visibility column and its four views when it opens a
   project, which can be after this server connected. The decisions that
@@ -97,8 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selected again. Now every read re-reads the declaration, one way as
   before (a declaration seen is never withdrawn), so a coder hidden in
   QualCoder mid-conversation is filtered from the next call; a
-  declaration that arrives without all four views is refused, as at
-  connect. The cost is one schema query per read on a project that did
+  declaration seen by any read or by a decision that names a coder is
+  kept for both; a read that lands after QualCoder has added the column
+  and before it has added the views is refused, and the next read after
+  it has added them answers, filtered. The cost is one schema query per read on a project that did
   not declare visibility when the connection opened, 5 to 6
   microseconds each on the development Mac and a few per read tool
   call (about 11 to 25 microseconds on the reads measured), and nothing

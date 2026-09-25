@@ -680,6 +680,15 @@ def sqlite_error_label(error: BaseException) -> str:
     return type(error).__name__
 
 
+def _version_for_log(version: Any) -> str:
+    """A project's `databaseversion` as a log line may carry it: the
+    value when it has QualCoder's shape (`v` and up to four digits),
+    otherwise a fixed phrase. The field is the project's own text."""
+    if isinstance(version, str) and re.fullmatch(r"v\d{1,4}", version):
+        return version
+    return "(a value not in QualCoder's form, withheld)"
+
+
 def error_label(error: BaseException) -> str:
     """Any error as a log line may carry it: its kind and a short name,
     never its message (v0.14, one rule for every log line).
@@ -2084,10 +2093,13 @@ class QualcoderDatabase:
         # Validate path before opening
         self.db_path = validate_qda_path(db_path)
         self.read_only = read_only
-        # Whether coder visibility arrived after this connection opened:
-        # None until a read sees it arrive, then whether its whole view
-        # set was there (v0.14, `_visibility_in_force`).
-        self._visibility_arrived: Optional[bool] = None
+        # Coder visibility arriving after this connection opened (v0.14):
+        # whether any read or naming decision has seen the declaration
+        # (kept, one way, `_visibility_is_declared_now`), and whether a
+        # read has seen QualCoder's whole view set with it (kept once
+        # whole; a partial set is read again, `_visibility_in_force`).
+        self._declaration_seen = False
+        self._visibility_arrived = False
         self._arrived_views: frozenset = frozenset()
 
         try:
@@ -2105,10 +2117,10 @@ class QualcoderDatabase:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             raise RuntimeError(
-                f"Failed to open database: {sqlite_error_label(e)}") from e
+                f"Failed to open database: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             raise RuntimeError(
-                f"Failed to open database: {sqlite_error_label(e)}") from e
+                f"Failed to open database: {sqlite_error_label(e)}") from None
 
         # Validate this is a Qualcoder database
         self._validate_schema()
@@ -2165,11 +2177,11 @@ class QualcoderDatabase:
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             raise RuntimeError(
                 f"Failed to validate database schema: "
-                f"{sqlite_error_label(e)}") from e
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             raise RuntimeError(
                 f"Failed to validate database schema: "
-                f"{sqlite_error_label(e)}") from e
+                f"{sqlite_error_label(e)}") from None
 
     def _check_version(self):
         """Check database version and log warnings if unsupported.
@@ -2189,10 +2201,15 @@ class QualcoderDatabase:
                 self.db_version = version
                 self.qualcoder_about_ok = "QualCoder" in (row[1] or "")
                 if version not in SUPPORTED_DB_VERSIONS:
+                    # The value only when it has QualCoder's shape (`v`
+                    # and digits): the field is the project's own, and a
+                    # trigger can copy a note, private part included, or
+                    # a participant's name into it (v0.14 fix round 1,
+                    # Security secB-2).
                     logger.warning(
-                        f"Untested database version: {version}. "
-                        f"Supported versions: {SUPPORTED_DB_VERSIONS}"
-                    )
+                        "Untested database version: %s. Supported "
+                        "versions: %s", _version_for_log(version),
+                        SUPPORTED_DB_VERSIONS)
                 else:
                     logger.info(f"Connected to Qualcoder database version {version}")
         except sqlite3.OperationalError as e:
@@ -2347,11 +2364,11 @@ class QualcoderDatabase:
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             raise RuntimeError(
                 f"Failed to check database schema: "
-                f"{sqlite_error_label(e)}") from e
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             raise RuntimeError(
                 f"Failed to check database schema: "
-                f"{sqlite_error_label(e)}") from e
+                f"{sqlite_error_label(e)}") from None
 
     def get_project_info(self) -> Dict[str, Any]:
         """Get project metadata."""
@@ -2585,7 +2602,7 @@ class QualcoderDatabase:
 
         None: it declares no visibility, and nothing is hidden. True: it
         declares it and has QualCoder's whole view set. False: it
-        declares it without the whole set, which every read refuses.
+        declares it without the whole set, which the read refuses.
 
         A declaration present when the connection opened is the probe's
         answer and is never withdrawn (the one-way rule of
@@ -2596,17 +2613,24 @@ class QualcoderDatabase:
         the base tables and could return a hidden coder's row, with its
         owner, until the project was selected again. The cost is that
         re-read, one `PRAGMA table_info(coder_names)` per read on a
-        project without the declaration. When it arrives, the views
-        present are read once and kept, one way as well: a view dropped
-        afterwards fails the read that selects from it, as it does for a
-        declaration present at connect.
+        project without the declaration.
+
+        Once the declaration has been seen, by a read or by a decision
+        that names a coder, it is never withdrawn (one memory for both,
+        fix round 1, QA F3). The views are kept only once the whole set
+        has been seen; a partial set refuses this read and is read again
+        on the next (QA F2). QualCoder commits the column before the
+        views, so a read can land between the two; keeping that partial
+        answer refused every later read until the project was selected
+        again. A view dropped after the whole set was seen fails the
+        read that selects from it, as for a declaration present at
+        connect.
         """
         caps = getattr(self, "capabilities", None)
         if caps is not None and caps.visibility_declared():
             return caps.has_coder_visibility
-        arrived = getattr(self, "_visibility_arrived", None)
-        if arrived is not None:
-            return arrived
+        if getattr(self, "_visibility_arrived", False):
+            return True
         if not self._visibility_is_declared_now(say_a_lock=True):
             return None
         try:
@@ -2621,8 +2645,10 @@ class QualcoderDatabase:
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility views could not be read)") from None
         self._arrived_views = frozenset(views & VISIBILITY_VIEWS)
-        self._visibility_arrived = VISIBILITY_VIEWS <= views
-        return self._visibility_arrived
+        whole = VISIBILITY_VIEWS <= views
+        if whole:
+            self._visibility_arrived = True
+        return whole
 
     def visibility_applies(self) -> bool:
         """Whether reads on this project are shaped by coder visibility
@@ -2905,17 +2931,18 @@ class QualcoderDatabase:
         disclosure had already happened, and "never name a hidden coder"
         is an owner-ruled invariant (X1).
 
-        Re-read HERE and nowhere else, which is what makes this a
-        contained change rather than a server-wide one: this is the only
-        per-project read of the declaration that decides who may be
-        named, `_visible_source` keeps the connect-time answer, and the
+        The one per-project read of the declaration: the decisions that
+        name a coder call it directly, and since v0.14 every read calls
+        it too, through `_visible_source` (`_visibility_in_force`); the
         flagship reads its span rows from the base tables in either
-        case. One `PRAGMA table_info` per call, on a handful of calls
-        per tool call, and only on projects that had no declaration when
-        the connection opened.
+        case. One `PRAGMA table_info` per call, and only on projects
+        that had no declaration when the connection opened and on which
+        no call has seen one since.
 
         ONE-WAY, and this is the whole design. A declaration that was
-        there at connect time is never withdrawn by this re-read, only
+        there at connect time, or that any call has seen since (fix
+        round 1 of v0.14, QA F3: one memory for the reads and the
+        naming decisions), is never withdrawn by this re-read, only
         added. QualCoder's migration is additive: the column and the
         views arrive and never leave, so a declaration that disappears
         under a live connection is damage, drift, or a concurrent
@@ -2942,14 +2969,18 @@ class QualcoderDatabase:
         caps = getattr(self, "capabilities", None)
         if caps is not None and caps.visibility_declared():
             return True
+        if getattr(self, "_declaration_seen", False):
+            return True
         try:
             columns = {row[1] for row in self.conn.execute(
                 "PRAGMA table_info(coder_names)").fetchall()}
         except sqlite3.Error as e:
             # A read asks for a lock to be said as one (v0.14: every read
             # now re-reads this, and a locked database is not a damaged
-            # one); the decisions that name a coder keep the posture
-            # below, which they handle as "cannot be decided".
+            # one). A decision that calls this directly keeps the posture
+            # below ("cannot be decided"); one that goes through
+            # `_naming_source` is a read here and says a lock as a lock.
+            # Closed either way.
             if say_a_lock and _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             logger.error(f"Could not re-read the coder visibility "
@@ -2958,7 +2989,10 @@ class QualcoderDatabase:
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility declaration could not be read)"
             ) from None
-        return "visibility" in columns
+        if "visibility" in columns:
+            self._declaration_seen = True
+            return True
+        return False
 
     def coder_visibility_map(self) -> Optional[Dict[str, int]]:
         """{name: visibility} for the whole `coder_names` table.

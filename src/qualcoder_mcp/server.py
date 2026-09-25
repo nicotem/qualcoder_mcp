@@ -425,55 +425,63 @@ DB_UNAVAILABLE_ERROR = (
 )
 
 
+def _error_answer(where: str, e: BaseException,
+                  unexpected: Optional[str] = None) -> str:
+    """The error JSON a tool or a resource answers for `e`, and the log
+    line it writes (the kind only, v0.14).
+
+    One policy for both guards: this server's own errors answer their
+    message; a locked database and an old schema their own texts; a
+    database that will not open, a SQLite error and a file-system error
+    a fixed text, because their messages can carry a note or a path; an
+    error of any other kind its kind alone.
+    """
+    unexpected = unexpected or UNEXPECTED_ERROR
+    if isinstance(e, (DatabaseLockedError, UnsupportedSchemaError)):
+        return json.dumps({"error": str(e)})
+    if isinstance(e, DatabaseOpenError):
+        # Before the generic ValueError branch (it is a subclass): the
+        # sqlite text goes to the log, never into the conversation
+        # (S-H4). select_project keeps its own project-scoped wording.
+        logger.error("Database would not open in %s: %s", where,
+                     error_label(e))
+        return json.dumps({"error": DB_UNAVAILABLE_ERROR})
+    if isinstance(e, (ValueError, TypeError)):
+        return json.dumps({"error": str(e)})
+    if isinstance(e, FileNotFoundError):
+        logger.error("Not found in %s: %s", where, error_label(e))
+        return json.dumps({"error": "File or project not found."})
+    if isinstance(e, OSError):
+        logger.error("OS error in %s: %s", where, error_label(e))
+        return json.dumps({"error": FILE_SYSTEM_ERROR})
+    if isinstance(e, sqlite3.Error):
+        logger.error("SQLite error in %s: %s", where, error_label(e))
+        return json.dumps({"error": DB_UNAVAILABLE_ERROR})
+    if isinstance(e, RuntimeError):
+        logger.error("Runtime error in %s: %s", where, error_label(e))
+        return json.dumps({"error": error_text(e)})
+    # The last route (v0.14): an error of a kind no branch above names
+    # used to leave the guard for the MCP library, which answers the
+    # model with its message and logs the traceback. No such error is
+    # expected; if one comes, its kind is enough to report it, and its
+    # message is not sent.
+    logger.error("Unexpected error in %s: %s", where, error_label(e))
+    return json.dumps({"error": unexpected.format(kind=type(e).__name__)})
+
+
 def _tool_guard(fn):
     """Convert anticipated exceptions into sanitised error JSON.
 
     Applied to every MCP tool so that failures (no project selected, locked
     database, old schema, validation errors, corruption) reach the client as
-    actionable error JSON instead of raw tracebacks.
+    actionable error JSON instead of raw tracebacks (`_error_answer`).
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except DatabaseLockedError as e:
-            return json.dumps({"error": str(e)})
-        except UnsupportedSchemaError as e:
-            return json.dumps({"error": str(e)})
-        except DatabaseOpenError as e:
-            # Before the generic ValueError branch (it is a subclass): the
-            # sqlite text goes to the log, never into the conversation
-            # (S-H4). select_project keeps its own project-scoped wording.
-            logger.error("Database would not open in %s: %s", fn.__name__,
-                         error_label(e))
-            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
-        except (ValueError, TypeError) as e:
-            return json.dumps({"error": str(e)})
-        except FileNotFoundError as e:
-            logger.error("Not found in %s: %s", fn.__name__, error_label(e))
-            return json.dumps({"error": "File or project not found."})
-        except OSError as e:
-            logger.error("OS error in %s: %s", fn.__name__, error_label(e))
-            return json.dumps({"error": "File system operation failed: check "
-                                         "disk space and permissions."})
-        except sqlite3.Error as e:
-            logger.error("SQLite error in %s: %s", fn.__name__,
-                         error_label(e))
-            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
-        except RuntimeError as e:
-            logger.error("Runtime error in %s: %s", fn.__name__,
-                         error_label(e))
-            return json.dumps({"error": error_text(e)})
         except Exception as e:
-            # The last route (v0.14): an error of a kind no arm above
-            # names used to leave the guard for the MCP library, which
-            # answers the model with its message and logs the traceback.
-            # No such error is expected; if one comes, its kind is
-            # enough to report it, and its message is not sent.
-            logger.error("Unexpected error in %s: %s", fn.__name__,
-                         error_label(e))
-            return json.dumps({"error": UNEXPECTED_ERROR.format(
-                kind=type(e).__name__)})
+            return _error_answer(fn.__name__, e)
     return wrapper
 
 
@@ -483,47 +491,41 @@ def _tool_guard(fn):
 UNEXPECTED_ERROR = (
     "An unexpected error ({kind}) stopped this tool; nothing more of it is "
     "reported here. If it persists, report it with the tool's name.")
+UNEXPECTED_RESOURCE_ERROR = (
+    "An unexpected error ({kind}) stopped this read; nothing more of it is "
+    "reported here. If it persists, report it with the resource's address.")
 
-# The fixed text a resource read answers when the file system refused it.
+# The fixed text a tool or a resource answers when the file system
+# refused it.
 FILE_SYSTEM_ERROR = ("File system operation failed: check disk space and "
                      "permissions.")
 
 
 def _resource_guard(fn):
-    """What a resource read may say when it fails (v0.14).
+    """What a resource read answers when it fails: the error as the
+    resource's content, never raised (v0.14, fix round 1).
 
-    Resources are read by the MCP library, which puts an error's message
-    into its answer and logs the traceback. A SQLite error's message can
-    carry a note, private part included (a note stored as bytes that are
-    not UTF-8 makes Python's sqlite3 quote it whole), so a SQLite error,
-    an unopenable database and a file-system error are raised again as
-    this server's fixed texts, with nothing chained, and logged by their
-    kind. This server's own errors pass through as they are: their
-    messages are written here, and "No Qualcoder project selected" is
-    one of them.
+    The MCP library reads resources, and it logs every error a resource
+    raises with its traceback at ERROR, which reaches the host's log
+    (mcp 1.30.0, `server/fastmcp/server.py` 406-411). A raised error's
+    message would therefore be logged whatever it was, and several of
+    this server's own messages carry a path: "No Qualcoder project
+    selected" with the last-used project's path, and every refusal of a
+    configured path (`validate_qda_path`). So a resource returns the
+    error JSON a tool would answer for the same error (`_error_answer`,
+    one policy for both), as `qualcoder://cases/{id}` already answered a
+    missing case, and the library logs nothing. The hint to the
+    last-used project stays in the answer, where it helps, as it does in
+    a tool's; a host that records every answer records it there, as it
+    records the tools' answers.
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except DatabaseOpenError as e:
-            logger.error("Database would not open in %s: %s", fn.__name__,
-                         error_label(e))
-            raise RuntimeError(DB_UNAVAILABLE_ERROR) from None
-        except (ValueError, TypeError, RuntimeError):
-            raise
-        except sqlite3.Error as e:
-            logger.error("SQLite error in %s: %s", fn.__name__,
-                         error_label(e))
-            raise RuntimeError(DB_UNAVAILABLE_ERROR) from None
-        except OSError as e:
-            logger.error("OS error in %s: %s", fn.__name__, error_label(e))
-            raise RuntimeError(FILE_SYSTEM_ERROR) from None
         except Exception as e:
-            logger.error("Unexpected error in %s: %s", fn.__name__,
-                         error_label(e))
-            raise RuntimeError(UNEXPECTED_ERROR.format(
-                kind=type(e).__name__)) from None
+            return _error_answer(fn.__name__, e,
+                                 unexpected=UNEXPECTED_RESOURCE_ERROR)
     return wrapper
 
 
@@ -2962,6 +2964,25 @@ def _set_name_warnings(ro, state, name: str,
             "Unchanged; recorded again.")
     return warnings
 
+def _pseudonyms_json_error(e: BaseException) -> str:
+    """What an answer says when the project's pseudonyms.json could not be
+    read (v0.14 fix round 1, Security secB-3).
+
+    The reader's own refusals by their message, which it writes and which
+    never quote a value from the file (a `ValueError`, or its own
+    "was not found", a `FileNotFoundError` with no errno). Anything the
+    system or pathlib raised by its kind alone: an `OSError`'s text is
+    the file's path, the project folder's name in it, and so is the
+    `RuntimeError` pathlib raises for a link that loops on Python before
+    3.13; a `RecursionError` (a file nested past Python's limit) says
+    nothing useful beyond its kind.
+    """
+    if isinstance(e, ValueError) or (isinstance(e, OSError)
+                                     and e.errno is None):
+        return str(e)
+    return f"{PSEUDONYMS_JSON_NAME} could not be read ({error_label(e)})."
+
+
 def _pseudonyms_json_read() -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
     """One read of the project's pseudonyms.json, for the two routes.
 
@@ -2975,11 +2996,11 @@ def _pseudonyms_json_read() -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
         return {"present": False}, None
     try:
         entries, encoding = read_project_pseudonyms(folder)
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, RuntimeError) as e:
+        # RuntimeError too (Security secB-7): pathlib's link loop before
+        # Python 3.13, and a RecursionError, failed the whole report.
         return {"present": True, "entries": None,
-                "error": (str(e) if isinstance(e, ValueError) else
-                          f"{PSEUDONYMS_JSON_NAME} could not be read "
-                          f"({type(e).__name__}).")}, None
+                "error": _pseudonyms_json_error(e)}, None
     return {"present": True, "entries": len(entries),
             "encoding": encoding}, entries
 
@@ -6794,10 +6815,9 @@ def import_text_file(
             # refusal text quotes a value from it (D1 3.10, Security S3).
             validated = pseudo.validate_mapping(entries, "exact",
                                                 may_echo_names=False)
-        except FileNotFoundError as e:
-            return json.dumps({"error": str(e)}, indent=2)
-        except (ValueError, OSError, pseudo.MappingError) as e:
-            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError, RuntimeError) as e:
+            return json.dumps({"error": _pseudonyms_json_error(e)},
+                              indent=2)
         if content.startswith("﻿"):
             content = content[1:]
         content = content.replace("\r\n", "\n").replace("\r", "\n")
@@ -10891,7 +10911,9 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
             # parsed, extra keys included, for the write-back.
             existing, encoding, raw, read_mode = \
                 read_project_pseudonyms_with_raw(folder)
-        except (ValueError, OSError, LookupError) as e:
+        except (ValueError, OSError, LookupError, RuntimeError) as e:
+            # RuntimeError: pathlib's link loop before Python 3.13, whose
+            # text is the path, answered by its kind like an OSError.
             detail = (str(e).rstrip(".") if isinstance(e, ValueError)
                       and PSEUDONYMS_JSON_NAME in str(e) else
                       f"{PSEUDONYMS_JSON_NAME} could not be read "
@@ -12522,10 +12544,9 @@ def pseudonymise_source(
         try:
             mapping, sidecar_encoding = read_project_pseudonyms(
                 _current_project_folder())
-        except FileNotFoundError as e:
-            return json.dumps({"error": str(e)}, indent=2)
-        except (ValueError, OSError) as e:
-            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError, RuntimeError) as e:
+            return json.dumps({"error": _pseudonyms_json_error(e)},
+                              indent=2)
 
     # Whether the names in this mapping are already in the conversation.
     # They are when the caller typed them; they are NOT when they were

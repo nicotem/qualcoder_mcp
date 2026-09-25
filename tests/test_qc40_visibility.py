@@ -1741,17 +1741,17 @@ class TestPartialViewSetIsNotACapability:
 
     def test_file_content_refuses_rather_than_leaking_the_annotation(
             self, visibility_db):
-        """The files resource reads annotations through the view. It is a
-        resource, not a tool, so it has no `_tool_guard` to turn the
-        refusal into JSON; it raises, which is the fail-closed end of the
-        same rule and never returns the hidden coder's memo."""
-        from qualcoder_mcp.database import CoderVisibilityUnreadable
+        """The files resource reads annotations through the view. Since
+        v0.14's fix round 1 a resource answers an error as its content,
+        as a tool does (the MCP library logs every error a resource
+        raises), so the refusal arrives as JSON: the fail-closed end of
+        the same rule, never the hidden coder's memo."""
         _drop_view(visibility_db, "annotation_visible")
         _reopen(visibility_db)
-        with pytest.raises(CoderVisibilityUnreadable) as caught:
-            server.get_file_content(1)
-        assert "hidden annotation" not in str(caught.value)
-        assert HIDDEN not in str(caught.value)
+        raw = server.get_file_content(1)
+        assert "coder visibility" in json.loads(raw)["error"]
+        assert "hidden annotation" not in raw
+        assert HIDDEN not in raw
 
     def test_by_id_write_guards_do_not_read_the_row_as_visible(
             self, visibility_db):
@@ -2047,12 +2047,12 @@ class TestZeroViewsIsRefusedEverywhereThreeViewsAreRefused:
         out = json.loads(raw)
         assert "error" in out and "coder-visibility view" in out["error"]
 
-    def test_the_file_resource_raises_rather_than_leaking(self, zero_views):
-        from qualcoder_mcp.database import CoderVisibilityUnreadable
-        with pytest.raises(CoderVisibilityUnreadable) as caught:
-            server.get_file_content(1)
-        assert "hidden annotation" not in str(caught.value)
-        assert HIDDEN not in str(caught.value)
+    def test_the_file_resource_refuses_rather_than_leaking(self, zero_views):
+        # An answer, not a raise, since v0.14's fix round 1 (above).
+        raw = server.get_file_content(1)
+        assert "coder visibility" in json.loads(raw)["error"]
+        assert "hidden annotation" not in raw
+        assert HIDDEN not in raw
 
     def test_the_single_row_delete_refuses_and_removes_nothing(
             self, zero_views):

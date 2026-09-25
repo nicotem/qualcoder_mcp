@@ -50,14 +50,19 @@ What stays local, always:
   nothing about your project. Deleting it invalidates outstanding
   preview tokens, which means the next execute asks for a fresh
   preview, and the keyed digests in the run manifests already written
-  can then no longer be checked; nothing else. No export can be written
-  into this folder: the export tools refuse paths inside it.
+  can then no longer be checked; nothing else. The server replaces the
+  secret by itself, with the same two effects, when it finds the file
+  malformed or, on macOS and Linux, readable by other accounts (after a
+  restore or a sync tool widened its mode), and logs that it did. No
+  export can be written into this folder: the export tools refuse paths
+  inside it.
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
-  select_project). It has one outward flow: when a tool is called
-  before a project is selected, the error message names that path as a
-  recovery hint (only while that project still exists on disk), so a
+  select_project). It has one outward flow: when a tool is called, or
+  a resource read, before a project is selected, the error answer names
+  that path as a recovery hint (only while that project still exists on
+  disk; never in a line this server logs), so a
   project path chosen in one MCP host or session
   can appear in another host's conversation on the same account.
   Nothing is ever selected automatically from it; only a path with the
@@ -127,12 +132,18 @@ note, private part included: a project built to do it can give a
 trigger's error whatever it reads from a row, and a note or a name
 stored as bytes that are not UTF-8 makes Python's sqlite3 quote the
 whole value in the error it raises. The same rule holds for the
-resources (the `qualcoder://` addresses), which the MCP library reads
-and which answer a fixed text when the database fails, and for an error
+resources (the `qualcoder://` addresses), which answer an error as a
+tool does, as their content, so the MCP library, which logs every error
+a resource raises with its traceback, has none to log; and for an error
 of a kind this server does not expect, which is reported by its kind
 alone. This server's own error texts, which it writes, are answered as
 they are; some repeat what the caller supplied, such as a code name that
-is already taken. Since v0.14 the log also names no project, file,
+is already taken. The rule closes one channel, SQLite's message; it
+does not make a project built to leak safe to open. Python's own
+messages can quote a stored value (a text stored where a number
+belongs makes the conversion's error quote it, and that error is
+answered), and a trigger can copy a note's private part into a field
+every read returns. Since v0.14 the log also names no project, file,
 code, category, case, journal entry or attribute, and carries no path:
 creating a code, a category, a case or a journal entry, or importing a
 file, logs its id, and an attribute type or value is logged without its
@@ -141,8 +152,19 @@ the database name no project folder; and the lines about taking,
 listing, restoring, pruning and copying backups and projects name no
 path (a backup by the part of its name after the project folder's). A
 file-system error in the log is its kind and the system's short name
-for it (for example `PermissionError EACCES`), never the file it names.
-The results still name what they name, as each tool says.
+for it (for example `PermissionError EACCES`), never the file it names,
+and a project's schema version only when it has QualCoder's form (`v`
+and digits). The results still name what they name, as each tool says.
+All of this is about the lines this server writes, and the MCP
+library's own lines beside them, which name the kind of each request
+(and, for a prompt called with an argument it does not declare, that
+argument's value, which is the caller's own). A host may record more in
+the same file: Claude Desktop's
+server log (the file Settings > Developer > Show Logs opens) records
+every request and every answer as well, so there the file also holds
+everything the tools returned and the arguments they were given, names,
+paths and quoted text included, as the conversation does. Read such a
+file as you would the conversation before sharing it.
 
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
@@ -370,14 +392,20 @@ project has the coder-visibility capability:
   per read, and only on a project that did not declare visibility when
   the connection opened: 5 to 6 microseconds each on the development
   Mac, and a read tool makes a few per call. That re-read is one way: a
-  declaration that was there when the connection opened, or that a read
-  has seen arrive since, is never withdrawn by it, because a column that
-  disappears under a live connection is damage or a concurrent rebuild,
-  and the answer to those is the "cannot be determined" posture above;
-  and if the declaration itself cannot be read, the answer is the same
-  posture rather than "nobody is hidden". A declaration that arrives
-  without all four of QualCoder's views is refused by every read it
-  would shape, as one present when the connection opened is.
+  declaration that was there when the connection opened, or that any
+  call has seen since (a read or a decision that names a coder: they
+  share one memory of it), is never withdrawn by it, because a column
+  that disappears under a live connection is damage or a concurrent
+  rebuild, and the answer to those is the "cannot be determined"
+  posture above; and if the declaration itself cannot be read, the
+  answer is the same posture rather than "nobody is hidden". A
+  declaration seen without all four of QualCoder's views is refused by
+  the read it would shape, and the views are read again at the next:
+  QualCoder adds the column before the views, so a read can land
+  between the two, and the first read after QualCoder has finished
+  answers, filtered. A whole view set, once seen, is kept, and a view
+  dropped afterwards fails the read that selects from it, as for a
+  declaration present when the connection opened.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.

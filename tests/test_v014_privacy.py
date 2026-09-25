@@ -474,8 +474,9 @@ class TestTheQueryHelperAndTheRoutesWithNoTrigger:
     @pytest.mark.parametrize("read", ["codes", "files", "cases", "journal"])
     def test_a_resource_read_of_a_note_not_utf8(self, project, caplog, read):
         """Resources are read by the MCP library, which answered with the
-        message and logged the traceback; they now raise the fixed text
-        with nothing chained."""
+        message and logged the traceback; since fix round 1 they answer
+        the fixed text as their content and raise nothing, so the
+        library logs nothing."""
         table, column, where, fn = {
             "codes": ("code_name", "memo", "cid = 1", server.list_all_codes),
             "files": ("source", "memo", "id = 4", server.list_all_files),
@@ -488,24 +489,22 @@ class TestTheQueryHelperAndTheRoutesWithNoTrigger:
                           "owner) VALUES (1, 'j', 'x', 'd', 'TestCoder')")
         _ddl(project, _not_utf8(table, column, where))
         caplog.set_level(logging.DEBUG)
-        with pytest.raises(RuntimeError) as raised:
-            fn()
-        assert str(raised.value) == server.DB_UNAVAILABLE_ERROR
-        # Nothing chained: the library that reads a resource logs the
-        # exception it raises, and a traceback prints the whole chain.
-        assert raised.value.__cause__ is None
-        assert raised.value.__suppress_context__ is True
-        _assert_no_leak(caplog, str(raised.value))
+        answer = json.loads(fn())
+        assert answer == {"error": server.DB_UNAVAILABLE_ERROR}
+        _assert_no_leak(caplog, answer)
 
     def test_a_resource_read_over_the_wire(self, project, caplog):
         """What the host receives, through the MCP library itself."""
         import asyncio
         _ddl(project, _not_utf8("code_name", "memo", "cid = 1"))
         caplog.set_level(logging.DEBUG)
-        with pytest.raises(Exception) as raised:
-            asyncio.run(server.mcp.read_resource("qualcoder://codes/list"))
-        _assert_no_leak(caplog, str(raised.value))
-        assert server.DB_UNAVAILABLE_ERROR in str(raised.value)
+        contents = asyncio.run(server.mcp.read_resource(
+            "qualcoder://codes/list"))
+        text = "".join(item.content for item in contents)
+        _assert_no_leak(caplog, text)
+        assert json.loads(text) == {"error": server.DB_UNAVAILABLE_ERROR}
+        # The library logged nothing: it logs only what a resource raises.
+        assert "Error reading resource" not in caplog.text
 
     @pytest.mark.parametrize("tool", ["rename_file", "rename_case"])
     def test_a_rename_beside_a_file_name_not_utf8(self, project, caplog,
@@ -620,20 +619,19 @@ class TestTheRunsJournalWriteAndTheLastRoutes:
             raise KeyError(NOTE)
         monkeypatch.setattr(QualcoderDatabase, "list_codes", fails)
         caplog.set_level(logging.DEBUG)
-        with pytest.raises(RuntimeError) as raised:
-            server.list_all_codes()
-        assert str(raised.value) == server.UNEXPECTED_ERROR.format(
-            kind="KeyError")
-        _assert_no_leak(caplog, str(raised.value))
+        answer = json.loads(server.list_all_codes())
+        assert answer == {"error": server.UNEXPECTED_RESOURCE_ERROR.format(
+            kind="KeyError")}
+        _assert_no_leak(caplog, answer)
 
     def test_this_servers_own_errors_still_reach_a_resource_reader(self):
-        """The resource guard passes this server's own messages through,
-        "No Qualcoder project selected" among them."""
+        """The resource guard answers this server's own messages as a tool
+        would, "No Qualcoder project selected" among them, as content."""
         original = (server.db, server.current_project_path)
         server.db, server.current_project_path = None, None
         try:
-            with pytest.raises(ValueError, match="No Qualcoder project"):
-                server.list_all_codes()
+            answer = json.loads(server.list_all_codes())
+            assert answer["error"].startswith("No Qualcoder project selected")
         finally:
             server.db, server.current_project_path = original
 
@@ -644,6 +642,7 @@ class TestTheRunsJournalWriteAndTheLastRoutes:
 # (`"unique" in str(e).lower()` reads the message to decide, and says
 # nothing), a re-raise, and a chained cause.
 SAFE_CALLS = {"sqlite_error_label", "error_label", "error_text",
+              "_error_answer",
               "_raise_query_error", "isinstance", "type", "_is_locked_error",
               "_is_transient_sqlite_error", "_write_failed_text"}
 SAFE_ATTRIBUTES = {"sqlite_errorname", "sqlite_errorcode", "errno",
@@ -734,8 +733,8 @@ class TestTheDocumentsSayTheRule:
         install = _flat("INSTALL.md")
         assert "closing that is on the list for v0.14" not in install
         assert "the SQLite error text" not in install
-        assert ("The log carries no memo text, and since v0.14 no SQLite "
-                "message") in install
+        assert ("The lines this server writes carry no memo text, and "
+                "since v0.14 no SQLite message") in install
 
 
 # =============================================================================
@@ -973,8 +972,25 @@ class TestTheDocumentsSayWhatTheLogCarries:
     def test_install_no_longer_says_the_log_carries_names(self):
         install = _flat("INSTALL.md")
         assert "It does carry project file names" not in install
-        assert ("It names no project, file, code, category, case, journal "
+        assert ("They name no project, file, code, category, case, journal "
                 "entry or attribute and no path") in install
+
+    def test_both_say_what_a_host_that_records_every_answer_keeps(self):
+        """Fix round 1 (the refuter's widening of QA F1): the sentences
+        are about the lines this server writes; Claude Desktop's file
+        records every request and answer beside them."""
+        install = _flat("INSTALL.md")
+        privacy = _flat("PRIVACY.md")
+        assert ("Claude Desktop's server log (the file Show Logs opens) "
+                "also records every request and every answer in full") \
+            in install
+        assert ("A host may record more in the same file: Claude "
+                "Desktop's server log") in privacy
+        assert ("The rule closes one channel, SQLite's message; it does "
+                "not make a project built to leak safe to open.") in privacy
+        assert ("The server replaces the secret by itself, with the same "
+                "two effects") in privacy
+        assert ("they share one memory of it") in privacy
 
 
 # =============================================================================
@@ -1110,3 +1126,335 @@ class TestEveryReadRechecksWhoIsHidden:
             lambda self, **kwargs: reread.append(1) or True)
         assert HIDDEN not in server.get_coded_segments(code_id=1)
         assert reread == []
+
+
+# Fix round 1 (QA F2 and F3): QualCoder's own order, and one memory.
+
+def _column_only(project):
+    """The first half of QualCoder's `update_coder_names`: the table with
+    its `visibility` column, committed on its own before the views."""
+    from test_v012_pseudonymise_tool import VISIBILITY_COLUMN
+    con = sqlite3.connect(str(project / "data.qda"))
+    con.execute(VISIBILITY_COLUMN)
+    con.commit()
+    con.close()
+
+
+def _views_and_rows(project):
+    """The second half: the four views and the rows, committed together."""
+    from test_v012_pseudonymise_tool import VISIBILITY_VIEWS
+    con = sqlite3.connect(str(project / "data.qda"))
+    for ddl in VISIBILITY_VIEWS:
+        con.execute(ddl)
+    con.executemany("INSERT OR REPLACE INTO coder_names (name, visibility) "
+                    "VALUES (?, ?)", [("TestCoder", 1), (HIDDEN, 0)])
+    con.commit()
+    con.close()
+
+
+def _lose_the_declaration(project):
+    """The declaration and its views gone under the live connection (a
+    damaged project, or another tool; never QualCoder). The column is
+    dropped by rebuilding the table, which every SQLite can do."""
+    con = sqlite3.connect(str(project / "data.qda"))
+    for view in ("code_text_visible", "code_image_visible",
+                 "code_av_visible", "annotation_visible"):
+        con.execute(f"DROP VIEW IF EXISTS {view}")
+    con.execute("CREATE TABLE names_kept AS SELECT name FROM coder_names")
+    con.execute("DROP TABLE coder_names")
+    con.execute("ALTER TABLE names_kept RENAME TO coder_names")
+    con.commit()
+    con.close()
+
+
+class TestAnArrivalInQualCodersOwnOrder:
+
+    def test_a_read_between_the_two_commits_does_not_stick(self, arriving):
+        """QA F2: a read that lands after the column and before the views
+        is refused; once QualCoder has committed the views, the next read
+        answers, filtered, without selecting the project again."""
+        _column_only(arriving)
+        between = json.loads(server.get_coded_segments(code_id=1))
+        assert "coder-visibility views is missing" in between["error"]
+        _views_and_rows(arriving)
+        after = json.loads(server.get_coded_segments(code_id=1))
+        assert "error" not in after, after
+        assert HIDDEN not in json.dumps(after)
+        assert after["coder_visibility"]["hidden_coders"] == 1
+
+    @pytest.mark.parametrize("first", ["a_read", "a_naming_decision"])
+    def test_a_declaration_seen_by_either_path_is_never_withdrawn(
+            self, arriving, first):
+        """QA F3: one memory for the reads and the decisions that name a
+        coder. Whichever saw the arrival first, a declaration that then
+        disappears under the live connection names nobody hidden: the
+        reads refuse and the comparison does not list her."""
+        _arrive(arriving)
+        if first == "a_read":
+            assert HIDDEN not in server.get_coded_segments(code_id=1)
+        else:
+            assert HIDDEN not in server.compare_coders()
+        _lose_the_declaration(arriving)
+        for answer in (server.get_coded_segments(code_id=1),
+                       server.search_coded_text(query="Tom"),
+                       server.get_coding_frequencies(),
+                       server.compare_coders()):
+            assert HIDDEN not in answer
+
+
+# =============================================================================
+# FIX ROUND 1: RESOURCES OVER THE WIRE, ON A REAL STDIO SERVER
+# =============================================================================
+#
+# The MCP library logs every error a resource raises with its traceback, at
+# ERROR, to the server's standard error, which is the host's log. Here the
+# server runs as a real subprocess, its standard error kept whole as a host
+# keeps it, and the participant's name the project folder carries is looked
+# for in every line (QA F1, Security secB-1, and their refuters' scenarios).
+
+CONCRETE_RESOURCES = [
+    "qualcoder://project/info", "qualcoder://codes/list",
+    "qualcoder://categories/list", "qualcoder://files/list",
+    "qualcoder://cases/list", "qualcoder://journal",
+    "qualcoder://guidance/methods"]
+TEMPLATE_RESOURCES = ["qualcoder://codes/1", "qualcoder://files/1",
+                      "qualcoder://cases/1"]
+
+
+class _Wire:
+    """One home, one state folder, a project named after a participant,
+    and a way to run a server session and keep its standard error."""
+
+    def __init__(self, root):
+        from test_v012_pseudonymise_tool import build_project
+        from track5_helpers import write_fixture_sidecar
+        self.root = root
+        self.home = root / "home"
+        self.home.mkdir()
+        self.research = root / "Research" / f"{MARK} study"
+        self.project = build_project(self.research / f"{MARK} study.qda")
+        write_fixture_sidecar(str(self.project))
+        self.sessions = 0
+
+    def env(self, configured=None):
+        import os
+        env = {k: v for k, v in os.environ.items()
+               if k != "QUALCODER_PROJECT_PATH"}
+        env.update(HOME=str(self.home), USERPROFILE=str(self.home),
+                   QUALCODER_MCP_STATE_HOME=str(self.home / ".qualcoder_mcp"),
+                   PYTHONPATH=str(Path(server.__file__).parents[1]),
+                   PYTHONDONTWRITEBYTECODE="1")
+        if configured is not None:
+            env["QUALCODER_PROJECT_PATH"] = str(configured)
+        return env
+
+    def run(self, steps, configured=None, during=None):
+        """Run `steps` (("tool" or "read", name, arguments)) in a fresh
+        server; `during(step_index)` may return a context manager held
+        around that step. Returns (answers, standard error)."""
+        import asyncio
+        import contextlib
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        self.sessions += 1
+        errfile = self.root / f"stderr-{self.sessions}.log"
+        params = StdioServerParameters(
+            command=sys.executable, args=["-B", "-m", "qualcoder_mcp.server"],
+            env=self.env(configured))
+
+        async def session():
+            answers = []
+            with open(errfile, "w", encoding="utf-8") as err:
+                async with stdio_client(params, errlog=err) as (r, w):
+                    async with ClientSession(r, w) as s:
+                        await s.initialize()
+                        for index, (kind, name, args) in enumerate(steps):
+                            held = (during(index) if during
+                                    else contextlib.nullcontext())
+                            with held:
+                                if kind == "tool":
+                                    res = await s.call_tool(name, args or {})
+                                    answers.append("".join(
+                                        getattr(b, "text", "")
+                                        for b in res.content))
+                                else:
+                                    res = await s.read_resource(name)
+                                    answers.append("".join(
+                                        getattr(c, "text", "")
+                                        for c in res.contents))
+            return answers
+
+        answers = asyncio.run(asyncio.wait_for(session(), 180))
+        return answers, errfile.read_text(encoding="utf-8")
+
+
+def _every_resource():
+    return [("read", uri, None)
+            for uri in CONCRETE_RESOURCES + TEMPLATE_RESOURCES]
+
+
+def _named_lines(stderr):
+    return [line for line in stderr.splitlines() if MARK in line]
+
+
+class TestResourcesLogNothingOverTheWire:
+
+    def test_a_last_used_project_and_nothing_selected(self, tmp_path):
+        """A new conversation on a machine that has selected a project
+        before: every resource read first. The answers carry the hint to
+        the last-used project, as a tool's do; the log names nothing."""
+        wire = _Wire(tmp_path)
+        answers, _ = wire.run([("tool", "select_project",
+                                {"project_path": str(wire.project)})])
+        assert json.loads(answers[0])["success"] is True
+        answers, stderr = wire.run(
+            _every_resource() + [("tool", "get_project_summary", None)])
+        assert _named_lines(stderr) == [], stderr
+        assert "Error reading resource" not in stderr
+        first = json.loads(answers[0])
+        assert first["error"].startswith("No Qualcoder project selected")
+        assert "The last project used on this machine was" in first["error"]
+
+    def test_a_misconfigured_project_path(self, tmp_path):
+        """QUALCODER_PROJECT_PATH set to the folder that holds the project,
+        which the start-up check lets through (it exists)."""
+        wire = _Wire(tmp_path)
+        answers, stderr = wire.run(_every_resource(),
+                                   configured=wire.research)
+        assert _named_lines(stderr) == [], stderr
+        assert "Error reading resource" not in stderr
+        assert "Directory must have .qda extension" in \
+            json.loads(answers[0])["error"]
+
+    def test_a_lost_connection(self, tmp_path):
+        """Selected; a mistyped second selection drops the connection; the
+        next read tries to reconnect while another program holds the
+        database, fails, and answers the no-project text with its hint."""
+        import contextlib
+        wire = _Wire(tmp_path)
+
+        @contextlib.contextmanager
+        def held():
+            other = sqlite3.connect(str(wire.project / "data.qda"))
+            other.execute("BEGIN EXCLUSIVE")
+            try:
+                yield
+            finally:
+                other.rollback()
+                other.close()
+
+        steps = [("tool", "select_project",
+                  {"project_path": str(wire.project)}),
+                 ("tool", "select_project",
+                  {"project_path": str(wire.project.parent
+                                       / f"{MARK} typo.qda")}),
+                 ("read", "qualcoder://codes/list", None)]
+        answers, stderr = wire.run(
+            steps, during=lambda i: held() if i == 2
+            else contextlib.nullcontext())
+        assert json.loads(answers[1])["success"] is False
+        assert "Database connection lost" in stderr
+        assert _named_lines(stderr) == [], stderr
+        assert "Error reading resource" not in stderr
+        assert json.loads(answers[2])["error"].startswith(
+            "No Qualcoder project selected")
+
+    def test_a_file_system_error(self, tmp_path):
+        """A configured project folder whose data.qda is missing: the
+        file-system arm answers its fixed text, the log its kind (QA's
+        surviving mutation Q5)."""
+        wire = _Wire(tmp_path)
+        (wire.project / "data.qda").unlink()
+        answers, stderr = wire.run(_every_resource(),
+                                   configured=wire.project)
+        assert _named_lines(stderr) == [], stderr
+        assert "Error reading resource" not in stderr
+        assert json.loads(answers[0]) == {
+            "error": "File or project not found."}
+        assert "Not found in get_project_info: FileNotFoundError" in stderr
+
+
+# =============================================================================
+# FIX ROUND 1: THE SCHEMA VERSION, AND pseudonyms.json'S ERRORS
+# =============================================================================
+
+class TestTheSchemaVersionInTheLog:
+
+    def test_a_version_holding_a_note_is_not_logged(self, project, caplog):
+        """Security secB-2: `databaseversion` is the project's own text;
+        a trigger copying a note into it put the note, private part
+        included, into the WARNING every connection writes. Set directly
+        and then by the trigger QualCoder's own memo edit fires, across a
+        selection, a write (whose downgrade reconnects) and a read."""
+        _ddl(project, f"UPDATE project SET databaseversion = '{NOTE}'")
+        caplog.set_level(logging.DEBUG)
+        server.select_project(str(project))
+        server.get_current_project()
+        _ddl(project,
+             "UPDATE project SET databaseversion = 'v14'",
+             "CREATE TRIGGER copy AFTER UPDATE OF memo ON code_name BEGIN "
+             "UPDATE project SET databaseversion = new.memo; END")
+        server.set_memo(target_type="code", target_id=1, memo=NOTE,
+                        create_backup=False)
+        server.get_project_summary()
+        assert SENTINEL not in caplog.text
+        assert "Met Thomas" not in caplog.text
+        assert ("Untested database version: (a value not in QualCoder's "
+                "form, withheld)") in caplog.text
+
+    def test_a_version_in_qualcoders_form_is_still_logged(self, project,
+                                                         caplog):
+        _ddl(project, "UPDATE project SET databaseversion = 'v99'")
+        caplog.set_level(logging.DEBUG)
+        server.get_project_summary()
+        assert "Untested database version: v99." in caplog.text
+
+
+class TestPseudonymsJsonErrorsAreAnsweredByKind:
+
+    def _unreadable(self, project, monkeypatch, error):
+        from qualcoder_mcp import database as database_module
+        (project / "pseudonyms.json").write_text(
+            '[{"original": "Thomas", "pseudonym": "Alex"}]',
+            encoding="utf-8")
+
+        def fails(path):
+            raise error
+        monkeypatch.setattr(database_module, "_read_pseudonyms_json_bytes",
+                            fails)
+
+    ERRORS = {
+        "permission": PermissionError(
+            13, "Permission denied", f"/x/{MARK} study.qda/pseudonyms.json"),
+        "loop_before_3_13": RuntimeError(
+            f"Symlink loop from '/x/{MARK} study.qda/pseudonyms.json'"),
+        "nested_too_deep": RecursionError(
+            "maximum recursion depth exceeded while decoding a JSON array"),
+    }
+
+    @pytest.mark.parametrize("kind", sorted(ERRORS))
+    @pytest.mark.parametrize("route", ["import_text_file",
+                                       "pseudonymise_source",
+                                       "get_current_project",
+                                       "read_pseudonym_list"])
+    def test_the_answer_names_the_kind_not_the_path(
+            self, project, monkeypatch, route, kind):
+        self._unreadable(project, monkeypatch, self.ERRORS[kind])
+        raw = {
+            "import_text_file": lambda: server.import_text_file(
+                filename="fresh.txt", content="Words.",
+                apply_project_pseudonyms=True, create_backup=False),
+            "pseudonymise_source": lambda: server.pseudonymise_source(
+                file_id=1, use_project_pseudonyms=True),
+            "get_current_project": lambda: server.get_current_project(),
+            "read_pseudonym_list": lambda: server.read_pseudonym_list(),
+        }[route]()
+        assert MARK not in raw
+        answer = json.loads(raw)
+        label = dbmod.error_label(self.ERRORS[kind])
+        expected = f"pseudonyms.json could not be read ({label})."
+        if route in ("get_current_project", "read_pseudonym_list"):
+            assert expected in json.dumps(answer), answer
+            assert "Failed to get project info" not in raw
+        else:
+            assert answer["error"] == expected

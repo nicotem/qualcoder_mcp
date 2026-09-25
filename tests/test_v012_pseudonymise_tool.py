@@ -8954,10 +8954,9 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         from qualcoder_mcp.database import CoderVisibilityUnreadable
         folder = self._connected_before_qualcoder(tmp_path)
         hide_coder(folder, "Hidden Helga")
-        control = preview_of()
-        assert "Hidden Helga" not in json.dumps(control)
-        assert control["preview"]["hidden_coder_rows"]["override_required"] \
-            is True
+        # No call has seen the declaration yet: since v0.14's fix round 1
+        # a sighting is remembered (QA F3), and a remembered one answers
+        # without the re-read, closed as well (pinned below).
         real = server.db.conn
         server.db.conn = self._PragmaFaults(real)
         try:
@@ -8973,8 +8972,20 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         finally:
             server.db.conn = real
         # And the fault is the only thing in the way.
-        assert preview_of()["preview"]["hidden_coder_rows"][
+        control = preview_of()
+        assert "Hidden Helga" not in json.dumps(control)
+        assert control["preview"]["hidden_coder_rows"][
             "override_required"] is True
+        # Once seen, the declaration is remembered: the same fault now
+        # changes nothing, and the answer is still closed.
+        server.db.conn = self._PragmaFaults(real)
+        try:
+            again = preview_of()
+            assert "Hidden Helga" not in json.dumps(again)
+            assert again["preview"]["hidden_coder_rows"][
+                "override_required"] is True
+        finally:
+            server.db.conn = real
 
     def test_a_declaration_present_at_connect_never_reaches_the_re_read(
             self, project, tmp_path):
