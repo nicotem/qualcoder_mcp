@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still running after ten minutes has every thread's stack, its own
   frame included, written to the log (pytest's `faulthandler_timeout`),
   so a hang is named before the job's limit ends it. No new dependency.
+- The two tests that start a second test run give it a temporary folder
+  inside their own, so it no longer leaves a `pytest-of-<user>` folder
+  in the system's temporary directory on every run.
 
 ## [0.13.0-alpha] - 2026-09-25
 
