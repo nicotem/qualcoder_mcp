@@ -14,6 +14,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the wheel and the sdist, as the LGPL requires, and nothing about
   the licence changes.
 
+### Changed: privacy of the run record, error answers and the log
+
+- **The run's fingerprints no longer confirm a guessed name.** The
+  result of `pseudonymise_source` no longer carries `old_sha256`, the
+  plain SHA-256 of each file's text before the run: beside the
+  rewritten text, which the conversation can read, it confirmed a name
+  put back where its pseudonym sits (the v0.13 release's security
+  review recovered two names from a list of 3,000 in a fifth of a
+  second). The lengths before and after and `new_sha256` stay. The run
+  record is now format 3: each file's text before and after the run is
+  fingerprinted as `old_text_hmac_sha256` and `new_text_hmac_sha256`,
+  keyed with the preview-token secret over a fixed label and the text,
+  as `mapping_hmac_sha256` already was, where formats 1 and 2 carried
+  the plain pairs `old_fingerprint` and `new_fingerprint`. Records
+  already written are left as they are and still hold the plain
+  digests: keep them private, or delete the ones you do not need. A
+  reader tells the two apart by `format` (3 is keyed) and by the field
+  names. PRIVACY.md says what each format holds.
+- `pseudonymise_source`'s list of what it does not rewrite names an
+  imported document's stored copy in the project's `documents/` folder,
+  which keeps the original text and which QualCoder's exports ship.
+- Serialised tool JSON as it stands after this change: full = 171,165
+  characters (about 42.8k tokens at chars/4) over 73 tools, core =
+  56,568 (about 14.1k) over 21; only `pseudonymise_source`'s
+  description moved, and it is not in `core`. Measured as for 0.13, on
+  the final tree through the toolset gate, under Python 3.13.5 with mcp
+  1.30.0, in the repository's own `venv/`; on Python 3.11.13, in the
+  repository's `.venv/`, 179,929 and 59,520.
+
 ## [0.13.0-alpha] - 2026-09-25
 
 v0.13, the pseudonymisation follow-ups, as ruled from 2026-09-22 to

@@ -10708,13 +10708,18 @@ class QualcoderDatabase:
                     "Could not rewrite this project's text; nothing was "
                     "written.") from None
             length, sha = self.fingerprint_of_text(new_text)
+            # No digest of the text BEFORE the run (v0.14, the owner's
+            # ruling of 2026-09-25): beside the rewritten text, which the
+            # conversation can read, a plain digest of the old text
+            # confirms a guessed name put back where its pseudonym sits.
+            # The digest of the new text is of text the reader already
+            # has, and confirms nothing.
             report.append({
                 "file_id": fid,
                 "name": item["name"],
                 "replacements": len(item["replacements"]),
                 "old_length": len(item["old_text"]),
                 "new_length": length,
-                "old_sha256": item["old_fingerprint"][1],
                 "new_sha256": sha,
                 "codings_updated": counts["code_text"],
                 "annotations_updated": counts["annotation"],

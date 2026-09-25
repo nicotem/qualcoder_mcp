@@ -448,6 +448,7 @@ class TestOneFileIsTheRun:
         record = json.loads(Path(result["manifest_path"]).read_text(
             encoding="utf-8"))
         # Format 2 since v0.13's Brief 2 (ruling 2), which added the note
-        # section beside `files` and left `files` as it was.
-        assert record["format"] == 2
+        # section beside `files` and left `files` as it was; format 3
+        # since v0.14, which keys each file's text digests.
+        assert record["format"] == 3
         assert [item["file_id"] for item in record["files"]] == [1]

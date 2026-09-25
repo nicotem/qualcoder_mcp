@@ -44,12 +44,14 @@ What stays local, always:
   atomically and created owner-only on POSIX systems (mode 0600)
 - the preview-token secret (`~/.qualcoder_mcp/preview_secret`): 64
   random hex characters, created owner-only on POSIX systems, used to
-  sign the tokens that authorise a destructive operation. It never
-  leaves your machine, never appears in a result, a log line or an error,
-  and holds nothing about your project. Deleting it invalidates
-  outstanding preview tokens, which means the next execute asks for a
-  fresh preview; nothing else. No export can be written into this
-  folder: the export tools refuse paths inside it.
+  sign the tokens that authorise a destructive operation and to key the
+  digests in the pseudonymisation run manifests. It never leaves your
+  machine, never appears in a result, a log line or an error, and holds
+  nothing about your project. Deleting it invalidates outstanding
+  preview tokens, which means the next execute asks for a fresh
+  preview, and the keyed digests in the run manifests already written
+  can then no longer be checked; nothing else. No export can be written
+  into this folder: the export tools refuse paths inside it.
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
@@ -77,17 +79,30 @@ What stays local, always:
   one JSON file per `pseudonymise_source` run, created owner-only on
   POSIX systems): the pseudonyms applied, the replacement spans, the
   row ids and the old and new offsets of every row the run moved, the
-  case mode and overlap policy, two digests keyed with the
-  preview-token secret (`token_bind`, `mapping_hmac_sha256`), and, for
-  each file, the length and plain SHA-256 of its text before and after
-  the run (`old_fingerprint`, `new_fingerprint`). Those two are not
-  keyed: together with the pseudonymised text they confirm a guessed
-  original name, so the manifest must not be shared, not even as an
-  audit record beside the pseudonymised data. Never an
-  original name: the project path, the backup path and a file's name
-  are withheld where a reader would see one, and "Practical
-  mitigations" below says how. Since v0.13 the record is format 2: it
-  also says whether the run rewrote notes (`rewrite_memos`) and, when it
+  case mode and overlap policy, digests keyed with the preview-token
+  secret (`token_bind`, `mapping_hmac_sha256` and, since v0.14, each
+  file's text before and after the run, `old_text_hmac_sha256` and
+  `new_text_hmac_sha256`), and each file's length before and after the
+  run (`old_length`, `new_length`). A keyed digest can be recomputed
+  only with that secret, so beside the pseudonymised text it confirms no
+  guessed name to anyone without it. The two lengths, with the spans,
+  say by how many characters the replaced names were longer or shorter
+  in total than their pseudonyms, which narrows a guess without
+  confirming it; the preview gives the conversation the same two
+  lengths. Records written before v0.14 (format 1 by v0.12, format 2 by
+  v0.13) carry each file's length and plain SHA-256 before and after
+  the run instead (`old_fingerprint`, `new_fingerprint`): together with
+  the pseudonymised text those confirm a guessed original name, so such
+  a record must not be shared, not even as an audit record beside the
+  pseudonymised data. This server never rewrites or re-keys a record
+  already written; delete the old ones you do not need. A reader tells
+  the two kinds apart by the record's `format` (3 is keyed) and by the
+  field names: a field ending `_hmac_sha256` is keyed, an
+  `old_fingerprint` or `new_fingerprint` pair holds a plain SHA-256.
+  Never an original name: the project path, the backup path and a
+  file's name are withheld where a reader would see one, and "Practical
+  mitigations" below says how. Since v0.13 (format 2) the record also
+  says whether the run rewrote notes (`rewrite_memos`) and, when it
   did, lists each note it rewrote in a `memos` section (the table, the
   row's key, whether the note has a private part, the length of its
   public part before and after as a `public_length` pair, and where each
@@ -819,16 +834,24 @@ will ask, and the summary above depends on them:
     The manifest's `token_bind` and its `mapping_hmac_sha256` are both
     keyed with the per-user token secret rather than plain digests, so
     neither of those two confirms a guessed name to anyone who holds the
-    manifest or the preview without also holding that secret. The
-    per-file digests are not keyed: each file's length and plain
-    SHA-256 before and after the run are in the manifest
-    (`old_fingerprint`, `new_fingerprint`) and in the run's result
-    (`old_length`, `old_sha256`, `new_length`, `new_sha256`), so they
-    reach the AI provider as well. With the pseudonymised text beside
-    them, a guessed name can be put back where a pseudonym sits and
-    checked against the digest of the text before the run: they do
-    confirm a guessed name, to anyone who holds them and that text. The
-    manifest must not be shared.
+    manifest or the preview without also holding that secret. Since
+    v0.14 so are the per-file digests: each file's text before and after
+    the run is fingerprinted in the manifest under that secret
+    (`old_text_hmac_sha256`, `new_text_hmac_sha256`, over a fixed label
+    and the text, so no file's text can make it equal a token's
+    signature), and the run's result carries no digest of the text
+    before the run, only the
+    two lengths (`old_length`, `new_length`) and the plain SHA-256 of
+    the text after it (`new_sha256`), which is a digest of text the
+    reader can already read. Before v0.14 the result carried the plain
+    SHA-256 of the text before the run as well (`old_sha256`), and the
+    manifest the plain pair (`old_fingerprint`, `new_fingerprint`): with
+    the pseudonymised text beside them, a guessed name can be put back
+    where a pseudonym sits and checked against that digest, so they
+    confirm a guessed name to anyone who holds them and that text. A
+    conversation from an earlier version still holds those results, and
+    a manifest written by one still holds that pair; such a manifest
+    must not be shared.
   - **The preview's own reply.** On the `use_project_pseudonyms` path
     the mapping is the researcher's own reverse key and the model never
     supplied it, so no diagnostic and no refusal quotes a name from it

@@ -973,7 +973,9 @@ If you want to remove the MCP server:
    holds the AI-coding session files (`sessions/`), the last-used
    project pointer (`mru_project.json`), the preview-token secret
    (`preview_secret`, which signs the tokens that authorise a destructive
-   operation; deleting it only invalidates outstanding previews) and the
+   operation and keys the digests in the run manifests; deleting it
+   invalidates outstanding previews, and those digests can then no
+   longer be checked) and the
    run manifests `pseudonymise_source` writes (`pseudonymisation/`, one
    JSON file per run: the pseudonyms applied, the replacement spans, the
    row ids and offsets of the rows the run moved and, since v0.13, where

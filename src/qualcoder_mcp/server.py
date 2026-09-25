@@ -10533,6 +10533,21 @@ def merge_category(from_category_id: int,
 # behind a per-file fingerprint check that nothing has moved.
 
 PSEUDONYMISATION_DIRNAME = "pseudonymisation"
+# The run record's format. 3 since v0.14: each file's text before and
+# after the run is fingerprinted with a digest keyed with the token
+# secret (`old_text_hmac_sha256`, `new_text_hmac_sha256`) in place of the
+# plain SHA-256 pairs `old_fingerprint` and `new_fingerprint` that
+# formats 1 (v0.12) and 2 (v0.13) carried. A plain digest of the text
+# before the run, beside the pseudonymised text, confirms a guessed name
+# put back where its pseudonym sits (the v0.13 release's security gate
+# recovered two names from a 3,000-name list in a fifth of a second).
+PSEUDONYMISE_RECORD_FORMAT = 3
+# What a text digest in the record is keyed over: this label, then the
+# text as UTF-8. The label keeps the digest of a file's text apart from
+# every other value keyed with the same secret (the token's MAC and bind,
+# the mapping digest), so a text built to spell one of those payloads
+# does not make the record carry that value.
+RUN_RECORD_TEXT_LABEL = b"qualcoder-mcp run record text\n"
 # The run record's one fixed sentence (v0.13, ruling 2): what it is for,
 # and that it is not a way back.
 PSEUDONYMISE_RECORD_NOTE = (
@@ -11862,6 +11877,21 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     return "\n".join(lines)
 
 
+def run_record_text_digest(secret: str, text: str) -> str:
+    """A file text's fingerprint in the run record: HMAC-SHA256 under the
+    token secret over `RUN_RECORD_TEXT_LABEL` and the text as UTF-8.
+
+    Only someone holding the secret (this account's
+    `~/.qualcoder_mcp/preview_secret`, or the state home the server was
+    given) can compute it, so it tells, on this account, whether a text at
+    hand is the one a run read or wrote, and confirms nothing to anyone
+    else who holds the record and the pseudonymised text.
+    """
+    return hmac.new(secret.encode("ascii"),
+                    RUN_RECORD_TEXT_LABEL + text.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
 def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            compiled, bind: str, backup_path: Optional[str],
                            journal_entry: Optional[str],
@@ -11870,7 +11900,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            rewrite_memos: bool = False,
                            retention: Optional[Dict[str, Any]] = None
                            ) -> Dict[str, Any]:
-    """The run record kept in the state home (D1 3.2), format 2.
+    """The run record kept in the state home (D1 3.2), format 3.
 
     An audit record: which rows this run changed and where the
     pseudonyms now sit, spans in the NEW text plus row ids and old and
@@ -11890,13 +11920,18 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     own name, which can carry a participant's name: where a reader would
     see one, the key is withheld (`key_withheld`), by the rule
     `_pseudonymise_safe_name` applies to file names.
+
+    Format 3 (v0.14) fingerprints each file's text before and after the
+    run with `run_record_text_digest`, keyed with the token secret as the
+    mapping digest is, where formats 1 and 2 carried each text's length
+    and plain SHA-256 (`old_fingerprint`, `new_fingerprint`), which beside
+    the pseudonymised text confirm a guessed name. Records already written
+    are left as they are; no tool reads or rewrites them.
     """
     entries = compiled.mapping.entries
     withheld = set(pseudo.pseudonyms_withheld(compiled))
-    by_id = {item["file_id"]: item for item in written["files"]}
     files = []
     for item in plan["files"]:
-        report = by_id.get(item["file_id"], {})
         offset = 0
         spans = []
         for replacement in item["replacements"]:
@@ -11920,9 +11955,16 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         files.append({
             "file_id": item["file_id"],
             "name": _pseudonymise_safe_name(item["name"], compiled),
-            "old_fingerprint": list(item["old_fingerprint"]),
-            "new_fingerprint": [report.get("new_length"),
-                                report.get("new_sha256")],
+            # Keyed, as `mapping_hmac_sha256` is (format 3): a plain
+            # digest of the text before the run confirms a guessed name
+            # beside the pseudonymised text. The lengths stay plain; the
+            # preview already gives both to the conversation.
+            "old_length": len(item["old_text"]),
+            "old_text_hmac_sha256": run_record_text_digest(
+                secret, item["old_text"]),
+            "new_length": len(item["new_text"]),
+            "new_text_hmac_sha256": run_record_text_digest(
+                secret, item["new_text"]),
             "replacements": spans,
             **rows,
         })
@@ -11944,7 +11986,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     project_path = _pseudonymise_safe_name(project_path_at_start, compiled)
     safe_backup_path = _pseudonymise_safe_name(backup_path, compiled)
     manifest = {
-        "format": 2,
+        "format": PSEUDONYMISE_RECORD_FORMAT,
         "created": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "project_path": project_path,
         "token_bind": bind,
@@ -12083,8 +12125,10 @@ def pseudonymise_source(
     anonymise (PRIVACY.md).
 
     What this does NOT rewrite, and where the names will remain: case
-    names, file names, attribute values, PDFs, media files, QualCoder
-    4.0's ai_data folder, speakers.json and speaker_regex.json; notes (the
+    names, file names, attribute values, PDFs, media files, an imported
+    document's stored copy in the project's documents/ folder (the
+    original text, which QualCoder's exports ship), QualCoder 4.0's
+    ai_data folder, speakers.json and speaker_regex.json; notes (the
     twelve kinds of note) and journal entries are rewritten only when
     rewrite_memos is on, in their public part only and across the whole
     project, and otherwise remain too. Case and file names are changed

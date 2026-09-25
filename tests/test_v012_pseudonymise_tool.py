@@ -1587,11 +1587,12 @@ class TestManifest:
         """The spans say where the pseudonyms now sit, so a run can be
         accounted for afterwards; they are not an input to any undo
         (ruling C dropped undoing a run, and ruling 2 versioned the
-        record as an audit record: format 2, v0.13 Brief 2, 4.9)."""
+        record as an audit record: format 2, v0.13 Brief 2, 4.9; format 3
+        since v0.14 keys each file's text digests)."""
         result = execute_from(preview_of())
         manifest = json.loads(
             Path(result["manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["format"] == 2
+        assert manifest["format"] == 3
         assert manifest["rewrite_memos"] is False
         assert "memos" not in manifest
         assert "memos_not_rewritten_marker_risk" not in manifest
@@ -1601,7 +1602,7 @@ class TestManifest:
         for span in item["replacements"]:
             start, end = span["new_span"]
             assert text[start:end] in ("Alex", "Sam")
-        assert item["new_fingerprint"][0] == len(text)
+        assert item["new_length"] == len(text)
         assert [row["id"] for row in item["codings"]] == [1, 2, 3, 4]
 
     def test_a_file_name_that_holds_a_name_is_withheld(self, project):
@@ -5743,7 +5744,7 @@ class TestTheManifestPathIsSettledBeforeTheWrite:
         assert "Alex" in rows[0]["fulltext"]
         manifest = json.loads(
             Path(result["manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["files"][0]["new_fingerprint"][0] == \
+        assert manifest["files"][0]["new_length"] == \
             len(rows[0]["fulltext"])
 
 
@@ -7757,12 +7758,17 @@ class TestResultShape:
         assert "search index" in joined
         _house_rules(result["notes"])
 
-    def test_the_result_reports_both_fingerprints(self, project):
+    def test_the_result_reports_both_lengths_and_the_new_digest(
+            self, project):
+        """No digest of the text before the run since v0.14: beside the
+        rewritten text it confirms a guessed name (the owner's ruling of
+        2026-09-25; test_v014_privacy.py pins the attack)."""
         result = execute_from(preview_of())
         item = result["files"][0]
         assert item["old_length"] == len(TEXT)
         assert item["new_length"] == len(TEXT) - 10
-        assert item["old_sha256"] != item["new_sha256"]
+        assert "old_sha256" not in item
+        assert len(item["new_sha256"]) == 64
 
     def test_a_run_with_nothing_to_replace_answers_without_a_backup(
             self, project):
@@ -8102,10 +8108,13 @@ class TestTheDescriptionCarriesWhatD1Requires:
         ("variants_are_needed",
          "Nicknames, inflections and spelling variants each need their own "
          "entry or a `variants` list."),
-        ("what_is_not_rewritten",                       # v0.13 Brief 2
+        ("what_is_not_rewritten",              # v0.13 Brief 2, and v0.14
          "What this does NOT rewrite, and where the names will remain: case "
-         "names, file names, attribute values, PDFs, media files, QualCoder "
-         "4.0's ai_data folder, speakers.json and speaker_regex.json; notes "
+         "names, file names, attribute values, PDFs, media files, an "
+         "imported document's stored copy in the project's documents/ "
+         "folder (the original text, which QualCoder's exports ship), "
+         "QualCoder 4.0's ai_data folder, speakers.json and "
+         "speaker_regex.json; notes "
          "(the twelve kinds of note) and journal entries are rewritten only "
          "when rewrite_memos is on, in their public part only and across "
          "the whole project, and otherwise remain too."),
@@ -8558,18 +8567,19 @@ class TestTheDocumentsTellTheTruth:
         "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
         "both keyed with the per-user token secret rather than plain "
         "digests",
-        # v0.13 release fix round 1 (S-REL-1): the per-file digests are
-        # plain, in the manifest and in the result, and they confirm a
-        # guessed name beside the pseudonymised text.
-        "and, for each file, the length and plain SHA-256 of its text "
-        "before and after the run (`old_fingerprint`, `new_fingerprint`). "
-        "Those two are not keyed: together with the pseudonymised text "
-        "they confirm a guessed original name, so the manifest must not "
-        "be shared",
-        "each file's length and plain SHA-256 before and after the run are "
-        "in the manifest (`old_fingerprint`, `new_fingerprint`) and in the "
-        "run's result (`old_length`, `old_sha256`, `new_length`, "
-        "`new_sha256`), so they reach the AI provider as well.",
+        # v0.13 release fix round 1 (S-REL-1) said the per-file digests
+        # were plain and confirmed a guessed name; v0.14 keys them in the
+        # manifest and drops the old one from the result, and says what
+        # a record written before then still holds.
+        "Records written before v0.14 (format 1 by v0.12, format 2 by "
+        "v0.13) carry each file's length and plain SHA-256 before and "
+        "after the run instead (`old_fingerprint`, `new_fingerprint`): "
+        "together with the pseudonymised text those confirm a guessed "
+        "original name, so such a record must not be shared",
+        "A reader tells the two kinds apart by the record's `format` (3 is "
+        "keyed) and by the field names",
+        "Since v0.14 so are the per-file digests",
+        "the run's result carries no digest of the text before the run",
         # Fix round 4, L3, worded exactly in fix round 5: prune_backups
         # probes data.qda read-only through validate_qda_path and
         # constructs no fresh project connection, so it settles nothing.
@@ -8651,6 +8661,11 @@ class TestTheDocumentsTellTheTruth:
         assert ("and two digests keyed with the preview-token secret "
                 "(`token_bind`, `mapping_hmac_sha256`). Never an original "
                 "name" not in flat)
+        # v0.14: the v0.13 sentences that the per-file digests are not
+        # keyed, true of v0.13's code, are gone with it.
+        assert "The per-file digests are not keyed" not in flat
+        assert "Those two are not keyed" not in flat
+        assert "(`old_length`, `old_sha256`, `new_length`" not in flat
 
     def test_privacy_no_longer_makes_the_unqualified_promise(self):
         flat = self._flat("PRIVACY.md")

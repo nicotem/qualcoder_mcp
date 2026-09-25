@@ -309,9 +309,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 171_040          # 73 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 171_165          # 73 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_568           # 21 tools, same environment
-    FULL_MEASURED_310 = 179_796      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 179_929      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_520
 
     # Why two per cent, away from the reference environment.
@@ -339,7 +339,7 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "171,040"
+    FULL_CHARS = "171,165"
     CORE_CHARS = "56,568"
     FULL_ROUNDED = "171,000"
     CORE_ROUNDED = "57,000"
@@ -363,8 +363,17 @@ class TestThePublishedSchemaBudget:
         history the moment a tool surface moves. v0.13 removed an
         argument from six tools, so the two live in different entries
         for the first time and this class follows the current one.
+        v0.14's privacy change moved `pseudonymise_source`'s description,
+        so the release being written is the Unreleased entry, and the
+        0.13 figure is history (`_v013_entry`).
         """
-        return cls._read("CHANGELOG.md").split("## [0.12")[0]
+        return cls._read("CHANGELOG.md").split("## [0.13")[0]
+
+    @classmethod
+    def _v013_entry(cls):
+        """The 0.13 entry, whose figure is history and stays put."""
+        text = cls._read("CHANGELOG.md")
+        return text[text.index("## [0.13"):text.index("## [0.12")]
 
     @classmethod
     def _v012_entries(cls):
@@ -481,6 +490,10 @@ class TestThePublishedSchemaBudget:
         so is the rule that the entry being written states exactly one
         figure: its own."""
         assert self._current_entry().count("Serialised tool") == 1
+        v013 = self._v013_entry()
+        assert v013.count("Serialised tool") == 1
+        assert "full = 171,040 characters" in v013
+        assert self.FULL_CHARS not in v013
         history = self._v012_entries()
         assert history.count("Serialised tool") == 2
         assert "at the Batch A point, which is where this section stops " \
