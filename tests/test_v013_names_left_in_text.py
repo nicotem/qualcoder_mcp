@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.13 Brief 1, items 3 and 4: the names left in the file text.
 
 The residue block a researcher is read before approving a run did not

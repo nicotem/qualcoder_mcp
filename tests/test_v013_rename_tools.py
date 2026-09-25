@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.13: rename_case and rename_file (RENAME_TOOLS_DOSSIER.md, section 3;
 the owner's rulings of 2026-09-23).
 

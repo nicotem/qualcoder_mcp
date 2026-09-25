@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.13: rename_case and rename_file beside the pseudonymisation tool
 (RENAME_TOOLS_DOSSIER.md 2.6 and 4.3), on the flagship's own fixture.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.13 Brief 1, item 1: one file per call (decision A).
 
 `pseudonymise_source` rewrote every eligible text source, or the ones a

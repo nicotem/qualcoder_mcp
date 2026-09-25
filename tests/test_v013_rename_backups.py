@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.13 rename tools, fix round 2: how rename_file reads the project's
 backups to recognise a rename back (the lead's ruling on QA-4).
 
