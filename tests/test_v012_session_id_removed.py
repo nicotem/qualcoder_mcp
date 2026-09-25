@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import qualcoder_mcp.server as server
@@ -26,10 +28,14 @@ RESERVED_ARGUMENT_NAMES = {"session_id", "request_id", "conversation_id",
 
 class TestSessionIdDuplicateRemoved:
 
-    def test_no_tool_argument_uses_a_reserved_routing_name(self):
+    @pytest.mark.parametrize("toolset", ["full", "lifecycle"])
+    def test_no_tool_argument_uses_a_reserved_routing_name(self, toolset):
         # Self-checking: without this the guard would pass on an emptied
-        # or half-registered registry.
-        assert len(server.mcp._tool_manager._tools) == TOOL_COUNT
+        # or half-registered registry. Also under `lifecycle` (v0.14),
+        # whose tool is registered after import and would otherwise be
+        # the one tool this guard never sees.
+        server._apply_toolset(toolset)
+        assert len(server.mcp._tool_manager._tools) == _count(toolset)
         for name, tool in server.mcp._tool_manager._tools.items():
             props = set((tool.parameters or {}).get("properties", {}))
             assert not (props & RESERVED_ARGUMENT_NAMES), (name, props)
@@ -80,6 +86,12 @@ class TestSessionIdDuplicateRemoved:
 # ===========================================================================
 
 TOOL_COUNT = 73          # pinned in tests/test_v012_cli.py too
+
+
+def _count(toolset):
+    """The registry's size under `toolset` ("full" or "lifecycle")."""
+    extra = len(server.LIFECYCLE_TOOLS) if toolset == "lifecycle" else 0
+    return TOOL_COUNT + extra
 
 UNKNOWN_SESSION_ID = "00000000-0000-4000-8000-000000000000"
 
@@ -299,8 +311,9 @@ class TestNoResponseCarriesSessionId:
         # above, would pass vacuously on an emptied registry.
         assert len(server.mcp._tool_manager._tools) == TOOL_COUNT
 
+    @pytest.mark.parametrize("toolset", ["full", "lifecycle"])
     def test_no_tool_response_anywhere_carries_session_id(
-        self, setup_server, tmp_path, monkeypatch
+        self, setup_server, tmp_path, monkeypatch, toolset
     ):
         # Every tool is called for real with its required arguments only,
         # so every OPTIONAL argument takes its production default. Pin the
@@ -351,8 +364,14 @@ class TestNoResponseCarriesSessionId:
         # the question is what was NOT redirected (fix round 4, W1).
         assert _module_paths_under(real_home, tmp_path) == []
 
+        # Under `lifecycle` (v0.14) the sweep also calls create_project,
+        # which a sweep of the registry at import would never see. Its
+        # probe arguments give no coder name, so it asks and makes no
+        # folder; it runs last all the same, so that a creation, were it
+        # ever to happen, could not change what the other tools see.
+        server._apply_toolset(toolset)
         tools = server.mcp._tool_manager._tools
-        assert len(tools) == TOOL_COUNT
+        assert len(tools) == _count(toolset)
 
         # A real session has to exist, or the not-found envelopes would
         # list nothing and the sweep would pass without seeing the shape
@@ -361,7 +380,9 @@ class TestNoResponseCarriesSessionId:
 
         scanned, envelopes, offenders = set(), set(), []
         excluded = {}
-        for name, tool in sorted(tools.items()):
+        order = sorted(tools.items(), key=lambda item: (
+            item[0] in server.LIFECYCLE_TOOLS, item[0]))
+        for name, tool in order:
             try:
                 response = tool.fn(**_probe_arguments(tool, tmp_path))
             except Exception as exc:

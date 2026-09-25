@@ -34,6 +34,7 @@ VENV_PY = Path(sys.executable)
 
 EXPECTED_FULL = 73
 EXPECTED_CORE = 21
+EXPECTED_LIFECYCLE = 74          # full plus create_project (v0.14)
 
 SCHEMA = """
 CREATE TABLE project (databaseversion TEXT, date TEXT, memo TEXT, about TEXT, bookmarkfile INTEGER, bookmarkpos INTEGER, codername TEXT, recently_used_codes TEXT);
@@ -109,7 +110,7 @@ class TestToolsetResolution:
 
     def test_explicit_values_case_insensitive(self, monkeypatch):
         for raw, expect in [("core", "core"), ("FULL", "full"),
-                            (" Core ", "core")]:
+                            (" Core ", "core"), ("Lifecycle", "lifecycle")]:
             monkeypatch.setenv("QUALCODER_MCP_TOOLSET", raw)
             assert server._resolve_toolset_mode() == expect
 
@@ -119,6 +120,9 @@ class TestToolsetResolution:
             server._resolve_toolset_mode()
         msg = str(ei.value)
         assert "banana" in msg and "core" in msg and "full" in msg
+        assert "'lifecycle'" in msg
+        # `full` is no longer every tool once `lifecycle` exists (v0.14)
+        assert "all tools" not in msg
 
     def test_default_surface_is_backward_compatible(self):
         """No env var -> the full surface, untouched."""
@@ -149,6 +153,61 @@ class TestToolsetResolution:
         assert server.CORE_TOOLSET <= names
 
 
+class TestLifecycleToolset:
+    """`lifecycle` (v0.14): the full set plus create_project, registered
+    only in that mode, so every count taken at import stays 73."""
+
+    def test_membership_is_full_plus_create_project(self):
+        full = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert "create_project" not in full and len(full) == EXPECTED_FULL
+        server._apply_toolset("lifecycle")
+        names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert names == full | {"create_project"}
+        assert len(names) == EXPECTED_LIFECYCLE
+        assert set(server.LIFECYCLE_TOOLS) == {"create_project"}
+
+    def test_applying_it_twice_changes_nothing(self):
+        server._apply_toolset("lifecycle")
+        once = dict(server.mcp._tool_manager._tools)
+        assert server._apply_toolset("lifecycle") == {}
+        assert server.mcp._tool_manager._tools == once
+
+    def test_core_gains_nothing(self):
+        assert not set(server.LIFECYCLE_TOOLS) & server.CORE_TOOLSET
+
+    def test_lifecycle_tools_are_module_functions_the_mode_registers(self):
+        """The drift guard's twin for LIFECYCLE_TOOLS: each name is a
+        module-level function of the server, absent from the registry
+        at import, and the mode registers that very function."""
+        for name in server.LIFECYCLE_TOOLS:
+            assert callable(getattr(server, name, None)), name
+            assert name not in server.mcp._tool_manager._tools, name
+        server._apply_toolset("lifecycle")
+        for name in server.LIFECYCLE_TOOLS:
+            tool = server.mcp._tool_manager._tools[name]
+            assert tool.fn is getattr(server, name)
+
+    def test_the_tool_answers_through_the_guard(self):
+        """Registered like every decorated tool: its errors are JSON."""
+        server._apply_toolset("lifecycle")
+        tool = server.mcp._tool_manager._tools["create_project"]
+        assert json.loads(tool.fn(12345))["success"] is False
+        props = tool.parameters["properties"]
+        assert tool.parameters["required"] == ["name"]
+        assert props["coder_name_not_known"]["type"] == "boolean"
+        assert props["coder_name_not_known"]["default"] is False
+
+    def test_leak_1_a_lifecycle_test_that_forgets_to_undo(self):
+        """The first of a pair: applies the mode and never undoes it."""
+        server._apply_toolset("lifecycle")
+        assert len(server.mcp._tool_manager._tools) == EXPECTED_LIFECYCLE
+
+    def test_leak_2_does_not_leak_into_the_next_test(self):
+        """The registry-restoring fixture in conftest put it back."""
+        assert "create_project" not in server.mcp._tool_manager._tools
+        assert len(asyncio.run(server.mcp.list_tools())) == EXPECTED_FULL
+
+
 # ---------------------------------------------------------------------------
 # Startup level: unknown value fails loudly, before serving anything
 # ---------------------------------------------------------------------------
@@ -171,6 +230,7 @@ class TestStartupFailsLoudly:
         assert proc.returncode == 1
         assert "Unknown QUALCODER_MCP_TOOLSET" in proc.stderr
         assert "banana" in proc.stderr
+        assert "'lifecycle'" in proc.stderr
         assert "Traceback" not in proc.stderr
 
 
@@ -276,6 +336,45 @@ class TestCoreModeEndToEnd:
         assert len(rows) == 1
 
 
+class TestLifecycleModeEndToEnd:
+
+    def test_lifecycle_mode_creates_a_project_over_stdio(self, tmp_path):
+        """Started with QUALCODER_MCP_TOOLSET=lifecycle, the server lists
+        74 tools and creates a project in its workspace, which it then
+        has selected (the real transport, the real start-up path)."""
+        project = _build_project(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        params = StdioServerParameters(
+            command=str(VENV_PY),
+            args=["-m", "qualcoder_mcp.server"],
+            env=_server_env(home, project, toolset="lifecycle"),
+        )
+
+        async def drive():
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    names = {t.name for t in tools.tools}
+                    assert len(names) == EXPECTED_LIFECYCLE
+                    assert "create_project" in names
+                    out = json.loads(_text_of(await session.call_tool(
+                        "create_project",
+                        {"name": "Stdio study", "coder_name": "carol"})))
+                    assert out["created"] is True, out
+                    current = json.loads(_text_of(await session.call_tool(
+                        "get_current_project", {})))
+                    return out, current
+
+        out, current = asyncio.run(drive())
+        folder = home / "Documents" / "Qualcoder MCP Projects" / \
+            "Stdio study.qda"
+        assert Path(out["project_path"]).resolve() == folder.resolve()
+        assert (folder / "data.qda").is_file()
+        assert Path(current["current_project"]).resolve() == folder.resolve()
+
+
 class TestThePublishedSchemaBudget:
     """One measurement, propagated to every site (QA round 1, F8 and F21).
 
@@ -313,6 +412,9 @@ class TestThePublishedSchemaBudget:
     CORE_MEASURED = 56_568           # 21 tools, same environment
     FULL_MEASURED_310 = 179_796      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_520
+    # v0.14's opt-in `lifecycle` set: `full` plus create_project.
+    LIFECYCLE_MEASURED = 172_504     # 74 tools, same environment
+    LIFECYCLE_MEASURED_310 = 181_332
 
     # Why two per cent, away from the reference environment.
     #
@@ -436,6 +538,10 @@ class TestThePublishedSchemaBudget:
     def test_the_core_toolset_measures_what_the_documents_say(self):
         self._assert_matches("core", self.CORE_MEASURED,
                              self.CORE_MEASURED_310, EXPECTED_CORE)
+
+    def test_the_lifecycle_toolset_measures_its_pinned_figure(self):
+        self._assert_matches("lifecycle", self.LIFECYCLE_MEASURED,
+                             self.LIFECYCLE_MEASURED_310, EXPECTED_LIFECYCLE)
 
     def test_the_tolerance_is_a_real_comparison(self):
         """A tolerance nobody drives is a tolerance that passes anything.

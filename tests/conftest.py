@@ -427,6 +427,26 @@ def _isolate_session_manager(tmp_path, _sandbox_patch):
 
 
 @pytest.fixture(autouse=True)
+def _restore_tool_registry():
+    """Put the server's tool registry back as it was after every test.
+
+    v0.14's `lifecycle` toolset ADDS a tool at start-up, where `core`
+    only removes, and the tests that undo `_apply_toolset` by putting
+    back what it returned cannot see an addition: a lifecycle test that
+    forgot would leave `create_project` registered, and every later
+    count in that run would read 74, in an order depending on which
+    tests were selected (the create-project study's check). Copying the
+    registry before a test and restoring it after undoes additions and
+    removals alike, whatever the test did.
+    """
+    tools = server.mcp._tool_manager._tools
+    before = dict(tools)
+    yield
+    tools.clear()
+    tools.update(before)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_ai_coder_name(_sandbox_patch):
     """Keep an ambient QUALCODER_MCP_AI_CODER_NAME out of the suite.
 

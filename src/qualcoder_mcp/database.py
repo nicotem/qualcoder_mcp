@@ -1022,21 +1022,66 @@ _WINDOWS_DEVICE_STEMS = frozenset(
        for digit in "0123456789\u00b9\u00b2\u00b3"})
 
 
+def windows_name_rule(name: str) -> Optional[str]:
+    """Which Windows rule `name` breaks, or None: "windows_characters"
+    (< > | ? * or \"), "windows_ending" (a trailing dot or space) or
+    "windows_device" (a device name as the stem, any extension)."""
+    if any(ch in _WINDOWS_FORBIDDEN_CHARACTERS for ch in name):
+        return "windows_characters"
+    if name.endswith(('.', ' ')):
+        return "windows_ending"
+    if name.split('.')[0].rstrip(' ').upper() in _WINDOWS_DEVICE_STEMS:
+        return "windows_device"
+    return None
+
+
+_WINDOWS_FILE_NAME_TEXT = {
+    "windows_characters": (
+        "A file name must not contain < > | ? * or \" (Windows cannot "
+        "store them, and QualCoder's export writes the name as a file)."),
+    "windows_ending": (
+        "A file name must not end with a dot or a space (Windows drops "
+        "them, so there the name would stand for another file)."),
+    "windows_device": (
+        "A file name must not be a Windows device name (CON, PRN, AUX, "
+        "NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or COM or LPT "
+        "followed by a superscript 1, 2 or 3, with any extension): "
+        "Windows cannot store it as a file."),
+}
+
+
 def windows_name_problem(name: str) -> Optional[str]:
     """Why Windows cannot store `name` as a file, or None."""
-    if any(ch in _WINDOWS_FORBIDDEN_CHARACTERS for ch in name):
-        return ("A file name must not contain < > | ? * or \" (Windows "
-                "cannot store them, and QualCoder's export writes the name "
-                "as a file).")
-    if name.endswith(('.', ' ')):
-        return ("A file name must not end with a dot or a space (Windows "
-                "drops them, so there the name would stand for another "
-                "file).")
-    if name.split('.')[0].rstrip(' ').upper() in _WINDOWS_DEVICE_STEMS:
-        return ("A file name must not be a Windows device name (CON, PRN, "
-                "AUX, NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or "
-                "COM or LPT followed by a superscript 1, 2 or 3, with any "
-                "extension): Windows cannot store it as a file.")
+    rule = windows_name_rule(name)
+    return None if rule is None else _WINDOWS_FILE_NAME_TEXT[rule]
+
+
+def file_name_rule(name: str) -> Optional[Tuple[str, Any]]:
+    """The first file-name rule `name` breaks, as (rule, detail), or None.
+
+    One rule set with two wordings: `file_name_problem` words it for a
+    file, and `new_project.project_name_problem` for a project folder
+    (v0.14), so the two cannot drift apart. The rules, in order: "empty"
+    (empty, spaces only or dots only); "invisible" (detail: the class of
+    character, from forbidden_display_char); "surrogate"; "path" ('/',
+    '\\', '..' or ':'); the three Windows rules of windows_name_rule;
+    "too_long" (detail: the size in bytes, over MAX_FILE_NAME_BYTES).
+    """
+    if file_name_is_invalid_upstream(name):
+        return ("empty", None)
+    bad = forbidden_display_char(name)
+    if bad is not None:
+        return ("invisible", bad)
+    if any(unicodedata.category(ch) == "Cs" for ch in name):
+        return ("surrogate", None)
+    if '/' in name or '\\' in name or '..' in name or ':' in name:
+        return ("path", None)
+    windows = windows_name_rule(name)
+    if windows is not None:
+        return (windows, None)
+    size = len(name.encode("utf-8"))
+    if size > MAX_FILE_NAME_BYTES:
+        return ("too_long", size)
     return None
 
 
@@ -1052,29 +1097,28 @@ def file_name_problem(name: str) -> Optional[str]:
     characters '/', '\\', '..' and ':'; a name Windows cannot store
     (windows_name_problem: < > | ? * ", a trailing dot or space, a device
     name); over MAX_FILE_NAME_BYTES bytes in UTF-8. Refused, never
-    truncated.
+    truncated. The rules are `file_name_rule`'s.
     """
-    if file_name_is_invalid_upstream(name):
+    broken = file_name_rule(name)
+    if broken is None:
+        return None
+    rule, detail = broken
+    if rule == "empty":
         return ("A file name must not be empty, spaces only or dots only "
                 "(QualCoder itself renames such a file unnamed_file_<id>).")
-    bad = forbidden_display_char(name)
-    if bad is not None:
-        return f"A file name must not contain {bad}."
-    if any(unicodedata.category(ch) == "Cs" for ch in name):
+    if rule == "invisible":
+        return f"A file name must not contain {detail}."
+    if rule == "surrogate":
         return ("A file name must not contain an unpaired surrogate "
                 "character.")
-    if '/' in name or '\\' in name or '..' in name or ':' in name:
+    if rule == "path":
         return ("A file name must not contain path separators ('/' or "
                 "'\\'), '..' or ':', because QualCoder joins the name into "
                 "file paths.")
-    windows = windows_name_problem(name)
-    if windows is not None:
-        return windows
-    size = len(name.encode("utf-8"))
-    if size > MAX_FILE_NAME_BYTES:
-        return (f"A file name must be at most {MAX_FILE_NAME_BYTES} bytes "
-                f"in UTF-8 (this one has {size}).")
-    return None
+    if rule in _WINDOWS_FILE_NAME_TEXT:
+        return _WINDOWS_FILE_NAME_TEXT[rule]
+    return (f"A file name must be at most {MAX_FILE_NAME_BYTES} bytes "
+            f"in UTF-8 (this one has {detail}).")
 
 
 def refi_declared_text_type(name: str) -> str:

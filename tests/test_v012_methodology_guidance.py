@@ -231,6 +231,12 @@ class TestPromptTemplates:
 class TestHouseRules:
 
     def test_no_em_dash_on_any_registered_surface(self):
+        # `lifecycle` first (v0.14): its tool is registered after import,
+        # so a sweep of the registry as it stands at import would never
+        # read create_project's description.
+        server._apply_toolset("lifecycle")
+        assert set(server.LIFECYCLE_TOOLS) <= set(
+            server.mcp._tool_manager._tools)
         for name, tool in server.mcp._tool_manager._tools.items():
             assert EM_DASH not in (tool.description or ""), name
         for r in asyncio.run(server.mcp.list_resources()):

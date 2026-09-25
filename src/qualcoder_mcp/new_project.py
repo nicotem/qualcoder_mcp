@@ -24,11 +24,19 @@ each of this server's releases while 4.0 is in beta.
 """
 
 import datetime
+import os
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
-from .database import VERIFIED_MASTER_COMMIT
+from .database import (
+    MAX_FILE_NAME_BYTES,
+    VERIFIED_MASTER_COMMIT,
+    _sqlite_ro_uri,
+    documents_name_key,
+    file_name_rule,
+)
 
 # The schema label a new project carries, and the build that writes it.
 SCHEMA_VERSION = "v17"
@@ -368,3 +376,292 @@ def write_project(folder: Union[str, Path],
             raise
         raise ProjectWriteFailed(stage, error, left) from None
     return folder / DATABASE_FILE
+
+
+# ---------------------------------------------------------------------------
+# The project's name (v0.13's file-name rule, worded for a project, and
+# the project-only refusals). The folder is "<name>.qda".
+# ---------------------------------------------------------------------------
+
+PROJECT_SUFFIX = ".qda"
+# This server's backups are "<project>_backup_<time>[...].qda" and
+# QualCoder's "<project>_BKUP_<date>[<operation>].qda": a name holding
+# either is hidden by this server's project list, and a folder named
+# like another project's "_BKUP_" backup is deleted by QualCoder 4.0
+# beyond the newest five when that project closes.
+BACKUP_MARKERS = ("_backup_", "_BKUP_")
+
+_PROJECT_NAME_TEXT = {
+    "empty": "A project name must not be empty, spaces only or dots only.",
+    "surrogate": ("A project name must not contain an unpaired surrogate "
+                  "character."),
+    "path": ("A project name must not contain '/', '\\', '..' or ':': it "
+             "names one folder. To create the project somewhere else, "
+             "name that folder in `directory`."),
+    "windows_characters": (
+        "A project name must not contain < > ? * or \" (Windows cannot "
+        "store them in a folder name, and a project may be moved to "
+        "Windows)."),
+    "windows_ending": (
+        "A project name must not end with a dot or a space (Windows drops "
+        "them, so there the folder would have another name)."),
+    "windows_device": (
+        "A project name must not be a Windows device name (CON, PRN, AUX, "
+        "NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or COM or LPT "
+        "followed by a superscript 1, 2 or 3): Windows cannot store such "
+        "a folder."),
+}
+
+PIPE_REFUSAL = (
+    "A project name must not contain '|': QualCoder creates such a project "
+    "but can never open it, because it reads the text after a '|' as the "
+    "project's path.")
+
+
+def normalise_project_name(raw: str) -> str:
+    """The name as it will be used: stripped at both ends, NFC, and one
+    trailing '.qda' (any letter case) removed, since a researcher who
+    types "Study.qda" means the folder "Study.qda" (QualCoder would make
+    "Study.qda.qda")."""
+    name = unicodedata.normalize("NFC", raw.strip())
+    if name.lower().endswith(PROJECT_SUFFIX):
+        name = name[:-len(PROJECT_SUFFIX)]
+    return name
+
+
+def project_name_problem(name: str) -> Optional[str]:
+    """Why `name` (already normalised) may not name a project, or None.
+
+    v0.13's file-name rule first (`file_name_rule`: the same rules as a
+    file name, in the same order, worded for a project folder), then the
+    project-only refusals: a backup marker, a leading dot, and a name
+    still ending in '.qda'.
+    """
+    broken = file_name_rule(name)
+    if broken is not None:
+        rule, detail = broken
+        if rule == "invisible":
+            return f"A project name must not contain {detail}."
+        if rule == "too_long":
+            return (f"A project name must be at most {MAX_FILE_NAME_BYTES} "
+                    f"bytes in UTF-8 (this one has {detail}): the limit "
+                    f"leaves room for the backup names QualCoder and this "
+                    f"server add beside a project.")
+        if rule == "windows_characters" and "|" in name:
+            return PIPE_REFUSAL
+        return _PROJECT_NAME_TEXT[rule]
+    for marker in BACKUP_MARKERS:
+        if marker in name:
+            return (f"A project name must not contain '{marker}': this "
+                    f"server's project list hides such folders as backups, "
+                    f"and QualCoder 4.0 deletes a folder named like "
+                    f"another project's '_BKUP_' backup, beyond the newest "
+                    f"five, when it closes that project.")
+    if name.startswith("."):
+        return ("A project name must not start with a dot: the folder "
+                "would be hidden.")
+    if name.lower().endswith(PROJECT_SUFFIX):
+        return ("A project name must not end in '.qda' twice; give the name "
+                "without the ending.")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Where the project goes: the folder guard (new code, not the export path
+# resolver, which is made for files and needs a project selected).
+# ---------------------------------------------------------------------------
+
+class Refusal(ValueError):
+    """A creation refused before anything was written; the message is the
+    tool's answer."""
+
+
+def _inside(path: Path, folder: Path) -> bool:
+    return path == folder or folder in path.parents
+
+
+def check_parent_folder(parent: Path, state_home: Optional[Path],
+                        is_default: bool) -> None:
+    """Refuse a parent folder a project must not be created in.
+
+    `parent` is resolved. The researcher's own folder must exist and be
+    a folder (this tool creates no folder but its workspace); no parent
+    may lie inside this server's state folder, inside a folder whose
+    name ends in '.qda' (a project inside a project is copied into every
+    backup of the outer one), or on a path containing '|' (QualCoder
+    cannot open such a project).
+    """
+    where = "The workspace folder" if is_default else "The folder"
+    if not is_default:
+        if not parent.exists():
+            raise Refusal(
+                f"{where} '{parent}' does not exist. Name an existing "
+                f"folder (this tool creates no folder but its own "
+                f"workspace), or leave `directory` out to use the "
+                f"workspace.")
+        if not parent.is_dir():
+            raise Refusal(f"'{parent}' is not a folder. Name an existing "
+                          f"folder, or leave `directory` out.")
+    if state_home is not None and _inside(parent, state_home):
+        raise Refusal(
+            f"{where} is inside this server's state folder "
+            f"(~/.qualcoder_mcp), which holds its internal state; choose "
+            f"another folder.")
+    for part in (parent,) + tuple(parent.parents):
+        if part.name.lower().endswith(PROJECT_SUFFIX):
+            raise Refusal(
+                f"{where} '{parent}' is inside the project folder "
+                f"'{part.name}'. A project inside a project is copied into "
+                f"every backup of the outer one; choose a folder outside "
+                f"it.")
+    if "|" in str(parent):
+        raise Refusal(
+            f"{where} '{parent}' has a '|' in its path. QualCoder creates a "
+            f"project there but can never open it, because it reads the "
+            f"text after a '|' as the path; choose another folder.")
+
+
+def resolve_parent_folder(directory: Optional[str],
+                          workspace: Path) -> Tuple[Path, bool]:
+    """(the parent folder, resolved; whether it is the workspace)."""
+    if directory is None:
+        return Path(workspace).expanduser().resolve(), True
+    if not isinstance(directory, str):
+        raise Refusal("`directory` must be a folder path given as text, or "
+                      "left out to use the workspace.")
+    if not directory.strip():
+        raise Refusal("`directory` is empty. Name an existing folder, or "
+                      "leave `directory` out to use the workspace.")
+    try:
+        return Path(directory).expanduser().resolve(), False
+    except (OSError, RuntimeError, ValueError):
+        raise Refusal(f"'{directory}' is not a folder path this tool can "
+                      f"use.") from None
+
+
+# ---------------------------------------------------------------------------
+# What is already there: the same name (by the strictest disk's rule), and
+# older folders named like the new project's backups.
+# ---------------------------------------------------------------------------
+
+ORPHAN = "orphan"
+PROJECT = "project"
+UNREADABLE = "unreadable"
+NOT_A_FOLDER = "not_a_folder"
+
+
+def classify_existing(path: Path) -> str:
+    """What an existing entry with the new project's name is.
+
+    ORPHAN only for a folder whose `data.qda` is missing or empty: what a
+    creation that did not finish leaves. PROJECT for a readable database
+    with a project row. UNREADABLE for anything else in a folder, which
+    includes a real project that another program was writing when it
+    stopped (a full `data.qda` with a journal beside it): that one is not
+    called an orphan. The database is opened read-only, so a stranger's
+    journal is never rolled back; NOT_A_FOLDER for a file or a link.
+    """
+    if path.is_symlink() or not path.is_dir():
+        return NOT_A_FOLDER
+    database = path / DATABASE_FILE
+    try:
+        if not database.exists() or (database.is_file()
+                                     and database.stat().st_size == 0):
+            return ORPHAN
+    except OSError:
+        return UNREADABLE
+    if not database.is_file():
+        return UNREADABLE
+    conn = None
+    try:
+        conn = sqlite3.connect(_sqlite_ro_uri(database), uri=True)
+        row = conn.execute("SELECT count(*) FROM project").fetchone()
+        return PROJECT if row and row[0] else UNREADABLE
+    except sqlite3.Error:
+        return UNREADABLE
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def existing_name_refusal(entry: str, folder_name: str, kind: str) -> str:
+    """The refusal for an entry that already holds the new folder's name."""
+    if entry != folder_name:
+        return (f"The folder already holds '{entry}', which is the same "
+                f"name as '{folder_name}' on a disk that ignores letter "
+                f"case, accent composition or a trailing dot or space "
+                f"(macOS and Windows by default). Two projects under those "
+                f"names would become one folder when copied to such a "
+                f"disk, and one of them would be lost. Choose another "
+                f"name.")
+    if kind == PROJECT:
+        return (f"A project called '{folder_name}' already exists there. "
+                f"Select it with select_project to work on it, or choose "
+                f"another name.")
+    if kind == ORPHAN:
+        return (f"A folder called '{folder_name}' exists there with no "
+                f"usable project database in it: it looks like the remains "
+                f"of a project creation that did not finish, and nothing "
+                f"in it can be opened. The researcher may delete it by "
+                f"hand; otherwise choose another name. This tool never "
+                f"deletes an existing folder.")
+    if kind == NOT_A_FOLDER:
+        return (f"Something called '{folder_name}' exists there that is "
+                f"not a project folder (a file or a link). Choose another "
+                f"name.")
+    return (f"A folder called '{folder_name}' exists there and its database "
+            f"could not be read. Choose another name.")
+
+
+def backup_siblings(entries: Sequence[str], stem: str) -> List[str]:
+    """Entries named like the new project's backups: '<stem>_backup_...'
+    or '<stem>_BKUP_...', ending in '.qda'. Compared with letter case
+    folded, as a Windows disk and Python's own matching there do."""
+    prefixes = tuple(f"{stem}{marker}".casefold()
+                     for marker in BACKUP_MARKERS)
+    return sorted(entry for entry in entries
+                  if entry.casefold().startswith(prefixes)
+                  and entry.casefold().endswith(PROJECT_SUFFIX))
+
+
+def backup_siblings_refusal(found: Sequence[str], stem: str) -> str:
+    shown = ", ".join(f"'{name}'" for name in found[:5])
+    more = f" and {len(found) - 5} more" if len(found) > 5 else ""
+    return (f"The folder already holds {shown}{more}, named like backups "
+            f"of a project called '{stem}'. This server's backup tools "
+            f"would offer them as the new project's own backups, and could "
+            f"restore one in its place; QualCoder 4.0 deletes '_BKUP_' "
+            f"folders of a project beyond the newest five when it closes "
+            f"it. Choose another name, or move those folders first.")
+
+
+def scan_parent(parent: Path, folder_name: str,
+                stem: str) -> Optional[str]:
+    """The refusal the folder's present contents call for, or None.
+
+    A parent that does not exist yet (the workspace before its first
+    project) holds nothing. The same name is found by
+    `documents_name_key` (NFC, letter case folded, trailing dots and
+    spaces dropped): the atomic `mkdir` stays the final check, but on a
+    case-sensitive disk it would let 'study.qda' beside 'Study.qda'.
+    """
+    if not parent.exists():
+        return None
+    try:
+        entries = [entry.name for entry in os.scandir(parent)]
+    except OSError as error:
+        raise Refusal(
+            f"The folder '{parent}' could not be read "
+            f"({type(error).__name__}); check that it exists and that "
+            f"this program may read it.") from None
+    key = documents_name_key(folder_name)
+    same = [entry for entry in entries if documents_name_key(entry) == key]
+    if same:
+        entry = folder_name if folder_name in same else sorted(same)[0]
+        kind = classify_existing(parent / entry) if entry == folder_name \
+            else ""
+        return existing_name_refusal(entry, folder_name, kind)
+    siblings = backup_siblings(entries, stem)
+    if siblings:
+        return backup_siblings_refusal(siblings, stem)
+    return None

@@ -48,6 +48,7 @@ from .database import (
     private_note_refusal,
     MAX_CODER_NAME_LENGTH,
     backup_project,
+    default_workspace,
     qualcoder_lock_state,
     qualcoder_open_message,
     qualcoder_gui_signals,
@@ -65,6 +66,7 @@ from .database import (
     PSEUDONYMS_JSON_NAME,
 )
 from . import pseudonymise as pseudo
+from . import new_project
 from .cursors import (
     CURSOR_MAX_LENGTH,
     CURSOR_TOO_LONG,
@@ -4507,7 +4509,7 @@ def query_by_attribute(
 # rows (speakers.py:47 at 9bddf17): a pushpin pictograph and the words.
 # Compared as that literal, never as a pattern, because a researcher may
 # legitimately call themselves something similar.
-SPEAKER_SYSTEM_CODER = "\U0001F4CC Speaker coding"
+SPEAKER_SYSTEM_CODER = new_project.SPEAKER_CODER_NAME
 
 UNIT_OF_ANALYSIS = (
     "Each character (Unicode code point) of each text file's fulltext in "
@@ -14896,11 +14898,103 @@ Ground the profile in verbatim quotes from this case's segments, and keep what t
 
 
 # ============================================================================
+# Creating a project (v0.14). Registered only in the opt-in `lifecycle`
+# toolset (the owner's design of 2026-09-08, ruled on 2026-09-25), so the
+# default `full` set and `core` do not change. The format, the name rules
+# and the folder guard are in new_project.py.
+# ============================================================================
+
+def _create_project_refusal(text: str, **extra: Any) -> str:
+    return json.dumps({"success": False, "created": False, "error": text,
+                       **extra}, indent=2)
+
+
+@_tool_guard
+def create_project(name: str, directory: Optional[str] = None,
+                   coder_name: Optional[str] = None,
+                   coder_name_not_known: bool = False) -> str:
+    """Create a new, empty QualCoder project, and select it.
+
+    Makes the project folder "<name>.qda" with its four subfolders and a
+    database in QualCoder 4.0's format, exactly as QualCoder 4.0's own New
+    Project makes them, then selects the new project so material can be
+    imported at once. Nothing existing is ever changed: a name already in
+    use is refused, never replaced or given a "_1".
+
+    Args:
+        name: The project's name, without ".qda" (a typed ".qda" is
+              dropped)
+        directory: An existing folder to create the project in; leave it
+                   out to use this server's workspace,
+                   ~/Documents/Qualcoder MCP Projects
+        coder_name: The coder name the researcher uses in QualCoder
+                    (Settings, Coder name), exactly as it appears there
+        coder_name_not_known: True when the researcher does not know it
+
+    Returns:
+        JSON with the new project's path, what was written, and the next
+        steps
+    """
+    if not isinstance(name, str):
+        return _create_project_refusal(
+            "`name` must be the project's name, given as text.")
+    stem = new_project.normalise_project_name(name)
+    problem = new_project.project_name_problem(stem)
+    if problem is not None:
+        return _create_project_refusal(problem)
+    try:
+        parent, is_default = new_project.resolve_parent_folder(
+            directory, default_workspace())
+        new_project.check_parent_folder(
+            parent, Path(preview_tokens_state_home()).resolve(), is_default)
+    except new_project.Refusal as refusal:
+        return _create_project_refusal(str(refusal))
+    folder = parent / f"{stem}{new_project.PROJECT_SUFFIX}"
+
+    if coder_name is None and not coder_name_not_known:
+        return _create_project_refusal(
+            "Ask the researcher for the coder name they use in QualCoder.",
+            action_required="coder_name")
+    stored_coder = "" if coder_name is None else validate_coder_name(
+        coder_name, "coder_name")
+
+    about = new_project.about_line(_package_version)
+    statements = new_project.creation_statements(
+        stored_coder, about, new_project.creation_date())
+    try:
+        if is_default:
+            parent.mkdir(parents=True, exist_ok=True)
+        data_path = new_project.write_project(folder, statements)
+    except FileExistsError:
+        return _create_project_refusal(
+            f"Something called '{folder.name}' already exists there. "
+            f"Choose another name.")
+    logger.info("Created a new project (schema %s)",
+                new_project.SCHEMA_VERSION)
+
+    previous = current_project_path
+    switch_project(str(folder))
+    _remember_mru_project(str(data_path))
+    return json.dumps({
+        "success": True,
+        "created": True,
+        "project_path": str(folder),
+        "project_name": stem,
+        "schema": new_project.SCHEMA_VERSION,
+        "about": about,
+        "coder_name": stored_coder or None,
+        "coder_name_known": bool(stored_coder),
+        "selected": True,
+        "previous_project": previous,
+    }, indent=2)
+
+
+# ============================================================================
 # Main entry point
 # ============================================================================
 
 # ============================================================================
-# Toolset modes (EXPERIMENTAL): QUALCODER_MCP_TOOLSET=core|full
+# Toolset modes (EXPERIMENTAL): QUALCODER_MCP_TOOLSET=full|core|lifecycle
 # ============================================================================
 # Local models break on large tool surfaces long before frontier models do:
 # tool-selection accuracy collapses as the menu grows, and the full tool
@@ -14909,6 +15003,12 @@ Ground the profile in verbatim quotes from this case's segments, and keep what t
 # the supervised-coding-loop subset below; the default remains the full
 # surface (backward compatible). Required for local models, optional
 # elsewhere. Resources and prompts are unaffected.
+#
+# `lifecycle` (v0.14) is the full set plus the project-lifecycle tools,
+# today only `create_project`. Those tools are not decorated: they are
+# added by `_apply_toolset("lifecycle")` at start-up, so every count taken
+# at import, `full` and `core` stay as they are, and a researcher opts in
+# to a tool that makes folders on their disk.
 
 CORE_TOOLSET = frozenset({
     # project open/select
@@ -14931,7 +15031,11 @@ CORE_TOOLSET = frozenset({
     "copy_project_to_workspace", "delete_coding", "list_backups",
 })
 
-_VALID_TOOLSET_MODES = ("full", "core")
+# The project-lifecycle tools: registered only by `lifecycle`, in this
+# order, from the module-level functions of the same names.
+LIFECYCLE_TOOLS = ("create_project",)
+
+_VALID_TOOLSET_MODES = ("full", "core", "lifecycle")
 
 
 def _resolve_toolset_mode() -> str:
@@ -14940,17 +15044,21 @@ def _resolve_toolset_mode() -> str:
     if raw not in _VALID_TOOLSET_MODES:
         raise ValueError(
             f"Unknown QUALCODER_MCP_TOOLSET value {raw!r}: valid values "
-            f"are 'full' (default, all tools) and 'core' (the reduced "
-            f"supervised-coding set for local models)."
+            f"are 'full' (default, the standard set), 'core' (the reduced "
+            f"supervised-coding set for local models) and 'lifecycle' (the "
+            f"standard set plus creating a project)."
         )
     return raw
 
 
 def _apply_toolset(mode: str) -> Dict[str, Any]:
-    """Restrict the registered tool surface to the requested mode.
+    """Set the registered tool surface to the requested mode.
 
-    Returns the removed tools keyed by name so tests can restore them.
-    Idempotent for mode='full' (removes nothing).
+    `core` removes every tool outside CORE_TOOLSET and returns the
+    removed tools keyed by name, so tests can restore them. `lifecycle`
+    adds the LIFECYCLE_TOOLS (adding one already registered changes
+    nothing) and removes nothing. `full` changes nothing. The tests'
+    registry-restoring fixture undoes either.
     """
     removed: Dict[str, Any] = {}
     if mode == "core":
@@ -14958,6 +15066,10 @@ def _apply_toolset(mode: str) -> Dict[str, Any]:
             if name not in CORE_TOOLSET:
                 removed[name] = mcp._tool_manager._tools[name]
                 mcp.remove_tool(name)
+    elif mode == "lifecycle":
+        for name in LIFECYCLE_TOOLS:
+            if name not in mcp._tool_manager._tools:
+                mcp.add_tool(globals()[name])
     active = len(mcp._tool_manager._tools)
     logger.info(f"Toolset mode: {mode} ({active} tools registered)")
     return removed
