@@ -27,13 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns it red; on Windows, whose thread clock is too coarse for a 15 ms
   count, it stays on the wall clock. It still fails when the reader's
   sweep goes back to `str.translate`.
-- Serialised tool JSON as it stands after this change: full = 171,101
-  characters (about 42.8k tokens at chars/4) over 73 tools, core =
-  56,629 (about 14.2k) over 21, and the new opt-in lifecycle set =
-  173,528 over 74. Measured as for 0.13, on the final tree through the
+- Serialised tool JSON as it stands after this change: full = 171,907
+  characters (about 43.0k tokens at chars/4) over 73 tools, core =
+  57,435 (about 14.4k) over 21, and the new opt-in lifecycle set =
+  174,334 over 74. Measured as for 0.13, on the final tree through the
   toolset gate, under Python 3.13.5 with mcp 1.30.0, in the repository's
-  own `venv/`; on Python 3.11.13, in the repository's `.venv/`, 179,861,
-  59,585 and 182,420.
+  own `venv/`; on Python 3.11.13, in the repository's `.venv/`, 180,723,
+  60,447 and 183,282.
 
 ## [0.13.0-alpha] - 2026-09-25
 

@@ -820,11 +820,11 @@ carries the complete list.
 > set_project_ai_coder_name,
 > copy_project_to_workspace, delete_coding, list_backups.
 > Required for local models, optional elsewhere; unknown values fail
-> loudly at startup. Measured for 0.13 (the
+> loudly at startup. Measured for 0.14 (the
 > serialised tool definitions: name, description and input schema, the
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
-> definitions run to about 171,000 characters for `full`, roughly 43k
+> definitions run to about 172,000 characters for `full`, roughly 43k
 > tokens at four characters per token, and about 57,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those

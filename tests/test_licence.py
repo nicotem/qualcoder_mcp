@@ -482,7 +482,6 @@ NOTICE_HERE = (
     (65, "tests/track5_helpers.py"),
     (65, "tests/test_v17_support.py"),
     (65, "tests/test_v013_rename_tools.py"),
-    (65, "scripts/create_test_project.py"),
     (66, "tests/fixtures/qc40_new_project.json"),
     (67, "tests/test_v012_pseudonymise_tool.py"),
     (67, "tests/test_v012_duplicate_inserts.py"),

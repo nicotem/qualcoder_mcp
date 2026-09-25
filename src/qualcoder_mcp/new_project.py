@@ -550,6 +550,21 @@ UNREADABLE = "unreadable"
 NOT_A_FOLDER = "not_a_folder"
 
 
+def is_unfinished(path: Path) -> bool:
+    """A folder whose `data.qda` is missing or empty: what a creation that
+    did not finish leaves. Read from the folder listing and the file's
+    size alone; the database is not opened."""
+    database = path / DATABASE_FILE
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return False
+        if not os.path.lexists(database):
+            return True
+        return database.is_file() and database.stat().st_size == 0
+    except OSError:
+        return False
+
+
 def classify_existing(path: Path) -> str:
     """What an existing entry with the new project's name is.
 
@@ -563,13 +578,9 @@ def classify_existing(path: Path) -> str:
     """
     if path.is_symlink() or not path.is_dir():
         return NOT_A_FOLDER
+    if is_unfinished(path):
+        return ORPHAN
     database = path / DATABASE_FILE
-    try:
-        if not database.exists() or (database.is_file()
-                                     and database.stat().st_size == 0):
-            return ORPHAN
-    except OSError:
-        return UNREADABLE
     if not database.is_file():
         return UNREADABLE
     conn = None

@@ -105,6 +105,10 @@ class TestSignals:
         signals = qualcoder_gui_signals(proj)
         assert len(signals) == 1
         assert "chat history" in signals[0]
+        # v0.14: both builds rewrite the file on every open, AI or not,
+        # so the signal is no longer presented as a 4.0 or AI one
+        assert "3.8.2 and 4.0 both rewrite it" in signals[0]
+        assert "4.0 AI" not in signals[0]
 
     def test_old_chat_history_is_silent(self, tmp_path, no_process_hits):
         proj = tmp_path / "p.qda"
@@ -184,6 +188,70 @@ class TestProcessFilter:
 
     def test_garbage_lines_tolerated(self):
         assert _filter_qualcoder_processes([None, 42, b"bytes"]) == []
+
+    def test_a_mention_is_not_a_running_qualcoder(self):
+        """v0.14, the create-project study's finding: the old filter
+        counted any command line holding "qualcoder" once this server's
+        own names were blanked, so shells, logs and test runs on the
+        machine made every selection say the project APPEARS to be open
+        in QualCoder. These are the lines measured on the developer's
+        Mac and the kinds around them."""
+        lines = [
+            "/bin/zsh -c source /Users/x/.claude/shell-snapshots/s.sh && "
+            "python -c 'from qualcoder_mcp import database as d; "
+            "d._qualcoder_process_hits()'",
+            "/Library/Frameworks/Python.framework/Versions/3.13/Resources/"
+            "Python.app/Contents/MacOS/Python -B -c from qualcoder_mcp "
+            "import database as d; d._qualcoder_process_hits()",
+            "tail -f /Users/x/Library/Logs/Claude/mcp-server-qualcoder.log",
+            "grep -ri qualcoder notes.txt",
+            "vim /Users/x/Applications/QualCoder/README.md",
+            "python3 /x/.local/acceptance/qualcoder/qc40/qc_probe.py create",
+            "python -m pytest tests/test_qc40_gui_detection.py -k qualcoder",
+            "/usr/bin/python3 -m qualcoder_mcp.server",
+            "uv run --directory /x/qualcoder_mcp qualcoder-mcp",
+            "python3 script.py /Users/x/Applications/QualCoder",
+        ]
+        assert _filter_qualcoder_processes(lines) == []
+
+    def test_the_ways_qualcoder_really_runs(self):
+        lines = [
+            # the owner's source checkout, launched from the Dock
+            "/Library/Frameworks/Python.framework/Versions/3.13/Resources/"
+            "Python.app/Contents/MacOS/Python -m qualcoder",
+            "/Users/x/Applications/QualCoder/env/bin/python -X faulthandler "
+            "-m qualcoder",
+            "python3 /home/u/QualCoder/src/qualcoder/__main__.py",
+            "python -m qualcoder.__main__",
+            "/Applications/QualCoder.app/Contents/MacOS/QualCoder",
+            "/tmp/.mount_QualCo1a2b/usr/bin/QualCoder",
+            "C:\\Program Files\\QualCoder\\QualCoder.exe",
+            '"QualCoder.exe","4242","Console","1","150,000 K"',
+            '"C:\\Python313\\python.exe" -m qualcoder',
+        ]
+        assert _filter_qualcoder_processes(lines) == [
+            line.strip()[:200] for line in lines]
+
+    def test_the_scan_leaves_this_process_out(self, monkeypatch):
+        """The ps fallback reads pids too, so this process never counts,
+        whatever its command line says."""
+        import subprocess
+        own = os.getpid()
+        listing = (f"  {own} /usr/bin/python3 -m qualcoder\n"
+                   f"  {own + 1} /usr/bin/python3 -m qualcoder\n").encode()
+
+        class Done:
+            stdout = listing
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+        monkeypatch.setattr(database.os, "name", "posix")
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        database._process_scan_cache["at"] = 0.0
+        try:
+            hits = database._qualcoder_process_hits()
+        finally:
+            database._process_scan_cache["at"] = 0.0
+        assert hits == ["/usr/bin/python3 -m qualcoder"]
 
     def test_scan_never_raises(self, monkeypatch):
         # Whatever the platform offers, the scan returns a list

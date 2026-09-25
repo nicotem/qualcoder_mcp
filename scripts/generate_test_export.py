@@ -28,7 +28,8 @@ def main():
         print(f"❌ Test project not found at: {test_project_path}")
         print("\nPlease ensure the test project exists.")
         print("You can create it by running:")
-        print("  python scripts/create_test_project.py")
+        print("  python scripts/create_test_project.py "
+              "\"~/Documents/QDA Projects/test_project.qda\"")
         return 1
 
     print(f"✓ Found test project: {test_project_path}")

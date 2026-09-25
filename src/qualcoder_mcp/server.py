@@ -523,13 +523,20 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
 
                 try:
                     stat = qda_file.stat()
-                    projects.append({
+                    entry = {
                         "path": str(qda_file),
                         "name": qda_file.stem,
                         "directory": str(qda_file.parent),
                         "size_mb": round(stat.st_size / (1024 * 1024), 2),
                         "modified": stat.st_mtime
-                    })
+                    }
+                    # A folder a creation left unfinished is listed, and
+                    # marked (v0.14); its database is never opened here.
+                    if qda_file.is_dir() and _is_unfinished_creation(
+                            str(qda_file)):
+                        entry["usable"] = False
+                        entry["note"] = NO_USABLE_DATABASE
+                    projects.append(entry)
                 except (OSError, PermissionError) as e:
                     logger.debug(f"Cannot access {qda_file}: {e}")
                     continue
@@ -2412,6 +2419,30 @@ def list_available_projects(search_directories: Optional[List[str]] = None) -> s
         return json.dumps({"error": f"Failed to discover projects: {str(e)}"})
 
 
+# v0.14 (the create-project study's findings 1 and 7, and its check).
+PIPE_PATH_WARNING = (
+    "This project's path contains '|'. QualCoder cannot open a project "
+    "from such a path, because it reads the text after a '|' as the path; "
+    "to open it in QualCoder, move or rename the folder so that its path "
+    "has no '|'. This server works with it as usual.")
+NO_USABLE_DATABASE = (
+    "This folder holds no usable project database: its data.qda is missing "
+    "or empty, which is what a project creation that did not finish "
+    "leaves. Nothing in it can be opened; it may be deleted by hand.")
+
+
+def _is_unfinished_creation(project_path: str) -> bool:
+    """A .qda folder whose data.qda is missing or empty, never opened."""
+    try:
+        folder = Path(project_path).expanduser()
+        if folder.name == "data.qda":
+            folder = folder.parent
+        return (folder.suffix.lower() == ".qda"
+                and new_project.is_unfinished(folder))
+    except (OSError, ValueError):
+        return False
+
+
 def _project_open_failure_result(project_path: str) -> Dict[str, Any]:
     """Error payload for a well-formed project whose database would not open.
 
@@ -2469,7 +2500,9 @@ def select_project(project_path: str) -> str:
     QualCoder 4.0 detection is best-effort: 4.0 writes no lock file, so
     the result also carries `qualcoder_gui_signals`, heuristics built from
     a write sidecar on the project database, recent activity on the 4.0 AI
-    search index or chat history, and a guarded local process scan. When
+    search index, a recently rewritten chat history file (QualCoder 3.8.2
+    and 4.0 both rewrite it on every open), and a guarded local process
+    scan. When
     any are present the warning says the project APPEARS to be open in
     QualCoder; confirm with the user before any write rather than treating
     it as certain. When none are present the warning names the limitation
@@ -2566,6 +2599,8 @@ def select_project(project_path: str) -> str:
                 "QualCoder itself would refuse to open it with 'This is "
                 "not a QualCoder database'."
             )
+        if "|" in str(validate_qda_path(project_path)):
+            warnings.append(PIPE_PATH_WARNING)
 
         if warnings:
             result["warning"] = " | ".join(warnings)
@@ -2594,6 +2629,11 @@ def select_project(project_path: str) -> str:
             # heuristics choose the wording; the damaged-database
             # advice is always kept (P1-5; QA round 1, F3/F22).
             return json.dumps(_project_open_failure_result(project_path))
+        if _is_unfinished_creation(project_path):
+            return json.dumps({
+                "success": False,
+                "error": NO_USABLE_DATABASE + " Use 'list_available_projects' "
+                         "to find valid projects."})
         # A wrong or malformed path: no heuristic can explain it, so the
         # deterministic recovery hint stays exactly as it was
         return json.dumps({
@@ -2612,6 +2652,16 @@ def select_project(project_path: str) -> str:
             "error": "Failed to open project database"
         })
 
+
+# The setter's warning when the project's own coder name is not known
+# (v0.14, the create-project study's 7.5): the refusal of the
+# researcher's name cannot then be made.
+RESEARCHER_CODER_NAME_UNKNOWN = (
+    "This project's own coder name (the researcher's name in QualCoder) is "
+    "not known, so whether this AI coder name is theirs could not be "
+    "checked. Confirm with the researcher that it is not the name they use "
+    "in QualCoder; the check comes on when they first open the project in "
+    "QualCoder, which records their name.")
 
 _VISIBILITY_UNREADABLE = object()
 
@@ -2667,8 +2717,11 @@ def set_project_ai_coder_name(name: str, note: str = "",
     project's own coder name, QualCoder's literal default coder name
     "default", or QualCoder's speaker coder "\U0001F4CC Speaker coding";
     refused without allow_hidden_coder=true if the name belongs
-    to a coder currently hidden in QualCoder. Does not require QualCoder
-    to be closed, because it writes no database row.
+    to a coder currently hidden in QualCoder. When the project's own
+    coder name is not known (a project created before the researcher gave
+    it), the first refusal cannot be made and the result warns instead:
+    confirm with the user that the name is not theirs. Does not require
+    QualCoder to be closed, because it writes no database row.
 
     Args:
         name: The coder name to store AI rows under
@@ -2758,6 +2811,11 @@ def set_project_ai_coder_name(name: str, note: str = "",
 
     declared = host_declaration()
     warnings = _set_name_warnings(ro, state, name, declared, visibility)
+    if not codername:
+        # The one check keeping AI rows apart from the researcher's is the
+        # comparison above, which needs the project's coder name (v0.14:
+        # a project created with the name "not known" has none yet).
+        warnings.append(RESEARCHER_CODER_NAME_UNKNOWN)
 
     kept_aside = None
     if replaced_unreadable:
@@ -2940,8 +2998,10 @@ def get_current_project() -> str:
     - `qualcoder_gui_signals` (list, always present): best-effort
       heuristics for an open QualCoder 4.0 window, which writes no lock
       file (a write sidecar on the project database, recent activity on
-      the 4.0 AI search index or chat history, a running process that
-      looks like QualCoder). When any are present a `qualcoder_gui_hint`
+      the 4.0 AI search index, a chat history file rewritten recently,
+      which both QualCoder builds do on every open, a running process
+      that looks like QualCoder). When any are present a
+      `qualcoder_gui_hint`
       says the project APPEARS to be open; that is a heuristic, so confirm
       with the user before writing rather than treating it as certain. An
       idle 4.0 window with no recent AI activity leaves no file trace, so
@@ -9085,14 +9145,21 @@ def create_proposed_codes(coding_session_id: str,
 
 @mcp.tool()
 @_tool_guard
-def set_memo(target_type: str, target_id: int, memo: str,
+def set_memo(target_type: str, target_id: Optional[int], memo: str,
              create_backup: bool = True,
              allow_hidden_coder: bool = False) -> str:
-    """Write (or clear) the memo on a code, category, file, coding, or case.
+    """Write (or clear) the memo on a code, category, file, coding, or
+    case, or the project memo.
 
     THIS WRITES TO THE DATABASE. Memos are the researcher's analytic notes
     attached to an object. This sets the memo, replacing any existing one;
     pass an empty string to clear it.
+
+    The project memo (target_type 'project', target_id null) describes
+    the study: QualCoder 4.0's own assistant reads its public part as the
+    project's context (research topic and questions, methodology,
+    participants and data). A new project's memo is empty, as QualCoder
+    leaves it.
 
     Memo privacy (QualCoder 4.0 convention): memo text from the first
     '#####' marker onward is the researcher's private zone. This tool
@@ -9115,9 +9182,9 @@ def set_memo(target_type: str, target_id: int, memo: str,
 
     Args:
         target_type: What to attach the memo to: one of 'code', 'category',
-                     'file', 'coding', 'case'
+                     'file', 'coding', 'case', 'project'
         target_id: The object's id (code cid / category catid / file source
-                   id / coding ctid / case caseid)
+                   id / coding ctid / case caseid); null for 'project'
         memo: The memo text ('' clears it)
         create_backup: Create a timestamped backup before writing (default True)
         allow_hidden_coder: Override to write on a hidden coder's coding
@@ -9129,13 +9196,18 @@ def set_memo(target_type: str, target_id: int, memo: str,
     Example:
         "Add a memo to code 5: 'participants frame this as institutional'"
         "Note on file 3 that the audio was hard to transcribe"
+        "Put the study's research questions in the project memo"
     """
     # Validate on the read-only connection before upgrading/backup
-    valid = {"code", "category", "file", "coding", "case"}
+    valid = {"code", "category", "file", "coding", "case", "project"}
     if target_type not in valid:
         return json.dumps({
             "error": f"target_type must be one of: {', '.join(sorted(valid))}"
         })
+    if target_type != "project" and target_id is None:
+        return json.dumps({
+            "error": f"target_id is required for target_type "
+                     f"'{target_type}' (null is only for 'project')."})
 
     if target_type == "coding":
         refusal = _refuse_existing_row_change(
@@ -15022,6 +15094,10 @@ def _created_project_next_steps(coder: str,
          "that needs it; " + differ),
         ("Add material with import_text_file; sub-codes are available at "
          "once (create_code with parent_code_id)."),
+        ("The project memo is empty, as QualCoder leaves a new project's; "
+         "set_memo with target_type 'project' writes it (research topic "
+         "and questions, methodology, participants), and QualCoder 4.0's "
+         "own assistant reads it as the project's context."),
     ] + ([("The new project is selected, so every tool now works on it; "
            "select_project with previous_project goes back to the one "
            "selected before.")] if previous else [])

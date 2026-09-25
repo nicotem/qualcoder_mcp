@@ -1,185 +1,47 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-3.0-or-later
-"""Create a test Qualcoder project for AI coding development and testing."""
+"""Create a test QualCoder project with sample data, for development.
+
+Usage: python scripts/create_test_project.py <new folder ending in .qda>
+
+The project is made by the server's own creation code
+(qualcoder_mcp.new_project: QualCoder 4.0's format, one transaction),
+then filled with three interview transcripts, codes in categories,
+cases with attributes, three codings and a journal entry. The folder
+must not exist yet: this script never deletes or replaces anything
+(v0.14; until then it deleted a fixed folder in ~/Documents first and
+built a project neither QualCoder nor this server would open).
+"""
 
 import sqlite3
-import os
-import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
-def create_test_project(project_folder: str):
-    """Create a test Qualcoder project with proper folder structure.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-    Args:
-        project_folder: Path to the project folder (e.g., ~/Documents/QDA Projects/test_project.qda)
+from qualcoder_mcp import new_project  # noqa: E402
+
+
+def create_test_project(project_folder: str) -> str:
+    """Create the test project at `project_folder` (a new .qda folder).
+
+    Raises FileExistsError when something of that name exists, and
+    ValueError when the folder's name does not end in '.qda'.
     """
-
     project_path = Path(project_folder).expanduser()
-
-    # Remove existing project folder if it exists
-    if project_path.exists():
-        print(f"Removing existing project at {project_path}")
-        shutil.rmtree(project_path)
-
-    # Create project folder structure
-    print(f"Creating project folder: {project_path}")
-    project_path.mkdir(parents=True, exist_ok=True)
-
-    # Create subdirectories
-    (project_path / "documents").mkdir(exist_ok=True)
-    (project_path / "images").mkdir(exist_ok=True)
-    (project_path / "audio").mkdir(exist_ok=True)
-    (project_path / "video").mkdir(exist_ok=True)
-
-    # Create the database file inside the folder
-    db_path = project_path / "data.qda"
-    print(f"Creating database: {db_path}")
-
-    # Create database
+    if project_path.suffix != ".qda":
+        raise ValueError("the project folder's name must end in '.qda'")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    about = new_project.about_line("test script")
+    db_path = new_project.write_project(
+        project_path,
+        new_project.creation_statements("test_user", about,
+                                        new_project.creation_date()))
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
-
-    # Create schema
-    print("Creating Qualcoder schema...")
-
-    # Project info table
-    cur.execute("""
-        CREATE TABLE project (
-            databaseversion text,
-            date text,
-            memo text,
-            about text
-        )
-    """)
-
-    # Source files table
-    cur.execute("""
-        CREATE TABLE source (
-            id integer primary key,
-            name text,
-            fulltext text,
-            mediapath text,
-            memo text,
-            owner text,
-            date text
-        )
-    """)
-
-    # Code categories table
-    cur.execute("""
-        CREATE TABLE code_cat (
-            catid integer primary key,
-            name text,
-            owner text,
-            date text,
-            memo text,
-            supercatid integer
-        )
-    """)
-
-    # Code names table
-    cur.execute("""
-        CREATE TABLE code_name (
-            cid integer primary key,
-            name text,
-            memo text,
-            owner text,
-            date text,
-            catid integer,
-            color text
-        )
-    """)
-
-    # Cases table
-    cur.execute("""
-        CREATE TABLE cases (
-            caseid integer primary key,
-            name text,
-            memo text,
-            owner text,
-            date text
-        )
-    """)
-
-    # Attribute types table
-    cur.execute("""
-        CREATE TABLE attribute_type (
-            name text primary key,
-            date text,
-            owner text,
-            memo text,
-            caseOrFile text,
-            valuetype text
-        )
-    """)
-
-    # Attributes table
-    cur.execute("""
-        CREATE TABLE attribute (
-            attrid integer primary key,
-            name text,
-            attr_type text,
-            value text,
-            id integer,
-            date text,
-            owner text
-        )
-    """)
-
-    # Coded text table
-    cur.execute("""
-        CREATE TABLE code_text (
-            ctid integer primary key,
-            cid integer,
-            fid integer,
-            seltext text,
-            pos0 integer,
-            pos1 integer,
-            owner text,
-            date text,
-            memo text,
-            important integer
-        )
-    """)
-
-    # Annotations table
-    cur.execute("""
-        CREATE TABLE annotation (
-            anid integer primary key,
-            fid integer,
-            pos0 integer,
-            pos1 integer,
-            memo text,
-            owner text,
-            date text
-        )
-    """)
-
-    # Journal table
-    cur.execute("""
-        CREATE TABLE journal (
-            jid integer primary key,
-            name text,
-            jentry text,
-            date text,
-            owner text
-        )
-    """)
-    cur.execute("CREATE TABLE coder_names (name TEXT UNIQUE NOT NULL, visibility INTEGER NOT NULL DEFAULT 1 CHECK (visibility IN (0, 1)))")
-
-    conn.commit()
-
-    # Insert test data
-    print("Inserting test data...")
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Project info
-    cur.execute("""
-        INSERT INTO project (databaseversion, date, memo, about)
-        VALUES (?, ?, ?, ?)
-    """, ("v8", now, "Test project for AI coding development", "AI Coding Test Project"))
+    cur.execute("UPDATE project SET memo = ?",
+                ("Test project for AI coding development",))
 
     # Sample interview transcripts
     interview_1 = """
@@ -389,7 +251,7 @@ realistic about the future here. I'm building my network and keeping my options 
     conn.commit()
     conn.close()
 
-    print(f"✓ Test project database created: {db_path}")
+    print(f"Test project created: {project_path}")
     print(f"  - 3 interview transcripts")
     print(f"  - 10 codes in 3 categories")
     print(f"  - 3 cases with attributes")
@@ -398,12 +260,13 @@ realistic about the future here. I'm building my network and keeping my options 
 
 
 if __name__ == "__main__":
-    # Create project folder (not just the .qda file)
-    project_folder = os.path.expanduser("~/Documents/QDA Projects/test_project.qda")
-    create_test_project(project_folder)
-
-    db_path = os.path.join(project_folder, "data.qda")
-    print("\n✅ Test project created successfully!")
-    print(f"📁 Project folder: {project_folder}")
-    print(f"💾 Database file: {db_path}")
-    print(f"\nYou can now open this project in Qualcoder.")
+    if len(sys.argv) != 2:
+        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        sys.exit(2)
+    try:
+        created = create_test_project(sys.argv[1])
+    except (FileExistsError, ValueError) as error:
+        print(f"Not created: {error}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Project folder: {created}")
+    print("You can now open this project in QualCoder.")

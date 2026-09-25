@@ -312,6 +312,16 @@ class UnsupportedSchemaError(RuntimeError):
     """Raised when the project database schema is too old for this server."""
 
 
+# The plain refusal of a database whose project table has no row (v0.14,
+# the create-project study's finding 7): not a usable QualCoder project.
+NO_PROJECT_ROW_MESSAGE = (
+    "This project's database has no project record (its project table is "
+    "empty), so it is not a usable QualCoder project, and QualCoder itself "
+    "will not open it. If it was left by a project creation that did not "
+    "finish, it may be deleted by hand; otherwise restore it from a "
+    "backup.")
+
+
 class DatabaseOpenError(ValueError):
     """A well-formed project location whose data.qda SQLite would not open.
 
@@ -434,8 +444,12 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
 #   recent AI activity leaves no file trace at all and is visible only
 #   to the process scan below (QA round 1, F2).
 # - ai_data/chat_history.sqlite mtime: the chat panel keeps this store
-#   open and writes on every message (ai_chat.py:1682-1718); a recent
-#   mtime means recent AI chat activity on this project.
+#   open and writes on every message (ai_chat.py:1682-1718), but both
+#   QualCoder 3.8.2 and 4.0 also rewrite it on EVERY project open, AI
+#   enabled or not (3.8.2 ai_chat.py:181-214 from __main__.py:3034; 4.0
+#   ai_chat.py:1677-1718 from __main__.py:2444; the create-project
+#   study, 3.5), so a recent mtime means a recent open or recent chat in
+#   either build, and is not worded as a 4.0 or AI signal (v0.14).
 # - A best-effort local process scan for a running QualCoder
 #   (platform-guarded, optional, cached; never a hard dependency and
 #   never allowed to crash or block, including on Windows CI runners).
@@ -461,23 +475,87 @@ def _mtime_age_seconds(path: Path) -> Optional[float]:
         return None
 
 
-def _filter_qualcoder_processes(lines) -> List[str]:
-    """Pure filter: process lines that look like a running QualCoder.
+# How a running QualCoder shows in a process list: its own program
+# (an installed `qualcoder` entry point, a packaged QualCoder.app or
+# QualCoder.exe), or a Python running QualCoder's package or its
+# __main__.py. Until v0.14 any command line holding the word "qualcoder"
+# counted once this server's own names were blanked out, so a shell or an
+# editor that merely mentioned it (the create-project study measured it:
+# test runs, a `tail` of the host's "mcp-server-qualcoder.log") gave a
+# false "APPEARS to be open in QualCoder".
+_QUALCODER_MODULES = ("qualcoder", "qualcoder.__main__")
+_QUALCODER_SCRIPTS = ("qualcoder", "qualcoder.py", "qualcoder-script.py")
+_PYTHON_OPTIONS_WITH_A_VALUE = ("-W", "-X", "-Q")
+_EXE_RE = re.compile(r"^(.*?\.exe)(?=\s|$)", re.IGNORECASE)
+_APP_RE = re.compile(r"^(.*?\.app/Contents/MacOS/\S+)", re.IGNORECASE)
 
-    This server's own name contains 'qualcoder', so every spelling of
-    the server/package name is blanked out of a line before matching;
-    what remains must still say 'qualcoder' to count.
+
+def _program_and_arguments(line: str) -> Tuple[str, List[str]]:
+    """Split a process line into its program and its arguments. A
+    program path may hold spaces ("C:\\Program Files\\...\\x.exe", an
+    app bundle); `tasklist /fo csv` gives the program's name, quoted,
+    first."""
+    text = line.strip()
+    if text.startswith('"'):
+        program, _, rest = text[1:].partition('"')
+        # `tasklist` goes on with a comma and the next field; a quoted
+        # program path in a command line, with its arguments
+        return program, ([] if rest.startswith(",") else rest.split())
+    for pattern in (_EXE_RE, _APP_RE):
+        match = pattern.match(text)
+        if match:
+            return match.group(1).strip('"'), text[match.end():].split()
+    tokens = text.split()
+    return (tokens[0], tokens[1:]) if tokens else ("", [])
+
+
+def _process_is_qualcoder(line: str) -> bool:
+    """Whether one process line is a running QualCoder (see above)."""
+    program, arguments = _program_and_arguments(line)
+    name = program.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name == "qualcoder":
+        return True
+    if not name.startswith("python"):
+        return False
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "-m":
+            return (index + 1 < len(arguments)
+                    and arguments[index + 1].lower() in _QUALCODER_MODULES)
+        if token.startswith("-m") and len(token) > 2:
+            return token[2:].lower() in _QUALCODER_MODULES
+        if token == "-c":
+            return False
+        if token in _PYTHON_OPTIONS_WITH_A_VALUE:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        script = token.replace("\\", "/").lower()
+        return (script.rsplit("/", 1)[-1] in _QUALCODER_SCRIPTS
+                or script.endswith("qualcoder/__main__.py"))
+    return False
+
+
+def _filter_qualcoder_processes(lines) -> List[str]:
+    """Pure filter: the process lines that are a running QualCoder.
+
+    This server's own names ("qualcoder_mcp", "qualcoder-mcp") never
+    match, because the program or module must be QualCoder's own.
     """
     hits = []
     for line in lines:
+        if not isinstance(line, str):
+            continue
         try:
-            folded = str(line).lower()
+            if _process_is_qualcoder(line):
+                hits.append(line.strip()[:200])
         except Exception:
             continue
-        for own in ("qualcoder_mcp", "qualcoder-mcp", "qualcoder mcp"):
-            folded = folded.replace(own, "")
-        if "qualcoder" in folded:
-            hits.append(str(line).strip()[:200])
     return hits
 
 
@@ -485,37 +563,46 @@ def _qualcoder_process_hits() -> List[str]:
     """Best-effort scan for running QualCoder processes (cached).
 
     psutil when available, else one short-lived ps/tasklist call with a
-    hard timeout. Any failure whatsoever returns no hits.
+    hard timeout. This process itself is left out. Any failure
+    whatsoever returns no hits.
     """
     now = time.monotonic()
     if now - _process_scan_cache["at"] < _PROCESS_SCAN_CACHE_SECONDS:
         return _process_scan_cache["lines"]
     lines: List[str] = []
+    own_pid = os.getpid()
     try:
         try:
             import psutil  # optional, never a hard dependency
         except ImportError:
             psutil = None
         if psutil is not None:
-            own_pid = os.getpid()
             for proc in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
                     if proc.info.get("pid") == own_pid:
                         continue
-                    cmdline = " ".join(proc.info.get("cmdline") or [])
-                    lines.append(f"{proc.info.get('name', '')} {cmdline}")
+                    cmdline = proc.info.get("cmdline") or []
+                    lines.append(" ".join(cmdline) if cmdline
+                                 else str(proc.info.get("name") or ""))
                 except Exception:
                     continue
         else:
             import subprocess
             if os.name == "nt":
-                cmd = ["tasklist", "/fo", "csv"]
+                cmd = ["tasklist", "/fo", "csv", "/nh"]
             else:
-                cmd = ["ps", "-axo", "args"]
+                cmd = ["ps", "-axo", "pid=,args="]
             completed = subprocess.run(
                 cmd, capture_output=True, timeout=3, check=False)
-            lines = completed.stdout.decode(
-                "utf-8", errors="replace").splitlines()
+            output = completed.stdout.decode("utf-8", errors="replace")
+            if os.name == "nt":
+                lines = output.splitlines()
+            else:
+                for row in output.splitlines():
+                    pid, _, args = row.strip().partition(" ")
+                    if pid.isdigit() and int(pid) == own_pid:
+                        continue
+                    lines.append(args)
     except Exception:
         lines = []
     hits = _filter_qualcoder_processes(lines)
@@ -573,8 +660,10 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
         age = _mtime_age_seconds(chat) if chat.exists() else None
         if age is not None and age <= GUI_SIGNAL_FRESH_SECONDS:
             signals.append(
-                f"the QualCoder 4.0 AI chat history was modified "
-                f"{int(age // 60)} minute(s) ago")
+                f"the project's chat history file "
+                f"(ai_data/chat_history.sqlite) was modified "
+                f"{int(age // 60)} minute(s) ago; QualCoder 3.8.2 and 4.0 "
+                f"both rewrite it whenever they open the project")
 
         # 4. A QualCoder process is running on this machine
         if include_process_scan:
@@ -2090,17 +2179,25 @@ class QualcoderDatabase:
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to open database: {e}") from e
 
-        # Validate this is a Qualcoder database
-        self._validate_schema()
+        try:
+            # Validate this is a Qualcoder database
+            self._validate_schema()
 
-        # Check database version
-        self._check_version()
+            # Check database version
+            self._check_version()
 
-        # Probe schema capabilities (column/table existence: the real gate)
-        self._probe_capabilities()
+            # Probe schema capabilities (column/table existence: the real
+            # gate)
+            self._probe_capabilities()
 
-        # Gate on required columns (older QualCoder schemas lack them)
-        self._check_required_columns()
+            # Gate on required columns (older QualCoder schemas lack them)
+            self._check_required_columns()
+        except BaseException:
+            # A refused database is closed at once rather than left to
+            # the collector: on Windows an open handle keeps its folder
+            # from being moved or removed (v0.14).
+            self.close()
+            raise
 
     def __enter__(self):
         """Context manager entry."""
@@ -2159,6 +2256,11 @@ class QualcoderDatabase:
         try:
             cursor = self.conn.execute("SELECT databaseversion, about FROM project")
             row = cursor.fetchone()
+            if row is None:
+                # QualCoder refuses such a project (its open check finds
+                # no row), and every write refusal here gave advice about
+                # upgrading that could not apply (v0.14).
+                raise UnsupportedSchemaError(NO_PROJECT_ROW_MESSAGE)
             if row:
                 version = row[0]
                 self.db_version = version
@@ -6375,8 +6477,10 @@ class QualcoderDatabase:
         """Set (or clear) the memo on a memo-bearing object.
 
         Args:
-            target_type: One of 'code', 'category', 'file', 'coding', 'case'
-            target_id: The row id (cid/catid/source id/ctid/caseid)
+            target_type: One of 'code', 'category', 'file', 'coding',
+                  'case', or 'project' (the project memo, v0.14)
+            target_id: The row id (cid/catid/source id/ctid/caseid);
+                  not used for 'project', which has one memo
             memo: The memo text. '' clears it (QualCoder's empty-string
                   convention; memos are never NULL).
             auto_commit: Commit immediately (default True)
@@ -6392,18 +6496,20 @@ class QualcoderDatabase:
             RuntimeError: If database is read-only or the update fails
         """
         self._require_write_access()
-        if target_type not in self._MEMO_TARGETS:
+        if target_type not in self._MEMO_TARGETS and target_type != "project":
             raise ValueError(
                 f"target_type must be one of: "
-                f"{', '.join(sorted(self._MEMO_TARGETS))}"
+                f"{', '.join(sorted([*self._MEMO_TARGETS, 'project']))}"
             )
-        target_id = validate_id(target_id, "target_id")
         if not isinstance(memo, str):
             raise ValueError("memo must be a string")
         # Reject over-length rather than silently truncate (memos have no
         # length limit in QualCoder; validate_string would truncate — a
         # silent corruption of the user's note, memos-journals.md §6.7/#8)
         _reject_if_too_long(memo, "memo")
+        if target_type == "project":
+            return self._set_project_memo(memo, auto_commit)
+        target_id = validate_id(target_id, "target_id")
 
         table, id_col, name_col = self._MEMO_TARGETS[target_type]
 
@@ -6468,6 +6574,44 @@ class QualcoderDatabase:
             "target_type": target_type,
             "target_id": target_id,
             "label": label,
+            "memo": public_memo,
+            "cleared": public_memo == "",
+        }
+
+    def _set_project_memo(self, memo: str, auto_commit: bool
+                          ) -> Dict[str, Any]:
+        """The project memo (v0.14): the project row's `memo`, written
+        with QualCoder's own statement, `update project set memo=?`
+        (__main__.py:1952 at the pin; the project has one row). As for
+        every other memo, only the public part is replaced: the private
+        part after '#####' survives verbatim and is never returned.
+        QualCoder 4.0's own assistant reads the public part as the
+        project's context (ai_chat.py:2731)."""
+        try:
+            row = self.conn.execute("SELECT memo FROM project").fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "set_memo", "Failed to set memo")
+        if row is None:
+            raise ValueError(
+                "This project has no project record, so it has no project "
+                "memo; QualCoder itself will not open it.")
+        stored_memo = merge_public_memo(row["memo"], memo)
+        public_memo = extract_ai_memo(stored_memo)
+        try:
+            self.conn.execute("UPDATE project SET memo = ?", (stored_memo,))
+            if auto_commit:
+                self.conn.commit()
+            logger.info("Set the project memo")
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, "set_memo", "Failed to set memo")
+        return {
+            "target_type": "project",
+            "target_id": None,
+            "label": "project",
             "memo": public_memo,
             "cleared": public_memo == "",
         }

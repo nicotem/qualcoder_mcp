@@ -611,7 +611,6 @@ QualCoder projects.
     Here: tests/track5_helpers.py.
     Here: tests/test_v17_support.py.
     Here: tests/test_v013_rename_tools.py.
-    Here: scripts/create_test_project.py.
     From: 3.8.2 __main__.py, lines 2347-2417; app.py, lines 1470-1473;
     and, at the root of QualCoder's repository, tests/test_qualcoder.py,
     lines 47-107.
