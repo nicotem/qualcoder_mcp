@@ -455,9 +455,9 @@ reason:
 
 - A new argument, `rewrite_memos` (default off, bound into the approval
   token), also rewrites the public part of every note (the twelve kinds
-  the residue counts, codings to image codings, and the project's own)
-  and of every journal entry, across the whole project whatever
-  `file_id` says, by the same whole-word rule as the file text. A
+  the residue counts, codings to image codings, and the project's own),
+  across the whole project whatever `file_id` says, by the same
+  whole-word rule as the file text. A
   note's private part (from its `#####` marker) is carried across
   unchanged and never read, so a name there is still there and cannot
   be reported; the preview counts how many of the notes it would

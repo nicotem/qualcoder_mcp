@@ -201,7 +201,9 @@ class TestTheFilesShip:
         """The owner's rulings of 2026-09-25: NOTICE says this project
         uses the listed items under QualCoder's licence, taking no
         position on whether each item is copyrightable, and CONTRIBUTING
-        says the listed items were copied before the copying rule."""
+        says most of the listed items were copied before the copying
+        rule (entry 13, entries 67, 68 and 70 and some file-format facts
+        were added under it)."""
         notice = " ".join(
             (REPO / "NOTICE").read_text(encoding="utf-8").split())
         assert ("(LGPL-3.0-or-later). This project uses the items below "
@@ -209,9 +211,9 @@ class TestTheFilesShip:
         assert "The items below remain under that licence." not in notice
         contributing = " ".join(
             (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
-        assert ("The items NOTICE lists were copied before this rule was "
-                "made; some of them could be written afresh, and each is "
-                "kept as it is until its code is next changed."
+        assert ("Most of the items NOTICE lists were copied before this "
+                "rule was made; some of them could be written afresh, and "
+                "each is kept as it is until its code is next changed."
                 in contributing)
 
     def test_the_mit_licence_file_is_gone(self):
