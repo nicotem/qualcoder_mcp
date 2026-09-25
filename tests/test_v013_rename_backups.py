@@ -10,6 +10,7 @@ id AND the same date), R1-2 (opened read-only and immutable) and R1-4
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -376,8 +377,9 @@ class TestTheDocumentsHalfAsksForTheSameText:
             return Spy(con) if _in_a_backup(target) else con
         monkeypatch.setattr(database.sqlite3, "connect", connect)
         assert _file(5, "legacy.txt", create_backup=False)["changed"]
+        # Fix round 4, F3A-2: the text compared as the database's bytes.
         assert seen == ["SELECT name, date FROM source WHERE id = ? AND "
-                        "fulltext IS ?"], seen
+                        "CAST(fulltext AS BLOB) IS ?"], seen
 
 
 class TestTheDateToTheSecondAndTheEmptyDate:
@@ -422,3 +424,89 @@ class TestAHalfWrittenBackupIsSkipped:
         assert "already holds" in out.get("error", ""), out
         (b1 / side).unlink()
         assert _file(5, "legacy.txt", create_backup=False)["changed"]
+
+
+def _replay_a(project, text5, text6, merged_text):
+    """Checker A's replay a with the texts given (REVERIFY_RENAME_F3_A.md,
+    probe n1): legacy texts 5 and 6 share a second; 6 renamed here (a
+    backup), deleted in QualCoder, and QualCoder's Merge projects (master
+    merge_projects.py:858-862, replayed) inserts coder B's text with the
+    same date: it takes id 6. Then rename 6 back to 'p6.txt'."""
+    stamp = "2021-03-02 11:22:33"
+    docs = project / "documents"
+    docs.mkdir(exist_ok=True)
+    (docs / "p5.txt").write_text("participant five, original")
+    (docs / "p6.txt").write_text("participant six, original")
+    for fid, name, text in ((5, "p5.txt", text5), (6, "p6.txt", text6)):
+        _exec(project, "INSERT INTO source (id, name, fulltext, mediapath, "
+                       "memo, owner, date) VALUES (?, ?, ?, NULL, '', "
+                       "'gui_user', ?)", (fid, name, text, stamp))
+    _reload()
+    assert _file(6, "P06.txt")["changed"]
+    _exec(project, "DELETE FROM source WHERE id = 6")
+    _exec(project, "INSERT INTO source (name, fulltext, mediapath, memo, "
+                   "owner, date) VALUES ('p5-coderB.txt', ?, NULL, '', "
+                   "'coderB', ?)", (merged_text, stamp))
+    _reload()
+    return _file(6, "p6.txt", create_backup=False)
+
+
+class TestAnEmptyOrUnreadableTextIsNoEvidence:
+    """Fix round 4, F3A-1 to F3A-3."""
+
+    @pytest.mark.parametrize("text", ["", None])
+    def test_n1_replay_a_with_empty_texts(self, setup_server,
+                                          qualcoder_db_path, text):
+        out = _replay_a(Path(qualcoder_db_path), text, text, text)
+        assert "already holds a file called 'p6.txt'" in \
+            out.get("error", ""), out
+
+    def test_n2_n4_a_text_that_is_not_utf8(self, legacy, caplog):
+        """Compared as the database's own bytes: the rename back of the
+        same text is recognised, and nothing of the text is logged."""
+        body = b"Thomas Jones, 14 Mill Lane, said \xff\xfe hello"
+        _exec(legacy, "UPDATE source SET fulltext = CAST(? AS TEXT) "
+                      "WHERE id = 5", (body,))
+        _reload()
+        caplog.set_level(logging.DEBUG)
+        assert _file(5, "P05.txt")["changed"]            # a backup
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert out.get("changed") is True, out
+        assert not [r for r in caplog.records
+                    if "Mill Lane" in r.getMessage()]
+
+    def test_a_text_that_cannot_be_read_is_the_ordinary_refusal(
+            self, legacy, monkeypatch, caplog):
+        assert _file(5, "legacy2.txt")["changed"]
+        real = database.QualcoderDatabase.current_text
+
+        def unreadable(self, file_id):
+            return self.TEXT_UNREADABLE
+        monkeypatch.setattr(database.QualcoderDatabase, "current_text",
+                            unreadable)
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert out["error"].startswith(
+            "The project's documents folder already holds"), out
+        assert real is not None
+
+    def test_n3_null_and_the_text_None_differ(self, legacy, monkeypatch):
+        """The race of probe n3: the backup shows 5 with the text 'None';
+        the text becomes NULL in the window before the lock."""
+        _exec(legacy, "UPDATE source SET fulltext = 'None' WHERE id = 5")
+        _reload()
+        assert _file(5, "P05.txt")["changed"]
+        real = database.QualcoderDatabase.begin_immediate
+
+        def begin(self_db):
+            _exec(legacy, "UPDATE source SET fulltext = NULL WHERE id = 5")
+            real(self_db)
+        monkeypatch.setattr(database.QualcoderDatabase, "begin_immediate",
+                            begin)
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+
+    def test_the_key_carries_the_texts_type(self):
+        key = server._text_evidence_key
+        assert key(None) != key("None")
+        assert key(b"None") != key("None")
+        assert key(b"abc") == key(b"abc")

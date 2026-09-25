@@ -8096,11 +8096,25 @@ class QualcoderDatabase:
     # recognise a rename back (fix round 1, QA-4).
     EARLIER_NAMES_BACKUP_LIMIT = 200
 
+    # What current_text answers when the text cannot be read at all.
+    TEXT_UNREADABLE = object()
+
     def current_text(self, file_id: int) -> Any:
-        """This entry's stored text as it is now (for earlier_name's
-        same-text question), or None."""
-        row = self.conn.execute("SELECT fulltext FROM source WHERE id = ?",
-                                (file_id,)).fetchone()
+        """This entry's stored text as it is now, as the database's own
+        bytes (for earlier_name's same-text question), or None.
+
+        Read `CAST(fulltext AS BLOB)` (fix round 4, F3A-2), so a text
+        stored as text that is not UTF-8 is compared as it stands
+        instead of failing the decode; a read that still fails answers
+        TEXT_UNREADABLE, which is no evidence, so the ordinary refusal
+        answers and nothing of the text reaches a log line.
+        """
+        try:
+            row = self.conn.execute(
+                "SELECT CAST(fulltext AS BLOB) FROM source WHERE id = ?",
+                (file_id,)).fetchone()
+        except sqlite3.Error:
+            return self.TEXT_UNREADABLE
         return row[0] if row else None
 
     def earlier_name(self, file_id: int, current_date: Any,
@@ -8133,9 +8147,14 @@ class QualcoderDatabase:
         database is skipped (F2A-5); the scan stops at the first backup
         that shows an accepted name (R1-4). A backup that cannot be read
         is skipped. Nothing is
-        written; only this entry's name and date are read.
+        written; only the name and date of the row with this id are read.
         """
         if current_date is None or current_date == "":
+            return None
+        # An empty, missing or unreadable text says nothing about which
+        # entry this is (fix round 4, F3A-1, F3A-2): no evidence.
+        if same_text and (text is None or text == b"" or text == ""
+                          or text is self.TEXT_UNREADABLE):
             return None
         folder = Path(self.db_path).parent
         backups = []
@@ -8169,7 +8188,8 @@ class QualcoderDatabase:
                     if same_text:
                         row = con.execute(
                             "SELECT name, date FROM source WHERE id = ? "
-                            "AND fulltext IS ?", (file_id, text)).fetchone()
+                            "AND CAST(fulltext AS BLOB) IS ?",
+                            (file_id, text)).fetchone()
                     else:
                         row = con.execute(
                             "SELECT name, date FROM source WHERE id = ?",

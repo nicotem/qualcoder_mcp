@@ -12437,6 +12437,17 @@ def stored_file_name(mediapath: Optional[str]) -> Optional[str]:
     return re.split(r"[\\/]", tail)[-1] or None
 
 
+def _text_evidence_key(text: Any) -> Tuple[str, str]:
+    """The carried answer's key for a text: its type and a SHA-256 digest
+    of its bytes (fix round 4, F3A-3: a NULL text and the text 'None', or
+    a bytes text and the string of its repr, no longer share a key)."""
+    if text is None:
+        return ("NoneType", "")
+    data = text if isinstance(text, bytes) else \
+        str(text).encode("utf-8", "surrogatepass")
+    return (type(text).__name__, hashlib.sha256(data).hexdigest())
+
+
 def _is_a_rename_back(rows, file_id: int, clash: str, find_earlier) -> bool:
     """Whether the documents/ file `clash` is this text's own copy under
     a name it had before (the lead's ruling on QA-4).
@@ -12518,9 +12529,14 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
         `same_text` (the documents/ half, F2A-2) the backup's row must
         hold this entry's current text as well."""
         text = db.current_text(file_id) if same_text else None
-        digest = hashlib.sha256(str(text).encode(
-            "utf-8", "surrogatepass")).hexdigest() if same_text else None
-        tag = (tag, row.get("date"), digest)
+        # No evidence from an empty, missing or unreadable text (fix
+        # round 4, F3A-1, F3A-2), decided before the carried answer or
+        # any backup is consulted.
+        if same_text and (text is None or text in (b"", "")
+                          or text is db.TEXT_UNREADABLE):
+            return None
+        tag = (tag, row.get("date"),
+               _text_evidence_key(text) if same_text else None)
         if tag not in evidence:
             evidence[tag] = db.earlier_name(file_id, row.get("date"), accept,
                                             same_text=same_text, text=text)
