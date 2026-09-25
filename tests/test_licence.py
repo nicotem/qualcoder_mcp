@@ -175,6 +175,28 @@ class TestTheFilesShip:
         assert "qualcoder-mcp is free software" in grant
         assert f"(SPDX: {EXPRESSION})" in grant
 
+    # The owner's wording of 2026-09-24 on the releases already
+    # published, after the sentence that dates the change (the lead's
+    # ruling of 2026-09-25 at the v0.13 release preparation).
+    RELEASES_ALREADY_PUBLISHED = (
+        "This licence applies from version 0.13. Every release up to and "
+        "including 0.12.1 was published under the MIT License, and this "
+        "project's own code in those releases remains available under "
+        "those terms. Those releases also contained some of the "
+        "QualCoder-derived items listed below; those items were always "
+        "under QualCoder's licence, LGPL-3.0-or-later, whatever those "
+        "releases declared.")
+
+    def test_notice_says_when_the_licence_applies_and_what_came_before(self):
+        """The paragraph stands whole, in the part before QualCoder's
+        section, as one paragraph: the date of the change, then the
+        owner's two sentences on the releases already published."""
+        notice = (REPO / "NOTICE").read_text(encoding="utf-8")
+        notice = notice.replace("\r\n", "\n")
+        grant = notice.partition("Code derived from QualCoder")[0]
+        paragraphs = [" ".join(p.split()) for p in grant.split("\n\n")]
+        assert self.RELEASES_ALREADY_PUBLISHED in paragraphs
+
     def test_the_mit_licence_file_is_gone(self):
         """MIT stays in git history and in every release up to 0.12.1;
         a LICENSE file in the tree would say it still applies."""

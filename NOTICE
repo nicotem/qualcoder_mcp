@@ -20,12 +20,12 @@ The licence texts ship with this program: COPYING.LESSER is the GNU
 Lesser General Public License, version 3, and COPYING is the GNU General
 Public License, version 3, whose terms the Lesser licence incorporates.
 
-Every release up to and including 0.12.1 was published under the MIT
-License, and this project's own code in those releases remains
-available under those terms. Those releases also contained some of the
-QualCoder-derived items listed below; those items were always under
-QualCoder's licence, LGPL-3.0-or-later, whatever those releases
-declared.
+This licence applies from version 0.13. Every release up to and
+including 0.12.1 was published under the MIT License, and this
+project's own code in those releases remains available under those
+terms. Those releases also contained some of the QualCoder-derived
+items listed below; those items were always under QualCoder's licence,
+LGPL-3.0-or-later, whatever those releases declared.
 
 
 Code derived from QualCoder
