@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The GPL text moved from `COPYING` to `LICENSES/GPL-3.0.txt`, so that
+- The GPL text moved from `COPYING` to `legal/GPL-3.0.txt`, so that
   GitHub shows the project's licence as the LGPL; the text still ships
   in the wheel and the sdist, as the LGPL requires, and nothing about
   the licence changes.

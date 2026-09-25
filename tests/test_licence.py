@@ -14,10 +14,11 @@ that nothing else in the suite would notice:
 - `pyproject.toml` declares the expression `LGPL-3.0-or-later` and names
   the three licence files, which is what puts them in the wheel and the
   sdist;
-- `COPYING.LESSER`, `LICENSES/GPL-3.0.txt` and `NOTICE` exist, the two
+- `COPYING.LESSER`, `legal/GPL-3.0.txt` and `NOTICE` exist, the two
   licence texts are the FSF's own, byte for byte, the MIT `LICENSE` is
-  gone, and the GPL text stays out of the top folder, where GitHub would
-  read it as a second licence of the project.
+  gone, and the GPL text stays out of the top folder and out of a
+  top-level `LICENSES/` folder, the two places GitHub's licence detector
+  reads, where it would count as a second licence of the project.
 
 A fourth pin keeps NOTICE true as the code moves: every entry in its
 "Code derived from QualCoder" section says where the item is, and every
@@ -41,12 +42,13 @@ except ModuleNotFoundError:  # Python 3.10, where pytest itself needs tomli
 REPO = pathlib.Path(__file__).resolve().parents[1]
 EXPRESSION = "LGPL-3.0-or-later"
 HEADER = f"# SPDX-License-Identifier: {EXPRESSION}"
-# The GPL text sits under LICENSES/ (the REUSE layout) rather than as
-# COPYING in the top folder: GitHub reads every licence file at the top
-# as a licence of the project, and listed "LGPL-3.0 and GPL-3.0" while
-# it was there. The LGPL is additional permissions on the GPL and asks
-# for the GPL text to accompany it, so the text still ships.
-GPL_TEXT = "LICENSES/GPL-3.0.txt"
+# The GPL text sits in legal/: GitHub's licence detector reads the top
+# folder and a top-level LICENSES/ folder, counts every licence it finds
+# there as a licence of the project, and listed "LGPL-3.0 and GPL-3.0"
+# while the text was COPYING at the top. legal/ is neither, which is why
+# the text sits there. The LGPL is additional permissions on the GPL and
+# asks for the GPL text to accompany it, so the text still ships.
+GPL_TEXT = "legal/GPL-3.0.txt"
 LICENCE_FILES = ("COPYING.LESSER", GPL_TEXT, "NOTICE")
 
 # The FSF texts as https://www.gnu.org/licenses/ serves them. The LGPL
@@ -229,12 +231,16 @@ class TestTheFilesShip:
         a LICENSE file in the tree would say it still applies."""
         assert not (REPO / "LICENSE").exists()
 
-    def test_the_lgpl_is_the_only_licence_text_in_the_top_folder(self):
-        """GitHub names a repository's licence from the licence files in
-        its top folder, and with the GPL text there as COPYING it showed
-        "LGPL-3.0 and GPL-3.0". The GPL text belongs under LICENSES/, and
-        NOTICE says where it is."""
+    def test_the_lgpl_is_the_only_licence_text_github_reads(self):
+        """GitHub's licence detector reads the top folder and a top-level
+        LICENSES/ folder, and with the GPL text at the top as COPYING it
+        showed "LGPL-3.0 and GPL-3.0". The GPL text belongs in legal/,
+        which is neither of the two, and NOTICE says where it is."""
         assert not (REPO / "COPYING").exists()
+        licence_folders = [
+            path.name for path in REPO.iterdir() if path.is_dir()
+            and path.name.lower() in ("licenses", "licences")]
+        assert not licence_folders, licence_folders
         named_as_licences = sorted(
             path.name for path in REPO.iterdir() if path.is_file()
             and path.name.lower().startswith(("licen", "copying", "unlicen")))
