@@ -15,8 +15,8 @@ extract_ai_memo and merge_public_memo are QualCoder's own code, copied
 from ai_memo.py:28-59 at 9bddf17 (author Kai Dröge) statement for
 statement, with local names changed, so that the behaviour is upstream's
 exactly; NOTICE lists them.
-neutralize_marker and strip_private_memos are this project's own. The
-behaviour the copied functions give:
+neutralize_marker, rewrite_public_memo and strip_private_memos are this
+project's own. The behaviour the copied functions give:
 
 - Split: the FIRST marker wins; the private suffix starts AT the
   marker, marker included. Text with no marker is entirely public.

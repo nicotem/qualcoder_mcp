@@ -1384,9 +1384,15 @@ class TestRewritePublicMemo:
     def test_merge_public_memo_is_unchanged(self):
         """The helper is new and `merge_public_memo` is not touched: it
         stays matched to upstream `ai_memo.py:48-59`, which the module
-        docstring promises."""
+        docstring promises. Since the licence change (v0.13) the
+        docstring says why: the function is QualCoder's own, copied, and
+        the new helper is this project's."""
         import qualcoder_mcp.memo_privacy as memo_privacy
-        assert "Behaviour is matched to upstream ai_memo.py exactly" in \
-            memo_privacy.__doc__
+        doc = " ".join(memo_privacy.__doc__.split())
+        assert ("from ai_memo.py:28-59 at 9bddf17 (author Kai Dröge) "
+                "statement for statement, with local names changed, so that "
+                "the behaviour is upstream's exactly") in doc
+        assert ("neutralize_marker, rewrite_public_memo and "
+                "strip_private_memos are this project's own.") in doc
         assert merge_public_memo("old\n\n#####p", "new") == "new\n\n#####p"
         assert merge_public_memo("old", "new#####x") == "new"
