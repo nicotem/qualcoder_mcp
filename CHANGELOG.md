@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests: keep them private, or delete the ones you do not need. A
   reader tells the two apart by `format` (3 is keyed) and by the field
   names. PRIVACY.md says what each format holds.
+- `pseudonymise_source`'s list of what it does not rewrite names an
+  imported document's stored copy in the project's `documents/` folder,
+  which keeps the original text and which QualCoder's exports ship.
 - **One rule for every error answer and log line: the kind of error and
   SQLite's short name for it, never SQLite's message.** A project built
   to do it (a trigger whose error quotes a row) or a damaged one (a note
@@ -86,9 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   microseconds each on the development Mac and a few per read tool
   call (about 11 to 25 microseconds on the reads measured), and nothing
   on a project that did.
-- `pseudonymise_source`'s list of what it does not rewrite names an
-  imported document's stored copy in the project's `documents/` folder,
-  which keeps the original text and which QualCoder's exports ship.
+- Two tests v0.13's review of the note rewriting asked for: the mode a
+  saved `pseudonyms.json` keeps is shown to come from the file that was
+  read even when the name is swapped for a link at the reader's own
+  close, and the run's note-statement log line is pinned whole for an
+  error with no SQLite name (Python 3.10's shape) on every interpreter.
+  No behaviour changed.
 - Serialised tool JSON as it stands after this change: full = 171,165
   characters (about 42.8k tokens at chars/4) over 73 tools, core =
   56,568 (about 14.1k) over 21; only `pseudonymise_source`'s

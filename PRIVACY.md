@@ -115,11 +115,10 @@ What stays local, always:
   where the pseudonyms now sit, kept so a run can be accounted for
   afterwards. It is not a way back; the backup taken before the run is.
 
-Error answers and the server's log. An error answer goes to the AI
+**Error answers and the server's log.** An error answer goes to the AI
 provider like any other result, and the server's log lines go to the
 host, which may keep them on disk (INSTALL.md, "Reading the server
-log").
-Since v0.14 neither carries SQLite's message: an error from the
+log"). Since v0.14 neither carries SQLite's message: an error from the
 database is reported by its kind and SQLite's short name for it (for
 example `IntegrityError SQLITE_CONSTRAINT_TRIGGER`; Python 3.10 has no
 such name, and there the kind stands alone, as it does for a value that
@@ -865,10 +864,9 @@ will ask, and the summary above depends on them:
     (`old_text_hmac_sha256`, `new_text_hmac_sha256`, over a fixed label
     and the text, so no file's text can make it equal a token's
     signature), and the run's result carries no digest of the text
-    before the run, only the
-    two lengths (`old_length`, `new_length`) and the plain SHA-256 of
-    the text after it (`new_sha256`), which is a digest of text the
-    reader can already read. Before v0.14 the result carried the plain
+    before the run, only the two lengths (`old_length`, `new_length`)
+    and the plain SHA-256 of the text after it (`new_sha256`), which is
+    a digest of text the reader can already read. Before v0.14 the result carried the plain
     SHA-256 of the text before the run as well (`old_sha256`), and the
     manifest the plain pair (`old_fingerprint`, `new_fingerprint`): with
     the pseudonymised text beside them, a guessed name can be put back
