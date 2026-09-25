@@ -1143,6 +1143,14 @@ def saved_filter_values(text: Any) -> List[str]:
     return values
 
 
+def sqlite_text_codec(encoding: Any) -> str:
+    """The Python codec for the text encoding SQLite's `PRAGMA encoding`
+    names (fix round 4, F3B-1): the bytes of `CAST(... AS BLOB)` are in
+    the database's own encoding."""
+    return {"UTF-16le": "utf-16-le", "UTF-16be": "utf-16-be",
+            "UTF-16": "utf-16"}.get(encoding, "utf-8")
+
+
 def documents_name_key(name: str) -> str:
     """How the strictest disk QualCoder may open a project on compares two
     file names (fix round 1, S-1): Unicode NFC, letter case folded
@@ -8263,36 +8271,46 @@ class QualcoderDatabase:
 
         table, id_col = {"case": ("gr_case_text_item", "caseid"),
                          "file": ("gr_file_text_item", "fid")}[kind]
-        def text_of(value: Any) -> Any:
-            # Read as bytes and decoded tolerantly (fix round 3, B-6): a
-            # saved row stored as text that is not UTF-8 would otherwise
-            # raise at the read and refuse every rename.
-            if isinstance(value, bytes):
-                return value.decode("utf-8", "replace")
-            return value
+        def read_rows(columns: str, table_name: str, where: str,
+                      args: tuple) -> List[tuple]:
+            """The rows as text; only when that read raises (a saved row
+            stored as text in no valid encoding, fix round 3, B-6), the
+            database's own bytes, decoded tolerantly with the codec its
+            `PRAGMA encoding` names (fix round 4, F3B-1: a UTF-16
+            database's bytes are not UTF-8)."""
+            try:
+                return self.conn.execute(
+                    f"SELECT {columns} FROM {table_name}{where}",
+                    args).fetchall()
+            except sqlite3.Error:
+                pass
+            codec = sqlite_text_codec(
+                self.conn.execute("PRAGMA encoding").fetchone()[0])
+            blobs = ", ".join(f"CAST({c.strip()} AS BLOB)"
+                              for c in columns.split(","))
+            return [tuple(v.decode(codec, "replace")
+                          if isinstance(v, bytes) else v for v in row)
+                    for row in self.conn.execute(
+                        f"SELECT {blobs} FROM {table_name}{where}", args)]
 
         # Each place, and what of a row is read: a saved display's and a
         # saved filter's own name too (fix round 3, B-3), whole.
         places = (
-            ("saved_graph_labels", table,
-             f"SELECT CAST(displaytext AS BLOB) FROM {table} "
-             f"WHERE {id_col} = ?", (row_id,),
+            ("saved_graph_labels", table, "displaytext",
+             f" WHERE {id_col} = ?", (row_id,),
              lambda label: [label]),
             ("saved_table_displays", "manage_files_display",
-             "SELECT CAST(name AS BLOB), CAST(tblrows AS BLOB) "
-             "FROM manage_files_display", (),
+             "name, tblrows", "", (),
              lambda name, rows: [name] + saved_display_values(rows)),
-            ("saved_filters", "files_filter",
-             "SELECT CAST(name AS BLOB), CAST(filter AS BLOB) "
-             "FROM files_filter", (),
+            ("saved_filters", "files_filter", "name, filter", "", (),
              lambda name, text: [name] + saved_filter_values(text)),
         )
-        for label, place, sql, args, parts in places:
+        for label, place, columns, where, args, parts in places:
             if not present(place):
                 continue
-            hits = sum(1 for row in self.conn.execute(sql, args)
-                       if any(pattern.search(key(part)) for part in
-                              parts(*[text_of(value) for value in row])))
+            hits = sum(1 for row in read_rows(columns, place, where, args)
+                       if any(pattern.search(key(part))
+                              for part in parts(*row)))
             if hits:
                 found[label] = hits
 

@@ -1664,3 +1664,69 @@ class TestTheSavedPlacesOwnNames:
         out = _case(5, "P05 new", create_backup=False)
         assert out["old_name_left_in"] == {
             "saved_table_displays": 1, "saved_filters": 1}, out
+
+
+def _to_utf16(project):
+    """Rewrite the project's database with the text encoding UTF-16le, as
+    checker B's probe p4 made a UTF-16 copy of QualCoder's saved40.qda
+    (QualCoder never sets an encoding; another tool could)."""
+    path = Path(project) / "data.qda"
+    old_path = Path(project) / "data_utf8.qda"
+    path.rename(old_path)
+    new = sqlite3.connect(str(path))
+    old = sqlite3.connect(str(old_path))
+    try:
+        new.execute("PRAGMA encoding = 'UTF-16le'")
+        for name, sql in old.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
+                "AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"):
+            new.execute(sql)
+            rows = old.execute(f"SELECT * FROM {name}").fetchall()
+            if rows:
+                marks = ",".join("?" * len(rows[0]))
+                new.executemany(f"INSERT INTO {name} VALUES ({marks})", rows)
+        new.commit()
+        assert new.execute("PRAGMA encoding").fetchone()[0] == "UTF-16le"
+    finally:
+        new.close()
+        old.close()
+    old_path.unlink()
+
+
+class TestAUtf16Database:
+    """Fix round 4, F3B-1: in a UTF-16 database the saved rows are read as
+    text (SQLite hands Python UTF-8 whatever the encoding), and only a
+    read that raises falls back to the database's own bytes, decoded with
+    its codec."""
+
+    @pytest.mark.parametrize("label, expected", [
+        ("Thomas_P01", {"saved_table_displays": 5, "saved_filters": 1}),
+        ("P02", {"saved_table_displays": 2, "saved_filters": 1}),
+    ])
+    def test_counted_as_in_a_utf8_database(self, project, label, expected):
+        _saved_places(project)
+        for name, rows in QUALCODER_DISPLAYS:
+            _exec(project, "INSERT INTO manage_files_display (name, "
+                           "tblrows) VALUES (?, ?)", (name, rows))
+        for name, text in QUALCODER_FILTERS:
+            _exec(project, "INSERT INTO files_filter (name, filter) "
+                           "VALUES (?, ?)", (name, text))
+        _add_case(project, label, 5)
+        server.db.close()
+        _to_utf16(project)
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out["old_name_left_in"] == expected, out
+
+    def test_the_fallback_decodes_with_the_databases_codec(self):
+        """SQLite hands Python a UTF-16 database's text as valid UTF-8, so
+        the fallback is reached only by bytes no encoding can read, which
+        in a UTF-8 database is the B-6 pin below; here, the codec it
+        would use for each encoding SQLite names."""
+        from qualcoder_mcp.database import sqlite_text_codec
+        assert [sqlite_text_codec(e) for e in
+                ("UTF-8", "UTF-16le", "UTF-16be", "UTF-16")] == \
+            ["utf-8", "utf-16-le", "utf-16-be", "utf-16"]
+        text = "Thomas_P01 note"
+        assert (text.encode("utf-16-le")
+                .decode(sqlite_text_codec("UTF-16le"))) == text
