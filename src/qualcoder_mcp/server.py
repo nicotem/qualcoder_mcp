@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 """Qualcoder MCP Server - Expose Qualcoder data via Model Context Protocol."""
 
+import errno
 import os
 import re
 import sys
@@ -15026,6 +15027,56 @@ def _created_project_next_steps(coder: str,
            "selected before.")] if previous else [])
 
 
+def _creation_failure_reason(error: BaseException) -> str:
+    """Why a creation failed, in the tool's own words: from the kind of
+    error and SQLite's short name or the system's error number, never
+    from the message, which can carry a path."""
+    if isinstance(error, sqlite3.Error):
+        name = getattr(error, "sqlite_errorname", "") or ""
+        text = str(error).lower()
+        if "FULL" in name or "full" in text:
+            return "the disk is full"
+        if any(k in name for k in ("READONLY", "CANTOPEN", "PERM", "AUTH")) \
+                or "readonly" in text or "unable to open" in text:
+            return "this program may not write a database there"
+        if "IOERR" in name or "disk i/o" in text:
+            return "the disk reported an error while it was written"
+        label = f"{type(error).__name__} {name}".strip()
+        return f"the database could not be written ({label})"
+    if isinstance(error, OSError):
+        code = getattr(error, "errno", None)
+        if code in (errno.ENOSPC, getattr(errno, "EDQUOT", -1)):
+            return "the disk is full"
+        if isinstance(error, PermissionError) or code in (errno.EACCES,
+                                                          errno.EPERM):
+            return "this program may not write there"
+        if code == errno.EROFS:
+            return "the disk is read-only"
+        if code == errno.ENAMETOOLONG:
+            return "the name or the path is too long for this disk"
+        return f"the system refused it ({type(error).__name__})"
+    return f"an unexpected error stopped it ({type(error).__name__})"
+
+
+def _creation_failure_text(error: BaseException, folder: Path,
+                           left: Sequence[str]) -> str:
+    """The answer for a creation that failed after the checks passed."""
+    text = (f"The project could not be created: "
+            f"{_creation_failure_reason(error)}.")
+    if not left:
+        return text + " Nothing was left behind."
+    if list(left) == ["."]:
+        return text + (
+            f" The folder '{folder}' was left in place because it holds "
+            f"something this tool did not make; nothing of the project is "
+            f"in it.")
+    return text + (
+        f" Part of what was made could not be removed ("
+        f"{', '.join(n for n in left if n != '.')} in '{folder}'); nothing "
+        f"there is a usable project, and the researcher may delete it by "
+        f"hand.")
+
+
 def _create_project_place_refusal(name: Any, directory: Any):
     """The first refusal of the name, the folder or what is already
     there, as text; otherwise (stem, parent, is_default, folder)."""
@@ -15123,9 +15174,19 @@ def create_project(name: str, directory: Optional[str] = None,
     about = new_project.about_line(_package_version)
     statements = new_project.creation_statements(
         stored_coder, about, new_project.creation_date())
-    try:
-        if is_default:
+    # Every failure from here on is worded by this tool: _tool_guard's
+    # generic database text ("locked or corrupted ... close QualCoder")
+    # is wrong for a project that does not exist yet.
+    if is_default:
+        try:
             parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            logger.error("The workspace could not be made: %s",
+                         sqlite_error_label(error))
+            return _create_project_refusal(
+                f"The workspace folder '{parent}' could not be made: "
+                f"{_creation_failure_reason(error)}. Nothing was created.")
+    try:
         data_path = new_project.write_project(folder, statements)
     except FileExistsError:
         # Made by someone else between the look and the claim: say what
@@ -15137,6 +15198,18 @@ def create_project(name: str, directory: Optional[str] = None,
         return _create_project_refusal(again or (
             f"Something called '{folder_name}' already exists there. "
             f"Choose another name."))
+    except new_project.ProjectWriteFailed as failure:
+        logger.error("Creating a project failed at the %s stage: %s",
+                     failure.stage, sqlite_error_label(failure.cause))
+        return _create_project_refusal(
+            _creation_failure_text(failure.cause, folder, failure.left))
+    except OSError as error:
+        # The claim itself (the mkdir of the project folder) failed:
+        # nothing was made.
+        logger.error("Creating a project failed at the claim: %s",
+                     sqlite_error_label(error))
+        return _create_project_refusal(
+            _creation_failure_text(error, folder, []))
     logger.info("Created a new project (schema %s)",
                 new_project.SCHEMA_VERSION)
 

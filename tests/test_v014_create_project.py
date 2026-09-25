@@ -624,3 +624,191 @@ class TestAfterCreation:
                 "",)
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Part 6: failures
+# ---------------------------------------------------------------------------
+
+class _FailAt:
+    """A connection that raises `error` after its `after`-th statement,
+    or at COMMIT when `after` is None."""
+
+    def __init__(self, conn, error, after=None):
+        self._conn, self._error, self._after, self._count = \
+            conn, error, after, 0
+
+    in_transaction = property(lambda self: self._conn.in_transaction)
+
+    def close(self):
+        self._conn.close()
+
+    def execute(self, sql, args=()):
+        if sql == "COMMIT" and self._after is None:
+            raise self._error
+        result = self._conn.execute(sql, args)
+        if sql not in ("BEGIN", "COMMIT", "ROLLBACK"):
+            self._count += 1
+            if self._count == self._after:
+                raise self._error
+        return result
+
+
+def _fail_with(monkeypatch, error, after=None):
+    real = new_project._connect
+    monkeypatch.setattr(new_project, "_connect",
+                        lambda path: _FailAt(real(path), error, after))
+
+
+class TestFailures:
+
+    def test_a_failure_at_commit_is_the_tools_own_words(self, monkeypatch):
+        _fail_with(monkeypatch, sqlite3.OperationalError("database is locked"))
+        text = refused(create("AtCommit"))
+        assert text.startswith("The project could not be created:")
+        assert "Nothing was left behind." in text
+        assert server.DB_UNAVAILABLE_ERROR not in text
+        assert "close QualCoder" not in text and "QualCoder is open" not in text
+        assert list(workspace().iterdir()) == []
+
+    def test_a_full_disk_is_named(self, monkeypatch):
+        _fail_with(monkeypatch,
+                   sqlite3.OperationalError("database or disk is full"), 20)
+        text = refused(create("Full"))
+        assert "the disk is full" in text
+        assert list(workspace().iterdir()) == []
+
+    def test_a_full_disk_at_a_subfolder(self, monkeypatch):
+        real_mkdir = Path.mkdir
+
+        def mkdir(self, *args, **kwargs):
+            if self.name == "video":
+                raise OSError(28, "No space left on device")
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        text = refused(create("FullAgain"))
+        assert "the disk is full" in text and "Nothing was left" in text
+        assert list(workspace().iterdir()) == []
+
+    @pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)()
+                        == 0, reason="POSIX permissions, not as root")
+    def test_no_permission_to_write_there(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            text = refused(create("NoWrite", locked))
+        finally:
+            locked.chmod(0o700)
+        assert "may not write there" in text
+        assert list(locked.iterdir()) == []
+
+    def test_the_workspace_cannot_be_made(self):
+        (Path.home() / "Documents").write_text("a file, not a folder")
+        text = refused(create("NoWorkspace"))
+        assert text.startswith("The workspace folder")
+        assert "Nothing was created" in text
+
+    def test_a_folder_holding_someone_elses_file_is_left(self, tmp_path,
+                                                        monkeypatch):
+        work = tmp_path / "work"
+        work.mkdir()
+
+        class Drop(_FailAt):
+            def execute(self, sql, args=()):
+                if sql == "COMMIT":
+                    (work / "Shared.qda" / "theirs.txt").write_text("keep")
+                return super().execute(sql, args)
+
+        real = new_project._connect
+        monkeypatch.setattr(
+            new_project, "_connect",
+            lambda path: Drop(real(path), sqlite3.OperationalError("x")))
+        text = refused(create("Shared", work))
+        assert "was left in place because it holds something this tool " \
+               "did not make" in text
+        assert (work / "Shared.qda" / "theirs.txt").read_text() == "keep"
+        assert sorted(p.name for p in (work / "Shared.qda").iterdir()) == [
+            "theirs.txt"]
+
+    def test_what_could_not_be_removed_is_named(self, tmp_path,
+                                                monkeypatch):
+        work = tmp_path / "work"
+        work.mkdir()
+        _fail_with(monkeypatch, sqlite3.OperationalError("x"), 5)
+        real_unlink = Path.unlink
+
+        def unlink(self, *args, **kwargs):
+            if self.name == "data.qda":
+                raise PermissionError(13, "in use")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        text = refused(create("Stuck", work))
+        assert "could not be removed (data.qda in" in text
+        assert "may delete it by hand" in text
+
+
+_SPILL = """
+import os, sqlite3, sys
+sys.path.insert(0, {src!r})
+from qualcoder_mcp import new_project as n
+target = sys.argv[1]
+os.mkdir(target)
+for name in n.SUBFOLDERS:
+    os.mkdir(os.path.join(target, name))
+conn = sqlite3.connect(os.path.join(target, "data.qda"), isolation_level=None)
+conn.execute("PRAGMA cache_size=1")       # pages reach the file before COMMIT
+conn.execute("BEGIN")
+for sql, args in n.creation_statements("carol", "x QualCoder", "2026-09-26"):
+    conn.execute(sql, args)
+os._exit(9)                                # killed during the commit's work
+"""
+
+
+class TestWhatACrashLeaves:
+    """A crash before COMMIT leaves an empty database and a journal (an
+    orphan); a crash while COMMIT writes the pages leaves a full database
+    with a hot journal, which is also what a real project looks like
+    after QualCoder crashed mid-write. Only the first gets the orphan
+    wording, and neither is opened for writing (a read-write open would
+    roll a stranger's journal back)."""
+
+    def _hot(self, tmp_path) -> Path:
+        import subprocess
+        script = tmp_path / "spill.py"
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        script.write_text(_SPILL.format(src=src), encoding="utf-8")
+        target = tmp_path / "work" / "Hot.qda"
+        target.parent.mkdir()
+        proc = subprocess.run([sys.executable, str(script), str(target)],
+                              capture_output=True, timeout=120)
+        assert proc.returncode == 9, proc.stderr
+        assert (target / "data.qda").stat().st_size > 0
+        assert (target / "data.qda-journal").stat().st_size > 0
+        return target
+
+    @staticmethod
+    def _bytes(folder):
+        return {p.name: p.read_bytes() for p in folder.iterdir()
+                if p.is_file()}
+
+    def test_a_hot_journal_is_not_an_orphan_and_is_not_touched(self,
+                                                               tmp_path):
+        folder = self._hot(tmp_path)
+        before = self._bytes(folder)
+        text = refused(create("Hot", folder.parent))
+        assert "its database could not be read" in text
+        assert "remains" not in text and "delete" not in text
+        assert self._bytes(folder) == before     # the journal is intact
+
+    def test_an_empty_database_with_a_journal_is_an_orphan(self, tmp_path):
+        folder = tmp_path / "work" / "Cold.qda"
+        folder.mkdir(parents=True)
+        (folder / "data.qda").write_bytes(b"")
+        (folder / "data.qda-journal").write_bytes(b"\xd9\xd5\x05\xf9" * 128)
+        before = self._bytes(folder)
+        text = refused(create("Cold", folder.parent))
+        assert "remains of a project creation that did not finish" in text
+        assert self._bytes(folder) == before
