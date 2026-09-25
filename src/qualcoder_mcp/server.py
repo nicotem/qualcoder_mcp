@@ -15275,10 +15275,12 @@ def create_project(name: str, directory: Optional[str] = None,
             f"Something called '{folder_name}' already exists there. "
             f"Choose another name."))
     except new_project.ProjectWriteFailed as failure:
+        stage, cause, left = failure.stage, failure.cause, failure.left
+        # The kind only: an error's text can carry the path
         logger.error("Creating a project failed at the %s stage: %s",
-                     failure.stage, sqlite_error_label(failure.cause))
+                     stage, sqlite_error_label(cause))
         return _create_project_refusal(
-            _creation_failure_text(failure.cause, folder, failure.left))
+            _creation_failure_text(cause, folder, left))
     except OSError as error:
         # The claim itself (the mkdir of the project folder) failed:
         # nothing was made.
