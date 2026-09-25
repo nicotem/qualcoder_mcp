@@ -3597,13 +3597,21 @@ class TestTheNoteRewriteIsWritten:
         assert query(project, "SELECT memo FROM source WHERE id=1"
                      )[0]["memo"].startswith("Met Thomas.")
 
+    @pytest.mark.parametrize("named", [True, False],
+                             ids=["named", "nameless"])
     def test_a_failed_note_statement_logs_no_note_text_on_any_sqlite(
-            self, project, caplog, monkeypatch):
+            self, project, caplog, monkeypatch, named):
         """Security S-6 on every platform, whatever the SQLite: the note
         statement itself raises the error a leaking trigger would, an
         IntegrityError whose message is the note being written, private
         part included. Only the connection the note statements run on is
-        wrapped, and only for their duration."""
+        wrapped, and only for their duration.
+
+        `nameless` is Python 3.10's shape, an error with no SQLite name
+        (v0.13's re-verification, RF2-3, and v0.14's item 5): the label
+        is the class alone, and the whole line is pinned, so a branch
+        that logged the message where there is no name is red on every
+        interpreter, not only on CI's 3.10 runners."""
         import logging
         _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
                     "Met Thomas.\n#####PRIVATE-SENTINEL words")
@@ -3618,7 +3626,8 @@ class TestTheNoteRewriteIsWritten:
             def execute(self, sql, parameters=()):
                 if sql.startswith("UPDATE source SET memo = ?"):
                     error = sqlite3.IntegrityError(parameters[0])
-                    error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+                    if named:
+                        error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
                     raised.append(parameters[0])
                     raise error
                 return self._conn.execute(sql, parameters)
@@ -3649,7 +3658,8 @@ class TestTheNoteRewriteIsWritten:
         line = [r.getMessage() for r in caplog.records
                 if "pseudonymise_write (notes)" in r.getMessage()]
         assert line == ["Database error in pseudonymise_write (notes): "
-                        "IntegrityError SQLITE_CONSTRAINT_TRIGGER"]
+                        + ("IntegrityError SQLITE_CONSTRAINT_TRIGGER"
+                           if named else "IntegrityError")]
         # Rolled back: every note, and the file's text, as they were.
         assert self._snapshot(project) == before
         assert query(project, "SELECT fulltext FROM source WHERE id=1"
@@ -4606,6 +4616,63 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
         assert json.loads(_written(project))[0] == {"original": "Peter",
                                                     "pseudonym": "Pat"}
+        # The file linked to is not touched.
+        assert stat.S_IMODE(loud.stat().st_mode) == 0o666
+        assert loud.read_text(encoding="utf-8") == "[]"
+
+    @POSIX_ONLY
+    def test_the_kept_mode_is_read_before_the_reader_closes_the_file(
+            self, project, tmp_path, monkeypatch):
+        """v0.13's re-verification (RF2-2) and v0.14's item 5: the swap
+        above comes after the reader has returned, so a reader that took
+        the mode by path after closing its descriptor would pass it. Here
+        the name is swapped for a link at the reader's own close, inside
+        the merge the run's transaction makes, so only a mode taken from
+        the descriptor that was read is 0600."""
+        from qualcoder_mcp import database as database_module
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        os.chmod(project / "pseudonyms.json", 0o600)
+        loud = tmp_path / "world.json"
+        loud.write_text("[]", encoding="utf-8")
+        os.chmod(loud, 0o666)
+        real_reader = server.read_project_pseudonyms_with_raw
+        real_os = database_module.os
+        calls, armed, swapped = [], [], []
+
+        class OsWithASwapAtClose:
+            """The module's `os`, with `close` swapping the name for a
+            link once, when armed, just after the descriptor closes."""
+
+            def __getattr__(self, name):
+                return getattr(real_os, name)
+
+            @staticmethod
+            def close(fd):
+                real_os.close(fd)
+                if armed and not swapped:
+                    target = project / "pseudonyms.json"
+                    target.rename(project / "aside.json")
+                    target.symlink_to(loud)
+                    swapped.append(1)
+
+        def reader(folder):
+            calls.append(1)
+            if len(calls) == 4:     # the merge inside the run's transaction
+                armed.append(1)
+            try:
+                return real_reader(folder)
+            finally:
+                armed.clear()
+
+        monkeypatch.setattr(database_module, "os", OsWithASwapAtClose())
+        monkeypatch.setattr(server, "read_project_pseudonyms_with_raw",
+                            reader)
+        _, result = _save_run()
+        assert len(calls) == 4 and swapped == [1]
+        assert result["mapping_saved"] is True
+        target = project / "pseudonyms.json"
+        assert not target.is_symlink()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
         # The file linked to is not touched.
         assert stat.S_IMODE(loud.stat().st_mode) == 0o666
         assert loud.read_text(encoding="utf-8") == "[]"
