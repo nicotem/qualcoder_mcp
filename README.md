@@ -1110,6 +1110,8 @@ qualcoder_mcp/
 │   ├── create_test_project.py  # Test project generator
 │   ├── generate_test_export.py
 │   └── test_workflow.py
+├── LICENSES/
+│   └── GPL-3.0.txt         # The GNU GPL, version 3, which the LGPL incorporates
 ├── pyproject.toml           # Package configuration
 ├── README.md               # This file
 ├── CHANGELOG.md            # Version history
@@ -1119,7 +1121,6 @@ qualcoder_mcp/
 ├── CITATION.cff            # Citation metadata
 ├── SUPPORT.md              # Support policy (GitHub Issues only)
 ├── COPYING.LESSER          # The licence: GNU LGPL, version 3
-├── COPYING                 # The GNU GPL, version 3, which the LGPL incorporates
 └── NOTICE                  # Copyright, licence, and the code derived from QualCoder
 ```
 
@@ -1261,7 +1262,7 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## Licence
 
-From v0.13, qualcoder-mcp is licensed under the GNU Lesser General Public License, version 3 or (at your option) any later version (`LGPL-3.0-or-later`), which is QualCoder's own licence. The licence texts are [COPYING.LESSER](https://github.com/nicotem/qualcoder_mcp/blob/main/COPYING.LESSER) and [COPYING](https://github.com/nicotem/qualcoder_mcp/blob/main/COPYING), the GNU General Public License, version 3, which the Lesser licence incorporates.
+From v0.13, qualcoder-mcp is licensed under the GNU Lesser General Public License, version 3 or (at your option) any later version (`LGPL-3.0-or-later`), which is QualCoder's own licence. The licence texts are [COPYING.LESSER](https://github.com/nicotem/qualcoder_mcp/blob/main/COPYING.LESSER) and [LICENSES/GPL-3.0.txt](https://github.com/nicotem/qualcoder_mcp/blob/main/LICENSES/GPL-3.0.txt), the GNU General Public License, version 3, which the Lesser licence incorporates.
 
 Every release up to and including 0.12.1 was published under the MIT License, and this project's own code in those releases remains available under those terms. Those releases also contained some of the QualCoder-derived items NOTICE lists; those items were always under QualCoder's licence, LGPL-3.0-or-later, whatever those releases declared.
 

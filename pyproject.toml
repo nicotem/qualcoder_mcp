@@ -6,12 +6,14 @@ authors = [{name = "Niccolò Tempini", email = "n.tempini@exeter.ac.uk"}]
 # PEP 639 SPDX licence expression (setuptools >= 77). LGPL-3.0-or-later
 # from v0.13, QualCoder's own licence; releases up to 0.12.1 were
 # published under MIT (see NOTICE).
-# COPYING.LESSER is the LGPL text and COPYING the GPL text it incorporates;
-# NOTICE names the code derived from QualCoder. PEP 639 supersedes licence
-# classifiers with the expression, and setuptools refuses a
-# "License :: ..." classifier beside one, so none is listed below.
+# COPYING.LESSER is the LGPL text and LICENSES/GPL-3.0.txt the GPL text it
+# incorporates, kept out of the top folder so that GitHub reads the
+# project's licence as the LGPL alone; NOTICE names the code derived from
+# QualCoder. PEP 639 supersedes licence classifiers with the expression,
+# and setuptools refuses a "License :: ..." classifier beside one, so
+# none is listed below.
 license = "LGPL-3.0-or-later"
-license-files = ["COPYING", "COPYING.LESSER", "NOTICE"]
+license-files = ["COPYING.LESSER", "LICENSES/GPL-3.0.txt", "NOTICE"]
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = [

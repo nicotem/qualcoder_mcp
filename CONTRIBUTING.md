@@ -173,10 +173,10 @@ first. The same rule applies to the maintainer's own projects.
 From v0.13, qualcoder-mcp is licensed under the GNU Lesser General
 Public License, version 3 or (at your option) any later version
 (LGPL-3.0-or-later): see [COPYING.LESSER](COPYING.LESSER) and
-[COPYING](COPYING), the GNU General Public License text it
-incorporates. Releases up to 0.12.1 were published under the MIT
-License. By contributing you agree that your contribution is licensed
-under the same terms.
+[LICENSES/GPL-3.0.txt](LICENSES/GPL-3.0.txt), the GNU General Public
+License text it incorporates. Releases up to 0.12.1 were published
+under the MIT License. By contributing you agree that your contribution
+is licensed under the same terms.
 
 Every `.py` file under `src/`, `tests/` and `scripts/` opens with the line
 `# SPDX-License-Identifier: LGPL-3.0-or-later` (after a shebang or an

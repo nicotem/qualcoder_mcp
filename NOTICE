@@ -17,8 +17,9 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
 General Public License for more details.
 
 The licence texts ship with this program: COPYING.LESSER is the GNU
-Lesser General Public License, version 3, and COPYING is the GNU General
-Public License, version 3, whose terms the Lesser licence incorporates.
+Lesser General Public License, version 3, and LICENSES/GPL-3.0.txt is the
+GNU General Public License, version 3, whose terms the Lesser licence
+incorporates.
 
 This licence applies from version 0.13. Every release up to and
 including 0.12.1 was published under the MIT License, and this

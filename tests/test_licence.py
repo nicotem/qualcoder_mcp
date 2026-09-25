@@ -14,8 +14,10 @@ that nothing else in the suite would notice:
 - `pyproject.toml` declares the expression `LGPL-3.0-or-later` and names
   the three licence files, which is what puts them in the wheel and the
   sdist;
-- `COPYING`, `COPYING.LESSER` and `NOTICE` exist, the two licence texts
-  are the FSF's own, byte for byte, and the MIT `LICENSE` is gone.
+- `COPYING.LESSER`, `LICENSES/GPL-3.0.txt` and `NOTICE` exist, the two
+  licence texts are the FSF's own, byte for byte, the MIT `LICENSE` is
+  gone, and the GPL text stays out of the top folder, where GitHub would
+  read it as a second licence of the project.
 
 A fourth pin keeps NOTICE true as the code moves: every entry in its
 "Code derived from QualCoder" section says where the item is, and every
@@ -39,14 +41,20 @@ except ModuleNotFoundError:  # Python 3.10, where pytest itself needs tomli
 REPO = pathlib.Path(__file__).resolve().parents[1]
 EXPRESSION = "LGPL-3.0-or-later"
 HEADER = f"# SPDX-License-Identifier: {EXPRESSION}"
-LICENCE_FILES = ("COPYING", "COPYING.LESSER", "NOTICE")
+# The GPL text sits under LICENSES/ (the REUSE layout) rather than as
+# COPYING in the top folder: GitHub reads every licence file at the top
+# as a licence of the project, and listed "LGPL-3.0 and GPL-3.0" while
+# it was there. The LGPL is additional permissions on the GPL and asks
+# for the GPL text to accompany it, so the text still ships.
+GPL_TEXT = "LICENSES/GPL-3.0.txt"
+LICENCE_FILES = ("COPYING.LESSER", GPL_TEXT, "NOTICE")
 
 # The FSF texts as https://www.gnu.org/licenses/ serves them. The LGPL
 # text is also byte-identical to QualCoder's own LICENSE.txt. Hashed with
 # CRLF folded to LF, so a Windows checkout that converts line endings
 # still compares the text rather than the checkout's settings.
 SHA256 = {
-    "COPYING":
+    GPL_TEXT:
         "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
     "COPYING.LESSER":
         "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
@@ -220,6 +228,20 @@ class TestTheFilesShip:
         """MIT stays in git history and in every release up to 0.12.1;
         a LICENSE file in the tree would say it still applies."""
         assert not (REPO / "LICENSE").exists()
+
+    def test_the_lgpl_is_the_only_licence_text_in_the_top_folder(self):
+        """GitHub names a repository's licence from the licence files in
+        its top folder, and with the GPL text there as COPYING it showed
+        "LGPL-3.0 and GPL-3.0". The GPL text belongs under LICENSES/, and
+        NOTICE says where it is."""
+        assert not (REPO / "COPYING").exists()
+        named_as_licences = sorted(
+            path.name for path in REPO.iterdir() if path.is_file()
+            and path.name.lower().startswith(("licen", "copying", "unlicen")))
+        assert named_as_licences == ["COPYING.LESSER"], named_as_licences
+        notice = " ".join(
+            (REPO / "NOTICE").read_text(encoding="utf-8").split())
+        assert f"{GPL_TEXT} is the GNU General Public License" in notice
 
 
 # NOTICE's entries: a numbered line ("12. ...") opens one, and its
