@@ -1080,7 +1080,7 @@ def saved_display_values(tblrows: Any) -> List[str]:
     """What a saved Manage Files display is read for (fix round 2, R2-1;
     fix round 3, B-1, B-2, B-8). QualCoder saves its rows joined by two
     tabs, each row '<column>\t<operator>\t<value>' (master
-    manage_files.py:751, :1169, :1176, :1183; 3.8.2 :191, :591, :601,
+    manage_files.py:752, :1169, :1176, :1183; 3.8.2 :191, :591, :601,
     :615). When every row has exactly that shape, only the values are
     read, so the column names and operators ('Case', 'Name', 'like',
     'hide') are never read as a label. Anything else is read whole, the

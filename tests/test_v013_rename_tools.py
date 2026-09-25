@@ -266,7 +266,7 @@ def _saved_places(project):
 def _save_display(project, name, rows):
     """A saved Manage Files display as QualCoder writes one: its rows
     '<column>\t<operator>\t<value>' joined by two tabs (master
-    manage_files.py:751, :1169, :1176, :1183, transcribed)."""
+    manage_files.py:752, :1169, :1176, :1183, transcribed)."""
     tblrows = "\t\t".join(f"{col}\t{op}\t{value}" for col, op, value in rows)
     _exec(project, "INSERT INTO manage_files_display (name, tblrows, "
                    "tblcolumns, owner) VALUES (?, ?, 'Name\t100\t\t', "
