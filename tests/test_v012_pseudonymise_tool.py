@@ -3875,20 +3875,19 @@ class TestTheNotePassRate:
         record_property("note_pass_rate", line)
         sys.stderr.write(f"\nnote pass rate: {line}\n")
 
-    def test_the_rate_reaches_the_summary_ci_prints(self):
+    def test_the_rate_reaches_the_summary_ci_prints(self, tmp_path):
         """Driven the way CI runs, `pytest -ra -q` in its own
         interpreter, which prints nothing of a passing test's output:
-        the line is in the summary `pytest_terminal_summary` writes."""
-        import subprocess
+        the line is in the summary `pytest_terminal_summary` writes. The
+        child run leaves nothing in the system's temporary directory
+        (v0.14)."""
         here = Path(__file__).resolve()
         target = (f"{here}::TestTheNotePassRate::"
                   f"test_the_note_pass_rate_is_measured_and_published")
-        result = subprocess.run(
-            [sys.executable, "-B", "-m", "pytest", "-ra", "-q",
-             "-p", "no:cacheprovider", target],
-            cwd=str(here.parents[1]), capture_output=True, text=True,
-            timeout=300)
+        result, system_tmp = H.run_pytest_in_a_child(target, tmp_path,
+                                                     here.parents[1])
         assert result.returncode == 0, result.stdout[-2000:]
+        assert sorted(p.name for p in system_tmp.iterdir()) == []
         lines = [line for line in result.stdout.splitlines()
                  if line.startswith("note pass rate: ")]
         assert len(lines) == 1, result.stdout[-2000:]

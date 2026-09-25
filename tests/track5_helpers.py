@@ -542,3 +542,32 @@ def make_session(project_path: str, suggestions: List[CodingSuggestion]) -> AICo
         sess.add_suggestion(s)
     server.session_manager.save_session(sess)
     return sess
+
+
+def run_pytest_in_a_child(target: str, tmp_path: Path, cwd, timeout=300):
+    """`pytest -ra -q` over `target` in a fresh interpreter, the way CI
+    runs the suite; returns the finished process and the folder the child
+    was given as its system temporary directory.
+
+    v0.14 (the workbench): the child used to take pytest's default base
+    folder, `pytest-of-<user>` in the system's temporary directory, and
+    leave a `pytest-<n>` folder there on every run. It is now given one
+    under the parent's `tmp_path` (`--basetemp`), which the parent's own
+    run cleans up, and every variable that names the system temporary
+    directory (TMPDIR, TEMP, TMP, and pytest's PYTEST_DEBUG_TEMPROOT)
+    points at an empty folder beside it, so the caller can show that the
+    child left nothing there.
+    """
+    import subprocess
+    system_tmp = tmp_path / "child-system-tmp"
+    system_tmp.mkdir()
+    env = dict(os.environ)
+    for name in ("TMPDIR", "TEMP", "TMP", "PYTEST_DEBUG_TEMPROOT"):
+        env[name] = str(system_tmp)
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "pytest", "-ra", "-q",
+         "-p", "no:cacheprovider", f"--basetemp={tmp_path / 'child-base'}",
+         target],
+        cwd=str(cwd), env=env, capture_output=True, text=True,
+        timeout=timeout)
+    return result, system_tmp

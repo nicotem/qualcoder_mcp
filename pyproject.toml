@@ -75,6 +75,16 @@ dev = [
 markers = [
     "giant: large 10k+ coding / 500k-char build; opt-in via TRACK6_GIANT=1",
 ]
+# The per-test limit (v0.14): when one test, setup and teardown included,
+# has run for ten minutes, pytest writes every thread's stack to the
+# output, the test's own frame among them, so a hang is named in the CI
+# log before the job's own limit (.github/workflows/ci.yml) ends it. It is
+# pytest's built-in use of the standard library's faulthandler, so it
+# needs no dependency, and it changes no verdict: a slow test on a slow
+# runner still passes. The slowest test takes under 30 seconds on a
+# developer's machine, and the slowest green Windows job ran the suite
+# eight to nine times slower than that machine does.
+faulthandler_timeout = 600
 # A warning raised by our own modules fails the run (fix round 1, F19).
 # Scoped to this package: a dependency's DeprecationWarning is not ours
 # to fix, and failing on one would pin third-party release notes into
