@@ -14975,6 +14975,57 @@ def _coder_name_for_creation(coder_name: Any, not_known: Any
     return name, None
 
 
+# What each QualCoder build does with a created project, in the create
+# project study's plain wording (CREATE_PROJECT_STUDY_4_0.md, 4.4; 3.8.2's
+# behaviour measured there and confirmed by run in its check).
+OPENING_IN_QUALCODER_382 = (
+    "This project is in QualCoder 4.0's format. QualCoder 3.8.2 opens it "
+    "without any warning and keeps everything in it, but it cannot show "
+    "what 4.0 added: sub-codes appear there as ordinary codes, and the "
+    "labels, arrows and memo notes on graphs do not appear. If the "
+    "project is edited in 3.8.2, three things change without a message "
+    "the next time 4.0 opens it: a sub-code moved into a category goes "
+    "back under its parent code; the sub-codes of a code deleted in 3.8.2 "
+    "become ordinary codes with no category; and a graph saved after "
+    "another was deleted can show the deleted graph's memo notes. Work on "
+    "this project in QualCoder 4.0.")
+
+
+def _opening_in_qualcoder_40(folder: Path, coder: str) -> str:
+    text = (f"QualCoder 4.0 opens this project without a message and "
+            f"without changing its format: Project, Open Project, then "
+            f"choose the folder {folder}. ")
+    if coder:
+        return text + (
+            f"The coder name stored is \"{coder}\". If the researcher's "
+            f"QualCoder is set to another name, QualCoder asks whether to "
+            f"keep it or switch; Switch changes their coder name for every "
+            f"project they open.")
+    return text + (
+        "No coder name is stored, so QualCoder records the researcher's "
+        "own on that first open, asks nothing, and keeps one backup copy "
+        "of the project beside it.")
+
+
+def _created_project_next_steps(coder: str,
+                                previous: Optional[str]) -> List[str]:
+    differ = (f"it must differ from the researcher's own QualCoder coder "
+              f"name, \"{coder}\"." if coder else
+              "the researcher's own QualCoder coder name is not known, so "
+              "make sure the name chosen is not the one they use in "
+              "QualCoder.")
+    return [
+        ("No AI coder name is set for this project yet. Ask the researcher "
+         "which name the AI's codings and other writes should be stored "
+         "under, and call set_project_ai_coder_name before the first write "
+         "that needs it; " + differ),
+        ("Add material with import_text_file; sub-codes are available at "
+         "once (create_code with parent_code_id)."),
+    ] + ([("The new project is selected, so every tool now works on it; "
+           "select_project with previous_project goes back to the one "
+           "selected before.")] if previous else [])
+
+
 def _create_project_place_refusal(name: Any, directory: Any):
     """The first refusal of the name, the folder or what is already
     there, as text; otherwise (stem, parent, is_default, folder)."""
@@ -15090,9 +15141,7 @@ def create_project(name: str, directory: Optional[str] = None,
                 new_project.SCHEMA_VERSION)
 
     previous = current_project_path
-    switch_project(str(folder))
-    _remember_mru_project(str(data_path))
-    return json.dumps({
+    result: Dict[str, Any] = {
         "success": True,
         "created": True,
         "project_path": str(folder),
@@ -15101,10 +15150,35 @@ def create_project(name: str, directory: Optional[str] = None,
         "about": about,
         "coder_name": stored_coder or None,
         "coder_name_known": bool(stored_coder),
-        "selected": True,
+        "selected": False,
         "previous_project": previous,
         "warnings": warnings,
-    }, indent=2)
+    }
+    # Selected as select_project would, without the machine-wide process
+    # scan: a project made seconds ago by this server cannot be open in
+    # QualCoder, and "APPEARS to be open in QualCoder" would be false.
+    # The project's own signals (a lock file, a hot journal, recent AI
+    # activity) are still read.
+    try:
+        switch_project(str(folder))
+        result["selected"] = True
+        _remember_mru_project(str(data_path))
+        result["qualcoder_gui_signals"] = qualcoder_gui_signals(
+            folder, include_process_scan=False)
+    except Exception as error:
+        logger.error("A created project could not be selected: %s",
+                     sqlite_error_label(error))
+        result["selection_error"] = (
+            f"The project was created but could not be selected "
+            f"({type(error).__name__}). Select it with select_project "
+            f"and the project_path above.")
+    result["next_steps"] = _created_project_next_steps(stored_coder,
+                                                       previous)
+    result["opening_in_qualcoder"] = {
+        "4.0": _opening_in_qualcoder_40(folder, stored_coder),
+        "3.8.2": OPENING_IN_QUALCODER_382,
+    }
+    return json.dumps(result, indent=2)
 
 
 # ============================================================================

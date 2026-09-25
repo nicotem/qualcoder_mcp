@@ -517,3 +517,110 @@ class TestTheAiCoderNameSetter:
         assert "Nothing was changed" in answer["error"]
         assert not (Path(server.current_project_path) /
                     "qualcoder_mcp.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Part 5: after creation
+# ---------------------------------------------------------------------------
+
+class TestAfterCreation:
+
+    def test_the_new_project_is_selected(self):
+        answer = create("Selected")
+        assert answer["selected"] is True
+        folder = Path(answer["project_path"])
+        assert Path(server.current_project_path) == folder
+        assert server.db is not None and server.db.read_only
+        current = json.loads(server.get_current_project())
+        assert Path(current["current_project"]) == folder
+        mru = json.loads(Path(server._MRU_FILE).read_text(encoding="utf-8"))
+        assert Path(mru["project_path"]) == folder / "data.qda"
+
+    def test_no_process_scan_so_no_false_alarm(self, monkeypatch):
+        """A machine where the scan would match: select_project warns
+        that the project APPEARS to be open; create_project never runs
+        the scan for the project it has just made."""
+        calls = []
+
+        def hits():
+            calls.append(1)
+            return ["/usr/bin/python3 -m qualcoder"]
+
+        monkeypatch.setattr(database, "_qualcoder_process_hits", hits)
+        answer = create("Quiet")
+        assert calls == []
+        assert answer["qualcoder_gui_signals"] == []
+        assert "APPEARS" not in json.dumps(answer)
+        selected = json.loads(server.select_project(answer["project_path"]))
+        assert "APPEARS to be open" in selected["warning"]
+
+    def test_the_previous_project_is_named(self):
+        server.db, server.current_project_path = None, None
+        first = create("First")
+        assert first["previous_project"] is None
+        assert not any("previous_project" in step
+                       for step in first["next_steps"])
+        second = create("Second")
+        assert second["previous_project"] == first["project_path"]
+        assert any("previous_project" in step
+                   for step in second["next_steps"])
+
+    def test_what_each_build_does_on_first_open(self):
+        known = create("Known")
+        opening = known["opening_in_qualcoder"]
+        assert "without a message and without changing its format" in \
+            opening["4.0"]
+        assert known["project_path"] in opening["4.0"]
+        assert "keep it or switch" in opening["4.0"]
+        assert opening["3.8.2"] == server.OPENING_IN_QUALCODER_382
+        for words in ("opens it without any warning",
+                      "sub-codes appear there as ordinary codes",
+                      "labels, arrows and memo notes on graphs",
+                      "goes back under its parent code",
+                      "become ordinary codes with no category",
+                      "Work on this project in QualCoder 4.0"):
+            assert words in opening["3.8.2"]
+        unknown = json.loads(server.create_project(
+            "Unknown", coder_name_not_known=True))
+        assert "records the researcher's own on that first open" in \
+            unknown["opening_in_qualcoder"]["4.0"]
+        assert "one backup copy" in unknown["opening_in_qualcoder"]["4.0"]
+
+    def test_the_next_steps(self):
+        steps = " ".join(create("Steps", coder_name="carol")["next_steps"])
+        assert "set_project_ai_coder_name" in steps
+        assert "must differ from the researcher's own QualCoder coder " \
+               "name, \"carol\"" in steps
+        assert "import_text_file" in steps and "parent_code_id" in steps
+        steps = " ".join(json.loads(server.create_project(
+            "Steps2", coder_name_not_known=True))["next_steps"])
+        assert "is not known" in steps
+
+    def test_created_but_not_selected_is_said(self, monkeypatch):
+        def refuse(path, read_only=True):
+            raise database.DatabaseLockedError("locked")
+
+        monkeypatch.setattr(server, "switch_project", refuse)
+        answer = create("Unselected")
+        assert answer["created"] is True and answer["selected"] is False
+        assert "created but could not be selected" in \
+            answer["selection_error"]
+        assert "DatabaseLockedError" in answer["selection_error"]
+        assert (Path(answer["project_path"]) / "data.qda").is_file()
+
+    def test_nothing_else_is_written(self):
+        """No ai_data, lock file, sidecar, backup or journal entry; the
+        workspace holds the one folder."""
+        answer = create("Bare")
+        folder = Path(answer["project_path"])
+        assert sorted(p.name for p in folder.iterdir()) == [
+            "audio", "data.qda", "documents", "images", "video"]
+        assert [p.name for p in folder.parent.iterdir()] == ["Bare.qda"]
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        try:
+            assert conn.execute("SELECT count(*) FROM journal"
+                                ).fetchone()[0] == 0
+            assert conn.execute("SELECT memo FROM project").fetchone() == (
+                "",)
+        finally:
+            conn.close()
