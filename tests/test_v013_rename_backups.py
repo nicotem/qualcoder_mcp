@@ -518,3 +518,34 @@ def test_the_description_says_the_text_must_be_the_same():
     assert "may take back its own copy in the documents folder under a " \
            "name such a backup shows it with and, for its documents copy, " \
            "the same text." in flat
+
+
+class TestBothTextGuards:
+    """Fix round 4, F3A-1: an empty or NULL text is refused by the
+    pre-check before any backup is read, and the reader refuses it too."""
+
+    @pytest.mark.parametrize("text", ["", None])
+    def test_no_backup_is_read_for_an_empty_text(self, legacy, monkeypatch,
+                                                 text):
+        _exec(legacy, "UPDATE source SET fulltext = ? WHERE id = 5", (text,))
+        _reload()
+        assert _file(5, "legacy2.txt")["changed"]
+        calls = []
+        real = database.QualcoderDatabase.earlier_name
+        monkeypatch.setattr(
+            database.QualcoderDatabase, "earlier_name",
+            lambda self, *a, **kw: calls.append(kw) or real(self, *a, **kw))
+        out = _file(5, "legacy.txt", create_backup=False)
+        assert "already holds" in out.get("error", ""), out
+        assert calls == []
+
+    @pytest.mark.parametrize("text", [b"", None])
+    def test_the_reader_refuses_it_too(self, legacy, text):
+        _exec(legacy, "UPDATE source SET fulltext = '' WHERE id = 5")
+        _reload()
+        assert _file(5, "legacy2.txt")["changed"]         # backup: ''
+        db = server.get_db()
+        found = db.earlier_name(5, "2024-01-15 10:00:00",
+                                lambda name: name == "legacy.txt",
+                                same_text=True, text=text)
+        assert found is None
