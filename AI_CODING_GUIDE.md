@@ -199,9 +199,11 @@ unread; labels and attribute values are scanned and counted, never
 rewritten, PDFs are counted and never rewritten, and media files and
 `ai_data/` are out of scope; the preview's residue report says where
 names remain, in the notes, the labels, the attribute values and the
-text of every file, each count as two readings. A mapping you type is
-half of the reverse key, so the run asks where it is kept: saved into
-the project's own `pseudonyms.json` in QualCoder's format
+text of every file, each count as two readings. A case or file label
+such as `Thomas_P01` is renamed with `rename_case` or `rename_file`; an
+imported file's stored copy keeps its original name and text. A mapping
+you type is half of the reverse key, so the run asks where it is kept:
+saved into the project's own `pseudonyms.json` in QualCoder's format
 (`save_mapping_to_project`), or kept by you
 (`researcher_keeps_mapping`). Pseudonymised data is still personal
 data: read PRIVACY.md before sending it anywhere.

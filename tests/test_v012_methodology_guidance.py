@@ -100,7 +100,7 @@ class TestPlacement:
         carriers = [n for n, t in server.mcp._tool_manager._tools.items()
                     if "reframe_and_ask" in (t.description or "")]
         assert carriers == ["analyze_for_coding"]
-        assert len(server.mcp._tool_manager._tools) == 71  # B1 setter, B3 compare, the flagship, the name list
+        assert len(server.mcp._tool_manager._tools) == 73  # B1 setter, B3 compare, the flagship, the name list, the two renames
 
     def test_docstring_of_the_function_object_matches_the_registration(self):
         # _tool_guard uses functools.wraps, so the amended __doc__ travels

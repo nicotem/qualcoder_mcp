@@ -764,7 +764,9 @@ class TestTheWarnings:
                 "up",
                 "A name inside a longer word is usually a different word "
                 "(Thomasson) and is normally left as it is; a case label "
-                "such as Thomas_P01 is the exception, renamed by hand.",
+                "such as Thomas_P01 is the exception, renamed with "
+                "rename_case, and a file named after the person with "
+                "rename_file.",
                 "a count in another file may be a different person with the "
                 "same name, to be run with its own mapping",
                 "a look-alike letter from another script is not caught."):

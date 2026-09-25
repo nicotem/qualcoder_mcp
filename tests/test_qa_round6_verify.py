@@ -361,6 +361,7 @@ class TestGuidanceEnvelope:
             "rename_category", "move_category", "merge_codes", "delete_code",
             "delete_category", "apply_codings", "import_text_file",
             "link_file_to_case", "delete_coding", "restore_backup",
+            "rename_case", "rename_file",
         ]
         missing = []
         for name in write_tools:

@@ -31,7 +31,7 @@ from mcp.client.stdio import stdio_client
 REPO = Path(__file__).resolve().parent.parent
 VENV_PY = Path(sys.executable)
 
-EXPECTED_FULL = 71
+EXPECTED_FULL = 73
 EXPECTED_CORE = 21
 
 SCHEMA = """
@@ -308,9 +308,9 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 163_904          # 71 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 171_040          # 73 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 56_568           # 21 tools, same environment
-    FULL_MEASURED_310 = 172_308      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 179_796      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 59_520
 
     # Why two per cent, away from the reference environment.
@@ -338,11 +338,11 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "163,904"
+    FULL_CHARS = "171,040"
     CORE_CHARS = "56,568"
-    FULL_ROUNDED = "163,000"
-    CORE_ROUNDED = "56,000"
-    FULL_TOKENS = "40k"
+    FULL_ROUNDED = "171,000"
+    CORE_ROUNDED = "57,000"
+    FULL_TOKENS = "43k"
     CORE_TOKENS = "14k"
 
     @staticmethod

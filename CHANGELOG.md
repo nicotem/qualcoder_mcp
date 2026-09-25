@@ -8,19 +8,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Serialised tool JSON for this release as it stands, every change
-  below included: full = 163,904 characters (about 41.0k tokens at
-  chars/4) over 71 tools, core = 56,568 (about 14.1k) over 21. `core`
+  below included: full = 171,040 characters (about 42.8k tokens at
+  chars/4) over 73 tools, core = 56,568 (about 14.1k) over 21. `core`
   moved only with `get_current_project`, which gained its report of
-  the project's own `pseudonyms.json`; neither the six
-  token-gated tools nor `pseudonymise_source` is in it. Measured
-  exactly as the 0.12 figures were, on the final tree through the
-  toolset gate, as the `tools/list` payload carries them:
-  the name, description and input schema of every registered tool,
-  serialised together with `json.dumps` defaults, under Python 3.13.5
-  with mcp 1.30.0, in the repository's own `venv/`. On Python 3.11.13,
-  in the repository's `.venv/`, the same definitions measure 172,308 and
-  59,520, because 3.10 to 3.12 keep the docstring indentation 3.13
-  strips at compile time.
+  the project's own `pseudonyms.json`; neither the six token-gated
+  tools, nor `pseudonymise_source`, nor the two rename tools, nor
+  `read_pseudonym_list` is in it. Measured exactly as the 0.12 figures
+  were, on the final tree through the toolset gate, as the `tools/list`
+  payload carries them: the name, description and input schema of every
+  registered tool, serialised together with `json.dumps` defaults,
+  under Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`.
+  On Python 3.11.13, in the repository's `.venv/`, the same definitions
+  measure 179,796 and 59,520, because 3.10 to 3.12 keep the docstring
+  indentation 3.13 strips at compile time.
+
+### Removed: the inert `confirm` argument on the six token-gated tools
+
+- 0.12.0 announced this: "`confirm` stays in the six signatures for this
+  release and is removed in v0.13." It is removed. `merge_codes`,
+  `delete_code`, `delete_category`, `merge_category`, `restore_backup`
+  and `prune_backups` no longer declare it, the preview gate they share
+  no longer carries it, and a preview no longer returns the
+  `deprecated_argument` note that explained it. The two-step flow is
+  unchanged: call without `preview_token` for a preview, then again with
+  the token the preview returned.
+- The removal shortens the tool definitions; the size this release
+  ships at is the one measurement at the top of this entry.
+
+### Fixed
+
+- **`pseudonymise_source` could answer "File or project not found." over a
+  rewrite that had committed.** The run manifest resolved the project path
+  when it was written, which is after the commit; a project folder renamed
+  in that window made the resolution fail, so the run returned that refusal
+  with no manifest, no notes and no stale-session list, and logged the full
+  project path on the way out. The path is settled before the gate runs and
+  the manifest is handed what was settled.
+
+- **A preview token that does not verify is no longer described as a
+  changed project.** The refusal said "The project changed since this
+  preview was made", which is an assertion the check cannot make: a token
+  whose MAC is forged, or whose issue time has been edited, keeps the
+  public `bind` it was copied from and lands in the same branch as a live
+  token whose rows have moved, and so does a token issued before the
+  preview secret was rotated. The three cannot be told apart, so the
+  refusal now says the token did not verify, names all three causes with
+  the likeliest first, and gives the one remedy they share. Where the
+  claim IS true it still stands: the re-check inside the write
+  transaction fires on a token that did verify, and keeps its own
+  wording. The machine-readable `reason` is unchanged.
+
+- **A write that fails after its backup was taken now says what happened
+  and names the backup.** The answer was the generic "Database error: the
+  project file may be locked or corrupted ... consider restoring a backup",
+  with no path. SQLite either applies a transaction or it does not, so a
+  commit that faulted (a full disk) or a second connection holding the
+  reserved lock past the wait leaves the project database exactly as it
+  was, and restoring a backup over it would have destroyed work the
+  researcher still had. The message now says the write did not complete
+  and was rolled back, so nothing needs restoring, and says the other
+  thing where it is true instead: if the rollback itself did not go
+  through, the project may be part-written and a backup is the answer.
+  Every failure route out of a write, including a tool's own refusal,
+  carries `backup_path` for the backup that is sitting beside the project,
+  which after a `pseudonymise_source` attempt still holds the real names.
+  That includes the two lock routes, which the first cut of this fix
+  missed: a write that QualCoder interrupted by opening the project
+  mid-write, and one that met a second writer holding the database past
+  the wait inside a database method. Both answered the lock text alone
+  and left the backup unnamed; both now name it. `apply_codings`, which
+  keeps its own write body, answered a commit-time fault with the raw
+  exception text and no path; it now answers with the same fixed text
+  and names the backup, keeping its `applied_before_failure` and
+  `total_approved` counts, and its other failure routes after the backup
+  name it too.
+- **The retry advice is given only where waiting can help.** The arm
+  above catches every sqlite3 error, and the first cut gave the same
+  "close it or wait a moment, then retry" to a malformed database image
+  and to a constraint the write violated, neither of which retrying
+  cures. A database that was locked or busy, a full disk and an I/O
+  error keep the retry sentence. Any other fault is told that the
+  database refused the write, with the exception class named (never its
+  message, which goes to the log as before), that nothing changed, and
+  that if it happens again the project should be opened in QualCoder to
+  check it, with a backup restored only if it will not open. Which of
+  the two a fault gets is decided from the exception class and then its
+  message text, which is a heuristic and is called one in the source.
+
+- **`pseudonymise_source`'s description tells the whole truth about
+  what the `use_project_pseudonyms` path returns as it stands.** It
+  declared two kinds of value that can carry a name from the
+  researcher's own `pseudonyms.json`: the project path and each file's
+  own name. There are four: the backup path and the note that names the
+  backup are both named after the project folder, and the backup path
+  is reported on success and, since the fix above, on any failure after
+  the backup was taken. Each file's own name now includes every file
+  the residue's new file-text part names. The description says so, and
+  so does PRIVACY.md. Nothing this path returns has changed but the
+  file-text part; the sentence that describes it has.
 
 ### Added: `pseudonymise_source` reports every residue count as two readings
 
@@ -176,6 +261,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the public API returns without signing in, so the budgets can be
   checked on every platform.
 
+### Changed: `pseudonymise_source` rewrites one file per call
+
+- `file_ids` (an optional list; omit it for every eligible text source)
+  is now `file_id`, one required id. A mapping that is right for one
+  participant is applied to that participant's file, so two people who
+  share a name get two pseudonyms by running their two files with two
+  mappings. This is also the shape QualCoder itself has: its
+  `pseudonyms.json` is applied per file at import. To pseudonymise a
+  project, run it file by file; with `use_project_pseudonyms` the
+  mapping is read from the project's own `pseudonyms.json` each time,
+  and with a typed mapping it is repeated on each call.
+- A file this tool cannot rewrite is refused, with the reason the old
+  `skipped_files` list gave (`pdf_source`, `no_fulltext`,
+  `unknown_file_id`) under `reason`, before any token check. The refusal
+  names the file by its id only, never by its name.
+- The approval token binds the one file id. A token issued for one file
+  does not execute on another.
+
+### Added: `rename_case` and `rename_file`
+
+- Two write tools, in the `full` toolset only, that rename a case or a
+  file's entry the way QualCoder does, so a label named after a
+  participant (`Thomas_P01`, `Thomas_interview.txt`) can be changed
+  without leaving the conversation. Each writes one column of one row,
+  as QualCoder does: `UPDATE cases SET name = ? WHERE caseid = ?`, Manage
+  Cases' own statement, or `UPDATE source SET name = ? WHERE id = ?`,
+  where Manage Files' "Rename database entry" selects the row by its name
+  (`update source set name=? where name=?`) and this server by its id.
+  Nothing else: no date, owner or note, no other
+  table, and for a file nothing on disk and no stored path. Everything
+  QualCoder keys by id (codings, annotations, case links, attributes,
+  graph nodes, the transcript link) follows the new name. No approval
+  token, as for `rename_code`: nothing is lost, a backup is taken by
+  default, and the old name is in the result.
+- Both follow `rename_code`'s write discipline: the write gate first,
+  then a read-only pre-check that answers an unknown id, the identical
+  name (`changed: false, reason: unchanged`), a refusal or a clash with
+  no lock and no backup, then the write, which takes SQLite's write
+  lock (`BEGIN IMMEDIATE`) before re-checking inside the transaction,
+  because the write gate cannot see QualCoder 4.0.
+- The log line carries the id only ("Renamed case 3"): the host keeps
+  this server's log on disk, and removing a participant's name is why
+  these tools exist. `rename_code` and `rename_category` now log their
+  ids only as well; until now they logged both names.
+- Each result says where the old name stays. `old_name_left_in` counts
+  QualCoder's saved graph labels, saved table displays and saved filters
+  that still hold it and lists the ids of files whose name holds it (a
+  heuristic: the old name as a whole word, ignoring letter case, where
+  letters and digits make up a word, so `_` and `.` separate words and a
+  short label such as `AS` is not found inside `Case`; in saved displays
+  and filters their names are read, and of their rows only the values
+  they filter on, so a label such as `OR` is not counted in every filter
+  QualCoder saved as `BOOLEAN_OR`, while a row not in QualCoder's exact
+  saved shape is read whole, and one that is not UTF-8 is decoded
+  tolerantly; each count only when it is not zero). `rename_file` adds
+  `stored_copy` (an imported file's copy in the project folder and its
+  stored path keep the old name, and a document's copy keeps the
+  original text, which QualCoder's exports ship), `linked_transcript` or
+  `transcript_of`, `transcript_pairing` (where QualCoder would pair a
+  recording with a transcript by name) and `search_index_note`. A `note`
+  names the rest: backups, session files, this server's pseudonymisation
+  journal entries and run records (for a file), QualCoder 4.0's AI chat,
+  and imports and merges that bring an old name back.
+- QualCoder 4.0 writes no lock file, so a Manage Cases or Manage Files
+  window opened before a rename keeps the old name and can overwrite the
+  rename or fail on it. Both descriptions say so; close the project in
+  QualCoder 4.0 first. QualCoder 3.x's lock refuses the rename as it
+  refuses every write.
+- The pseudonymisation preview's notes and PRIVACY.md name the two tools
+  where they used to say a case label is "renamed by hand", and say
+  which places a rename cannot reach and the preview does not read: an
+  imported file's stored copy and stored path, saved graph labels, saved
+  table displays and filters, and QualCoder's saved SQL queries. The case
+  ambiguity hint now names
+  `rename_case`.
+
+Departures from QualCoder's Manage Cases, each with its reason:
+
+| Departure | Reason |
+|---|---|
+| Runs of spaces inside a name collapse to one (QualCoder strips the ends only) | The duplicate-names rule took QualCoder 4.0's name normalisation; `create_case` already applies it |
+| A name matching ANOTHER case ignoring letter case, spacing and Unicode form is refused (QualCoder refuses exact matches only) | The duplicate-names rule for renames; without it `create_case` meets twins and the case lookups by name pick one |
+| A pre-existing letter-case twin blocks a respelling | The same rule; the refusal names the other case's id |
+| Refusals and the identical name are answered (QualCoder silently restores the cell) | A tool has no cell to restore |
+| A backup before the write | The house write discipline; QualCoder relies on its open-time backup |
+| The result reports where the old name stays | Reporting only; QualCoder says nothing |
+
+Departures from Manage Files' "Rename database entry", each with its
+reason:
+
+| Departure | Reason |
+|---|---|
+| The file is chosen by id | Equivalent under `unique(name)`; ids are how every tool here names a file |
+| Ends trimmed, Unicode NFC applied, a clash compared after NFC on both sides | As `import_text_file` does: two names that look identical are refused |
+| Empty, spaces-only and dots-only names refused | QualCoder 4.0 itself treats them as invalid and renames them `unnamed_file_<id>` at every load |
+| Control, line-separator and invisible formatting characters refused | They make a name look identical to another or break single-line display |
+| `/`, `\`, `..` and `:` refused | QualCoder joins the name into paths (delete, export, text replacement, the REFI-QDA export); `..` reaches the project database, and a drive prefix leaves the folder on Windows |
+| A name Windows cannot store refused: `<`, `>`, `\|`, `?`, `*`, `"`, a trailing dot or space, and the device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `LPT0` to `LPT9`, and `COM` or `LPT` followed by a superscript 1, 2 or 3, as stems with any extension) | A project travels between machines, and QualCoder's Manage Files export opens the entry's name as a file with no handler, so on Windows such a name fails part-way through an export or writes to a device; Windows also drops a trailing dot or space, so `x.docx.` would stand for another file's `x.docx` there |
+| Over 200 bytes in UTF-8 refused, never truncated | QualCoder writes the name as a file name on export, with suffixes (a text with no stored path is exported as `<name>.txt`), under the usual 255-byte file-name limit; and a paging cursor carrying the name stays under its 1,024-character cap. The limit is in bytes because both reasons are: there is no limit in characters |
+| A text's new name already present in `documents/` refused, compared as the strictest disk compares names (letter case folded, Unicode form and a trailing dot or space ignored), never as this server's own disk does | QualCoder finds a text's stored copy there by the entry's name and would act on that other file; a project renamed on a disk that keeps letter case may be opened on one that folds it |
+| `unnamed_file_<n>` refused while file n has an invalid name | QualCoder 4.0's automatic rename would then fail and Manage Files could not open |
+| An ending QualCoder acts on is kept (owner's ruling of 2026-09-23): a transcript's `.txt` or `.transcribed`, exactly; `.pdf` neither gained nor lost; `.transcribed` not gained; a media file's stored extension; a text with no stored file keeps a plain-text type (`.txt` or no dot). Each refusal says why and that QualCoder's own Rename can still do it; any other name changes freely (`Thomas.Jones` to `P01`), and restoring an ending the file had before is not refused, except a transcript losing both endings or a media file its extension | QualCoder reads those endings: 4.0 drops a transcript link whose name lost its ending, the REFI-QDA export decides PDF and transcript sources and the declared file type from the name, and media are exported under their entry name |
+| The identical name answers "unchanged", before any rule | Same outcome as "This already exists", in the house shape |
+| A backup, and no in-window undo list | The house write discipline; reverse with a second rename or `restore_backup`. A rename back is recognised from the project's backups (and, for an ending, from the stored file's own name), so the ending and `documents/` rules do not refuse it. A backup counts only where it shows this same entry, a heuristic: the same id and the same date (set at creation and by some later QualCoder actions, never by a rename), because QualCoder gives a deleted last entry's id to the next one; for the `documents/` half, the same text as well, compared inside SQLite, because QualCoder's Merge projects copies dates. Backups are opened read-only and immutable, a backup with a journal or WAL file beside its database skipped, only when a rule would refuse, once per question, stopping at the first that shows the name; when no backup shows the earlier name (a rename made with `create_backup=false`, or pruned backups), the rules apply and `restore_backup` or QualCoder's own Rename can make it |
+| QualCoder's search index is not refreshed | It belongs to QualCoder, which re-indexes on the next open with AI on; stated in the result |
+| No bulk rename | QualCoder's drops every extension and breaks transcript links; call `rename_file` per file |
+| The result reports the stored copy, transcripts, pairings and saved places | Reporting only |
+
 ### Added: `pseudonymise_source` rewrites notes under `rewrite_memos`
 
 - A new argument, `rewrite_memos` (default off, bound into the approval
@@ -233,9 +426,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   umask mode for a file of real names; an existing file keeps its own
   permissions, and a read-only one is refused before the backup
   (`pseudonyms_json_read_only`). QualCoder's text and transcript
-  imports apply the file one entry at a time, in file order and
-  case-sensitively (its survey import and text-file replacement match
-  differently), so the new entries are written longest name first (a
+  imports (not PDFs) apply the file one entry at a time, in file order
+  and case-sensitively (its survey import and text-file replacement
+  match differently), so the new entries are written longest name first (a
   shorter name inside a longer one then does not pre-empt it, as this
   run's single pass does not), the preview warns when an entry already
   in the file would pre-empt a new one, and it warns that under an
@@ -258,109 +451,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is an audit record of which rows a run changed; no tool reads it
   back and it is not an input to any undo (undoing a run was dropped
   from v0.13; the backup is the way back).
-
-### Changed: `pseudonymise_source` rewrites one file per call
-
-- `file_ids` (an optional list; omit it for every eligible text source)
-  is now `file_id`, one required id. A mapping that is right for one
-  participant is applied to that participant's file, so two people who
-  share a name get two pseudonyms by running their two files with two
-  mappings. This is also the shape QualCoder itself has: its
-  `pseudonyms.json` is applied per file at import. To pseudonymise a
-  project, run it file by file; with `use_project_pseudonyms` the
-  mapping is read from the project's own `pseudonyms.json` each time,
-  and with a typed mapping it is repeated on each call.
-- A file this tool cannot rewrite is refused, with the reason the old
-  `skipped_files` list gave (`pdf_source`, `no_fulltext`,
-  `unknown_file_id`) under `reason`, before any token check. The refusal
-  names the file by its id only, never by its name.
-- The approval token binds the one file id. A token issued for one file
-  does not execute on another.
-
-### Removed: the inert `confirm` argument on the six token-gated tools
-
-- 0.12.0 announced this: "`confirm` stays in the six signatures for this
-  release and is removed in v0.13." It is removed. `merge_codes`,
-  `delete_code`, `delete_category`, `merge_category`, `restore_backup`
-  and `prune_backups` no longer declare it, the preview gate they share
-  no longer carries it, and a preview no longer returns the
-  `deprecated_argument` note that explained it. The two-step flow is
-  unchanged: call without `preview_token` for a preview, then again with
-  the token the preview returned.
-- The removal shortens the tool definitions; the size this release
-  ships at is the one measurement at the top of this entry.
-
-### Fixed
-
-- **`pseudonymise_source` could answer "File or project not found." over a
-  rewrite that had committed.** The run manifest resolved the project path
-  when it was written, which is after the commit; a project folder renamed
-  in that window made the resolution fail, so the run returned that refusal
-  with no manifest, no notes and no stale-session list, and logged the full
-  project path on the way out. The path is settled before the gate runs and
-  the manifest is handed what was settled.
-
-- **A preview token that does not verify is no longer described as a
-  changed project.** The refusal said "The project changed since this
-  preview was made", which is an assertion the check cannot make: a token
-  whose MAC is forged, or whose issue time has been edited, keeps the
-  public `bind` it was copied from and lands in the same branch as a live
-  token whose rows have moved, and so does a token issued before the
-  preview secret was rotated. The three cannot be told apart, so the
-  refusal now says the token did not verify, names all three causes with
-  the likeliest first, and gives the one remedy they share. Where the
-  claim IS true it still stands: the re-check inside the write
-  transaction fires on a token that did verify, and keeps its own
-  wording. The machine-readable `reason` is unchanged.
-
-- **A write that fails after its backup was taken now says what happened
-  and names the backup.** The answer was the generic "Database error: the
-  project file may be locked or corrupted ... consider restoring a backup",
-  with no path. SQLite either applies a transaction or it does not, so a
-  commit that faulted (a full disk) or a second connection holding the
-  reserved lock past the wait leaves the project database exactly as it
-  was, and restoring a backup over it would have destroyed work the
-  researcher still had. The message now says the write did not complete
-  and was rolled back, so nothing needs restoring, and says the other
-  thing where it is true instead: if the rollback itself did not go
-  through, the project may be part-written and a backup is the answer.
-  Every failure route out of a write, including a tool's own refusal,
-  carries `backup_path` for the backup that is sitting beside the project,
-  which after a `pseudonymise_source` attempt still holds the real names.
-  That includes the two lock routes, which the first cut of this fix
-  missed: a write that QualCoder interrupted by opening the project
-  mid-write, and one that met a second writer holding the database past
-  the wait inside a database method. Both answered the lock text alone
-  and left the backup unnamed; both now name it. `apply_codings`, which
-  keeps its own write body, answered a commit-time fault with the raw
-  exception text and no path; it now answers with the same fixed text
-  and names the backup, keeping its `applied_before_failure` and
-  `total_approved` counts, and its other failure routes after the backup
-  name it too.
-- **The retry advice is given only where waiting can help.** The arm
-  above catches every sqlite3 error, and the first cut gave the same
-  "close it or wait a moment, then retry" to a malformed database image
-  and to a constraint the write violated, neither of which retrying
-  cures. A database that was locked or busy, a full disk and an I/O
-  error keep the retry sentence. Any other fault is told that the
-  database refused the write, with the exception class named (never its
-  message, which goes to the log as before), that nothing changed, and
-  that if it happens again the project should be opened in QualCoder to
-  check it, with a backup restored only if it will not open. Which of
-  the two a fault gets is decided from the exception class and then its
-  message text, which is a heuristic and is called one in the source.
-
-- **`pseudonymise_source`'s description tells the whole truth about
-  what the `use_project_pseudonyms` path returns as it stands.** It
-  declared two kinds of value that can carry a name from the
-  researcher's own `pseudonyms.json`: the project path and each file's
-  own name. There are four: the backup path and the note that names the
-  backup are both named after the project folder, and the backup path
-  is reported on success and, since the fix above, on any failure after
-  the backup was taken. Each file's own name now includes every file
-  the residue's new file-text part names. The description says so, and
-  so does PRIVACY.md. Nothing this path returns has changed but the
-  file-text part; the sentence that describes it has.
 
 ### Upgrading from 0.12.x
 
@@ -405,6 +495,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pseudonym there, in the preview on the `use_project_pseudonyms` path,
   or in the run manifest's `entries` can be `null` (withheld, with
   `pseudonyms_withheld` beside it).
+- **`import_text_file` shares `rename_file`'s name rules, so some names
+  it used to accept are refused.** Exactly these, and each refusal
+  names what it refuses: a name over 200 bytes in UTF-8 (before, the only length check was
+  a 10,000-character limit whose truncated copy was discarded, so no
+  length was ever enforced); a name containing `:`; a name carrying an
+  invisible formatting character (a zero-width space, a bidirectional
+  control), a line or paragraph separator or a C1 control character
+  (only the C0 controls and DEL were refused before); a name that is a
+  single dot; a name Windows cannot store (`<`, `>`, `|`, `?`, `*`, `"`,
+  a trailing dot, a device name such as `CON`, `NUL.txt` or `CONIN$`);
+  and a name already present in the project's `documents/` folder, or
+  differing from a file there only in letter case, Unicode form or a
+  trailing dot or space, which QualCoder would treat as the new text's
+  stored copy on a disk that ignores those differences. There is no
+  limit in characters. Every other name that imported before imports
+  now.
 - **`pseudonymise_source` on a mapping you type: say where the mapping
   is kept.** An execute that passes neither `save_mapping_to_project`
   nor `researcher_keeps_mapping` is now refused as

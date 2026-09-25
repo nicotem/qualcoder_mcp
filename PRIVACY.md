@@ -361,6 +361,24 @@ and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
 normal: QualCoder rebuilds it on project open.
 
+Besides `restore_backup`, which opens the backup you choose to check
+it, reads its first bytes for the preview and copies it back,
+one tool reads the backups' contents: `rename_file`, to recognise a
+rename back (a name, or an ending, the file had before). Only when one of
+its rules would refuse the new name, it opens the database of the
+project's own backups beside it, this server's `_backup_` copies and
+QualCoder's `_BKUP_` copies, newest first and at most 200, read-only and
+immutable (nothing is written into a backup, no side file is made; a
+backup with a journal or WAL file beside its database is skipped), once
+per question, stopping at the first that shows the name. It reads only
+the name and the date of the row with this file's id there; for a copy
+in the project's documents folder it also asks whether that row's text
+equals the file's current text, a comparison SQLite makes, so no text
+is read out of a backup. Taking that row for the same file is a
+heuristic: the date is set at creation and by some later QualCoder
+actions, and a rename never changes it. Nothing it reads is returned or
+logged: the only effect is whether the rename is accepted or refused.
+
 Two further rules touch files on your disk:
 
 - **Symlinks.** Unlike QualCoder's own backups, this server's backups
@@ -649,12 +667,13 @@ will ask, and the summary above depends on them:
     values.** Scanned and counted; of these, only the public part of the
     notes and journal entries is rewritten, and only when `rewrite_memos`
     is on, across the whole project; the names of things and the
-    attribute values are never rewritten. A note's private part (from
-    its `#####` marker) is carried across unread, so a name there is
-    still there and nothing in this server can report it. A second run
-    with `rewrite_memos` on also rewrites the journal entries this
-    server wrote for earlier runs, which the preview counts and warns
-    about. The count is in the
+    attribute values are never rewritten by the pseudonymisation tool (a
+    case or file name is renamed with `rename_case` or `rename_file`,
+    below). A note's private part (from its `#####` marker) is carried
+    across unread, so a name there is still there and nothing in this
+    server can report it. A second run with `rewrite_memos` on also
+    rewrites the journal entries this server wrote for earlier runs,
+    which the preview counts and warns about. The count is in the
     preview's `residue` block, and a name that occurs only in a
     `#####` private note is neither read nor counted. Those counts are a
     heuristic that reads wider than the rewrite does: the rewrite
@@ -718,6 +737,26 @@ will ask, and the summary above depends on them:
     where a run of letters is a clause rather than a word; anything else
     is counted and not listed, and every list in one preview shares a
     budget of 4,000 characters.
+  - **Case and file names, and what a rename cannot reach.** Since
+    v0.13, `rename_case` and `rename_file` rename a case label such as
+    `Thomas_P01` or a file called `Thomas_interview.txt` the way
+    QualCoder's Manage Cases and Manage Files do: the name changes and
+    nothing else. A rename cannot reach, and the preview's count does
+    not read: the stored copy and stored path of an imported file (the
+    copy in the project folder keeps the name it was imported under and,
+    for a document, the original text, and QualCoder's exports ship that
+    copy), saved graph labels, saved table displays and filters, and
+    QualCoder's saved SQL queries. Each rename's result counts the saved
+    graph labels, table displays and filters for the case or file it
+    renamed; the saved SQL queries nothing in this server reads. Every
+    backup, this server's session files, QualCoder's search index and
+    QualCoder 4.0's AI chat keep the old name too, and
+    so do this server's pseudonymisation journal entries and run records,
+    which keep a file's name as it was at the run unless that name
+    carried a name from the mapping (they then name the file by its id).
+    To recognise a rename back, `rename_file` reads this file's earlier
+    name from the project's backups (see "Backups, project copies, and
+    the `ai_data/` folder").
   - **QualCoder 4.0's `ai_data/` folder.** Its chat history may quote the
     previous text and its search index still holds it until QualCoder
     reopens the project and re-indexes. This server never reads or

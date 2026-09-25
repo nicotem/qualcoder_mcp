@@ -4500,7 +4500,8 @@ class TestSavingTheMappingIntoPseudonymsJson:
             "server does not keep the mapping unless asked. On this run it "
             "was saved into the project's own pseudonyms.json (3 entries "
             "added), which QualCoder applies on every later text or "
-            "transcript import and which travels into every later backup; "
+            "transcript import (not a PDF) and which travels into every "
+            "later backup; "
             "store that file securely once the import work is done, as "
             "QualCoder's own guidance says."]
         variants = [n for n in notes if n.startswith("The mapping had")]
@@ -4517,10 +4518,12 @@ class TestSavingTheMappingIntoPseudonymsJson:
         applying = [n for n in notes if n.startswith(
             "QualCoder applies pseudonyms.json")]
         # Fix round 2: where QualCoder applies it (B2P-N1), and names that
-        # overlap without nesting (Q-5).
+        # overlap without nesting (Q-5); the merge with main: not a PDF,
+        # which QualCoder's text import skips (Q2-1).
         assert applying == [
             "QualCoder applies pseudonyms.json on every later text or "
-            "transcript import one entry at a time, in file order and "
+            "transcript import (not a PDF) one entry at a time, in file "
+            "order and "
             "case-sensitively (its survey import and text-file replacement "
             "match differently). The new entries were written longest name "
             "first, so a shorter name inside a longer one does not pre-empt "
@@ -8011,8 +8014,9 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "file; and an execute refused for a name the file already maps "
          "says when the file holds every typed name under its typed "
          "pseudonym, which confirms an exact pair."),
-        ("where_qualcoder_applies_the_file",             # fix round 2, B2P-N1
-         "QualCoder's text and transcript imports apply the file one entry "
+        ("where_qualcoder_applies_the_file",     # fix round 2, B2P-N1; Q2-1
+         "QualCoder's text and transcript imports (not PDFs) apply the file "
+         "one entry "
          "at a time, in file order and case-sensitively (its survey import "
          "and text-file replacement match differently)"),
         ("the_file_is_qualcoders_format",                # point 7
@@ -8235,7 +8239,9 @@ class TestTheDocumentsTellTheTruth:
         "Scanned and counted; of these, only the public part of the notes "
         "and journal entries is rewritten, and only when `rewrite_memos` "
         "is on, across the whole project; the names of things and the "
-        "attribute values are never rewritten.",
+        "attribute values are never rewritten by the pseudonymisation tool "
+        "(a case or file name is renamed with `rename_case` or "
+        "`rename_file`, below).",           # the merge with main
         "A note's private part (from its `#####` marker) is carried across "
         "unread, so a name there is still there and nothing in this server "
         "can report it.",
@@ -8386,8 +8392,9 @@ class TestTheDocumentsTellTheTruth:
         that match as this run does, and the one case it cannot promise
         is named."""
         entry = self._flat("CHANGELOG.md").split("## [0.12")[0]
-        assert ("QualCoder's text and transcript imports apply the file one "
-                "entry at a time, in file order and case-sensitively (its "
+        assert ("QualCoder's text and transcript imports (not PDFs) apply "
+                "the file one entry at a time, in file order and "
+                "case-sensitively (its "
                 "survey import and text-file replacement match "
                 "differently)") in entry
         assert ("Two names that overlap without either containing the other "
@@ -8395,8 +8402,8 @@ class TestTheDocumentsTellTheTruth:
                 "so.") in entry
         assert "QualCoder applies the file one entry at a time" not in entry
         readme = self._flat("README.md")
-        assert ("(QualCoder's text and transcript imports apply the file one "
-                "entry at a time, case-sensitively;") in readme
+        assert ("(QualCoder's text and transcript imports (not PDFs) apply "
+                "the file one entry at a time, case-sensitively;") in readme
         assert "QualCoder applies the file one entry at a time" not in readme
 
     def test_the_changelog_counts_the_rounds(self):

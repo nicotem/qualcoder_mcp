@@ -1,12 +1,13 @@
 """Database interface for Qualcoder .qda files."""
 
+import ast
 import bisect
 import locale
 import os
 import sqlite3
 import stat
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Sequence, Tuple, Union
+from typing import Optional, List, Dict, Any, Callable, Sequence, Tuple, Union
 import json
 import re
 import time
@@ -18,7 +19,8 @@ import unicodedata
 import uuid
 import shutil
 from datetime import datetime
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+import glob
 
 from .memo_privacy import (
     PERSONAL_NOTE_MARK,
@@ -968,6 +970,336 @@ def forbidden_display_char(value: str) -> Optional[str]:
 def _forbidden_coder_name_char(name: str) -> Optional[str]:
     """Name the first class of forbidden character in a coder name, or None."""
     return forbidden_display_char(name)
+
+
+# File names (v0.13, rename dossier 3.3, items 1 to 4): one rule set for
+# every file name this server writes, shared by import_text_file and
+# rename_file. QualCoder's own rename dialog checks only that the name is
+# not exactly an existing one (add_item_name.py:72-82 at 9bddf17; :74-84
+# at 3.8.2), but QualCoder then joins the name into paths (delete, export,
+# text replacement, the REFI-QDA export) and writes it as a file name on
+# export, with suffixes (a text with no stored path is exported as
+# '<name>.txt'). 200 bytes in UTF-8 leaves room for those suffixes under
+# the usual 255-byte file-name limit, and keeps a paging cursor that
+# carries the name under its 1,024-character cap: the cursor's worst case
+# comes from two-byte and four-byte letters, which reach 200 bytes at or
+# under 100 characters, so a limit in characters would add nothing to
+# either reason (fix round 1, QA-1: 200 ASCII characters make a
+# 393-character cursor). There is no limit in characters.
+MAX_FILE_NAME_BYTES = 200
+
+
+def file_name_is_invalid_upstream(name: Any) -> bool:
+    """QualCoder master's own test for an invalid file name.
+
+    Manage Files renames such a file to `unnamed_file_<id>` at every
+    table load (manage_files.py:1963-1971 at 9bddf17), transcribed:
+    `name.strip('.') == '' or name.strip() == ''`.
+    """
+    if not isinstance(name, str):
+        return False
+    return name.strip('.') == '' or name.strip() == ''
+
+
+# Names Windows cannot store as a file (fix round 1, S-2 and S-1): a
+# project travels between machines, and QualCoder's Manage Files export
+# opens `<export folder>/<entry name>` with no handler (master
+# manage_files.py:3484-3549), so on Windows such a name fails part-way
+# through an export or, for a device name, writes to the device. Win32
+# also drops a trailing dot or space from a name, so `x.docx.` would stand
+# for another file's `x.docx` there. Microsoft's reserved device names,
+# as stems with any extension, in any letter case; its list includes the
+# digit 0, the superscript digits 1 to 3, and the console names CONIN$
+# and CONOUT$ (fix round 2, R1-6; Python 3.13's ntpath.isreserved
+# reserves them too).
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>|?*"')
+_WINDOWS_DEVICE_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{port}{digit}" for port in ("COM", "LPT")
+       for digit in "0123456789\u00b9\u00b2\u00b3"})
+
+
+def windows_name_problem(name: str) -> Optional[str]:
+    """Why Windows cannot store `name` as a file, or None."""
+    if any(ch in _WINDOWS_FORBIDDEN_CHARACTERS for ch in name):
+        return ("A file name must not contain < > | ? * or \" (Windows "
+                "cannot store them, and QualCoder's export writes the name "
+                "as a file).")
+    if name.endswith(('.', ' ')):
+        return ("A file name must not end with a dot or a space (Windows "
+                "drops them, so there the name would stand for another "
+                "file).")
+    if name.split('.')[0].rstrip(' ').upper() in _WINDOWS_DEVICE_STEMS:
+        return ("A file name must not be a Windows device name (CON, PRN, "
+                "AUX, NUL, CONIN$, CONOUT$, COM0 to COM9, LPT0 to LPT9, or "
+                "COM or LPT followed by a superscript 1, 2 or 3, with any "
+                "extension): Windows cannot store it as a file.")
+    return None
+
+
+def file_name_problem(name: str) -> Optional[str]:
+    """The first reason `name` may not be a file name, or None.
+
+    `name` is the candidate as it will be stored: stripped at both ends
+    and NFC-normalised by the caller. Refused, in this order: empty,
+    spaces only or dots only (QualCoder master's own invalid-name test);
+    control, line or paragraph separator and invisible format characters
+    (forbidden_display_char, with its two orthographic exceptions); an
+    unpaired surrogate, which SQLite cannot store as text; the path
+    characters '/', '\\', '..' and ':'; a name Windows cannot store
+    (windows_name_problem: < > | ? * ", a trailing dot or space, a device
+    name); over MAX_FILE_NAME_BYTES bytes in UTF-8. Refused, never
+    truncated.
+    """
+    if file_name_is_invalid_upstream(name):
+        return ("A file name must not be empty, spaces only or dots only "
+                "(QualCoder itself renames such a file unnamed_file_<id>).")
+    bad = forbidden_display_char(name)
+    if bad is not None:
+        return f"A file name must not contain {bad}."
+    if any(unicodedata.category(ch) == "Cs" for ch in name):
+        return ("A file name must not contain an unpaired surrogate "
+                "character.")
+    if '/' in name or '\\' in name or '..' in name or ':' in name:
+        return ("A file name must not contain path separators ('/' or "
+                "'\\'), '..' or ':', because QualCoder joins the name into "
+                "file paths.")
+    windows = windows_name_problem(name)
+    if windows is not None:
+        return windows
+    size = len(name.encode("utf-8"))
+    if size > MAX_FILE_NAME_BYTES:
+        return (f"A file name must be at most {MAX_FILE_NAME_BYTES} bytes "
+                f"in UTF-8 (this one has {size}).")
+    return None
+
+
+def refi_declared_text_type(name: str) -> str:
+    """The file type QualCoder's REFI-QDA export declares for a text with
+    no stored path, read from its entry name (refi.py:3160-3168 at
+    9bddf17, transcribed): the text after the last dot, 'txt' when there
+    is no dot, and 'txt' for 'transcribed'. A type other than 'txt' in
+    any letter case is declared as a rich-text file (:2600-2606)."""
+    suffix = name.split('.')[-1] if '.' in name else 'txt'
+    return 'txt' if suffix == 'transcribed' else suffix
+
+
+def stored_path_extension(mediapath: Optional[str]) -> str:
+    """The extension of a stored path's last component ('.mp3'), or ''.
+    Both separators are read, so a linked Windows path works too."""
+    if not mediapath:
+        return ''
+    last = re.split(r"[\\/]", mediapath)[-1]
+    return '.' + last.rsplit('.', 1)[1] if '.' in last else ''
+
+
+# The operators QualCoder writes into a saved display's rows (master
+# manage_files.py:1169, :1176, :1183; 3.8.2 :591, :601, :615).
+_SAVED_DISPLAY_OPERATORS = ("=", "like", "hide")
+
+
+def saved_display_values(tblrows: Any) -> List[str]:
+    """What a saved Manage Files display is read for (fix round 2, R2-1;
+    fix round 3, B-1, B-2, B-8). QualCoder saves its rows joined by two
+    tabs, each row '<column>\t<operator>\t<value>' (master
+    manage_files.py:752, :1169, :1176, :1183; 3.8.2 :191, :591, :601,
+    :615). When every row has exactly that shape, only the values are
+    read, so the column names and operators ('Case', 'Name', 'like',
+    'hide') are never read as a label. Anything else is read whole, the
+    conservative reading: QualCoder itself writes rows it cannot split
+    back, a value that begins with a tab or holds two tabs in a row, and
+    3.8.2 writes a cancelled 'like' row with an empty value."""
+    if not isinstance(tblrows, str):
+        return []
+    values = []
+    for row in tblrows.split("\t\t"):
+        parts = row.split("\t")
+        if len(parts) != 3 or not parts[0] or not parts[2] or \
+                parts[1] not in _SAVED_DISPLAY_OPERATORS:
+            return [tblrows]
+        values.append(parts[2])
+    return values
+
+
+# The operators QualCoder offers for a saved filter's condition (master
+# report_attributes.py:710-712; 3.8.2 the same lines): a condition with
+# any other word there is not in QualCoder's shape (fix round 4, F3B-3).
+_SAVED_FILTER_OPERATORS = ("<", ">", "<=", ">=", "=", "!=", "in", "not in",
+                           "between", "like")
+
+# A saved filter longer than this is read whole rather than parsed: a
+# filter QualCoder saves is a few hundred characters, and literal_eval's
+# cost grows with its input.
+SAVED_FILTER_PARSE_LIMIT = 20_000
+
+
+def saved_filter_values(text: Any) -> List[str]:
+    """The values a saved attribute filter compares with (R2-1).
+    QualCoder saves the text of a Python list (master
+    report_attributes.py:139-161, :265-310): a first item
+    ['BOOLEAN_OR'] or ['BOOLEAN_AND'], then one
+    [name, 'case' or 'file', type, operator, [values]] per condition,
+    character values in single quotes (3.8.2 report_attributes.py:147,
+    :269-309, the same). When the text has exactly that shape (the
+    second item 'case' or 'file', the operator one of QualCoder's, the
+    name and the type text, the values a list of text; fix round 4,
+    F3B-3), only the values are read, so QualCoder's own words (BOOLEAN_OR, AND, case,
+    character, like) are never read as a label. Anything else, a list of
+    another shape included, is read whole, the conservative reading
+    (fix round 3, B-2)."""
+    if not isinstance(text, str):
+        return []
+    if len(text) > SAVED_FILTER_PARSE_LIMIT:
+        return [text]
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError,
+            TypeError):
+        return [text]
+    if not (isinstance(parsed, list) and parsed and
+            parsed[0] in (["BOOLEAN_OR"], ["BOOLEAN_AND"])):
+        return [text]
+    values: List[str] = []
+    for item in parsed[1:]:
+        if not (isinstance(item, list) and len(item) == 5
+                and all(isinstance(part, str) for part in item[:4])
+                and item[1] in ("case", "file")
+                and item[3] in _SAVED_FILTER_OPERATORS
+                and isinstance(item[4], list)
+                and all(isinstance(value, str) for value in item[4])):
+            return [text]
+        for value in item[4]:
+            if len(value) >= 2 and value[0] == value[-1] == "'":
+                value = value[1:-1]
+            values.append(value)
+    return values
+
+
+def sqlite_text_codec(encoding: Any) -> str:
+    """The Python codec for the text encoding SQLite's `PRAGMA encoding`
+    names (fix round 4, F3B-1): the bytes of `CAST(... AS BLOB)` are in
+    the database's own encoding."""
+    return {"UTF-16le": "utf-16-le", "UTF-16be": "utf-16-be",
+            "UTF-16": "utf-16"}.get(encoding, "utf-8")
+
+
+def documents_name_key(name: str) -> str:
+    """How the strictest disk QualCoder may open a project on compares two
+    file names (fix round 1, S-1): Unicode NFC, letter case folded
+    (macOS and Windows fold it by default), and trailing dots and spaces
+    dropped (Windows drops them)."""
+    folded = unicodedata.normalize(
+        "NFC", unicodedata.normalize("NFC", name).casefold())
+    return folded.rstrip(". ")
+
+
+def documents_clash_message(name: str, entry: Optional[str] = None) -> str:
+    """The refusal for a text entry named after a file already in the
+    project's documents/ folder (rename dossier 3.3, item 5)."""
+    if entry is None or entry == name:
+        held = f"a file called '{name}'"
+    else:
+        held = (f"'{entry}', which is the same file as '{name}' on a disk "
+                f"that ignores letter case or drops a trailing dot or "
+                f"space (macOS and Windows by default)")
+    return (f"The project's documents folder already holds {held}. "
+            f"QualCoder finds a text's stored copy there by the entry's "
+            f"name when it deletes, exports or replaces the text, so it "
+            f"would treat that file as this entry's. Choose another name.")
+
+
+# The closing clause of every ending refusal (owner ruling of 2026-09-23,
+# dossier question 1, option b): QualCoder's own Rename can still do it.
+_ENDING_STILL_POSSIBLE = (
+    " QualCoder's own Rename (Manage Files, the name's right-click menu, "
+    "\"Rename database entry\") can still make this change if it is "
+    "wanted.")
+
+
+def file_ending_problem(old: str, new: str, mediapath: Optional[str],
+                        recording_names: Sequence[str],
+                        earlier: Sequence[str] = ()) -> Optional[str]:
+    """The ending rule of rename_file, or None: refuse only a change of an
+    ending QualCoder acts on (owner ruling of 2026-09-23, option b).
+
+    `recording_names` are the names of the recordings whose transcript
+    link (av_text_id) points at this file; empty when it is no
+    transcript. Every other name changes freely: a name with no
+    recognised ending ('Thomas.Jones') has no rule.
+
+    `earlier` are names this file had before (its stored file's own name,
+    and its names in the project's backups): restoring an ending one of
+    them had is not refused (the lead's ruling on QA-4), where the rule
+    is about gaining an ending ('.pdf' either way, '.transcribed', a
+    declared file type) or swapping a transcript's '.txt' and
+    '.transcribed'. Losing both of a transcript's endings, or a media
+    file's stored extension, is refused whatever came before, because
+    that is the change that breaks QualCoder's link or export.
+    """
+    earlier = [e for e in earlier if isinstance(e, str)]
+    if recording_names:
+        endings = (".txt", ".transcribed")
+        for ending in endings:
+            if not old.endswith(ending) or new.endswith(ending):
+                continue
+            other = endings[1 - endings.index(ending)]
+            if not new.endswith(other):
+                return (f"This file is the transcript of "
+                        f"'{recording_names[0]}', and its name must keep "
+                        f"the ending '{ending}' exactly, letter case "
+                        f"included: QualCoder 4.0 treats a transcript whose "
+                        f"name does not end in '.txt' or '.transcribed' as a "
+                        f"broken link, drops it, and gives the recording a "
+                        f"new, empty transcript the next time it is opened."
+                        + _ENDING_STILL_POSSIBLE)
+            if not any(e.endswith(other) for e in earlier):
+                # The swap keeps QualCoder 4.0's link (both endings pass
+                # its test); what QualCoder acts on is the by-name
+                # '.transcribed' pairing (fix round 1, QA-2).
+                return (f"This file is the transcript of "
+                        f"'{recording_names[0]}', and its name must keep "
+                        f"the ending '{ending}': QualCoder's REFI-QDA export "
+                        f"and file summary pair a recording with an entry "
+                        f"ending in '.transcribed' by name, and export a "
+                        f"'.transcribed' entry only as that pairing, so "
+                        f"swapping '{ending}' for '{other}' changes how "
+                        f"QualCoder exports and pairs this transcript."
+                        + _ENDING_STILL_POSSIBLE)
+    new_pdf = new.lower().endswith('.pdf')
+    if old.lower().endswith('.pdf') != new_pdf and not any(
+            e.lower().endswith('.pdf') == new_pdf for e in earlier):
+        verb = "gain" if new_pdf else "lose"
+        return (f"The name would {verb} the ending '.pdf': QualCoder's "
+                f"REFI-QDA export decides from that ending whether a "
+                f"document is exported as a PDF." + _ENDING_STILL_POSSIBLE)
+    if (new.endswith('.transcribed') and not old.endswith('.transcribed')
+            and not any(e.endswith('.transcribed') for e in earlier)):
+        return ("The name would gain the ending '.transcribed': QualCoder's "
+                "REFI-QDA export exports such an entry only as the "
+                "transcript of the recording whose name it extends, and "
+                "otherwise not at all, and its file summary pairs them by "
+                "name." + _ENDING_STILL_POSSIBLE)
+    kind = _detect_file_type(mediapath or "")
+    ext = stored_path_extension(mediapath)
+    if (kind in ("image", "audio", "video") and ext
+            and old.lower().endswith(ext.lower())
+            and not new.lower().endswith(ext.lower())):
+        return (f"This {kind} file's name must keep its ending '{ext}' "
+                f"(letter case aside): QualCoder exports an image, audio or "
+                f"video file under its entry name, so the ending becomes "
+                f"the exported file's type." + _ENDING_STILL_POSSIBLE)
+    if not mediapath:
+        before = refi_declared_text_type(old)
+        after = refi_declared_text_type(new)
+        if (before.lower() == 'txt' and after.lower() != 'txt'
+                and not any(refi_declared_text_type(e).lower()
+                            == after.lower() for e in earlier)):
+            return (f"This text has no stored file, and QualCoder's REFI-QDA "
+                    f"export declares its file type from the name: it is "
+                    f"declared plain text now, and '{new}' would declare it "
+                    f"a '{after}' file. Keep the ending '.txt', or no dot "
+                    f"at all." + _ENDING_STILL_POSSIBLE)
+    return None
 
 
 def validate_coder_name(value: Any, param_name: str = "owner") -> str:
@@ -5662,16 +5994,16 @@ class QualcoderDatabase:
             raise ValueError("name must be a non-empty string")
         # Normalize so visually identical names compare equal (SEC D-1)
         name = unicodedata.normalize("NFC", name.strip())
-        # Reject NUL and other control characters: they bypass both the
-        # duplicate pre-check and the UNIQUE(name) constraint while
-        # displaying as an existing filename (SEC D-1)
-        if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in name):
-            raise ValueError("filename must not contain control characters")
+        # The file-name rules shared with rename_file (v0.13): control
+        # and invisible characters (they bypass both the duplicate
+        # pre-check and the UNIQUE(name) constraint while displaying as an
+        # existing filename, SEC D-1), path characters and the length
+        # limit, refused rather than truncated.
+        problem = file_name_problem(name)
+        if problem is not None:
+            raise ValueError(problem)
         if '.' not in name:
             raise ValueError("filename must have an extension (e.g., .txt)")
-        if '/' in name or '\\' in name or '..' in name:
-            raise ValueError("filename must not contain path separators or '..'")
-        validate_string(name, "name")
 
         # Validate content
         if not isinstance(content, str):
@@ -5714,6 +6046,9 @@ class QualcoderDatabase:
             raise ValueError(
                 f"A file named '{name}' already exists (id={existing['id']})"
             )
+        clash = self.documents_name_taken(name)
+        if clash is not None:
+            raise ValueError(documents_clash_message(name, clash))
 
         return name
 
@@ -6205,7 +6540,8 @@ class QualcoderDatabase:
             )
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Renamed code {code_id}: '{old['name']}' -> '{new_name}'")
+            # The id only (v0.13): the host keeps this log on disk.
+            logger.info(f"Renamed code {code_id}")
         except sqlite3.IntegrityError as e:
             try:
                 self.conn.rollback()
@@ -6734,8 +7070,8 @@ class QualcoderDatabase:
             )
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Renamed category {category_id}: "
-                        f"'{old['name']}' -> '{new_name}'")
+            # The id only (v0.13): the host keeps this log on disk.
+            logger.info(f"Renamed category {category_id}")
         except sqlite3.IntegrityError as e:
             try:
                 self.conn.rollback()
@@ -7701,6 +8037,386 @@ class QualcoderDatabase:
             "date": date_str,
             "attributes_created": len(attr_types),
         }
+
+    def _rename_row(self, table: str, id_col: str, row_id: int,
+                    new_name: str, kind: str, tool: str,
+                    auto_commit: bool) -> str:
+        """`UPDATE <table> SET name = ? WHERE <id_col> = ?` and nothing
+        else, after an exact-duplicate pre-check; the old name returned.
+
+        The one write both renames make (v0.13, rename dossier 3.2 and
+        3.3): no date, no owner, no memo, no other table, as QualCoder's
+        Manage Cases (cases.py:718-719 at 9bddf17; :647-648 at 3.8.2) and
+        Manage Files (manage_files.py:1501-1503; :786-788). The log line
+        carries the id only: the host keeps this server's log on disk, and
+        a case or file named after a participant is why these tools exist.
+        """
+        try:
+            old = self.conn.execute(
+                f"SELECT name FROM {table} WHERE {id_col} = ?",
+                (row_id,)).fetchone()
+            if old is None:
+                raise ValueError(f"{kind.capitalize()} ID {row_id} does not "
+                                 f"exist")
+            clash = self.conn.execute(
+                f"SELECT {id_col} FROM {table} WHERE name = ? AND "
+                f"{id_col} <> ?", (new_name, row_id)).fetchone()
+            if clash:
+                raise ValueError(f"A {kind} named '{new_name}' already "
+                                 f"exists (id {clash[0]})")
+            self.conn.execute(
+                f"UPDATE {table} SET name = ? WHERE {id_col} = ?",
+                (new_name, row_id))
+            if auto_commit:
+                self.conn.commit()
+            logger.info(f"Renamed {kind} {row_id}")
+        except sqlite3.IntegrityError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "unique" in str(e).lower():
+                raise ValueError(f"A {kind} named '{new_name}' already "
+                                 f"exists") from None
+            raise RuntimeError(f"Failed to rename {kind}: {e}") from None
+        except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _raise_query_error(e, tool, f"Failed to rename {kind}")
+        return old["name"]
+
+    def rename_case(self, case_id: int, new_name: str,
+                    auto_commit: bool = True) -> Dict[str, Any]:
+        """Rename a case (cases.name, unique among cases); nothing else.
+
+        The name is normalised as create_case normalises it. Exact-name
+        collision check only; the duplicate-names rule is applied by the
+        tool layer before this is reached. No length limit, as Manage
+        Cases has none (validate_string's return is not used, as for
+        codes).
+        """
+        self._require_write_access()
+        case_id = validate_id(case_id, "case_id")
+        new_name = normalize_name(new_name)
+        if not new_name:
+            raise ValueError("new_name must be a non-empty string")
+        validate_string(new_name, "new_name")
+        old = self._rename_row("cases", "caseid", case_id, new_name,
+                               "case", "rename_case", auto_commit)
+        return {"case_id": case_id, "old_name": old, "new_name": new_name}
+
+    def rename_file(self, file_id: int, new_name: str,
+                    auto_commit: bool = True) -> Dict[str, Any]:
+        """Rename a file's entry (source.name, unique); nothing else.
+
+        Nothing on disk is renamed, and the stored path, owner and date
+        are untouched, as QualCoder's "Rename database entry". The name is
+        stripped and NFC-normalised and must pass file_name_problem
+        (defence in depth: the tool layer applies it, and the rules that
+        read the project, before this is reached).
+        """
+        self._require_write_access()
+        file_id = validate_id(file_id, "file_id")
+        if not isinstance(new_name, str):
+            raise TypeError("new_name must be a string")
+        new_name = unicodedata.normalize("NFC", new_name.strip())
+        problem = file_name_problem(new_name)
+        if problem is not None:
+            raise ValueError(problem)
+        old = self._rename_row("source", "id", file_id, new_name, "file",
+                               "rename_file", auto_commit)
+        return {"file_id": file_id, "old_name": old, "new_name": new_name}
+
+    def case_name_rows(self) -> List[Dict[str, Any]]:
+        """Every case's id and name, one light query (the rename
+        pre-check; list_cases runs a count query per case)."""
+        return [{"id": r["caseid"], "name": r["name"]} for r in
+                self.conn.execute("SELECT caseid, name FROM cases")]
+
+    def file_name_rows(self) -> List[Dict[str, Any]]:
+        """Every file's id, name, stored path, transcript link and date,
+        one light query (the rename pre-check)."""
+        return [{"id": r["id"], "name": r["name"],
+                 "mediapath": r["mediapath"], "av_text_id": r["av_text_id"],
+                 "date": r["date"]}
+                for r in self.conn.execute(
+                    "SELECT id, name, mediapath, av_text_id, date FROM "
+                    "source ORDER BY id")]
+
+    def documents_listing(self) -> List[str]:
+        """The names in the project's documents/ folder ([] when it is
+        missing or unreadable). The one place the documents/ rule reads
+        the disk, so a test can stand in any listing."""
+        try:
+            return os.listdir(Path(self.db_path).parent / "documents")
+        except OSError:
+            return []
+
+    def documents_clash(self, name: str,
+                        own_names: Sequence[str] = ()) -> Optional[str]:
+        """The file in documents/ that an entry called `name` would stand
+        for on the strictest disk QualCoder may open the project on, or
+        None; a file in `own_names` (this entry's own copies) excepted.
+
+        QualCoder finds a text's stored copy by its entry name (3.8.2
+        Delete and Export; master's Delete for no stored path, text
+        replacement and "move to linked"; the REFI-QDA export for no
+        stored path), so an entry named after another file there would be
+        treated as that file. The comparison is the worst platform's,
+        never this server's own disk (fix round 1, S-1): a project renamed
+        here on a disk that keeps letter case may be opened by QualCoder
+        on one that folds it (macOS and Windows by default), and Windows
+        drops a trailing dot or space. So both names are compared under
+        documents_name_key. An 8.3 short name (`BETA_I~1.DOC`) is not
+        modelled. Only names are compared: nothing is joined into a path.
+        """
+        clashes = self.documents_clashes(name, own_names)
+        return clashes[0] if clashes else None
+
+    def documents_clashes(self, name: str,
+                          own_names: Sequence[str] = ()) -> List[str]:
+        """Every file documents_clash could answer, sorted."""
+        key = documents_name_key(name)
+        own = {unicodedata.normalize("NFC", n) for n in own_names
+               if isinstance(n, str)}
+        return [entry for entry in sorted(self.documents_listing())
+                if documents_name_key(entry) == key
+                and unicodedata.normalize("NFC", entry) not in own]
+
+    def documents_name_taken(self, name: str) -> Optional[str]:
+        """documents_clash with no own copy (a new entry has none)."""
+        return self.documents_clash(name)
+
+    # How many of the project's backups, newest first, are read to
+    # recognise a rename back (fix round 1, QA-4).
+    EARLIER_NAMES_BACKUP_LIMIT = 200
+
+    # What current_text answers when the text cannot be read at all.
+    TEXT_UNREADABLE = object()
+
+    def current_text(self, file_id: int) -> Any:
+        """This entry's stored text as it is now, as the database's own
+        bytes (for earlier_name's same-text question), or None.
+
+        Read `CAST(fulltext AS BLOB)` (fix round 4, F3A-2), so a text
+        stored as text that is not UTF-8 is compared as it stands
+        instead of failing the decode; a read that still fails answers
+        TEXT_UNREADABLE, which is no evidence, so the ordinary refusal
+        answers and nothing of the text reaches a log line.
+        """
+        try:
+            row = self.conn.execute(
+                "SELECT CAST(fulltext AS BLOB) FROM source WHERE id = ?",
+                (file_id,)).fetchone()
+        except sqlite3.Error:
+            return self.TEXT_UNREADABLE
+        return row[0] if row else None
+
+    def earlier_name(self, file_id: int, current_date: Any,
+                     accept: Callable[[str], bool],
+                     same_text: bool = False,
+                     text: Any = None) -> Optional[str]:
+        """The first name `accept` accepts that this same entry has in one
+        of the project's backups, newest backup first, or None: this
+        server's `<project>_backup_*` and QualCoder's `<project>_BKUP_*`
+        copies beside the project, at most EARLIER_NAMES_BACKUP_LIMIT of
+        them.
+
+        The evidence rename_file uses to recognise a rename back (the
+        lead's ruling on QA-4): a backup keeps every earlier name. A
+        HEURISTIC for "the same entry": a backup's row counts only when
+        its id AND its date match the current row (fix round 2, R1-1):
+        QualCoder's `source.id` has no AUTOINCREMENT, so a deleted last
+        entry's id is given to the next one, and the date is set at
+        creation and by some later QualCoder actions (saving a
+        transcript, replacing a text, its 4.0 assistant's memo update),
+        never by a rename. With `same_text`, for the documents/ half
+        only, the row's text must equal `text` too (fix round 3, F2A-2:
+        QualCoder's Merge projects copies dates, so a different text can
+        match on id and date); the comparison runs inside SQLite
+        (`fulltext IS ?`), so no text is read out of a backup. No date,
+        no evidence (the safe direction: a rename back is then refused).
+        Each backup is opened read-only and immutable (R1-2), so no lock
+        is taken and no side file is made, a WAL backup included; a
+        backup with a `data.qda-journal` or `data.qda-wal` beside its
+        database is skipped (F2A-5); the scan stops at the first backup
+        that shows an accepted name (R1-4). A backup that cannot be read
+        is skipped. Nothing is
+        written; only the name and date of the row with this id are read.
+        """
+        if current_date is None or current_date == "":
+            return None
+        # An empty, missing or unreadable text says nothing about which
+        # entry this is (fix round 4, F3A-1, F3A-2): no evidence.
+        if same_text and (text is None or text == b"" or text == ""
+                          or text is self.TEXT_UNREADABLE):
+            return None
+        folder = Path(self.db_path).parent
+        backups = []
+        for prefix in (f"{folder.stem}_backup_", f"{folder.stem}_BKUP_"):
+            try:
+                for entry in folder.parent.glob(glob.escape(prefix) + "*.qda"):
+                    try:
+                        if entry.is_dir() and entry != folder:
+                            backups.append((entry.stat().st_mtime, entry))
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        backups.sort(key=lambda item: item[0], reverse=True)
+        for _mtime, entry in backups[:self.EARLIER_NAMES_BACKUP_LIMIT]:
+            data = entry / "data.qda"
+            try:
+                if not data.is_file():
+                    continue
+                # A copy taken while a writer was mid-transaction, or a
+                # WAL database with frames not yet in the main file:
+                # immutable would read the main file as it stands and
+                # count a state that was never committed, so such a
+                # backup is skipped, as mode=ro alone would have refused
+                # it (fix round 3, F2A-5).
+                if (entry / "data.qda-journal").exists() or \
+                        (entry / "data.qda-wal").exists():
+                    continue
+                uri = _sqlite_ro_uri(data) + "&immutable=1"
+                with closing(sqlite3.connect(uri, uri=True)) as con:
+                    if same_text:
+                        row = con.execute(
+                            "SELECT name, date FROM source WHERE id = ? "
+                            "AND CAST(fulltext AS BLOB) IS ?",
+                            (file_id, text)).fetchone()
+                    else:
+                        row = con.execute(
+                            "SELECT name, date FROM source WHERE id = ?",
+                            (file_id,)).fetchone()
+            except (sqlite3.Error, OSError, ValueError):
+                continue
+            if row and row[1] == current_date and \
+                    isinstance(row[0], str) and accept(row[0]):
+                return row[0]
+        return None
+
+    @staticmethod
+    def own_stored_names(mediapath: Optional[str],
+                         name: Any) -> List[str]:
+        """The names in documents/ that are this text's own copy: the
+        stored path's file for '/docs/', the entry's own name when there
+        is no stored path (QualCoder finds it by that name), none for a
+        linked 'docs:' file. Names only (S-7: a legacy stored name with a
+        NUL or a path character is compared, never joined or stat-ed)."""
+        if not mediapath:
+            return [name] if isinstance(name, str) else []
+        if mediapath.startswith('/docs/'):
+            return [mediapath[len('/docs/'):]]
+        return []
+
+    def old_name_left_in(self, kind: str, row_id: int, old_name: str,
+                         mediapath: Optional[str] = None) -> Dict[str, Any]:
+        """Where the old name of a renamed case or file still shows, among
+        the saved places QualCoder keeps by text rather than by id.
+
+        A HEURISTIC: the old name as a whole word, ignoring letter case
+        (both sides NFC and casefolded), where letters and digits make up
+        a word, so '_', '-', '.' and spaces separate words (fix round 1,
+        QA-6: a short label such as 'AS' is no longer found inside 'Case'
+        or 'Thomas'). Unlike the pseudonymisation rewrite's rule, '_'
+        separates here, because a file named after a case is typically
+        'Thomas_P01_interview.txt' or 'Survey_Thomas_P01'. Each count is
+        present only when not zero, and a table this schema lacks is
+        skipped. Saved graph labels are this row's own nodes
+        (gr_case_text_item or gr_file_text_item); saved table displays
+        (each display's name, and the value field of each of its rows)
+        and saved filters (each filter's name, and the values of each of
+        its conditions) are the whole project's, read without
+        QualCoder's own words where the row has QualCoder's exact saved
+        shape and whole otherwise (fix rounds 2 and 3, R2-1, B-1 to B-3:
+        a case called OR is not counted in every filter saved as
+        BOOLEAN_OR); a saved row that is not UTF-8 is decoded tolerantly
+        (B-6); file_ids are the
+        other files whose name holds the old name, for a file with a
+        stored path without the stored file's extension ('Thomas.pdf'
+        finds its pages 'Thomas_p1.jpg'), otherwise whole ('Thomas.Jones'
+        is not read as 'Thomas'). Ids and counts only, never a name.
+        """
+        def key(value: Any) -> str:
+            return (unicodedata.normalize("NFC", value).casefold()
+                    if isinstance(value, str) else "")
+
+        def whole_word(name: str):
+            return re.compile(r"(?<![^\W_])" + re.escape(key(name))
+                              + r"(?![^\W_])")
+
+        found: Dict[str, Any] = {}
+        if not key(old_name).strip():
+            return found
+        pattern = whole_word(old_name)
+
+        def present(table: str) -> bool:
+            return self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+                "name = ?", (table,)).fetchone() is not None
+
+        table, id_col = {"case": ("gr_case_text_item", "caseid"),
+                         "file": ("gr_file_text_item", "fid")}[kind]
+        def read_rows(columns: str, table_name: str, where: str,
+                      args: tuple) -> List[tuple]:
+            """The rows as text; only when that read raises (a saved row
+            stored as text in no valid encoding, fix round 3, B-6), the
+            database's own bytes, decoded tolerantly with the codec its
+            `PRAGMA encoding` names (fix round 4, F3B-1: a UTF-16
+            database's bytes are not UTF-8)."""
+            try:
+                return self.conn.execute(
+                    f"SELECT {columns} FROM {table_name}{where}",
+                    args).fetchall()
+            except sqlite3.Error:
+                pass
+            codec = sqlite_text_codec(
+                self.conn.execute("PRAGMA encoding").fetchone()[0])
+            blobs = ", ".join(f"CAST({c.strip()} AS BLOB)"
+                              for c in columns.split(","))
+            return [tuple(v.decode(codec, "replace")
+                          if isinstance(v, bytes) else v for v in row)
+                    for row in self.conn.execute(
+                        f"SELECT {blobs} FROM {table_name}{where}", args)]
+
+        # Each place, and what of a row is read: a saved display's and a
+        # saved filter's own name too (fix round 3, B-3), whole.
+        places = (
+            ("saved_graph_labels", table, "displaytext",
+             f" WHERE {id_col} = ?", (row_id,),
+             lambda label: [label]),
+            ("saved_table_displays", "manage_files_display",
+             "name, tblrows", "", (),
+             lambda name, rows: [name] + saved_display_values(rows)),
+            ("saved_filters", "files_filter", "name, filter", "", (),
+             lambda name, text: [name] + saved_filter_values(text)),
+        )
+        for label, place, columns, where, args, parts in places:
+            if not present(place):
+                continue
+            hits = sum(1 for row in read_rows(columns, place, where, args)
+                       if any(pattern.search(key(part))
+                              for part in parts(*row)))
+            if hits:
+                found[label] = hits
+
+        stem = old_name
+        ext = stored_path_extension(mediapath) if kind == "file" else ""
+        if ext and len(old_name) > len(ext) and \
+                old_name.lower().endswith(ext.lower()):
+            stem = old_name[:-len(ext)]
+        if key(stem).strip():
+            stem_pattern = whole_word(stem)
+            ids = [fid for fid, name in self.conn.execute(
+                       "SELECT id, name FROM source ORDER BY id")
+                   if not (kind == "file" and fid == row_id)
+                   and stem_pattern.search(key(name))]
+            if ids:
+                found["file_ids"] = ids
+        return found
 
     # Reserved attribute names (cases-attributes.md §3.3): QualCoder's own
     # dialog reserves the singular forms, but its RIS importer actually
@@ -8688,7 +9404,8 @@ class QualcoderDatabase:
         "by_reason, whole_word_in_a_file_not_rewritten, so the kinds "
         "still add up. A name inside a longer word is usually a "
         "different word (Thomasson) and is normally left as it is; a "
-        "case label such as Thomas_P01 is the exception, renamed by hand. "
+        "case label such as Thomas_P01 is the exception, renamed with "
+        "rename_case, and a file named after the person with rename_file. "
         "This block reads every file that has stored text, including the "
         "ones this run does not touch, as they will be after the run, so "
         "a count in another file may be a different person with the same "
@@ -9407,7 +10124,14 @@ class QualcoderDatabase:
             "search tool in this server and are read in QualCoder. "
             "search_files reads narrower than this block does (a plain "
             "substring, no normalisation), so a name it does not find may "
-            "still be counted here.")
+            "still be counted here. The labels include case and file "
+            "names, which rename_case and rename_file change. A rename "
+            "does not reach, and this block does not read, the stored "
+            "copy and stored path of an imported file (the copy in the "
+            "project folder keeps the name it was imported under and, for "
+            "a document, the original text), saved graph labels, saved "
+            "table displays and filters, or QualCoder's saved SQL "
+            "queries.")
         residue["ai_data_note"] = (
             "QualCoder 4.0's ai_data folder (chat history and the search "
             "index) is never read or written by this server and is not "
