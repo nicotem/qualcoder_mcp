@@ -34,7 +34,8 @@ toolset, 21 in `core`. The dependency floor is unchanged,
 `mcp>=1.17.0,<2`. Parity claims cite QualCoder master at pinned commit
 9bddf17 and the 3.8.2 tag. Each part went through a QA gate, a Security
 gate and re-verification until clean, then six-platform CI; the suite
-at the release commit: 3959 passed, 3 skipped, 0 failed. No
+at commit `030f132`, from a fresh clone in fresh virtual environments
+on Python 3.13.5 and 3.11.13: 3964 passed, 3 skipped, 0 failed. No
 acceptance run in QualCoder was made for this release: the
 pseudonymisation tool's on-screen results were last checked in
 QualCoder for 0.12.1, and what this release adds is verified against
