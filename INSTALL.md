@@ -705,13 +705,13 @@ host decides where that goes. Claude Desktop shows it under Settings >
 Developer > Show Logs. LM Studio on macOS persists it into
 `~/Library/Logs/LM Studio/main.log`; search that file for
 `qualcoder_mcp` to find the server's start-up lines (which report the
-toolset mode and the number of tools registered) and any errors. In
-ordinary use the log carries no memo text (a project built to do it,
-with a database trigger, or a damaged one, with a note that is not
-UTF-8, can make several tools log a database message that quotes a
-note, private part included; closing that is on the list for v0.14);
-it does carry project file names, code and case names and, for
-a database that will not open, the SQLite error text.
+toolset mode and the number of tools registered) and any errors. The
+log carries no memo text, and since v0.14 no SQLite message: a database
+error is logged by its kind and SQLite's short name for it, so a project
+built to put a note into an error (with a database trigger), or a
+damaged one (with a note that is not UTF-8), no longer makes a tool log
+that note, private part included. It does carry project file names and
+code and case names.
 
 ---
 

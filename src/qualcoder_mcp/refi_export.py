@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Set
 from datetime import datetime, timezone
 
-from .database import QualcoderDatabase
+from .database import QualcoderDatabase, error_label, error_text
 from .sessions import CodingSuggestion
 
 logger = logging.getLogger(__name__)
@@ -546,8 +546,9 @@ class RefiQdaExporter:
         except ValueError:
             raise
         except Exception as e:
-            logger.error(f"Failed to export to REFI-QDA: {e}")
-            raise RuntimeError(f"REFI-QDA export failed: {e}") from None
+            logger.error("Failed to export to REFI-QDA: %s", error_label(e))
+            raise RuntimeError(
+                f"REFI-QDA export failed: {error_text(e)}") from None
 
     def validate_suggestions(self, suggestions: List[CodingSuggestion]) -> List[str]:
         """Validate suggestions before export.
@@ -574,7 +575,8 @@ class RefiQdaExporter:
             file_ids = {f["id"] for f in files}
 
         except Exception as e:
-            warnings.append(f"Could not load project data for validation: {e}")
+            warnings.append(f"Could not load project data for validation: "
+                            f"{error_text(e)}")
             return warnings
 
         # File text lengths (also identifies files with no exportable text)

@@ -115,6 +115,26 @@ What stays local, always:
   where the pseudonyms now sit, kept so a run can be accounted for
   afterwards. It is not a way back; the backup taken before the run is.
 
+Error answers and the server's log. An error answer goes to the AI
+provider like any other result, and the server's log lines go to the
+host, which may keep them on disk (INSTALL.md, "Reading the server
+log").
+Since v0.14 neither carries SQLite's message: an error from the
+database is reported by its kind and SQLite's short name for it (for
+example `IntegrityError SQLITE_CONSTRAINT_TRIGGER`; Python 3.10 has no
+such name, and there the kind stands alone, as it does for a value that
+is not UTF-8, which Python itself reports). SQLite's message can quote a
+note, private part included: a project built to do it can give a
+trigger's error whatever it reads from a row, and a note or a name
+stored as bytes that are not UTF-8 makes Python's sqlite3 quote the
+whole value in the error it raises. The same rule holds for the
+resources (the `qualcoder://` addresses), which the MCP library reads
+and which answer a fixed text when the database fails, and for an error
+of a kind this server does not expect, which is reported by its kind
+alone. This server's own error texts, which it writes, are answered as
+they are; some repeat what the caller supplied, such as a code name that
+is already taken.
+
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
 travel only inside the conversation. What they encode is a position, a

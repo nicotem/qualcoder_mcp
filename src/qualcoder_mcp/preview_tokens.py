@@ -323,7 +323,7 @@ def load_secret() -> str:
     except PreviewSecretUnavailable:
         raise
     except OSError as e:
-        logger.error("Preview secret unavailable: %s", e)
+        logger.error("Preview secret unavailable: %s", type(e).__name__)
         raise PreviewSecretUnavailable(SECRET_UNAVAILABLE_MESSAGE) from e
 
 

@@ -3,6 +3,7 @@
 
 import ast
 import bisect
+import errno
 import locale
 import os
 import sqlite3
@@ -584,7 +585,7 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
                     f"a process that looks like QualCoder is running on "
                     f"this machine ({len(hits)} match(es))")
     except Exception as e:  # never let a heuristic break a tool
-        logger.debug(f"GUI-open heuristics failed: {e}")
+        logger.debug(f"GUI-open heuristics failed: {error_label(e)}")
     return signals
 
 
@@ -674,15 +675,62 @@ def sqlite_error_label(error: BaseException) -> str:
     return type(error).__name__
 
 
+def error_label(error: BaseException) -> str:
+    """Any error as a log line may carry it: its kind and a short name,
+    never its message (v0.14, one rule for every log line).
+
+    A SQLite error, or one raised while handling it, is labelled by
+    `sqlite_error_label`. An `OSError` is its class and the symbolic
+    name of its errno (`PermissionError EACCES`), because its message
+    names the file, and a path carries the project folder's name, which
+    in a single-case study is the participant's. Anything else is its
+    class alone.
+    """
+    for candidate in (error, error.__cause__, error.__context__):
+        if isinstance(candidate, sqlite3.Error):
+            return sqlite_error_label(candidate)
+    if isinstance(error, OSError):
+        name = errno.errorcode.get(error.errno) \
+            if isinstance(error.errno, int) else None
+        return (f"{type(error).__name__} {name}" if name
+                else type(error).__name__)
+    return type(error).__name__
+
+
+def error_text(error: BaseException) -> str:
+    """An error as an answer may carry it (v0.14): the errors this server
+    raises (`ValueError`, `TypeError`, `RuntimeError` and their kinds) by
+    their message, which it writes; a SQLite error, an `OSError` and any
+    other kind as `error_label` gives it.
+
+    SQLite's message is never used. A trigger in the project can make it
+    whatever it computes from a row, a note's private part included, and
+    a note or a name stored as bytes that are not UTF-8 makes Python's
+    sqlite3 quote the whole value in it; either would reach the AI
+    provider in an answer. A wrapper this server raises while handling a
+    SQLite error carries the label, never the message, so its own
+    message is safe to use. An error of another kind is not one this
+    server raises, and nothing says its message is free of the
+    project's text.
+    """
+    if isinstance(error, (sqlite3.Error, OSError)):
+        return error_label(error)
+    if isinstance(error, (ValueError, TypeError, RuntimeError)):
+        return str(error)
+    return error_label(error)
+
+
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
     """Convert a sqlite3 error from a query into a typed, sanitised error.
 
     Locked databases get a distinct, actionable error; everything else is
-    logged in full and re-raised as a generic sanitised RuntimeError.
+    logged by its kind and SQLite's name for it, never its message (v0.14:
+    a trigger or a note that is not UTF-8 can make the message a note),
+    and re-raised as a generic sanitised RuntimeError.
     """
     if isinstance(e, sqlite3.OperationalError) and _is_locked_error(e):
         raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-    logger.error(f"Database error in {where}: {e}")
+    logger.error("Database error in %s: %s", where, sqlite_error_label(e))
     raise RuntimeError(message) from None
 
 # Workspace configuration. Users should work in this folder to keep
@@ -803,9 +851,11 @@ def validate_qda_path(db_path: str) -> Path:
         # A locked database is NOT corrupted: report it distinctly
         if _is_locked_error(e):
             raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-        raise DatabaseOpenError(f"Cannot open SQLite database: {e}")
+        raise DatabaseOpenError(
+            f"Cannot open SQLite database: {sqlite_error_label(e)}")
     except sqlite3.DatabaseError as e:
-        raise DatabaseOpenError(f"Invalid or corrupted SQLite database: {e}")
+        raise DatabaseOpenError(
+            f"Invalid or corrupted SQLite database: {sqlite_error_label(e)}")
     finally:
         if conn is not None:
             try:
@@ -1629,11 +1679,11 @@ def backup_project(project_path: Union[str, Path],
         logger.error(f"Failed to create backup: {e}")
         raise OSError(f"Backup failed: {e}") from None
     except Exception as e:
-        logger.error(f"Failed to create backup: {e}")
+        logger.error(f"Failed to create backup: {error_label(e)}")
         # Never leave a partial tree behind: list_backups would present
         # it as a restorable backup (S-H5)
         shutil.rmtree(backup_path, ignore_errors=True)
-        raise OSError(f"Backup failed: {e}") from None
+        raise OSError(f"Backup failed: {error_label(e)}") from None
 
 
 def copy_project_to_workspace(
@@ -1740,10 +1790,10 @@ def copy_project_to_workspace(
         logger.error(f"Failed to copy project: {e}")
         raise OSError(f"Copy failed: {e}") from None
     except Exception as e:
-        logger.error(f"Failed to copy project: {e}")
+        logger.error(f"Failed to copy project: {error_label(e)}")
         # Never leave a partial project copy behind (S-H5)
         shutil.rmtree(dest_path, ignore_errors=True)
-        raise OSError(f"Copy failed: {e}") from None
+        raise OSError(f"Copy failed: {error_label(e)}") from None
 
 
 def memo_has_private_zone(memo: Any) -> bool:
@@ -2042,9 +2092,11 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to open database: {e}") from e
+            raise RuntimeError(
+                f"Failed to open database: {sqlite_error_label(e)}") from e
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to open database: {e}") from e
+            raise RuntimeError(
+                f"Failed to open database: {sqlite_error_label(e)}") from e
 
         # Validate this is a Qualcoder database
         self._validate_schema()
@@ -2073,7 +2125,8 @@ class QualcoderDatabase:
             try:
                 self.conn.close()
             except Exception as e:
-                logger.warning(f"Error closing database connection: {e}")
+                logger.warning("Error closing database connection: %s",
+                               error_label(e))
             finally:
                 self.conn = None
 
@@ -2098,9 +2151,13 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to validate database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to validate database schema: "
+                f"{sqlite_error_label(e)}") from e
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to validate database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to validate database schema: "
+                f"{sqlite_error_label(e)}") from e
 
     def _check_version(self):
         """Check database version and log warnings if unsupported.
@@ -2129,9 +2186,11 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            logger.warning(f"Could not determine database version: {e}")
+            logger.warning("Could not determine database version: %s",
+                           sqlite_error_label(e))
         except sqlite3.Error as e:
-            logger.warning(f"Could not determine database version: {e}")
+            logger.warning("Could not determine database version: %s",
+                           sqlite_error_label(e))
 
     def _probe_capabilities(self):
         """Populate self.capabilities from column/table existence.
@@ -2181,9 +2240,11 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            logger.warning(f"Could not probe schema capabilities: {e}")
+            logger.warning("Could not probe schema capabilities: %s",
+                           sqlite_error_label(e))
         except sqlite3.Error as e:
-            logger.warning(f"Could not probe schema capabilities: {e}")
+            logger.warning("Could not probe schema capabilities: %s",
+                           sqlite_error_label(e))
 
     def _unknown_future_schema(self) -> bool:
         """True when databaseversion names a schema newer than the verified
@@ -2272,9 +2333,13 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to check database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to check database schema: "
+                f"{sqlite_error_label(e)}") from e
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to check database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to check database schema: "
+                f"{sqlite_error_label(e)}") from e
 
     def get_project_info(self) -> Dict[str, Any]:
         """Get project metadata."""
@@ -2539,7 +2604,7 @@ class QualcoderDatabase:
                 "AND name = ?", (view,)).fetchone()
         except sqlite3.Error as e:
             logger.error(f"Could not check for the coder-visibility view "
-                         f"{view}: {e}")
+                         f"{view}: {sqlite_error_label(e)}")
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility views could not be read)") from None
@@ -2843,7 +2908,7 @@ class QualcoderDatabase:
                 "PRAGMA table_info(coder_names)").fetchall()}
         except sqlite3.Error as e:
             logger.error(f"Could not re-read the coder visibility "
-                         f"declaration: {e}")
+                         f"declaration: {sqlite_error_label(e)}")
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility declaration could not be read)"
@@ -2880,7 +2945,8 @@ class QualcoderDatabase:
             rows = self.conn.execute(
                 "SELECT name, visibility FROM coder_names").fetchall()
         except sqlite3.Error as e:
-            logger.error(f"Database error in coder_visibility_map: {e}")
+            logger.error("Database error in coder_visibility_map: %s",
+                         sqlite_error_label(e))
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility table did not answer)") from None
@@ -5676,11 +5742,18 @@ class QualcoderDatabase:
             # Check for unique constraint violation
             if "unique" in str(e).lower():
                 raise ValueError(f"Coding already exists at this position for this user") from None
-            raise RuntimeError(f"Failed to add coding: {e}") from None
+            raise RuntimeError(
+                f"Failed to add coding: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_coding: {e}")
-            raise RuntimeError(f"Failed to add coding: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_coding: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to add coding: {sqlite_error_label(e)}") from None
 
     def find_text_coding(self, code_id: int, file_id: int, start_pos: int,
                          end_pos: int, owner: str) -> Optional[int]:
@@ -5815,11 +5888,18 @@ class QualcoderDatabase:
             self.conn.rollback()
             if "unique" in str(e).lower():
                 raise ValueError(f"Code name '{name}' already exists") from None
-            raise RuntimeError(f"Failed to add code: {e}") from None
+            raise RuntimeError(
+                f"Failed to add code: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_code: {e}")
-            raise RuntimeError(f"Failed to add code: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_code: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to add code: {sqlite_error_label(e)}") from None
 
     def add_memo_to_coding(self, coding_id: int, memo: str, owner: str) -> None:
         """Add or update memo on an existing coding.
@@ -5866,8 +5946,14 @@ class QualcoderDatabase:
 
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_memo_to_coding: {e}")
-            raise RuntimeError(f"Failed to update memo: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_memo_to_coding: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to update memo: {sqlite_error_label(e)}") from None
 
     def get_coding(self, coding_id: int) -> Optional[Dict[str, Any]]:
         """Get a single coded segment (code_text row) by its ctid.
@@ -6174,11 +6260,20 @@ class QualcoderDatabase:
                 raise ValueError(
                     f"A file named '{name}' already exists"
                 ) from None
-            raise RuntimeError(f"Failed to import text file: {e}") from None
+            raise RuntimeError(
+                f"Failed to import text file: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in import_text_file: {e}")
-            raise RuntimeError(f"Failed to import text file: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in import_text_file: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to import text file: "
+                f"{sqlite_error_label(e)}") from None
 
     def link_file_to_case(
         self,
@@ -6507,7 +6602,9 @@ class QualcoderDatabase:
                 raise ValueError(
                     f"A journal entry named '{name}' already exists"
                 ) from None
-            raise RuntimeError(f"Failed to add journal entry: {e}") from None
+            raise RuntimeError(
+                f"Failed to add journal entry: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self._rollback_own_transaction(auto_commit)
             _raise_query_error(e, "add_journal_entry",
@@ -6575,7 +6672,8 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A code named '{new_name}' already exists") from None
-            raise RuntimeError(f"Failed to rename code: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename code: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -7058,7 +7156,8 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A category named '{name}' already exists") from None
-            raise RuntimeError(f"Failed to add category: {e}") from None
+            raise RuntimeError(
+                f"Failed to add category: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -7105,7 +7204,9 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A category named '{new_name}' already exists") from None
-            raise RuntimeError(f"Failed to rename category: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename category: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -8104,7 +8205,8 @@ class QualcoderDatabase:
             if "unique" in str(e).lower():
                 raise ValueError(f"A {kind} named '{new_name}' already "
                                  f"exists") from None
-            raise RuntimeError(f"Failed to rename {kind}: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename {kind}: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()

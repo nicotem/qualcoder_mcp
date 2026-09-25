@@ -32,6 +32,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests: keep them private, or delete the ones you do not need. A
   reader tells the two apart by `format` (3 is keyed) and by the field
   names. PRIVACY.md says what each format holds.
+- **One rule for every error answer and log line: the kind of error and
+  SQLite's short name for it, never SQLite's message.** A project built
+  to do it (a trigger whose error quotes a row) or a damaged one (a note
+  or a name stored as bytes that are not UTF-8, which Python's sqlite3
+  quotes whole) could put a note, private part included, into an
+  answer the AI provider receives or a line the host logs. Now
+  `add_journal_entry`, `create_code`, `rename_code`, `create_category`,
+  `rename_category` and `import_text_file` answer, for instance,
+  "Failed to add code: IntegrityError SQLITE_CONSTRAINT_TRIGGER", and so
+  does the coding write behind `apply_codings` and
+  `create_proposed_codes` (and the database layer's note write for a
+  coding, which no tool calls); the shared
+  handler behind most reads logs the kind; the tool guard, the select,
+  write, restore, session and export routes and `search_files` do the
+  same; the pseudonymisation run's journal write, through either of its
+  branches, logs the kind; and a rename beside a file name that is not
+  UTF-8 logs the kind. Python 3.10, which has no SQLite names, gives
+  the kind alone. Two routes that bypassed the tool guard are closed:
+  the resources (`qualcoder://...`), which the MCP library reads and
+  whose errors it answered and logged in full, now raise a fixed text
+  with nothing chained; and an error of a kind the guard did not name,
+  which the library answered with its message, is now answered by its
+  kind. A test reads every handler in the source that can catch a
+  SQLite error and fails on any use of its message.
 - `pseudonymise_source`'s list of what it does not rewrite names an
   imported document's stored copy in the project's `documents/` folder,
   which keeps the original text and which QualCoder's exports ship.

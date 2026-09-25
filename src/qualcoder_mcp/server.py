@@ -24,6 +24,8 @@ from mcp.server.fastmcp import Context
 from .database import (
     QualcoderDatabase,
     sqlite_error_label,
+    error_label,
+    error_text,
     pseudonyms_json_fingerprint,
     CoderVisibilityUnreadable,
     coder_is_hidden,
@@ -346,7 +348,7 @@ def _remember_mru_project(project_path: str) -> None:
             json.dump(payload, f)
         tmp.replace(_MRU_FILE)
     except Exception as e:
-        logger.debug(f"Could not record MRU project: {e}")
+        logger.debug("Could not record MRU project: %s", error_label(e))
         if tmp is not None:
             try:
                 tmp.unlink()
@@ -442,23 +444,86 @@ def _tool_guard(fn):
             # Before the generic ValueError branch (it is a subclass): the
             # sqlite text goes to the log, never into the conversation
             # (S-H4). select_project keeps its own project-scoped wording.
-            logger.error(f"Database would not open in {fn.__name__}: {e}")
+            logger.error("Database would not open in %s: %s", fn.__name__,
+                         error_label(e))
             return json.dumps({"error": DB_UNAVAILABLE_ERROR})
         except (ValueError, TypeError) as e:
             return json.dumps({"error": str(e)})
         except FileNotFoundError as e:
-            logger.error(f"Not found in {fn.__name__}: {e}")
+            logger.error("Not found in %s: %s", fn.__name__, error_label(e))
             return json.dumps({"error": "File or project not found."})
         except OSError as e:
-            logger.error(f"OS error in {fn.__name__}: {e}")
+            logger.error("OS error in %s: %s", fn.__name__, error_label(e))
             return json.dumps({"error": "File system operation failed: check "
                                          "disk space and permissions."})
         except sqlite3.Error as e:
-            logger.error(f"SQLite error in {fn.__name__}: {e}")
+            logger.error("SQLite error in %s: %s", fn.__name__,
+                         error_label(e))
             return json.dumps({"error": DB_UNAVAILABLE_ERROR})
         except RuntimeError as e:
-            logger.error(f"Runtime error in {fn.__name__}: {e}")
-            return json.dumps({"error": str(e)})
+            logger.error("Runtime error in %s: %s", fn.__name__,
+                         error_label(e))
+            return json.dumps({"error": error_text(e)})
+        except Exception as e:
+            # The last route (v0.14): an error of a kind no arm above
+            # names used to leave the guard for the MCP library, which
+            # answers the model with its message and logs the traceback.
+            # No such error is expected; if one comes, its kind is
+            # enough to report it, and its message is not sent.
+            logger.error("Unexpected error in %s: %s", fn.__name__,
+                         error_label(e))
+            return json.dumps({"error": UNEXPECTED_ERROR.format(
+                kind=type(e).__name__)})
+    return wrapper
+
+
+# What a tool answers for an error of a kind `_tool_guard` does not name
+# (v0.14). Its kind only: the message of an unexpected error is not
+# known to be free of the project's text.
+UNEXPECTED_ERROR = (
+    "An unexpected error ({kind}) stopped this tool; nothing more of it is "
+    "reported here. If it persists, report it with the tool's name.")
+
+# The fixed text a resource read answers when the file system refused it.
+FILE_SYSTEM_ERROR = ("File system operation failed: check disk space and "
+                     "permissions.")
+
+
+def _resource_guard(fn):
+    """What a resource read may say when it fails (v0.14).
+
+    Resources are read by the MCP library, which puts an error's message
+    into its answer and logs the traceback. A SQLite error's message can
+    carry a note, private part included (a note stored as bytes that are
+    not UTF-8 makes Python's sqlite3 quote it whole), so a SQLite error,
+    an unopenable database and a file-system error are raised again as
+    this server's fixed texts, with nothing chained, and logged by their
+    kind. This server's own errors pass through as they are: their
+    messages are written here, and "No Qualcoder project selected" is
+    one of them.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except DatabaseOpenError as e:
+            logger.error("Database would not open in %s: %s", fn.__name__,
+                         error_label(e))
+            raise RuntimeError(DB_UNAVAILABLE_ERROR) from None
+        except (ValueError, TypeError, RuntimeError):
+            raise
+        except sqlite3.Error as e:
+            logger.error("SQLite error in %s: %s", fn.__name__,
+                         error_label(e))
+            raise RuntimeError(DB_UNAVAILABLE_ERROR) from None
+        except OSError as e:
+            logger.error("OS error in %s: %s", fn.__name__, error_label(e))
+            raise RuntimeError(FILE_SYSTEM_ERROR) from None
+        except Exception as e:
+            logger.error("Unexpected error in %s: %s", fn.__name__,
+                         error_label(e))
+            raise RuntimeError(UNEXPECTED_ERROR.format(
+                kind=type(e).__name__)) from None
     return wrapper
 
 
@@ -559,7 +624,8 @@ def switch_project(project_path: str, read_only: bool = True) -> None:
         try:
             db.close()
         except Exception as e:
-            logger.warning(f"Error closing previous connection: {e}")
+            logger.warning("Error closing previous connection: %s",
+                           error_label(e))
         finally:
             db = None
 
@@ -605,7 +671,8 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
             logger.info(f"Successfully reconnected to: {Path(current_project_path).name}")
             return db
         except Exception as e:
-            logger.error(f"Failed to reconnect to database: {e}")
+            logger.error("Failed to reconnect to database: %s",
+                         error_label(e))
             # Fall through to normal error handling
 
     if db is None:
@@ -643,7 +710,8 @@ def _downgrade_to_readonly():
         try:
             db = QualcoderDatabase(current_project_path, read_only=True)
         except Exception as e:
-            logger.error(f"Failed to downgrade to read-only: {e}")
+            logger.error("Failed to downgrade to read-only: %s",
+                         error_label(e))
             db = None
 
 
@@ -1674,7 +1742,8 @@ def _rollback_if_open(write_db) -> bool:
             write_db.conn.rollback()
         return True
     except Exception as e:
-        logger.error(f"Rollback after a failed write did not go through: {e}")
+        logger.error("Rollback after a failed write did not go through: %s",
+                     error_label(e))
         return False
 
 
@@ -1754,7 +1823,7 @@ def _perform_write(op, create_backup: bool = True,
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     return {
                         "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
@@ -1791,7 +1860,8 @@ def _perform_write(op, create_backup: bool = True,
                 # transaction did not commit, and said "consider
                 # restoring a backup" over a database that did not
                 # change.
-                logger.error(f"SQLite error during a write: {e}")
+                logger.error("SQLite error during a write: %s",
+                             error_label(e))
                 return _with_backup(
                     {"error": _write_failed_text(
                         _rollback_if_open(write_db), backup_fail_detail,
@@ -2160,6 +2230,7 @@ def _alternative_gloss(alt: Dict[str, Any]) -> str:
 # ============================================================================
 
 @mcp.resource("qualcoder://project/info")
+@_resource_guard
 def get_project_info() -> str:
     """Get information about the current Qualcoder project.
 
@@ -2170,6 +2241,7 @@ def get_project_info() -> str:
 
 
 @mcp.resource("qualcoder://codes/list")
+@_resource_guard
 def list_all_codes() -> str:
     """Get a list of all codes in the project.
 
@@ -2181,6 +2253,7 @@ def list_all_codes() -> str:
 
 
 @mcp.resource("qualcoder://categories/list")
+@_resource_guard
 def list_all_categories() -> str:
     """Get a list of all code categories.
 
@@ -2191,6 +2264,7 @@ def list_all_categories() -> str:
 
 
 @mcp.resource("qualcoder://codes/{code_id}")
+@_resource_guard
 def get_code_info(code_id: int) -> str:
     """Get detailed information about a specific code.
 
@@ -2207,6 +2281,7 @@ def get_code_info(code_id: int) -> str:
 
 
 @mcp.resource("qualcoder://files/list")
+@_resource_guard
 def list_all_files() -> str:
     """Get a list of all source files in the project.
 
@@ -2218,6 +2293,7 @@ def list_all_files() -> str:
 
 
 @mcp.resource("qualcoder://files/{file_id}")
+@_resource_guard
 def get_file_content(file_id: int) -> str:
     """Get the content of a specific text file.
 
@@ -2234,6 +2310,7 @@ def get_file_content(file_id: int) -> str:
 
 
 @mcp.resource("qualcoder://cases/list")
+@_resource_guard
 def list_all_cases() -> str:
     """Get a list of all cases in the project.
 
@@ -2245,6 +2322,7 @@ def list_all_cases() -> str:
 
 
 @mcp.resource("qualcoder://cases/{case_id}")
+@_resource_guard
 def get_case_info(case_id: int) -> str:
     """Get detailed information about a specific case.
 
@@ -2260,6 +2338,7 @@ def get_case_info(case_id: int) -> str:
 
 
 @mcp.resource("qualcoder://journal")
+@_resource_guard
 def get_journal_entries() -> str:
     """Get all journal entries from the project.
 
@@ -2359,6 +2438,7 @@ one.
     description="Grounding rules, the four-way methodological vocabulary, and "
                 "citations to the method literature QualCoder 4.0 ships "
                 "prompts for. Static; needs no project.")
+@_resource_guard
 def get_methods_guidance() -> str:
     """Static methods notes: no project, no database, identical on every call."""
     return METHODS_GUIDANCE
@@ -2405,8 +2485,9 @@ def list_available_projects(search_directories: Optional[List[str]] = None) -> s
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error discovering projects: {e}")
-        return json.dumps({"error": f"Failed to discover projects: {str(e)}"})
+        logger.error("Error discovering projects: %s", error_label(e))
+        return json.dumps(
+            {"error": f"Failed to discover projects: {error_text(e)}"})
 
 
 def _project_open_failure_result(project_path: str) -> Dict[str, Any]:
@@ -2600,7 +2681,8 @@ def select_project(project_path: str) -> str:
         })
     except sqlite3.Error as e:
         # e.g. "database disk image is malformed" surfacing mid-read (F3)
-        logger.error(f"SQLite error while opening project: {e}")
+        logger.error("SQLite error while opening project: %s",
+                     error_label(e))
         return json.dumps(_project_open_failure_result(project_path))
     except RuntimeError as e:
         logger.error(f"Failed to open project database: {e}")
@@ -3014,7 +3096,8 @@ def get_current_project() -> str:
         # forwarding the sqlite message (S-H4)
         raise
     except Exception as e:
-        return json.dumps({"error": f"Failed to get project info: {str(e)}"})
+        return json.dumps(
+            {"error": f"Failed to get project info: {error_text(e)}"})
 
 
 @mcp.tool()
@@ -3886,9 +3969,9 @@ def search_files(
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in search_files: {e}")
+        logger.error("Error in search_files: %s", error_label(e))
         return json.dumps({
-            "error": f"Failed to search files: {str(e)}",
+            "error": f"Failed to search files: {error_text(e)}",
             "search_parameters": {
                 "pattern": pattern,
                 "searched_filename": search_filename,
@@ -6453,7 +6536,7 @@ def apply_codings(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     _downgrade_to_readonly()
                     return json.dumps({
                         "error": "Failed to create a backup: check disk space "
@@ -6509,7 +6592,8 @@ def apply_codings(
                 # write body and carried the same gap (Security S-1).
                 # Its bespoke counts stay. The sqlite text goes to the
                 # log, never into the answer.
-                logger.error(f"SQLite error while applying codings: {e}")
+                logger.error("SQLite error while applying codings: %s",
+                             error_label(e))
                 rolled_back = _rollback_if_open(write_db)
                 _downgrade_to_readonly()
                 return json.dumps(_with_backup({
@@ -6524,14 +6608,16 @@ def apply_codings(
                     write_db.conn.rollback()
                 except Exception:
                     pass
-                logger.error(f"Failed to apply codings, rolled back: {e}")
+                logger.error("Failed to apply codings, rolled back: %s",
+                             error_label(e))
                 _downgrade_to_readonly()
                 # A failure after the backup names it here too (the
                 # pre-commit lock re-check lands on this arm), so the
                 # CHANGELOG's "every failure route out of a write" holds
                 # for this body as well.
                 return json.dumps(_with_backup({
-                    "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
+                    "error": f"Failed to apply codings (all changes rolled "
+                             f"back): {error_text(e)}",
                     "applied_before_failure": len(results),
                     "total_approved": len(approved)
                 }, backup_path))
@@ -6809,7 +6895,7 @@ def import_text_file(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     return json.dumps({
                         "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
@@ -6853,7 +6939,8 @@ def import_text_file(
                 # The same post-backup failure as `_perform_write`'s, in
                 # one of the two write bodies not routed through it
                 # (`apply_codings` is the other).
-                logger.error(f"SQLite error during the import: {e}")
+                logger.error("SQLite error during the import: %s",
+                             error_label(e))
                 return json.dumps(_with_backup(
                     {"error": _write_failed_text(
                         _rollback_if_open(write_db),
@@ -7736,7 +7823,7 @@ def restore_backup(backup_path: str,
         # half-replaced project that the next read tool silently reconnects
         # to (fault-injection D1). Remove any partial folder first so the
         # safety-backup recovery always runs on a clean slate.
-        logger.error(f"Restore failed mid-swap: {e}")
+        logger.error("Restore failed mid-swap: %s", error_label(e))
         try:
             if project_folder.exists():
                 # The original folder was already rmtree'd inside the swap;
@@ -7765,7 +7852,8 @@ def restore_backup(backup_path: str,
                                      prefix="safety_backup_")
             return json.dumps(recovered)
         except Exception as recovery_error:
-            logger.error(f"Recovery also failed: {recovery_error}")
+            logger.error("Recovery also failed: %s",
+                         error_label(recovery_error))
         failed: Dict[str, Any] = {
             "error": "Restore failed. The pre-restore state is preserved in "
                      "the safety backup; copy it back over the project folder "
@@ -7826,7 +7914,8 @@ def restore_backup(backup_path: str,
         _attach_skipped_symlinks(result, safety_report,
                                  prefix="safety_backup_")
     except Exception as e:                        # noqa: BLE001
-        logger.error(f"Restore completed, reporting degraded: {e}")
+        logger.error("Restore completed, reporting degraded: %s",
+                     error_label(e))
         result["report_incomplete"] = (
             "The restore completed and the paths above are correct. This "
             "server could not finish describing the restored project "
@@ -7878,8 +7967,8 @@ def get_coding_session_info(coding_session_id: str) -> str:
         return json.dumps(payload, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in get_coding_session_info: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in get_coding_session_info: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -7927,8 +8016,8 @@ def list_coding_sessions(
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in list_coding_sessions: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in list_coding_sessions: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -7967,8 +8056,8 @@ def delete_coding_session(coding_session_id: str) -> str:
             }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in delete_coding_session: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in delete_coding_session: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -8006,8 +8095,8 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in cleanup_old_sessions: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in cleanup_old_sessions: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 
@@ -10628,8 +10717,8 @@ def _write_run_manifest(payload: Dict[str, Any],
         tmp = None
         return target
     except Exception as e:
-        logger.error(f"Could not write the pseudonymisation run "
-                     f"manifest: {e}")
+        logger.error("Could not write the pseudonymisation run manifest: %s",
+                     error_label(e))
         if tmp is not None:
             try:
                 tmp.unlink()
@@ -11710,7 +11799,8 @@ def _stale_sessions_for(file_ids: Sequence[int]) -> List[str]:
         listed = session_manager.list_sessions(
             project_path=current_project_path, days_old=36500)
     except Exception as e:
-        logger.debug(f"Could not list sessions for stale check: {e}")
+        logger.debug("Could not list sessions for stale check: %s",
+                     error_label(e))
         return stale
     for meta in listed:
         session_id = meta.get("coding_session_id")
