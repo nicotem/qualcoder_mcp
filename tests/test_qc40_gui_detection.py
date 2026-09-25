@@ -228,6 +228,8 @@ class TestProcessFilter:
             "C:\\Program Files\\QualCoder\\QualCoder.exe",
             '"QualCoder.exe","4242","Console","1","150,000 K"',
             '"C:\\Python313\\python.exe" -m qualcoder',
+            # QualCoder's own README (3.8.2) starts it this way on Windows
+            "py -m qualcoder",
         ]
         assert _filter_qualcoder_processes(lines) == [
             line.strip()[:200] for line in lines]

@@ -517,7 +517,9 @@ def _process_is_qualcoder(line: str) -> bool:
         name = name[:-4]
     if name == "qualcoder":
         return True
-    if not name.startswith("python"):
+    # a Python, or Windows' launcher (`py -m qualcoder`, as QualCoder's
+    # own README says to start it on Windows)
+    if not (name.startswith("python") or name in ("py", "pyw")):
         return False
     index = 0
     while index < len(arguments):
