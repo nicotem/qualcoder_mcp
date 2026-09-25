@@ -33,8 +33,8 @@ body:
     id: mcp-version
     attributes:
       label: qualcoder-mcp version
-      description: Run `qualcoder-mcp --version` in the environment you installed into (git installs, `python -m qualcoder_mcp.server --version`). `pip show qualcoder-mcp`, `pipx list` and `uv tool list` also work; pip spells 0.12.0-alpha as 0.12.0a0, and either spelling is fine. If you ask your assistant instead, treat its answer as a convenience, not proof.
-      placeholder: e.g. 0.12.0a0
+      description: Run `qualcoder-mcp --version` in the environment you installed into (git installs, `python -m qualcoder_mcp.server --version`). `pip show qualcoder-mcp`, `pipx list` and `uv tool list` also work; pip spells 0.13.0-alpha as 0.13.0a0, and either spelling is fine. If you ask your assistant instead, treat its answer as a convenience, not proof.
+      placeholder: e.g. 0.13.0a0
     validations:
       required: true
   - type: input

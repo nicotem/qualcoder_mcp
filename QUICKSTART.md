@@ -125,7 +125,7 @@ relaunch your Claude client**; new tools only appear after the
 restart. Confirm the installed version with `venv/bin/python -m
 qualcoder_mcp.server --version`, which prints the version and exits
 (`venv/bin/pip show qualcoder-mcp` still works and spells
-`0.12.1-alpha` as `0.12.1a0`). Updates never touch your projects or
+`0.13.0-alpha` as `0.13.0a0`). Updates never touch your projects or
 backups (the server is code-only).
 
 ## Troubleshooting

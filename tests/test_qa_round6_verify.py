@@ -400,10 +400,10 @@ class TestVersionHandshake:
         from importlib import metadata
         pkg = metadata.version("qualcoder-mcp")
         assert qualcoder_mcp.__version__ == pkg
-        # 0.12.1-alpha family (canary for a stale editable install; the
+        # 0.13.0-alpha family (canary for a stale editable install; the
         # release-prep rule: check it against a FRESH clone and venv, since
         # stale editable-install metadata passed a wrong canary in Batch A)
-        assert pkg.startswith("0.12.1")
+        assert pkg.startswith("0.13.0")
 
     def test_stdio_initialize_advertises_version(self):
         """A real MCP initialize handshake over the server advertises the

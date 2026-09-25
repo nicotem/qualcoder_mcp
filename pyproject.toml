@@ -1,6 +1,6 @@
 [project]
 name = "qualcoder-mcp"
-version = "0.12.1-alpha"
+version = "0.13.0-alpha"
 description = "Model Context Protocol server for Qualcoder qualitative data analysis with AI-assisted coding"
 authors = [{name = "Niccolò Tempini", email = "n.tempini@exeter.ac.uk"}]
 # PEP 639 SPDX licence expression (setuptools >= 77). LGPL-3.0-or-later
