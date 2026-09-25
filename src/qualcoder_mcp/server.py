@@ -12564,7 +12564,8 @@ def _file_rename_precheck(db, file_id: int, candidate: str,
                             "it had before, restore_backup or QualCoder's "
                             "own Rename can put that name back; this server "
                             "recognises a rename back only from a backup "
-                            "that shows this entry with that name.")
+                            "that shows this entry with that name and, for "
+                            "its documents copy, the same text.")
             return {"error": message}
     recordings = [r["name"] for r in rows
                   if r["av_text_id"] == file_id and r["id"] != file_id]
@@ -12631,7 +12632,8 @@ def rename_file(file_id: int, new_name: str,
     same id and the same date, which this tool reads for that) may be
     restored, except a transcript losing both endings or a media file its
     extension; and a text with no stored file may take back its own copy
-    in the documents folder under a name such a backup shows it with.
+    in the documents folder under a name such a backup shows it with and,
+    for its documents copy, the same text.
 
     The result carries `changed: true`, `old_name`, `file_type`, and
     what kept the old name: `stored_copy` (an imported file's copy in the

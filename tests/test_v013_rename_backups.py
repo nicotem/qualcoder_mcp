@@ -510,3 +510,11 @@ class TestAnEmptyOrUnreadableTextIsNoEvidence:
         assert key(None) != key("None")
         assert key(b"None") != key("None")
         assert key(b"abc") == key(b"abc")
+
+
+def test_the_description_says_the_text_must_be_the_same():
+    """Fix round 4, F3A-4."""
+    flat = " ".join(server.rename_file.__doc__.split())
+    assert "may take back its own copy in the documents folder under a " \
+           "name such a backup shows it with and, for its documents copy, " \
+           "the same text." in flat

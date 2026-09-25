@@ -1204,7 +1204,8 @@ class TestARenameBack:
             "If it was this entry's own copy under a name it had before, "
             "restore_backup or QualCoder's own Rename can put that name "
             "back; this server recognises a rename back only from a "
-            "backup that shows this entry with that name.")
+            "backup that shows this entry with that name and, for its "
+            "documents copy, the same text.")
 
     def test_not_when_another_entry_claims_that_file_now(self, project,
                                                           listing):
