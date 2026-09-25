@@ -366,3 +366,154 @@ class TestPathLength:
         assert new_project.long_path_warning(typical) is None
         assert new_project.file_name_room(typical) >= \
             new_project.FILE_NAME_ROOM
+
+
+# ---------------------------------------------------------------------------
+# Part 4: the researcher's coder name
+# ---------------------------------------------------------------------------
+
+def _stored_coder(answer):
+    conn = sqlite3.connect(str(Path(answer["project_path"]) / "data.qda"))
+    try:
+        row = conn.execute("SELECT codername FROM project").fetchone()
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM coder_names ORDER BY rowid")]
+    finally:
+        conn.close()
+    return row[0], names
+
+
+class TestTheCoderName:
+
+    def test_missing_asks_and_makes_nothing(self):
+        answer = json.loads(server.create_project("Study"))
+        text = refused(answer)
+        assert answer["action_required"] == "ask_researcher_coder_name"
+        assert "Settings, Coder name" in text and "never be guessed" in text
+        assert "coder_name_not_known=true" in text
+        assert not workspace().exists()
+
+    def test_a_name_is_stored(self):
+        answer = create("Study", coder_name="  Carol Smith ")
+        assert answer["coder_name"] == "Carol Smith"
+        assert answer["coder_name_known"] is True
+        assert _stored_coder(answer) == (
+            "Carol Smith", ["Carol Smith", server.SPEAKER_SYSTEM_CODER])
+        assert server.CODER_NAME_NOT_KNOWN_WARNING not in answer["warnings"]
+
+    def test_not_known_stores_an_empty_name_with_the_warning(self):
+        answer = json.loads(server.create_project(
+            "Study", coder_name_not_known=True))
+        assert answer["created"] is True
+        assert answer["coder_name"] is None
+        assert answer["coder_name_known"] is False
+        assert server.CODER_NAME_NOT_KNOWN_WARNING in answer["warnings"]
+        assert "first opens this project in QualCoder" in \
+            server.CODER_NAME_NOT_KNOWN_WARNING
+        assert _stored_coder(answer) == ("", [server.SPEAKER_SYSTEM_CODER])
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_an_empty_name_is_not_a_not_known(self, value):
+        """A model filling optional arguments often sends '': that is
+        not the researcher saying they do not know."""
+        text = refused(create("Study", coder_name=value))
+        assert "coder_name is empty" in text
+        assert "coder_name_not_known=true" in text
+        assert not workspace().exists()
+
+    def test_a_name_and_the_flag_together(self):
+        text = refused(create("Study", coder_name="carol",
+                              coder_name_not_known=True))
+        assert "not both" in text
+
+    def test_the_speaker_coder_is_refused(self):
+        text = refused(create("Study",
+                              coder_name=server.SPEAKER_SYSTEM_CODER))
+        assert "speaker coder" in text
+
+    def test_default_is_accepted(self):
+        """QualCoder's own name for anyone who never set one."""
+        answer = create("Study", coder_name="default")
+        assert _stored_coder(answer)[0] == "default"
+
+    @pytest.mark.parametrize("value,words", [
+        ("a" * 81, "the maximum is 80"),
+        ("a\nb", "control characters"),
+        ("x ##### y", "'#####'"),
+    ])
+    def test_the_coder_name_rule(self, value, words):
+        assert words in refused(create("Study", coder_name=value))
+
+    def test_asked_last_in_the_same_answer(self, tmp_path):
+        """A refused name and a missing coder name: both in one answer,
+        the name first, so the researcher is asked once."""
+        answer = json.loads(server.create_project("bad|name"))
+        text = refused(answer)
+        assert text.startswith(new_project.PIPE_REFUSAL)
+        assert "Before calling again, also: Ask the researcher" in text
+        assert answer["action_required"] == "ask_researcher_coder_name"
+        (tmp_path / "Taken.qda").mkdir()
+        answer = json.loads(server.create_project(
+            "Taken", directory=str(tmp_path)))
+        assert "remains of a project creation" in refused(answer)
+        assert "also: Ask the researcher" in refused(answer)
+        # and a coder-name refusal rides along the same way
+        text = refused(create("bad|name", coder_name=""))
+        assert "also: coder_name is empty" in text
+
+    def test_qualcoders_settings_file_is_never_read(self, tmp_path):
+        """An audit hook records every file opened, folder listed and
+        database connected while the tool runs in a home that holds
+        QualCoder's settings folder, with its config.ini: nothing under
+        it is touched (the settings file holds API keys)."""
+        settings = Path.home() / ".qualcoder"
+        settings.mkdir()
+        (settings / "config.ini").write_text(
+            "[DEFAULT]\ncodername = alice\n", encoding="utf-8")
+        seen = []
+        _AUDIT["sink"] = seen
+        try:
+            json.loads(server.create_project("Audited",
+                                             coder_name_not_known=True))
+            create("Audited2", coder_name="carol")
+            json.loads(server.create_project("Asked"))
+        finally:
+            _AUDIT["sink"] = None
+        assert seen, "the hook saw nothing: it is not recording"
+        touched = [p for p in seen if _under(p, settings)]
+        assert touched == []
+
+
+_AUDIT = {"sink": None}
+_AUDIT_EVENTS = {"open", "os.listdir", "os.scandir", "sqlite3.connect"}
+
+
+def _audit(event, args):
+    sink = _AUDIT["sink"]
+    if sink is None or event not in _AUDIT_EVENTS or not args:
+        return
+    target = args[0]
+    if isinstance(target, (str, bytes, os.PathLike)):
+        sink.append(os.fsdecode(target))
+
+
+sys.addaudithook(_audit)
+
+
+def _under(path: str, folder: Path) -> bool:
+    try:
+        return Path(path).resolve().is_relative_to(folder.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+class TestTheAiCoderNameSetter:
+
+    def test_the_speaker_coder_is_refused_as_the_ai_name(self):
+        create("Study")
+        answer = json.loads(server.set_project_ai_coder_name(
+            server.SPEAKER_SYSTEM_CODER))
+        assert "speaker coder" in answer["error"]
+        assert "Nothing was changed" in answer["error"]
+        assert not (Path(server.current_project_path) /
+                    "qualcoder_mcp.json").exists()

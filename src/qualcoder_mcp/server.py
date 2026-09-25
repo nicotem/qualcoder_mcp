@@ -2663,8 +2663,9 @@ def set_project_ai_coder_name(name: str, note: str = "",
     with a binary unique index, so "AI Agent" and "ai agent" are two
     coders there (code, category and case NAMES follow the opposite rule,
     which is QualCoder 4.0 parity for those). Refused if the name is the
-    project's own coder name or QualCoder's literal default coder name
-    "default"; refused without allow_hidden_coder=true if the name belongs
+    project's own coder name, QualCoder's literal default coder name
+    "default", or QualCoder's speaker coder "\U0001F4CC Speaker coding";
+    refused without allow_hidden_coder=true if the name belongs
     to a coder currently hidden in QualCoder. Does not require QualCoder
     to be closed, because it writes no database row.
 
@@ -2721,6 +2722,15 @@ def set_project_ai_coder_name(name: str, note: str = "",
             "\"default\" is QualCoder's own default coder name for any "
             "user who has not set one (it would collide with them); "
             "choose a different name. Nothing was changed.")})
+    if name == SPEAKER_SYSTEM_CODER:
+        # Every project lists QualCoder's speaker coder from its first
+        # moment (a created one too), and QualCoder stores the speaker
+        # codings under it (v0.14, the create-project study's check).
+        return json.dumps({"error": (
+            f"\"{SPEAKER_SYSTEM_CODER}\" is QualCoder's speaker coder, "
+            f"under which QualCoder stores its speaker codings; AI rows "
+            f"under it would be mixed with them. Choose a different name. "
+            f"Nothing was changed.")})
     visibility = _visibility_map(ro)
     if not allow_hidden_coder:
         if visibility is _VISIBILITY_UNREADABLE:
@@ -14909,39 +14919,71 @@ def _create_project_refusal(text: str, **extra: Any) -> str:
                        **extra}, indent=2)
 
 
-@_tool_guard
-def create_project(name: str, directory: Optional[str] = None,
-                   coder_name: Optional[str] = None,
-                   coder_name_not_known: bool = False) -> str:
-    """Create a new, empty QualCoder project, and select it.
+# The question create_project asks when the researcher's coder name is
+# missing (the owner's ruling 6 of 2026-09-25), and the warning for an
+# explicit "not known" (the study's 7.5 wording).
+CODER_NAME_ASK = (
+    "Ask the researcher for the coder name they use in QualCoder "
+    "(Settings, Coder name), exactly as it appears there, and call again "
+    "with it as coder_name. It is the researcher's own name for their "
+    "codings, not the AI's, and must never be guessed. If they do not use "
+    "QualCoder yet or do not know it, call again with "
+    "coder_name_not_known=true instead.")
+CODER_NAME_NOT_KNOWN_WARNING = (
+    "The researcher's QualCoder coder name is not known, so the check that "
+    "keeps the AI's codings apart from the researcher's own is off. It "
+    "comes on when the researcher first opens this project in QualCoder, "
+    "which records their name there; until then, make sure the AI coder "
+    "name chosen is not the name they use in QualCoder.")
 
-    Makes the project folder "<name>.qda" with its four subfolders and a
-    database in QualCoder 4.0's format, exactly as QualCoder 4.0's own New
-    Project makes them, then selects the new project so material can be
-    imported at once. Nothing existing is ever changed: a name already in
-    use is refused, never replaced or given a "_1".
 
-    Args:
-        name: The project's name, without ".qda" (a typed ".qda" is
-              dropped)
-        directory: An existing folder to create the project in; leave it
-                   out to use this server's workspace,
-                   ~/Documents/Qualcoder MCP Projects
-        coder_name: The coder name the researcher uses in QualCoder
-                    (Settings, Coder name), exactly as it appears there
-        coder_name_not_known: True when the researcher does not know it
+def _coder_name_for_creation(coder_name: Any, not_known: Any
+                             ) -> Tuple[Optional[str], Optional[str]]:
+    """(the coder name to store, None) or (None, what to tell the model).
 
-    Returns:
-        JSON with the new project's path, what was written, and the next
-        steps
+    Missing: ask (never read QualCoder's settings file, which holds API
+    keys in plain text, and never guess). An explicit "not known" is
+    stored as '' (never NULL: QualCoder's Switch answer fails on a NULL
+    name). A given name is validated as every coder name this server
+    writes is; QualCoder's speaker coder is refused, "default" (QualCoder's
+    own name for anyone who never set one) is accepted.
     """
+    if not isinstance(not_known, bool):
+        return None, "coder_name_not_known must be true or false."
+    if coder_name is None:
+        return ("", None) if not_known else (None, CODER_NAME_ASK)
+    if not isinstance(coder_name, str):
+        return None, "coder_name must be the coder name, given as text."
+    if not coder_name.strip():
+        return None, (
+            "coder_name is empty. Give the coder name exactly as it "
+            "appears in QualCoder, or, when the researcher does not know "
+            "it, leave coder_name out and pass coder_name_not_known=true.")
+    if not_known:
+        return None, (
+            "Give coder_name or coder_name_not_known=true, not both: the "
+            "flag says the researcher does not know their coder name.")
+    try:
+        name = validate_coder_name(coder_name, "coder_name")
+    except ValueError as error:
+        return None, str(error)
+    if name == SPEAKER_SYSTEM_CODER:
+        return None, (
+            f"\"{SPEAKER_SYSTEM_CODER}\" is QualCoder's speaker coder, which "
+            f"every project lists; it is not a person's coder name. Ask the "
+            f"researcher for the name they use in QualCoder.")
+    return name, None
+
+
+def _create_project_place_refusal(name: Any, directory: Any):
+    """The first refusal of the name, the folder or what is already
+    there, as text; otherwise (stem, parent, is_default, folder)."""
     if not isinstance(name, str):
-        return _create_project_refusal(
-            "`name` must be the project's name, given as text.")
+        return "`name` must be the project's name, given as text."
     stem = new_project.normalise_project_name(name)
     problem = new_project.project_name_problem(stem)
     if problem is not None:
-        return _create_project_refusal(problem)
+        return problem
     folder_name = f"{stem}{new_project.PROJECT_SUFFIX}"
     try:
         parent, is_default = new_project.resolve_parent_folder(
@@ -14955,18 +14997,77 @@ def create_project(name: str, directory: Optional[str] = None,
     except new_project.Refusal as error:
         refusal = str(error)
     if refusal is not None:
-        return _create_project_refusal(refusal)
+        return refusal
+    return stem, parent, is_default, folder
+
+
+@_tool_guard
+def create_project(name: str, directory: Optional[str] = None,
+                   coder_name: Optional[str] = None,
+                   coder_name_not_known: bool = False) -> str:
+    """Create a new, empty QualCoder project, and select it.
+
+    Makes the project folder "<name>.qda" with its four subfolders and a
+    database in QualCoder 4.0's format, exactly as QualCoder 4.0's own New
+    Project makes them, then selects the new project so material can be
+    imported at once. Nothing existing is ever changed: a name already in
+    use is refused, never replaced or given a "_1".
+
+    THE RESEARCHER'S CODER NAME: ask the researcher for the coder name
+    they use in QualCoder (Settings, Coder name) and pass it exactly as
+    they give it. It is their own name, not the AI's, and must never be
+    guessed or taken from anywhere else: a wrong name makes QualCoder ask
+    them to keep or switch names when they open the project. If they do
+    not use QualCoder yet or do not know it, pass coder_name_not_known=true
+    instead; the project is then created, and the result says what that
+    means. With neither, nothing is created and the answer asks for it.
+
+    Names: the name becomes a folder, so it may not hold / \\ : < > | ? *
+    or ", end in a dot or a space, start with a dot, be a Windows device
+    name such as CON, hold "_backup_" or "_BKUP_", or pass 200 bytes. A
+    name already used in that folder, in any letter case, is refused, and
+    so is a name whose older backup folders sit there. Each refusal says
+    why.
+
+    Args:
+        name: The project's name, without ".qda" (a typed ".qda" is
+              dropped)
+        directory: An existing folder to create the project in; leave it
+                   out to use this server's workspace,
+                   ~/Documents/Qualcoder MCP Projects
+        coder_name: The coder name the researcher uses in QualCoder
+                    (Settings, Coder name), exactly as they give it
+        coder_name_not_known: True when the researcher does not know it;
+                    then leave coder_name out
+
+    Returns:
+        JSON with the new project's path, what was written, and the next
+        steps
+    """
+    # The coder name is settled first but ASKED FOR LAST (the study's
+    # check): every other refusal comes first, with the coder-name
+    # question in the same answer, so the researcher is asked once.
+    stored_coder, coder_problem = _coder_name_for_creation(
+        coder_name, coder_name_not_known)
+    refusal = _create_project_place_refusal(name, directory)
+    if isinstance(refusal, str):
+        if coder_problem is not None:
+            refusal += f" Before calling again, also: {coder_problem}"
+        extra = ({"action_required": "ask_researcher_coder_name"}
+                 if coder_problem == CODER_NAME_ASK else {})
+        return _create_project_refusal(refusal, **extra)
+    if coder_problem is not None:
+        extra = ({"action_required": "ask_researcher_coder_name"}
+                 if coder_problem == CODER_NAME_ASK else {})
+        return _create_project_refusal(coder_problem, **extra)
+    stem, parent, is_default, folder = refusal
+    folder_name = folder.name
     warnings: List[str] = []
     too_long = new_project.long_path_warning(folder)
     if too_long:
         warnings.append(too_long)
-
-    if coder_name is None and not coder_name_not_known:
-        return _create_project_refusal(
-            "Ask the researcher for the coder name they use in QualCoder.",
-            action_required="coder_name")
-    stored_coder = "" if coder_name is None else validate_coder_name(
-        coder_name, "coder_name")
+    if not stored_coder:
+        warnings.append(CODER_NAME_NOT_KNOWN_WARNING)
 
     about = new_project.about_line(_package_version)
     statements = new_project.creation_statements(
