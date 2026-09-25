@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub shows the project's licence as the LGPL; the text still ships
   in the wheel and the sdist, as the LGPL requires, and nothing about
   the licence changes.
+- Every CI job stops after 90 minutes rather than GitHub's six hours;
+  the slowest green job of the last 120 runs took 59 minutes. A test
+  still running after ten minutes has every thread's stack, its own
+  frame included, written to the log (pytest's `faulthandler_timeout`),
+  so a hang is named before the job's limit ends it. No new dependency.
 
 ## [0.13.0-alpha] - 2026-09-25
 

@@ -11,6 +11,15 @@ jobs:
   test:
     name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    # A limit on the whole job (v0.14): GitHub's default is six hours, so
+    # a hung test held a runner that long. In the 120 green runs from 7 to
+    # 25 September 2026 the slowest job took 58 min 46 s (Windows, Python
+    # 3.10) against a Windows median of 23 minutes, and seven Windows jobs
+    # ran past 45 minutes; Linux and macOS took 15 minutes at most. Ninety
+    # minutes is about one and a half times the slowest green job. A hung
+    # test is named well before this, by the per-test limit in
+    # pyproject.toml (faulthandler_timeout).
+    timeout-minutes: 90
     # Least privilege for the job's GITHUB_TOKEN: the job reads the
     # checkout and uploads an artefact, and needs nothing else. Without a
     # permissions block the token takes the repository default, which is
