@@ -445,8 +445,8 @@ the format dictates.
     Here: src/qualcoder_mcp/database.py, QualcoderDatabase.file_name_rows
     and QualcoderDatabase.earlier_name.
     From: __main__.py, lines 1790-1792; manage_files.py, lines
-    2600-2608; cases.py, line 718; manage_files.py, line 1502 (3.8.2
-    __main__.py, lines 2350-2352).
+    2600-2608; manage_files.py, line 1502 (3.8.2 __main__.py, lines
+    2350-2352).
 
 46. The note columns of QualCoder's tables, the key each note is
     updated by, and the two kinds of note QualCoder dates when one is
