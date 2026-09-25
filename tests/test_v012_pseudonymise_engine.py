@@ -3457,6 +3457,30 @@ class TestTheFileTextCountStaysCheap:
 
     CEILING_SECONDS = 3.0
     CURLY_RATIO_CEILING = 2.8
+    CURLY_PAIRS = 15
+
+    @staticmethod
+    def _timed_on_both_clocks(compiled, text):
+        """One count, as `_timed` times it, on the wall clock and in the
+        thread's CPU time: (wall seconds, CPU seconds).
+
+        On Windows the thread's CPU time moves in ticks of about 15.6 ms,
+        as long as the whole one-form count, so the CPU reading there is
+        the wall clock's (the guard's behaviour on Windows is then what
+        it was, with fifteen pairs rather than five)."""
+        import gc
+        import time
+        cpu_clock = (time.perf_counter if sys.platform == "win32"
+                     else time.thread_time)
+        gc.collect()
+        gc.disable()
+        try:
+            wall_started, cpu_started = time.perf_counter(), cpu_clock()
+            P.names_left_in_text(compiled, text, True, False)
+            cpu = cpu_clock() - cpu_started
+            return time.perf_counter() - wall_started, cpu
+        finally:
+            gc.enable()
 
     @staticmethod
     def _timed(compiled, text):
@@ -3526,14 +3550,29 @@ class TestTheFileTextCountStaysCheap:
             compiled.text_lookup()
         found, elapsed = cls._timed(many, text)
         curly_found, curly_elapsed = cls._timed(many, curly)
-        # The two one-form readings the curly ratio guard divides, best of
-        # five taken alternately, so a burst of load lands on both rather
-        # than on one (the second re-verification's PN-1 and DR2-1: one
-        # reading each went red on the unmutated tip under load).
+        # The two one-form readings the curly ratio guard divides, taken
+        # as fifteen pairs, the order alternating, and the best of each
+        # kept: on the wall clock for the rate line, and in the thread's
+        # CPU time for the guard (v0.14). Best of five on the wall clock
+        # (the second re-verification's PN-1 and DR2-1) still went red on
+        # the unmutated tip under heavy load, because a busy machine
+        # stretches the longer curly reading more than the plain one, so
+        # the wall-clock ratio drifts upward; the thread's CPU time leaves
+        # out the time the process spent waiting for a core.
         one_elapsed = curly_one = float("inf")
-        for _ in range(5):
-            one_elapsed = min(one_elapsed, cls._timed(one, text)[1])
-            curly_one = min(curly_one, cls._timed(one, curly)[1])
+        one_cpu = curly_cpu = float("inf")
+        for turn in range(cls.CURLY_PAIRS):
+            for sample in ((text, curly) if turn % 2 == 0
+                           else (curly, text)):
+                wall, cpu = cls._timed_on_both_clocks(one, sample)
+                if sample is text:
+                    one_elapsed = min(one_elapsed, wall)
+                    one_cpu = min(one_cpu, cpu)
+                else:
+                    curly_one = min(curly_one, wall)
+                    curly_cpu = min(curly_cpu, cpu)
+        curly_ratio = (curly_cpu / (len(curly) / 1e6)) / (
+            one_cpu / (len(text) / 1e6))
         # The other classes the constants probe measured, at one form,
         # where the per-character term is what the count spends: the same
         # megabyte with its common words in Cyrillic, in Japanese and in
@@ -3612,6 +3651,7 @@ class TestTheFileTextCountStaysCheap:
             "megabytes": len(text) / 1e6, "curly_megabytes": len(curly) / 1e6,
             "elapsed": elapsed, "one_elapsed": one_elapsed,
             "curly_elapsed": curly_elapsed, "curly_one": curly_one,
+            "curly_ratio": curly_ratio,
             "other_one": other_one,
             "check_elapsed": check_elapsed,
             "check_work": P.residue_work(many, clean),
@@ -3734,13 +3774,19 @@ class TestTheFileTextCountStaysCheap:
         # a one-form count of the curly megabyte against the plain one.
         # 1.6 to 2.0 since the unseen characters are stripped by one
         # character class; 3.1 (3.11.13) to 4.0 (3.13.5) with the
-        # `str.translate` table it replaced.
-        ratio = (m["curly_one"] / m["curly_megabytes"]) / (
-            m["one_elapsed"] / m["megabytes"])
+        # `str.translate` table it replaced. v0.14: read in the thread's
+        # CPU time, best of fifteen alternating pairs (`measure`), so a
+        # busy machine no longer moves it: at load averages of 27 to 178
+        # it read 1.7 to 1.8 (3.13.5) and 2.0 to 2.2 (3.11.13) with the
+        # character class, as on a quiet machine, and 4.0 to 4.6 and 2.9
+        # to 3.1 with the table; best of five on the wall clock read up to
+        # 3.2 and 5.8 with the character class at the same load.
+        ratio = m["curly_ratio"]
         assert ratio < self.CURLY_RATIO_CEILING, (
             f"a curly-quoted megabyte costs {ratio:.1f} times a plain one "
-            f"at one form: the reader's reading of text that is not ASCII "
-            f"has become dear again")
+            f"at one form (CPU time, best of {self.CURLY_PAIRS} pairs): "
+            f"the reader's reading of text that is not ASCII has become "
+            f"dear again")
 
     def test_the_guard_that_tells_the_two_shapes_apart(self):
         """The absolute guard: the rate probe above does not discriminate

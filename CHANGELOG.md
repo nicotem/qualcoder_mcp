@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The two tests that start a second test run give it a temporary folder
   inside their own, so it no longer leaves a `pytest-of-<user>` folder
   in the system's temporary directory on every run.
+- The timing guard on curly-quoted text (a one-form count of a curly
+  megabyte against a plain one, under 2.8 times) reads the thread's CPU
+  time, best of fifteen alternating pairs, so a busy machine no longer
+  turns it red; on Windows, whose thread clock is too coarse for a 15 ms
+  count, it stays on the wall clock. It still fails when the reader's
+  sweep goes back to `str.translate`.
 
 ## [0.13.0-alpha] - 2026-09-25
 
