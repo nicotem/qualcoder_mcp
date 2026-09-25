@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.13.0-alpha] - 2026-09-DD
+
+v0.13, the pseudonymisation follow-ups, as ruled from 2026-09-22 to
+2026-09-25. The housekeeping batch: `confirm` removed from the six
+token-gated tools, the run manifest's project path settled before the
+write, a token that does not verify said to be one, and every failure
+after a backup naming that backup. Brief 1: `pseudonymise_source`
+rewrites one file per call; every residue count reads both ways, wide
+and whole-word; the names left in the text of every file are counted,
+and a name inside a longer word is reported and never substituted; a
+pseudonym that contains a real name is warned about and withheld from
+the records. The rename tools: `rename_case` and `rename_file`, at
+parity with QualCoder's Manage Cases and Manage Files, and a note on
+where the old name stays. Brief 2: the public part of notes rewritten
+under its own switch, `rewrite_memos`; the run record versioned as
+format 2; a typed mapping kept, either saved into the project's own
+`pseudonyms.json` or attested as kept by the researcher; the name list
+as a tool of its own, `read_pseudonym_list`; and a restore note and a
+prune warning that protect the mapping's last copy. The licence moves
+to LGPL-3.0-or-later, QualCoder's own. Three tools added,
+`rename_case`, `rename_file` and `read_pseudonym_list`: 73 in the full
+toolset, 21 in `core`. The dependency floor is unchanged,
+`mcp>=1.17.0,<2`. Parity claims cite QualCoder master at pinned commit
+9bddf17 and the 3.8.2 tag. Each part went through a QA gate, a Security
+gate and re-verification until clean, then six-platform CI; the suite
+at the release commit: 3959 passed, 3 skipped, 0 failed. No
+acceptance run in QualCoder was made for this release: the
+pseudonymisation tool's on-screen results were last checked in
+QualCoder for 0.12.1, and what this release adds is verified against
+the project database and QualCoder's source, not in a QualCoder window.
+
 - Serialised tool JSON for this release as it stands, every change
   below included: full = 171,040 characters (about 42.8k tokens at
   chars/4) over 73 tools, core = 56,568 (about 14.1k) over 21. `core`
@@ -517,6 +550,26 @@ reason:
 
 ### Upgrading from 0.12.x
 
+- Upgrade the package and restart the MCP host fully so it reloads the
+  tool descriptions (`qualcoder-mcp --version` confirms what is
+  installed: `0.13.0a0`). There is no migration step: project files and
+  session files are unchanged, and the dependency floor is unchanged.
+- **The licence is now LGPL-3.0-or-later.** Nothing changes for anyone
+  who installs and runs the server. Whoever distributes a modified
+  version must make its source available under the same licence.
+  `LICENSE` is gone; `COPYING.LESSER`, `COPYING` and `NOTICE` ship in
+  its place, and NOTICE lists what was taken from QualCoder. Every
+  release up to and including 0.12.1 was published under the MIT
+  License, and this project's own code in those releases remains
+  available under those terms; the QualCoder-derived items they
+  contained were always under QualCoder's licence.
+- **Three new tools, in the full toolset only:** `rename_case`,
+  `rename_file` and `read_pseudonym_list` (73 tools, from 70; `core` is
+  unchanged at 21). `read_pseudonym_list` sends the real names in the
+  project's `pseudonyms.json` to the AI provider, which is why it is a
+  tool of its own: a host that asks approval tool by tool asks for it
+  apart from everyday reads, and that is the moment to decide whether
+  it may run.
 - **Drop `confirm` from any call that still passes it.** It has been
   accepted and ignored since 0.12.0, so nothing that used to execute
   stops executing; what changes is that the argument is gone from the
@@ -587,6 +640,15 @@ reason:
 - **`get_current_project` gains `pseudonyms_json`.** A caller that
   compares the whole result shape sees a new key. The names in the
   file are returned only by the new `read_pseudonym_list`.
+- **`restore_backup` and `prune_backups` can say more.** A restore that
+  makes the project's `pseudonyms.json` appear, disappear or change adds
+  `pseudonyms_json_note` to its result, naming the pre-restore safety
+  backup that holds the one the project had. A prune preview adds a
+  note when the backups it would remove hold the only lasting copy of a
+  `pseudonyms.json`, and its execute is refused as a changed project
+  (`project_changed`) if that set of copies changed after the preview:
+  take a fresh preview. A caller that compares whole result shapes sees
+  the new keys.
 
 ## [0.12.1-alpha] - 2026-09-21
 
