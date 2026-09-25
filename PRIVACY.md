@@ -786,9 +786,10 @@ will ask, and the summary above depends on them:
     session made before a run keeps the pre-pseudonymisation text on
     disk. The run lists the affected sessions and never deletes one;
     `delete_coding_session` is yours to call.
-  - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` and the
-    journal entry inside the project carry pseudonyms, counts and row
-    ids only, never an original name. When a run rewrites notes, the
+  - The run manifest in `~/.qualcoder_mcp/pseudonymisation/` (the
+    pseudonyms, the replacement spans, the row ids and offsets) and the
+    journal entry inside the project (the pseudonyms and counts) never
+    carry an original name. When a run rewrites notes, the
     manifest names each note by its table and key, with the lengths of
     its public part, and the journal entry gives counts only; an
     attribute type is keyed by its own name, which is withheld where a

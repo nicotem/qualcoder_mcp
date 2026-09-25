@@ -705,10 +705,12 @@ host decides where that goes. Claude Desktop shows it under Settings >
 Developer > Show Logs. LM Studio on macOS persists it into
 `~/Library/Logs/LM Studio/main.log`; search that file for
 `qualcoder_mcp` to find the server's start-up lines (which report the
-toolset mode and the number of tools registered) and any errors. The
-log never contains memo text; it does carry project file names, code
-and case names and, for a database that will not open, the SQLite
-error text.
+toolset mode and the number of tools registered) and any errors. In
+ordinary use the log carries no memo text (a project built to do it,
+with a database trigger, can make one of the older write tools log a
+database message that quotes a note; closing that is on the list for
+v0.14); it does carry project file names, code and case names and, for
+a database that will not open, the SQLite error text.
 
 ---
 
@@ -972,8 +974,10 @@ If you want to remove the MCP server:
    (`preview_secret`, which signs the tokens that authorise a destructive
    operation; deleting it only invalidates outstanding previews) and the
    run manifests `pseudonymise_source` writes (`pseudonymisation/`, one
-   JSON file per run: pseudonyms, counts and row offsets, never an
-   original name). Nothing else is stored there.
+   JSON file per run: the pseudonyms applied, the replacement spans, the
+   row ids and offsets of the rows the run moved and, since v0.13, where
+   each pseudonym now sits in the notes it rewrote; never an original
+   name). Nothing else is stored there.
 
 Uninstalling does not touch your QualCoder projects. Note that the
 server does write to projects when you use its coding tools (always

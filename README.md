@@ -21,7 +21,7 @@ This MCP server lets an AI assistant directly access and analyse your Qualcoder 
 - 🏷️ **Codebook editing**: create, rename, recolour, merge, move, and delete codes and categories
 - 💾 **Memo & journal writing**: annotate codes, files, codings, and cases; keep a research journal
 - ↩️ **Undo & restore**: delete a coding, list backups, and restore a whole project to an earlier state
-- 📥 **Import transcripts** and link files to cases
+- 📥 **Import transcripts**, link files to cases, and **rename cases and files** the way QualCoder's Manage Cases and Manage Files do (`rename_case`, `rename_file`)
 - 🔄 **REFI-QDA export** (.qdpx) for interchange with NVivo, ATLAS.ti, and MAXQDA
 - 📤 **Report exports**: codebook, coded segments, code frequencies and case-code matrix as CSV, txt or Markdown files
 - 🕵️ **Pseudonymisation that keeps the coding** (`pseudonymise_source`): replace the names you list, as whole words, in the stored text of one text source per call, moving every coding, annotation and case link with the text; a preview and a residue report come first, a mandatory backup is taken, and what the tool does not rewrite is counted rather than left to be discovered, and the names left in every file's text are counted, both readings; with `rewrite_memos` the public part of every note and journal entry is rewritten too, and a mapping you type must be saved into the project's own `pseudonyms.json` or attested as kept before a run goes ahead
@@ -954,9 +954,10 @@ Every preview says whose work is at stake: how many of the affected
 codings were made under this project's AI coder name(s), a per-owner
 breakdown of the rest, how many belong to coders currently hidden in
 QualCoder (a count, never a name), and how many rows carry a `#####`
-private note. For these six tools, executing when hidden coders'
-codings are affected requires `allow_hidden_coder=true`;
-`pseudonymise_source` gates a narrower set (see its own entry).
+private note. Of these six, `merge_codes` and `delete_code` require
+`allow_hidden_coder=true` to execute when hidden coders' codings are
+affected (`restore_backup` rolls the whole project back and has no such
+gate); `pseudonymise_source` gates a narrower set (see its own entry).
 
 ## Available Prompts
 
@@ -1116,7 +1117,10 @@ qualcoder_mcp/
 ├── PRIVACY.md              # Data-flow disclosure
 ├── CONTRIBUTING.md         # How to report, propose and review changes
 ├── CITATION.cff            # Citation metadata
-└── SUPPORT.md              # Support policy (GitHub Issues only)
+├── SUPPORT.md              # Support policy (GitHub Issues only)
+├── COPYING.LESSER          # The licence: GNU LGPL, version 3
+├── COPYING                 # The GNU GPL, version 3, which the LGPL incorporates
+└── NOTICE                  # Copyright, licence, and the code derived from QualCoder
 ```
 
 ### Contributing
@@ -1220,21 +1224,33 @@ Contributions are welcome! Some ideas for enhancements:
   the deprecated `session_id` duplicate removed, Dependabot on the
   SHA-pinned actions
 
-**Completed in v0.13:**
+**Completed in v0.13.0 (this release):**
 - ✅ `pseudonymise_source` rewrites one file per call, and its residue
   report counts the names left in the text of every file, each count
-  as two readings (wide and whole-word)
+  as two readings (wide and whole-word); a name inside a longer word is
+  reported and never substituted, and a pseudonym that contains a real
+  name is warned about and withheld from the records
 - ✅ `pseudonymise_source` rewrites the public part of notes and journal
   entries under `rewrite_memos`, and a mapping you type is kept: saved
   into the project's own `pseudonyms.json` or attested as kept by the
-  researcher
+  researcher; `read_pseudonym_list` reads that file back as a tool of
+  its own; a restore says when it takes the file out of the project,
+  and a prune warns before it removes the only backups that hold it
 - ✅ `rename_case` and `rename_file` rename a case or a file's entry the
   way QualCoder does, so a label named after a participant can be
   changed without leaving the conversation
+- ✅ The inert `confirm` argument is gone from the six token-gated
+  tools, and every failure after a backup names that backup
+- ✅ The licence is LGPL-3.0-or-later, QualCoder's own, and NOTICE lists
+  every routine, value and fact taken from QualCoder
 
-**Planned for v0.13 and later:**
-- 🎯 Quote-anchored writes with a fuzzy fallback, and a persistent change
-  journal with undo
+**Planned for v0.14 and later:**
+- 🛡️ Undo for what a session did, on the model of QualCoder 4.0's own
+  assistant, and a hardening round (no note text in any error answer or
+  log line)
+- 🧪 Studies under way: creating a project, coding a PDF's text, and
+  graphs
+- 🎯 Quote-anchored writes with a fuzzy fallback
 - 🖼️ Media region coding (images, audio/video, PDF)
 - 🤝 Further QualCoder 4.0 interoperability (later phases)
 - 🔭 Further refinements driven by tester feedback ([file yours](https://github.com/nicotem/qualcoder_mcp/issues))

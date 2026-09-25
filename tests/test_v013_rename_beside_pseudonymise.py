@@ -254,9 +254,11 @@ def test_the_rename_notes_say_what_a_notes_run_leaves():
 
 def test_the_roadmap_counts_the_rename_tools_as_done():
     """The Brief 2 merge fix (N3): README's list of what v0.13 completed
-    names the rename tools beside the two pseudonymisation items."""
+    names the rename tools beside the two pseudonymisation items. The
+    release preparation named the list for the release and moved the
+    plan on to v0.14."""
     readme = _flat("README.md")
-    done = readme[readme.index("**Completed in v0.13:**"):
-                  readme.index("**Planned for v0.13 and later:**")]
+    done = readme[readme.index("**Completed in v0.13.0 (this release):**"):
+                  readme.index("**Planned for v0.14 and later:**")]
     assert "`rename_case` and `rename_file` rename a case or a file's " \
            "entry the way QualCoder does" in done
