@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Integration tests for complete AI coding workflow.
 
 These tests verify that all components work together correctly:

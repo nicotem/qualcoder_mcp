@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """B2 (v0.12, D3): an execute needs proof that a preview was computed.
 
 `confirm=true` answered a question the caller asked twice and could

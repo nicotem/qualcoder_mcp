@@ -154,9 +154,9 @@ rather than fewer.
   analyse, organise, initialise, licence as a noun). Identifiers are
   never changed: tool names (`analyze_for_coding`, `sanitize_formulas`,
   `recolor_code`), argument names, JSON result keys, environment
-  variable names, file names, SQL, and proper names such as "MIT
-  License" keep their exact spelling, including when a sentence
-  mentions them. Code comments follow the same rule when a line is
+  variable names, file names, SQL, and proper names such as "GNU
+  Lesser General Public License" keep their exact spelling, including
+  when a sentence mentions them. Code comments follow the same rule when a line is
   touched.
 
 ## Scope
@@ -168,11 +168,35 @@ special cases. Requests that fit only one research project, one
 researcher's habits or one MCP host are usually declined or generalised
 first. The same rule applies to the maintainer's own projects.
 
-## License
+## Licence
 
-qualcoder-mcp is released under the MIT License (see
-[LICENSE](LICENSE)). By contributing you agree that your contribution is
-licensed under the same terms. QualCoder itself is licensed under the
-LGPL-3.0: do not copy its source into this repository. Re-implement the
-behaviour independently and cite the upstream file and line you matched,
-as `memo_privacy.py` does.
+From v0.13, qualcoder-mcp is licensed under the GNU Lesser General
+Public License, version 3 or (at your option) any later version
+(LGPL-3.0-or-later): see [COPYING.LESSER](COPYING.LESSER) and
+[COPYING](COPYING), the GNU General Public License text it
+incorporates. Releases up to 0.12.1 were published under the MIT
+License. By contributing you agree that your contribution is licensed
+under the same terms.
+
+Every `.py` file under `src/`, `tests/` and `scripts/` opens with the line
+`# SPDX-License-Identifier: LGPL-3.0-or-later` (after a shebang or an
+encoding line, where the file has one), and `tests/test_licence.py`
+fails without it, so a new module needs it from its first commit.
+
+QualCoder is licensed under LGPL-3.0-or-later as well, and the rule for
+its code is the owner's (2026-09-23):
+
+- **Write our own implementation by default,** and prove parity with
+  tests against QualCoder's source. Cite the upstream file and line you
+  matched in the docstring.
+- **Copy QualCoder's code only where identical results cannot be had
+  otherwise,** as with the kappa expression, whose floating-point
+  result depends on the order of its operations, and the coding
+  editor's span walk.
+- **List every copy in [NOTICE](NOTICE) with its reason:** its file and
+  function here, the QualCoder file and lines it comes from, and why it
+  had to be copied. A test that carries QualCoder's code as its oracle
+  is listed there too, and `tests/test_licence.py` fails if a file or
+  name NOTICE gives no longer exists, so a rename or a rewrite updates
+  NOTICE in the same change. It also holds NOTICE's entries as a
+  snapshot, so an entry is removed only by editing the test as well.

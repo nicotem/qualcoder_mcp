@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Qualcoder MCP Server - Expose Qualcoder data via Model Context Protocol."""
 
 import os

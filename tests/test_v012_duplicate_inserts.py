@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.12 release preparation, carried defect (b): duplicate inserts meet
 QualCoder's real UNIQUE constraints.
 

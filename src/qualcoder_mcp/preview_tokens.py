@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Authorisation tokens for destructive operations (v0.12, D3; H1).
 
 A destructive tool executes only with proof that a preview of EXACTLY

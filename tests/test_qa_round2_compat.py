@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA round-2: mechanical verification of COMPAT_REQUIREMENTS.md items.
 
 Each test names the requirement ID it verifies (W* writes, P* positions,

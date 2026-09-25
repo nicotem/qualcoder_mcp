@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Tests for the fix/write-path wave.
 
 Covers: record_suggestions (the loop-completing tool), session-project

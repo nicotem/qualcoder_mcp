@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Create a test Qualcoder project for AI coding development and testing."""
 
 import sqlite3

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 Phase D1 — write-surface completions (contract D.1–D.5).
 
 Annotations per groundtruth2/memos-journals.md §4 (insert-only-if-nonempty,

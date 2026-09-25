@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v17 WS4 parity hardening (behavior-delta.md): T12-T16.
 
 T12 dual-convention link dedupe lives with the existing link tests

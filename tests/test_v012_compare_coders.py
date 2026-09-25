@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """B3 (v0.12, D2): comparing two coders, with both kappas named honestly.
 
 The parity pins P1 to P8 are the numbers QualCoder's own Coder comparison

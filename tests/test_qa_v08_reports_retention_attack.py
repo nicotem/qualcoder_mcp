@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA v0.8 gate — surfaces 3-4: report exports (QualCoder-parity
 differential on hostile fixtures) + backup retention.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.12 Batch A, items A1 and A2 (dossier D5, owner ruling X2).
 
 Palette colour snapping with QualCoder's exact color_matcher arithmetic,

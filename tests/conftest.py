@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Pytest configuration and shared fixtures."""
 
 import gc

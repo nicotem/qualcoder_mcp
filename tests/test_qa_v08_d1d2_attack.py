@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA v0.8 gate — surface 5: D1/D2 write completions.
 
 Annotations (overlap/empty/anid semantics + REFI-born tolerance),

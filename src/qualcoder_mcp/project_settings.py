@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Per-project settings this server keeps beside data.qda (v0.12, D7).
 
 One setting lives here so far: the AI coder name every row this server

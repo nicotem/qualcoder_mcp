@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QUALCODER_MCP_TOOLSET modes (EXPERIMENTAL, multi-host plan section 3.1).
 
 Default full = the backward-compatible full surface. core = the 21-tool

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Folded into the main suite from the v0.6.0-alpha parallel test campaign
 # (track 5b, fault injection); adapted paths/fixtures only — test logic unchanged.
 """Fault-injection tests for qualcoder_mcp write-failure recovery paths.

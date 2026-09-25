@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA verification round for the 17-item consolidated fix round.
 
 INDEPENDENT re-derivations (not reusing the developer's or track modules'

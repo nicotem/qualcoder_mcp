@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v17 support: capability-probe gate (WS1/T1/S1) + sub-code write
 correctness (WS2/T2-T4, T6/S2-S4/S10).
 

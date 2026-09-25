@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA adversarial round: INDEPENDENT verification of the 18 groundtruth2
 gotchas (memos-journals.md §7 x8 + code-edits.md §11 x10), re-derived from
 the dossiers — not from the developer's tests — plus QualCoder-fidelity

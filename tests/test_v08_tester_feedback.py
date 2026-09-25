@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 tester-feedback fold-in (TESTER_FEEDBACK_01.md, findings F1/F2).
 
 F1a: edit_suggestion — adjust a PENDING suggestion's span and/or code at

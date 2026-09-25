@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-2: configurable AI coder attribution (QUALCODER_MCP_AI_CODER_NAME).
 
 Owner verdict (b), 2026-08-28: the coding owner string is configurable,

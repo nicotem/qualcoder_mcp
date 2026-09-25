@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Qualcoder MCP Server - Model Context Protocol integration for Qualcoder."""
 
 from importlib.metadata import PackageNotFoundError, version

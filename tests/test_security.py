@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 Security-focused tests for the QualCoder MCP server.
 

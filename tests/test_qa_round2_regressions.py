@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA round-2 regression tests: one test (or group) per round-1 finding.
 
 Finding IDs (QA campaign 2026-07-02): F1-F15.

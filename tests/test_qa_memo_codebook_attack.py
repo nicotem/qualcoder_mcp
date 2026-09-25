@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA adversarial round: attacks on the memo/codebook tool surface.
 
 Covers: destructive preview->confirm gate attacks, safety-backup

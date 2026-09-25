@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """XSD validation of export_refi_qda output (COMPAT X11).
 
 Validates the project.qde produced by the export tool against the

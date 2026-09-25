@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.12 Batch A, fix round 1 (F5): the version comments beside the
 SHA-pinned GitHub Actions have to stay truthful.
 

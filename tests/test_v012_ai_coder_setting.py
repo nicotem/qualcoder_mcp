@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """B1 (v0.12, D7): the project's AI coder name, asked once, never guessed.
 
 Until v0.12 every row this server wrote carried a machine-wide name. It is

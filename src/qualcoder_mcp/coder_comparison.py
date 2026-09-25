@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Coder-comparison statistics (v0.12 B3, D2).
 
 QualCoder shows these numbers in two dialogs (`reports.py:820-1395` and

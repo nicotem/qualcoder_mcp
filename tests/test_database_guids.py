@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Tests for database.py GUID generation methods."""
 
 import pytest

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The pseudonymisation engine (v0.12 flagship, D1).
 
 Pure functions over strings and integers. No database, no server, no new

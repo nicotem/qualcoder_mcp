@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """QA round-2: adversarial tests for the NEW tool surface of fix/write-path.
 
 Targets: record_suggestions, delete_coding, list_backups, restore_backup,

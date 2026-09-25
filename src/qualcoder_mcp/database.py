@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Database interface for Qualcoder .qda files."""
 
 import ast
@@ -192,9 +193,11 @@ def validate_color(color: Any) -> str:
 def snap_to_palette(color: str) -> str:
     """Nearest QualCoder palette colour, by QualCoder's own rule.
 
-    Independent reimplementation of color_matcher
+    A close port of QualCoder's own color_matcher
     (color_selector.py:144-162 at master 9bddf17; identical body at 3.8.2,
-    color_selector.py:145-163), the function QualCoder 4.0's own MCP
+    color_selector.py:145-163): the same arithmetic and the same scan,
+    with the input upper-cased and the length guard dropped (below).
+    NOTICE lists it. color_matcher is the function QualCoder 4.0's own MCP
     server applies to every colour a model supplies on create
     (ai_mcp_server.py:3336-3344) and QualCoder applies on REFI-QDA import
     (refi.py:236-241). The arithmetic is kept exactly: distance is the

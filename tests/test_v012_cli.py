@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.12 Batch A, item A5: `--version` and the terminal notice.
 
 `--version` prints the package version and exits 0 (console script and

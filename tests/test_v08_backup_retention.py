@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """v0.8 Phase C — backup retention (contract C.1/C.2).
 
 Covers the list_backups age extension and prune_backups: policy shapes,

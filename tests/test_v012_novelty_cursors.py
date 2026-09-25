@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """B4 (v0.12, D4): the novelty filter, stable cursors and sampling budgets.
 
 Three read tools learn to say "not that, I have coded it already", to be

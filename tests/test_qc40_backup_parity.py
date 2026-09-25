@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-4: ai_data backup parity (verdict d, resolved by verification).
 
 QualCoder's save_backup copies the whole project tree INCLUDING

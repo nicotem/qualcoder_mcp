@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """P1-3: QC 4.0 coder-visibility reads (verdict c).
 
 Fixture mirrors what QualCoder 4.0 creates in the project database on

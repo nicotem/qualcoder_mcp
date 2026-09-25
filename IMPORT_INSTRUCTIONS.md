@@ -510,4 +510,4 @@ If you encounter issues:
 **Version**: v0.3.0
 **Last Updated**: October 2025
 **For**: Qualcoder 3.0+
-**License**: MIT
+**Licence**: LGPL-3.0-or-later from v0.13 (MIT up to 0.12.1)

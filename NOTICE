@@ -1,0 +1,550 @@
+qualcoder-mcp
+=============
+
+A Model Context Protocol server for QualCoder qualitative data analysis
+projects.
+
+Copyright (C) 2025-2026 Niccolò Tempini
+
+qualcoder-mcp is free software: you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version (SPDX: LGPL-3.0-or-later).
+
+qualcoder-mcp is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
+General Public License for more details.
+
+The licence texts ship with this program: COPYING.LESSER is the GNU
+Lesser General Public License, version 3, and COPYING is the GNU General
+Public License, version 3, whose terms the Lesser licence incorporates.
+
+This licence applies from version 0.13. Every release up to and
+including 0.12.1 was published under the MIT License, and those releases
+remain available under the terms they were published with.
+
+
+Code derived from QualCoder
+===========================
+
+qualcoder-mcp is a separate program that reads and writes the project
+files of QualCoder (https://github.com/ccbogel/QualCoder). It does not
+include QualCoder, but it contains a small number of routines and values
+taken from QualCoder so that its results match QualCoder's exactly, and
+it restates facts of QualCoder's file format so that projects stay
+compatible. This section lists every such item, from a provenance audit
+(citation, string and similarity sweeps, with a completeness check) of
+the repository against QualCoder's source and history (September 2026).
+Code written for this project to give QualCoder's results, without
+carrying QualCoder's code, is not listed.
+
+QualCoder is copyright Colin Curtain and contributors (its source file
+headers name the authors as Colin Curtain, Kai Dröge, Justin
+Missaghieh--Poncet and Lorenzo Salomón), and is licensed under the GNU
+Lesser General Public License, version 3 or (at your option) any later
+version (LGPL-3.0-or-later). The items below remain under that licence.
+
+How to read an entry. "Here" is the file in this repository and the
+functions, classes or names that carry the item. "From" is the
+QualCoder file and lines, under src/qualcoder/ in QualCoder's master
+branch at commit 9bddf17f86aa457aff72c3a38dbc10a37f296ad2 unless marked
+3.8.2 (the release tag) or given as at the root of QualCoder's
+repository. "Author", where given, is what QualCoder's file header or
+git history records for those lines; how a git identity maps to a
+person is for the QualCoder project to confirm. "Why" is the reason the
+item was copied.
+
+
+Routines in the package
+-----------------------
+
+1. QualCoder's memo privacy helpers (copied verbatim)
+   Here: src/qualcoder_mcp/memo_privacy.py, PERSONAL_NOTE_MARK,
+   _SEPARATOR_CHARS, split_public_private_memo, extract_ai_memo and
+   merge_public_memo.
+   From: ai_memo.py, lines 28-59.
+   Author: Kai Dröge (ai_memo.py's header; QualCoder's git history
+   records all 32 lines under his identity kaixxx).
+   Why: to honour QualCoder 4.0's '#####' private-memo convention on
+   every memo this server reads or writes, exactly as QualCoder does.
+
+2. QualCoder's "Kappa" value (copied verbatim)
+   Here: src/qualcoder_mcp/coder_comparison.py, kappa_qualcoder.
+   From: reports.py, lines 1140-1151 (the same expression is at
+   report_compare_coder_file.py, lines 818-830).
+   Author: Colin Curtain (QualCoder's git history, 9 of the 12 lines).
+   Why: the value must be the number QualCoder's Coder comparison report
+   displays, and a floating-point result is identical only when the same
+   operations run in the same order, so the expression is QualCoder's.
+
+3. QualCoder's coder comparison percentages (closely ported)
+   Here: src/qualcoder_mcp/coder_comparison.py, statistics.
+   From: reports.py, lines 1102-1107.
+   Why: the five headline percentages are rounded as QualCoder rounds
+   them, including 100 minus the already rounded agreement, so that they
+   equal QualCoder's to the last digit; that needs QualCoder's
+   expressions in QualCoder's order.
+
+4. QualCoder's coder comparison counting (closely ported)
+   Here: src/qualcoder_mcp/coder_comparison.py, qualcoder_report_values.
+   From: reports.py, lines 1061-1115.
+   Why: to state exactly what QualCoder's report would show when one
+   coder's segments of a code overlap, where QualCoder counts
+   differently from this server; it is a disclosure, never the headline
+   number.
+
+5. QualCoder's palette matcher (closely ported)
+   Here: src/qualcoder_mcp/database.py, snap_to_palette.
+   From: color_selector.py, lines 144-162 (color_matcher).
+   Author: recorded in QualCoder's git history under the identity
+   "QualCoder Developer".
+   Why: a colour the AI supplies snaps to the colour QualCoder itself
+   would choose, ties included, which needs QualCoder's metric and its
+   scan in its order.
+
+6. QualCoder's coding editor span walk (closely ported)
+   Here: src/qualcoder_mcp/pseudonymise.py, SpanMapper._parity.
+   From: code_text.py, lines 5893-5927 (apply_insert and apply_delete),
+   driven by the running offset of lines 5933-5950.
+   Author: Salomon-Mazatlan (a git identity in QualCoder's history, 33
+   of the 35 lines).
+   Why: under the optional overlap policy qualcoder_edit_parity, a coded
+   span moves, shrinks or is deleted exactly as QualCoder's own editor
+   would move, shrink or delete it when a name is deleted and its
+   pseudonym typed in its place; the order of the walk decides the
+   result.
+
+7. QualCoder's sub-code descendant check (copied verbatim)
+   Here: src/qualcoder_mcp/database.py,
+   QualcoderDatabase.code_is_descendant.
+   From: code_tree.py, lines 619-641.
+   Author: Salomon-Mazatlan (a git identity in QualCoder's history).
+   Why: to refuse a move or a merge that would put a code under its own
+   descendant, by the same test QualCoder applies.
+
+8. QualCoder's sub-code branch collector (closely ported)
+   Here: src/qualcoder_mcp/database.py, QualcoderDatabase.get_branch_cids.
+   From: code_tree.py, lines 796-818.
+   Why: a code and all its sub-codes, collected as QualCoder collects
+   them for a cascade delete.
+
+9. QualCoder's code path text (closely ported)
+   Here: src/qualcoder_mcp/database.py, QualcoderDatabase.code_path.
+   From: memo.py, lines 255-274.
+   Author: Salomon-Mazatlan (a git identity in QualCoder's history).
+   Why: to render "Category > ... > Code" exactly as QualCoder's memo
+   dialog renders it.
+
+10. QualCoder's merge memo provenance block (closely ported)
+    Here: src/qualcoder_mcp/database.py, QualcoderDatabase.merge_codes,
+    QualcoderDatabase.merge_category and _append_provenance_block.
+    From: code_tree.py, lines 1410-1417 and 1528-1536.
+    Author: Salomon-Mazatlan (a git identity in QualCoder's history,
+    for lines 1410-1417).
+    Why: a memo merged here reads exactly as one merged in QualCoder:
+    the same labels, field order and joining of the two memos.
+
+11. QualCoder 4.0's methodology vocabulary (closely ported)
+    Here: src/qualcoder_mcp/server.py, METHODOLOGY_VOCABULARY and
+    explain_ai_coding_tools.
+    From: ai_prompts/_agent.md, lines 81-88.
+    Author: kaixxx (a git identity in QualCoder's history, which
+    ai_memo.py's header gives as Kai Dröge's).
+    Why: to offer the model QualCoder 4.0's four-way methodological gate
+    (allow, allow_with_caveat, reframe_and_ask, refuse) in QualCoder's
+    terms; the four labels are QualCoder's and their definitions a close
+    paraphrase of its prompt.
+
+12. QualCoder's journal-name loop (closely ported)
+    Here: src/qualcoder_mcp/server.py, _pseudonymise_journal_attempt.
+    From: code_pdf.py, lines 6035-6049.
+    Why: to find a free journal name for the pseudonymisation audit
+    entry by the same sequence of candidates as QualCoder, and to give
+    up at the same point.
+
+
+Values in the package
+---------------------
+
+13. QualCoder's colour palette (120 colours)
+    Here: src/qualcoder_mcp/database.py, QUALCODER_COLORS.
+    From: color_selector.py, lines 52-65.
+    Why: a code created here takes its colour from QualCoder's own
+    palette, in QualCoder's order.
+
+14. QualCoder's backup exclusion patterns
+    Here: src/qualcoder_mcp/database.py, QUALCODER_BACKUP_IGNORE_PATTERNS.
+    From: app.py, lines 1619-1625.
+    Why: backups leave out the same regenerable files QualCoder's own
+    backups leave out.
+
+15. The tables QualCoder harvests coder names from
+    Here: src/qualcoder_mcp/database.py, HARVEST_OWNER_TABLES.
+    From: app.py, lines 1481-1494.
+    Why: coder names are checked against the same tables, in the same
+    order, as QualCoder's own harvest.
+
+16. QualCoder's pseudonym minimum lengths
+    Here: src/qualcoder_mcp/pseudonymise.py, MIN_ORIGINAL_CHARS and
+    MIN_PSEUDONYM_CHARS.
+    From: pseudonyms.py, lines 72 and 76.
+    Why: the same minimum lengths as QualCoder's pseudonym dialog.
+
+17. The owner strings QualCoder writes
+    Here: src/qualcoder_mcp/database.py, KNOWN_AI_ASSISTANT_OWNER.
+    Here: src/qualcoder_mcp/server.py, SPEAKER_SYSTEM_CODER.
+    From: ai_mcp_server.py, line 85; speakers.py, line 47.
+    Why: to recognise rows written by QualCoder's own assistant and by
+    its speaker coder.
+
+18. QualCoder 4.0's segment budget and sampling names
+    Here: src/qualcoder_mcp/server.py, MAX_SEGMENT_CHARS,
+    SEGMENT_STRATEGIES, _resolve_exclude_code_ids, get_coded_segments
+    and prune_backups.
+    From: ai_mcp_server.py, lines 69-70, 1693, 2744, 3587, 3757 and 5358.
+    Why: the segment-budget ceiling, QualCoder 4.0's 8000-character
+    default budget, which the get_coded_segments description recommends,
+    the sampling strategy names and the parameter and field names
+    exclude_code_ids, hit_max_char_limit and requires_confirmation are
+    aligned with QualCoder 4.0's own MCP server.
+
+19. QualCoder's journal-name attempt limit
+    Here: src/qualcoder_mcp/server.py, JOURNAL_NAME_ATTEMPTS.
+    From: code_pdf.py, line 6047.
+    Why: to give up after the same number of attempts as QualCoder.
+
+20. QualCoder's coded-segments CSV headings
+    Here: src/qualcoder_mcp/server.py, export_coded_segments_report.
+    From: report_codes.py, lines 919-931.
+    Why: the CSV export has the same columns as QualCoder's coding report
+    export.
+
+21. QualCoder's frequencies CSV headings
+    Here: src/qualcoder_mcp/server.py, export_frequencies_csv.
+    From: reports.py, lines 233, 338 and 394.
+    Why: the frequencies CSV (file name, headings and cid:/catid: cells)
+    reads like QualCoder's frequencies export.
+
+22. QualCoder's cascade-delete warning
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase.preview_delete_code and QualcoderDatabase.delete_code.
+    Here: src/qualcoder_mcp/server.py, delete_code.
+    From: code_tree.py, lines 841-843.
+    Why: to warn that sub-codes will also be deleted, in QualCoder's
+    words.
+
+23. QualCoder's merge refusal message
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase.preview_merge_codes.
+    From: code_tree.py, line 1509.
+    Why: the refusal of a merge into a code's own descendant, in
+    QualCoder's words.
+
+24. QualCoder's reserved attribute names
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase.RESERVED_ATTRIBUTE_NAMES.
+    From: add_attribute.py, lines 50 and 77.
+    Why: never to create an attribute that collides with QualCoder's
+    reference-manager attributes.
+
+25. The method literature QualCoder's prompt library cites
+    Here: src/qualcoder_mcp/server.py, METHODS_GUIDANCE.
+    From: in ai_prompts/text-analysis/,
+    themes-generation-friese-2024.md, line 7;
+    reconstructive-srp-lieder-schaffer-2024.md, line 5;
+    interactive-brainstorming-with-ai.md, line 6.
+    Why: to point researchers to the same publications; the references
+    are to third-party works, as QualCoder lists them.
+
+
+Facts of QualCoder's file format in the package
+-----------------------------------------------
+
+These are facts of QualCoder's file format restated so projects stay
+compatible: the table and column layouts, file names, conventions and
+rules that a program must follow for QualCoder to open, read and trust
+a project this server has written. They are restated in this project's
+own code; where the statement is a table or column list, it is the one
+the format dictates.
+
+26. QualCoder 3.8's lock file: its name, timeout and content.
+    Here: src/qualcoder_mcp/database.py, QUALCODER_LOCK_FILENAME,
+    QUALCODER_LOCK_TIMEOUT and hold_project_lock.
+    From: 3.8.2 __main__.py, lines 131, 2546-2547 and 2637.
+
+27. The names of QualCoder's coder-visibility views.
+    Here: src/qualcoder_mcp/database.py, VISIBILITY_VIEWS.
+    From: app.py, lines 1519, 1530, 1541 and 1552.
+
+28. The tables and columns that tell QualCoder's schema versions apart.
+    Here: src/qualcoder_mcp/database.py, SchemaCapabilities,
+    QualcoderDatabase._probe_capabilities and
+    QualcoderDatabase.write_support.
+    From: __main__.py, lines 2296-2346.
+
+29. The media path prefixes that tell text, PDF, image, audio and video
+    sources apart.
+    Here: src/qualcoder_mcp/database.py, _detect_file_type and
+    QualcoderDatabase.search_file_content.
+    From: manage_files.py, lines 615-619 and 1429-1434; code_text.py,
+    line 4319.
+
+30. The project folder layout and the project table's "about" marker.
+    Here: src/qualcoder_mcp/database.py, validate_qda_path and
+    QualcoderDatabase._check_version.
+    From: 3.8.2 __main__.py, lines 306, 2635 and 2700-2702; __main__.py,
+    lines 1991 and 2011-2015.
+
+31. The name and entry shape of pseudonyms.json.
+    Here: src/qualcoder_mcp/database.py, PSEUDONYMS_JSON_NAME and
+    read_project_pseudonyms.
+    From: pseudonyms.py, lines 64, 90, 92-93 and 122-123.
+
+32. The row layouts of categories, codes and text sources.
+    Here: src/qualcoder_mcp/database.py, QualcoderDatabase._hierarchy_maps,
+    QualcoderDatabase.fingerprint_rows_category, QualcoderDatabase.add_code
+    and QualcoderDatabase.import_text_file.
+    From: view_graph.py, line 4492; code_tree.py, lines 753-755;
+    ai_mcp_server.py, lines 1522-1525; __main__.py, lines 1791 and
+    1816-1824.
+
+33. Where QualCoder's own writers leave attribute placeholder rows.
+    Here: src/qualcoder_mcp/database.py, QualcoderDatabase.import_text_file,
+    QualcoderDatabase.add_case and QualcoderDatabase.add_attribute_type.
+    From: 3.8.2 manage_files.py, lines 1385-1392; 3.8.2 cases.py, lines
+    578-589; 3.8.2 attributes.py, lines 123-146.
+
+34. QualCoder's unique keys, its case links and its move update.
+    Here: src/qualcoder_mcp/database.py, QualcoderDatabase.find_text_coding,
+    QualcoderDatabase.link_file_to_case,
+    QualcoderDatabase.move_code_to_category,
+    QualcoderDatabase._pseudonymise_collisions and
+    QualcoderDatabase._pseudonymise_counts.
+    Here: src/qualcoder_mcp/pseudonymise.py, unique_constraint_collisions.
+    From: __main__.py, lines 1800-1801 and 1819-1821; code_tree.py, line
+    1245; 3.8.2 manage_files.py, lines 762-764; 3.8.2
+    case_file_manager.py, lines 207-211.
+
+35. The graph clean-up after a delete and the sub-code reparenting after
+    a merge.
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase._cleanup_graph_rows_for_cid and
+    QualcoderDatabase.merge_codes.
+    From: code_tree.py, lines 856-858 and 1565-1570.
+
+36. The column order of QualCoder's table reads, and its value_type
+    message.
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase.get_coded_text_segments,
+    QualcoderDatabase.search_files, QualcoderDatabase.list_attribute_types,
+    QualcoderDatabase._pseudonymise_rows and
+    QualcoderDatabase.add_attribute_type.
+    From: __main__.py, lines 1791 and 1819; app.py, line 1530;
+    attributes.py, line 78; code_text.py, lines 6174 and 6181;
+    ai_mcp_server.py, line 3089.
+
+37. The names of QualCoder's sidecar files and _BKUP_ backup folders.
+    Here: src/qualcoder_mcp/database.py,
+    QualcoderDatabase.PSEUDONYMISE_SIDECARS.
+    Here: src/qualcoder_mcp/server.py, discover_projects, _collect_backups
+    and restore_backup.
+    From: view_av.py, lines 149 and 1366-1380; speakers.py, lines
+    712-718; app.py, lines 1611-1612; __main__.py, lines 2582-2590.
+
+38. How a REFI-QDA codebook nests sub-codes for QualCoder's importer.
+    Here: src/qualcoder_mcp/refi_export.py,
+    RefiQdaExporter._add_codebook_section.
+    From: refi.py, lines 242-254, 3228-3248 and 3279-3290.
+
+
+Tests and fixtures
+------------------
+
+These are in the repository only; no package contains them. The test
+oracles carry QualCoder's code so that the tests compare this server's
+code with QualCoder's own, rather than with a restatement of it; the
+fixtures restate QualCoder's schema so that test projects are real
+QualCoder projects.
+
+39. The palette, pinned to QualCoder's (copied values)
+    Here: tests/test_v012_palette_idempotent.py, UPSTREAM_COLORS and
+    TestPaletteParity.test_palette_identical_to_pinned_upstream.
+    From: color_selector.py, lines 52-65.
+    Why: to pin item 13 to QualCoder's palette.
+
+40. The palette matcher oracle (copied verbatim)
+    Here: tests/test_v012_palette_idempotent.py, upstream_color_matcher.
+    From: color_selector.py, lines 144-162.
+    Why: item 5 is compared with QualCoder's own function.
+
+41. The palette matcher's named cases (copied values)
+    Here: tests/test_v012_palette_idempotent.py,
+    TestPaletteParity.test_named_cases.
+    From: the results of color_selector.py, lines 144-162, on lines
+    52-65.
+    Why: named parity cases, computed with QualCoder's function.
+
+42. The editor walk oracle (copied verbatim)
+    Here: tests/test_v012_pseudonymise_engine.py, MasterEditWalk.
+    From: code_text.py, lines 5893-5927.
+    Why: item 6 is checked against QualCoder's walk kept in QualCoder's
+    own shape (every row walked per edit, where item 6 walks every edit
+    per row), not against itself.
+
+43. The whole-word replacement pattern oracles (copied verbatim)
+    Here: tests/test_v012_pseudonymise_engine.py, master_boundary_spans,
+    legacy_boundary_spans,
+    TestNonChaining.test_why_that_mapping_is_refused_although_one_pass_survives_it
+    and TestNonChaining.test_what_upstream_would_have_done_with_that_mapping.
+    From: manage_files.py, line 3348; 3.8.2 manage_files.py, line 2039;
+    import_survey.py, lines 134-140.
+    Why: to test where QualCoder's own whole-word replacement fires, now
+    and in its older form.
+
+44. The coder-name harvest statement (copied verbatim)
+    Here: tests/test_v012_ai_coder_setting.py, TestUpstreamParity.HARVEST_SQL.
+    From: app.py, lines 1479-1495.
+    Why: parity tests run QualCoder's own harvest.
+
+45. The open-time repair statements (copied verbatim)
+    Here: tests/test_v17_support.py, replay_master_open_repair.
+    Here: tests/test_qa_v17_gate_core.py, master_repair_rowcount.
+    From: __main__.py, lines 2377-2381.
+    Why: fixtures and oracles replay the hierarchy repair QualCoder runs
+    when it opens a project.
+
+46. The delete twins, QualCoder 3.8.2 (copied verbatim)
+    Here: tests/test_qa_memo_codebook_gotchas.py,
+    TestQualCoderFidelityDifferential.test_delete_code_differential and
+    TestQualCoderFidelityDifferential.test_delete_category_differential_with_grandchildren.
+    From: 3.8.2 code_text.py, lines 2953-2956 and 2988-2994.
+    Why: differential tests apply QualCoder's own statements to a copy
+    of a project and compare the two databases.
+
+47. The merge twin, QualCoder 3.8.2 (closely ported)
+    Here: tests/test_qa_memo_codebook_gotchas.py, _qualcoder_merge.
+    From: 3.8.2 code_text.py, lines 2791-2821.
+    Why: the differential test for merge.
+
+48. The merge and delete twins, QualCoder master (closely ported)
+    Here: tests/test_qa_v17_gate_core.py,
+    TestSubcodeWriteDifferentials.test_merge_differential_provenance_reparent_graphs
+    and TestSubcodeWriteDifferentials.test_delete_branch_preview_refuse_and_cascade_differential.
+    From: code_tree.py, lines 850-858 and 1521-1571.
+    Why: the differential tests for master's merge and cascade delete.
+
+49. The move twins, QualCoder master (file-format facts)
+    Here: tests/test_qa_v17_gate_core.py,
+    TestSubcodeWriteDifferentials.test_move_dual_pointer_differential_and_oracle
+    and TestSubcodeWriteDifferentials.test_v14_projects_hierarchy_inert.
+    From: code_tree.py, lines 1235 and 1245.
+    Why: the differential test for move.
+
+50. The rename, recolour and move twins, QualCoder 3.8.2 (file-format
+    facts)
+    Here: tests/test_qa_memo_codebook_gotchas.py,
+    TestQualCoderFidelityDifferential.test_rename_recolor_move_differential
+    and TestQualCoderFidelityDifferential.test_move_category_differential.
+    From: 3.8.2 code_text.py, lines 1905, 2740, 3092, 3125 and 3156.
+    Why: differential tests.
+
+51. The coder-visibility views fixture (file-format facts)
+    Here: tests/test_qc40_visibility.py, _VIEW_DDL, _VISIBILITY_COLUMN_DDL
+    and _BROKEN_VIEWS.
+    From: app.py, lines 1472 and 1518-1561.
+    Why: fixtures build QualCoder's coder-visibility views.
+
+52. The coder_names table fixture (file-format facts)
+    Here: tests/test_v012_ai_coder_setting.py,
+    TestUpstreamParity.CODER_NAMES_DDL and
+    TestUpstreamParity.test_a_name_absent_from_coder_names_is_visible.
+    From: app.py, lines 1470-1473 and 1529-1539.
+    Why: coder_names and one view, recreated as QualCoder makes them.
+
+53. The pseudonymisation fixture schema (file-format facts)
+    Here: tests/test_v012_pseudonymise_tool.py, SCHEMA, VISIBILITY_COLUMN
+    and VISIBILITY_VIEWS.
+    From: 3.8.2 __main__.py, lines 2347-2388; app.py, lines 1472 and
+    1518-1561.
+    Why: a fixture with QualCoder's real tables and constraints.
+
+54. The schema-version ladder fixture (file-format facts)
+    Here: tests/test_v17_support.py, BASE_SCHEMA, _migrate_v15,
+    _migrate_v16 and _migrate_v17.
+    From: 3.8.2 __main__.py, lines 2348-2418; __main__.py, lines
+    2308-2343.
+    Why: fixtures at QualCoder's schema versions 15, 16 and 17.
+
+55. The scale and media fixture schema (file-format facts)
+    Here: tests/track6_build.py, DDL.
+    From: 3.8.2 __main__.py, lines 2348-2388; __main__.py, lines
+    1813-1828.
+    Why: the scale and media test builders.
+
+56. The shared fixture schemas (file-format facts)
+    Here: tests/conftest.py.
+    Here: tests/test_database_reads.py.
+    Here: tests/test_database_writes.py.
+    Here: tests/test_fault_injection.py.
+    Here: tests/test_qa_toolset_gate.py.
+    Here: tests/test_toolset_modes.py.
+    Here: tests/test_transport.py.
+    Here: tests/track5_helpers.py.
+    Here: tests/test_v17_support.py.
+    Here: scripts/create_test_project.py.
+    From: 3.8.2 __main__.py, lines 2347-2417; app.py, lines 1470-1473;
+    and, at the root of QualCoder's repository, tests/test_qualcoder.py,
+    lines 47-107.
+    Why: each of these builds its own QualCoder project fixture.
+
+57. Planted rows and old-version markers (file-format facts)
+    Here: tests/test_v012_pseudonymise_tool.py.
+    Here: tests/test_v012_duplicate_inserts.py.
+    Here: tests/test_fix_wave.py.
+    Here: tests/test_qa_round2_regressions.py.
+    Here: tests/test_v08_attributes.py.
+    Here: tests/test_qa_v08_d1d2_attack.py.
+    From: __main__.py, lines 1788-1828; pseudonyms.py, lines 64, 90 and
+    93; 3.8.2 __main__.py, lines 2985-2992; 3.8.2 case_file_manager.py,
+    lines 208-222.
+    Why: statements that name QualCoder's tables and columns to plant
+    rows and old schema versions in fixtures; similar one-line
+    statements occur elsewhere in tests/.
+
+58. The backup and merge-label pins (copied values)
+    Here: tests/test_qc40_backup_parity.py,
+    TestIgnoreSetPinned.test_qualcoder_set_is_byte_exact_with_upstream.
+    Here: tests/test_qc40_memo_privacy.py,
+    TestMergeCategoryProvenance.test_source_memo_carried_with_parity_recipe.
+    From: app.py, lines 1619-1625; code_tree.py, lines 1413-1417.
+    Why: to pin items 14 and 10 to QualCoder's.
+
+The REFI-QDA schema in tests/fixtures/refi_qda/Project.xsd is not
+QualCoder's: it is the REFI-QDA standard's own, copyright 2019 REFI
+(www.qdasoftware.org) under the MIT licence, whose notice the file
+carries. Its README records where it came from.
+
+
+Documents
+---------
+
+These are in the repository only; no package contains them.
+
+59. A REFI-QDA coded-segment example (copied verbatim)
+    Here: QUALCODER_IMPORT_CAPABILITIES.md.
+    From: refi.py, lines 1660-1669 (the example in load_codings_for_text's
+    docstring).
+    Why: to show the REFI-QDA coded-segment format.
+
+60. A case CSV example (copied values)
+    Here: QUALCODER_IMPORT_CAPABILITIES.md.
+    From: 3.8.2 Examples/cases.csv, lines 1-4, at the root of
+    QualCoder's repository.
+    Why: to show the case CSV import format.
+
+61. Notes on QualCoder's schema (file-format facts)
+    Here: RESEARCH_SUMMARY.md.
+    From: __main__.py, lines 1788-1828; 3.8.2 __main__.py, lines
+    2347-2417.
+    Why: research notes on QualCoder's tables and columns, in prose.
