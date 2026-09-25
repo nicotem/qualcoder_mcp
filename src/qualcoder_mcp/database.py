@@ -1099,6 +1099,12 @@ def saved_display_values(tblrows: Any) -> List[str]:
     return values
 
 
+# The operators QualCoder offers for a saved filter's condition (master
+# report_attributes.py:710-712; 3.8.2 the same lines): a condition with
+# any other word there is not in QualCoder's shape (fix round 4, F3B-3).
+_SAVED_FILTER_OPERATORS = ("<", ">", "<=", ">=", "=", "!=", "in", "not in",
+                           "between", "like")
+
 # A saved filter longer than this is read whole rather than parsed: a
 # filter QualCoder saves is a few hundred characters, and literal_eval's
 # cost grows with its input.
@@ -1112,8 +1118,10 @@ def saved_filter_values(text: Any) -> List[str]:
     ['BOOLEAN_OR'] or ['BOOLEAN_AND'], then one
     [name, 'case' or 'file', type, operator, [values]] per condition,
     character values in single quotes (3.8.2 report_attributes.py:147,
-    :269-309, the same). When the text has exactly that shape, only the
-    values are read, so QualCoder's own words (BOOLEAN_OR, AND, case,
+    :269-309, the same). When the text has exactly that shape (the
+    second item 'case' or 'file', the operator one of QualCoder's, the
+    name and the type text, the values a list of text; fix round 4,
+    F3B-3), only the values are read, so QualCoder's own words (BOOLEAN_OR, AND, case,
     character, like) are never read as a label. Anything else, a list of
     another shape included, is read whole, the conservative reading
     (fix round 3, B-2)."""
@@ -1133,6 +1141,8 @@ def saved_filter_values(text: Any) -> List[str]:
     for item in parsed[1:]:
         if not (isinstance(item, list) and len(item) == 5
                 and all(isinstance(part, str) for part in item[:4])
+                and item[1] in ("case", "file")
+                and item[3] in _SAVED_FILTER_OPERATORS
                 and isinstance(item[4], list)
                 and all(isinstance(value, str) for value in item[4])):
             return [text]

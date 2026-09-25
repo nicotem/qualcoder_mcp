@@ -1498,6 +1498,15 @@ class TestSavedDisplaysAndFiltersByTheirValues:
                       "Case\tmaybe\tThomas_P01"):
             assert saved_display_values(other) == [other]
         for other in ("[['Thomas_P01']]",
+                      # Fix round 4, F3B-3 and F3B-4 (M1): a condition whose
+                      # name, case-or-file or operator slot is not
+                      # QualCoder's is read whole, so the label there counts.
+                      "[['BOOLEAN_OR'], [['Thomas_P01'], 'case', "
+                      "'character', '=', [\"'x'\"]]]",
+                      "[['BOOLEAN_OR'], ['n', 'Thomas_P01', 'character', "
+                      "'=', [\"'x'\"]]]",
+                      "[['BOOLEAN_OR'], ['n', 'case', 'character', "
+                      "'Thomas_P01', [\"'x'\"]]]",
                       "[['BOOLEAN_OR'], ['n', 'case', 'character', '=', "
                       "\"'Thomas_P01'\"]]",
                       "[['BOOLEAN_OR'], ['n', 'case', 'character', '=']]",
@@ -1730,3 +1739,19 @@ class TestAUtf16Database:
         text = "Thomas_P01 note"
         assert (text.encode("utf-16-le")
                 .decode(sqlite_text_codec("UTF-16le"))) == text
+
+
+class TestAGraphLabelIsReadTolerantly:
+    """Fix round 4, F3B-4 (M2): a saved graph label stored as text that is
+    not UTF-8 is read, decoded tolerantly, and the rename goes through."""
+
+    def test_counted_and_not_blocking(self, project):
+        _saved_places(project)
+        _add_case(project, "Thomas_P01", 5)
+        _exec(project, "INSERT INTO gr_case_text_item (grid, caseid, "
+                       "displaytext) VALUES (1, 5, CAST(? AS TEXT))",
+              (b"Thomas_P01 \xff",))
+        _reload()
+        out = _case(5, "P05 new", create_backup=False)
+        assert out.get("changed") is True, out
+        assert out["old_name_left_in"] == {"saved_graph_labels": 1}, out
