@@ -1366,11 +1366,23 @@ class TestTheClassCannotComeBack:
     # views, which fail closed on their own, so its permissive zero
     # costs a disclosure block and never a disclosure (the argument the
     # gate upheld for the frequency, summary and cascade paths).
+    #
+    # `new_project.py` (v0.14) holds no read: its statement CREATES, in a
+    # new project, the four views QualCoder 4.0 creates, which are what
+    # every read of codings and annotations then goes through. The
+    # f-string and its fixed tail are both string nodes, so both appear.
     EXPECTED = {
         "database.py": {
             "SELECT COUNT(DISTINCT name) FROM coder_names "
             "WHERE visibility = 0",
             "SELECT name, visibility FROM coder_names",
+        },
+        "new_project.py": {
+            "CREATE VIEW \x00_visible AS SELECT t.* FROM \x00 t WHERE NOT "
+            "EXISTS (SELECT 1 FROM coder_names c WHERE c.name = t.owner "
+            "AND c.visibility = 0)",
+            "t WHERE NOT EXISTS (SELECT 1 FROM coder_names c WHERE c.name "
+            "= t.owner AND c.visibility = 0)",
         },
     }
 
@@ -1431,8 +1443,9 @@ class TestTheClassCannotComeBack:
 
     def test_the_sweep_finds_something(self):
         # An empty sweep would make the assertion above pass whatever
-        # the source says.
-        assert sum(len(v) for v in self._reads().values()) == 2
+        # the source says. Two reads, and the two strings of the new
+        # project's view statement.
+        assert sum(len(v) for v in self._reads().values()) == 4
 
     def test_the_sweep_would_notice_a_per_name_read(self):
         assert self._reads(
