@@ -234,10 +234,15 @@ class TestRecognisingAnUnusablePdf:
         (STORED_PDF, "pdf_file_stored_as_text"),
         ("x" * 1000 + "%PDF-1.4", "pdf_file_stored_as_text"),
         ("x" * 1020 + "%PDF-1.4", None),        # past the header window
-        ("text\x00more", "pdf_file_stored_as_text"),
+        # NULs alone are not a sign (fix round 1): a real 3.8.2 text layer
+        # can carry them (the QA gate's inriafonts.pdf: two NULs)
+        ("text\x00more", None),
         ("\n" * 5000, "no_text_layer"),
         ("\n" * 5000 + "a", None),
-        ("x" * 5000 + "\x00", "pdf_file_stored_as_text"),
+        ("x" * 5000 + "\x00", None),
+        ("%PDF-1.4\n%ascii streams, no NUL at all", "pdf_file_stored_as_text"),
+        (b"%PDF-1.7 \xff\xfe not UTF-8", "pdf_file_stored_as_text"),
+        (b"  \n\xa0", None),
     ])
     def test_the_rule(self, text, expected):
         assert dbmod.pdf_text_problem(text) == expected
@@ -414,6 +419,126 @@ class TestUnusablePdfsInCodingTools:
         assert "pdf_file_stored_as_text" in json.dumps(applied)
         assert _rows(folder, "SELECT COUNT(*) FROM code_text WHERE fid = 2"
                      ) == [(0,)]
+
+
+# A PDF 3.8.2 stored as the file itself with no NUL in it: its streams
+# written as ASCII (the refuter's route, which came back whole through
+# the case read), with a participant's name in its metadata.
+ASCII_STORED_PDF = ("%PDF-1.4\n1 0 obj\n<< /Title (Interview with Thomas "
+                    "Participant) /Author (Thomas Participant) "
+                    "/Keywords (ThomasP01) >>\nendobj\n"
+                    "2 0 obj\n<< /Type /Catalog >>\nendobj\n"
+                    "3 0 obj\n<< /Filter /ASCIIHexDecode >>\nstream\n"
+                    + "ff00ee11" * 200 + "\nendstream\nendobj\n%%EOF\n")
+
+
+def _case_with_links(folder: Path) -> None:
+    """Case 1 linked to every PDF the way QualCoder writes whole-file
+    links: 3.8.2's Manage Files (pos1 = len) and its case file manager
+    (pos1 = len - 1)."""
+    conn = sqlite3.connect(str(folder / "data.qda"))
+    conn.execute("INSERT INTO source (id, name, fulltext, mediapath, memo, "
+                 "owner, date) VALUES (7, 'consent.pdf', ?, "
+                 "'/docs/consent.pdf', '', 'V17Test', '2024-01-15')",
+                 (ASCII_STORED_PDF,))
+    conn.execute("INSERT INTO cases (caseid, name, memo, owner, date) "
+                 "VALUES (1, 'Thomas', '', 'V17Test', '2024-01-15')")
+    links = [(2, len(ARTICLE)), (3, len(SCANNED)), (4, len(STORED_PDF)),
+             (4, len(STORED_PDF) - 1), (7, len(ASCII_STORED_PDF)),
+             (7, len(ASCII_STORED_PDF) - 1), (1, 20)]
+    for i, (fid, pos1) in enumerate(links, start=1):
+        conn.execute("INSERT INTO case_text (id, caseid, fid, pos0, pos1, "
+                     "owner, date, memo) VALUES (?, 1, ?, 0, ?, 'V17Test', "
+                     "'2024-01-15', '')", (i, fid, pos1))
+    conn.commit()
+    conn.close()
+
+
+class TestTheCaseRead:
+    """Fix round 1, the first major: `qualcoder://cases/{id}` returned
+    a stored PDF file's bytes up to its first NUL, or whole without one."""
+
+    def _read(self, case_id=1):
+        import asyncio
+        contents = asyncio.run(server.mcp.read_resource(
+            f"qualcoder://cases/{case_id}"))
+        return "".join(item.content for item in contents)
+
+    def test_a_stored_pdf_file_gives_no_text_and_is_named(self, pdf_project):
+        _case_with_links(pdf_project)
+        text = self._read()
+        assert "%PDF" not in text
+        assert "Thomas Participant" not in text
+        assert "endobj" not in text
+        case = json.loads(text)
+        by_file = {}
+        for seg in case["text_segments"]:
+            by_file.setdefault(seg["file_id"], []).append(seg)
+        for fid in (4, 7):
+            assert len(by_file[fid]) == 2
+            for seg in by_file[fid]:
+                assert seg["text"] == ""
+                assert seg["unusable_pdf"]["reason"] == \
+                    "pdf_file_stored_as_text"
+        for seg in by_file[3]:
+            assert seg["unusable_pdf"]["reason"] == "no_text_layer"
+            assert seg["text"] == ""
+
+    def test_a_pdf_with_a_text_layer_and_a_text_file_keep_their_text(
+            self, pdf_project):
+        _case_with_links(pdf_project)
+        case = json.loads(self._read())
+        by_file = {seg["file_id"]: seg for seg in case["text_segments"]}
+        assert by_file[2]["text"] == ARTICLE
+        assert "unusable_pdf" not in by_file[2]
+        assert by_file[1]["text"] == \
+            "This is interview text. I feel"[:20]
+        assert "unusable_pdf" not in by_file[1]
+
+    def test_link_file_to_case_refuses_them_before_any_backup(
+            self, pdf_project):
+        folder = pdf_project
+        _case_with_links(folder)
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        conn.execute("DELETE FROM case_text")
+        conn.commit()
+        conn.close()
+        server.select_project(str(folder))
+        before = sorted(p.name for p in folder.parent.iterdir())
+        for fid, reason in ((4, "pdf_file_stored_as_text"),
+                            (7, "pdf_file_stored_as_text"),
+                            (3, "no_text_layer")):
+            out = json.loads(server.link_file_to_case(fid, case_id=1))
+            assert reason in out["error"], out
+            assert "not linked to a case" in out["error"]
+        assert sorted(p.name for p in folder.parent.iterdir()) == before
+        assert _rows(folder, "SELECT COUNT(*) FROM case_text") == [(0,)]
+        ok = json.loads(server.link_file_to_case(2, case_id=1))
+        assert ok.get("success") is True, ok
+
+    def test_the_names_left_count_never_reads_a_stored_pdf_file(
+            self, pdf_project):
+        """The pseudonymisation preview's count of names left in file
+        text used to read the stored file and could list a word from it
+        (here the PDF's keyword `ThomasP01`) as a longer word."""
+        _case_with_links(pdf_project)
+        out = json.loads(server.pseudonymise_source(
+            mapping=[{"original": "Thomas", "pseudonym": "Alex"}],
+            file_id=1, residue_detail="project"))
+        text = json.dumps(out)
+        assert "ThomasP01" not in text
+        assert "consent.pdf" not in text
+        assert "Participant" not in text
+
+    def test_the_database_refuses_the_link_too(self, pdf_project):
+        from qualcoder_mcp.database import QualcoderDatabase
+        _case_with_links(pdf_project)
+        wdb = QualcoderDatabase(str(pdf_project), read_only=False)
+        try:
+            with pytest.raises(ValueError, match="pdf_file_stored_as_text"):
+                wdb.link_file_to_case(1, 7, owner="V17Test")
+        finally:
+            wdb.close()
 
 
 # ===========================================================================
@@ -1006,3 +1131,309 @@ class TestTheDocumentsSayIt:
         assert "Error: the project set in QUALCODER_PROJECT_PATH was not " \
                "found; check the path in the host's configuration." in \
             printed
+
+
+# ===========================================================================
+# Fix round 1: a linked data.qda, and the smaller fixes
+# ===========================================================================
+
+import os  # noqa: E402
+
+needs_links = pytest.mark.skipif(
+    sys.platform == "win32", reason="symbolic links need privileges on "
+    "Windows; the rule is the same")
+
+
+def _link_database(folder: Path, outside: Path = None) -> Path:
+    """Move data.qda to db/real.qda (or outside the project) and link
+    data.qda to it: the refuter's layout."""
+    target_dir = outside if outside is not None else folder / "db"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "real.qda"
+    (folder / "data.qda").rename(target)
+    os.symlink(os.path.relpath(target, folder), folder / "data.qda")
+    return target
+
+
+class _Holder:
+    """Another program inside a write on a database file."""
+
+    def __init__(self, database: Path, spill: bool):
+        code = (
+            "import sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+            + ("c.execute('PRAGMA cache_size=1')\n" if spill else "")
+            + "c.execute('BEGIN IMMEDIATE')\n"
+            "c.execute(\"UPDATE code_name SET memo = 'uncommitted'\")\n"
+            "c.execute(\"UPDATE code_text SET seltext = 'uncommitted'\")\n"
+            + ("c.executemany('INSERT INTO code_text (cid, fid, seltext, "
+               "pos0, pos1, owner) VALUES (1, 1, ?, ?, ?, \\'x\\')', "
+               "[('u' * 500, i, i + 1) for i in range(3, 400)])\n"
+               if spill else "")
+            + "print('holding', flush=True)\n"
+            "sys.stdin.readline()\n"
+            "c.execute('ROLLBACK')\n")
+        self.proc = subprocess.Popen(
+            [sys.executable, "-c", code, str(database)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert self.proc.stdout.readline().strip() == "holding"
+
+    def release(self):
+        try:
+            self.proc.stdin.write("\n")
+            self.proc.stdin.flush()
+        except OSError:
+            pass
+        self.proc.wait(timeout=30)
+
+
+@needs_links
+class TestALinkedDatabase:
+
+    def test_a_link_inside_the_project_is_backed_up_consistently(
+            self, opened):
+        folder = opened("v17")
+        target = _link_database(folder)
+        holder = _Holder(target, spill=False)
+        try:
+            assert (target.parent / "real.qda-journal").exists()
+            report = {}
+            backup = backup_project(folder, report=report)
+        finally:
+            holder.release()
+        assert report["database_from_link"] is True
+        assert (backup / "data.qda").is_file()
+        assert not (backup / "data.qda").is_symlink()
+        # the target and its journal are not copied beside it
+        assert not (backup / "db" / "real.qda").exists()
+        assert not (backup / "db" / "real.qda-journal").exists()
+        for how in ("ro", "immutable"):
+            assert _read_backup(backup, how) == ("stress memo", 1, "ok")
+
+    def test_a_write_spilling_into_a_linked_database_blocks_the_backup(
+            self, opened, monkeypatch):
+        """The refuter's route: the other program's pages are in the
+        file. A byte copy took them (a state never committed, restored
+        silently); the online backup waits for the lock and, past the
+        wait, takes no backup at all."""
+        import qualcoder_mcp.database as database
+        monkeypatch.setattr(database, "BACKUP_BUSY_SECONDS", 0.3)
+        folder = opened("v17")
+        target = _link_database(folder)
+        before = sorted(p.name for p in folder.parent.iterdir())
+        holder = _Holder(target, spill=True)
+        try:
+            with pytest.raises(DatabaseLockedError):
+                backup_project(folder)
+        finally:
+            holder.release()
+        assert sorted(p.name for p in folder.parent.iterdir()) == before
+
+    def test_a_link_outside_the_project_writes_nothing(self, opened,
+                                                       tmp_path):
+        folder = opened("v17")
+        _link_database(folder, outside=tmp_path / "elsewhere")
+        server.select_project(str(folder))
+        before = sorted(p.name for p in folder.parent.iterdir())
+        out = json.loads(server.set_memo("code", 1, "new memo"))
+        assert out["error"] == server.BACKUP_WITHOUT_DATABASE_MESSAGE
+        assert _rows(folder, "SELECT memo FROM code_name WHERE cid = 1") \
+            == [("stress memo",)]
+        assert sorted(p.name for p in folder.parent.iterdir()) == before
+        copy = json.loads(server.copy_project_to_workspace(
+            str(folder), new_name="Copy"))
+        assert copy["error"] == server.BACKUP_WITHOUT_DATABASE_MESSAGE
+        # the text names no path
+        assert str(tmp_path) not in out["error"]
+
+    def test_a_backup_whose_database_is_a_link_is_named_and_refused(
+            self, opened):
+        folder = opened("v17")
+        backup = folder.parent / f"{folder.stem}_backup_20260901_100000.qda"
+        (backup / "db").mkdir(parents=True)
+        (backup / "db" / "real.qda").write_bytes(
+            (folder / "data.qda").read_bytes())
+        (backup / "db" / "real.qda-journal").write_bytes(b"pages")
+        os.symlink(os.path.join("db", "real.qda"), backup / "data.qda")
+        server.select_project(str(folder))
+        listed = json.loads(server.list_backups())["backups"][0]
+        assert listed["unclean"]["linked_database"] is True
+        assert listed["unclean"]["side_files"] == ["real.qda-journal"]
+        out = json.loads(server.restore_backup(str(backup)))
+        assert out["reason"] == "unclean_backup"
+        assert out["linked_database"] is True
+        assert "preview_token" not in out
+
+
+class TestTheSmallerFixes:
+
+    def test_an_empty_side_file_does_not_make_a_backup_unclean(self,
+                                                               opened):
+        folder = opened("v17")
+        empty = _plant_backup(folder, "20260901_100000",
+                              ["data.qda-journal"])
+        (empty / "data.qda-journal").write_bytes(b"")
+        full = _plant_backup(folder, "20260902_100000", ["data.qda-wal"])
+        server.select_project(str(folder))
+        marks = {b["name"]: "unclean" in b
+                 for b in json.loads(server.list_backups())["backups"]}
+        assert marks == {empty.name: False, full.name: True}
+        preview = json.loads(server.restore_backup(str(empty)))
+        assert "preview_token" in preview
+
+    def test_prune_names_the_unclean_backups_it_would_keep(self, opened):
+        folder = opened("v17")
+        _plant_backup(folder, "20260901_100000")
+        newest = _plant_backup(folder, "20260903_100000",
+                               ["data.qda-journal"])
+        os.utime(newest, (2_000_000_000, 2_000_000_000))
+        server.select_project(str(folder))
+        preview = json.loads(server.prune_backups(keep_last=1))
+        assert preview["would_keep_unclean"] == [newest.name]
+        assert any("none of the backups kept could be restored" in n
+                   for n in preview["notes"])
+
+    def test_the_database_copied_as_a_file_is_said(self, opened, tmp_path,
+                                                   monkeypatch):
+        import qualcoder_mcp.database as database
+        real = database._copy_database
+
+        def as_file(source, dest, report=None):
+            real(source, dest, report)
+            if report is not None:
+                report["database_copied_as_file"] = \
+                    "DatabaseError SQLITE_NOTADB"
+
+        monkeypatch.setattr(database, "_copy_database", as_file)
+        folder = opened("v17")
+        server.select_project(str(folder))
+        out = json.loads(server.set_memo("code", 1, "a memo"))
+        assert out["backup_database_copied_as_file"] == \
+            "DatabaseError SQLITE_NOTADB"
+        assert "may not be one committed state" in \
+            out["backup_database_copied_as_file_note"]
+        copy = json.loads(server.copy_project_to_workspace(
+            str(folder), new_name="Copy"))
+        assert copy["database_copied_as_file"] == \
+            "DatabaseError SQLITE_NOTADB"
+
+    def test_a_pdf_row_that_is_not_utf8_takes_nothing_down(self, opened):
+        folder = opened("v17")
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        conn.execute("INSERT INTO source (id, name, fulltext, mediapath) "
+                     "VALUES (8, 'bad.pdf', CAST(X'255044462d312e37ff00fe' "
+                     "AS TEXT), '/docs/bad.pdf')")
+        conn.execute("INSERT INTO source (id, name, fulltext, mediapath) "
+                     "VALUES (9, 'odd.pdf', CAST(X'48656c6c6fff' AS TEXT), "
+                     "'/docs/odd.pdf')")
+        conn.commit()
+        conn.close()
+        server.select_project(str(folder))
+        files = {f["id"]: f for f in json.loads(server.list_all_files())}
+        assert files[8]["unusable_pdf"] == "pdf_file_stored_as_text"
+        assert "unusable_pdf" not in files[9]
+        summary = json.loads(server.get_project_summary())
+        assert "error" not in summary, summary
+        session = json.loads(server.analyze_for_coding([1, 8]))
+        assert [f["file_id"] for f in session["files_refused"]] == [8]
+
+
+class TestAConfiguredProjectThatWillNotOpen:
+
+    @pytest.fixture
+    def broken(self, opened, monkeypatch):
+        folder = opened("v17")
+        (folder / "data.qda").write_bytes(b"not a database, " * 64)
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH", str(folder))
+        server.db = None
+        server.current_project_path = None
+        return folder
+
+    @pytest.mark.parametrize("call", [
+        lambda: server.list_backups(),
+        lambda: server.prune_backups(keep_last=1),
+        lambda: server.restore_backup("/nowhere/x_backup_1.qda"),
+        lambda: server.get_current_project(),
+        lambda: server.get_project_summary(),
+        lambda: server.set_memo("code", 1, "x", create_backup=False),
+        lambda: server.list_all_codes(),
+    ])
+    def test_one_text_in_every_tool_and_no_path(self, broken, call):
+        out = json.loads(call())
+        assert out["error"] == server.CONFIGURED_PROJECT_UNAVAILABLE
+        assert str(broken) not in out["error"]
+        assert "see list_backups" not in out["error"]
+
+
+class TestTheOtherAdoptions:
+    """QA's surviving mutations: three places that adopt a configured
+    project were unpinned."""
+
+    @pytest.fixture
+    def configured(self, opened, monkeypatch):
+        folder = opened("v17")
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH", str(folder))
+        server.db = None
+        server.current_project_path = None
+        return folder
+
+    def test_a_sessions_project_check(self, configured):
+        server.select_project(str(configured))
+        sid = json.loads(server.analyze_for_coding([1]))["coding_session_id"]
+        server.db.close()
+        server.db = None
+        server.current_project_path = None
+        out = json.loads(server.record_suggestions(sid, [
+            {"file_id": 1, "code_name": "Stress", "segment_text":
+             "I feel stressed", "reasoning": "r", "confidence": 0.9}]))
+        assert "No Qualcoder project selected" not in json.dumps(out)
+        assert out.get("recorded_count") == 1, out
+
+    def test_pseudonymise_source(self, configured):
+        out = json.loads(server.pseudonymise_source(
+            mapping=[{"original": "deadlines", "pseudonym": "targets"}],
+            file_id=1))
+        assert "No Qualcoder project selected" not in json.dumps(out)
+        assert "preview_token" in out, out
+
+    def test_import_text_files_pseudonym_route(self, configured):
+        (configured / "pseudonyms.json").write_text(
+            json.dumps([{"original": "Thomas", "pseudonym": "Alex"}]),
+            encoding="utf-8")
+        out = json.loads(server.import_text_file(
+            "new.txt", "Thomas said so.", apply_project_pseudonyms=True,
+            create_backup=False))
+        assert "No Qualcoder project selected" not in json.dumps(out)
+        assert out.get("success") is True, out
+
+
+class TestTheFixRoundDocuments:
+
+    def test_qualcoders_saves_wait_while_a_copy_runs(self):
+        import asyncio
+        tools = asyncio.run(server.mcp.list_tools())
+        copy = _flat(next(t.description for t in tools
+                          if t.name == "copy_project_to_workspace"))
+        assert "QualCoder's own saves wait while it runs" in copy
+        for name, phrase in (
+                ("README.md", "QualCoder's own saves wait for it"),
+                ("PRIVACY.md", "QualCoder's own saves wait for it"),
+                ("CHANGELOG.md", "QualCoder's own saves wait")):
+            text = _flat((REPO / name).read_text(encoding="utf-8"))
+            assert phrase in text, name
+            assert "about 4 GB or more" in text, name
+
+    def test_the_other_fix_round_sentences(self):
+        changelog = _flat((REPO / "CHANGELOG.md").read_text(
+            encoding="utf-8")).split("## [0.13")[0]
+        assert "the case resource qualcoder://cases/{id}" in changelog
+        assert "and by link_file_to_case" in changelog
+        assert "a real text layer that quotes a PDF header there is " \
+               "taken for one" in changelog
+        readme = _flat((REPO / "README.md").read_text(encoding="utf-8"))
+        assert "QualCoder's own count when no coder is hidden" in readme
+        privacy = _flat((REPO / "PRIVACY.md").read_text(encoding="utf-8"))
+        assert "Copy the whole project folder by hand, with QualCoder " \
+               "closed, before trying any repair" in privacy
+        assert "A database SQLite cannot read (a damaged one) is copied " \
+               "as a file" not in privacy

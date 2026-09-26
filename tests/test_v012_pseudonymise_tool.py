@@ -8243,8 +8243,9 @@ class TestTheDescriptionCarriesWhatD1Requires:
          "Every count is two readings, wide and whole-word, and the "
          "residue's file_text block counts the names left in the text of "
          "every file after the run, the files this run does not touch "
-         "included; a name inside a longer word is reported and never "
-         "substituted."),
+         "included (not a PDF QualCoder 3.8.2 stored as the file itself, "
+         "which holds no text); a name inside a longer word is reported "
+         "and never substituted."),                      # v0.14 brief D
         ("the_scan_residue_argument",                    # v0.13 Brief 1
          "scan_residue: Count where the names also occur in notes, labels "
          "and attribute values, and in the text of every file after the "
@@ -8474,9 +8475,12 @@ class TestTheDocumentsTellTheTruth:
         # v0.13: a PDF's stored text is counted by the residue's
         # file-text block, so "neither rewritten nor scanned" became
         # false of PDFs and the sentence says what is true now.
+        # v0.14 brief D, fix round 1: not a PDF 3.8.2 stored as the file
+        # itself, whose bytes the count no longer reads.
         "PDFs are never rewritten, and their stored text is counted with "
-        "every other file's; media files and `ai_data/` are out of scope "
-        "and are neither rewritten nor scanned.",
+        "every other file's (not a PDF that QualCoder 3.8.2 stored as the "
+        "file itself, which holds no text); media files and `ai_data/` are "
+        "out of scope and are neither rewritten nor scanned.",
         # v0.13, Brief 2 (its hand-off note, H.2.8, and the lead's first
         # answer): the tool entry's wording is conditional now and is
         # pinned here; the v0.12 sentence stays only in the "Completed in

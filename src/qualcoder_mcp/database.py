@@ -921,10 +921,17 @@ def _detect_file_type(mediapath: str) -> str:
 #   Master repairs such a row in place with its PDF view's Restructure.
 # Recognising the second is a HEURISTIC, named as one wherever it is
 # reported: the PDF header '%PDF-' within the first 1,024 characters
-# (where the PDF format allows it), or a NUL character anywhere. A real
-# text layer that quotes a PDF header near its start would be taken for
-# one. A PDF that is only partly scanned cannot be recognised without a
-# PDF engine (study, 3.2), which this server does not have.
+# (where the PDF format allows it). A real text layer that quotes a PDF
+# header near its start would be taken for one, and QualCoder 4.0's
+# Restructure would not change it (its own extraction would quote the
+# same header). NUL characters alone are no longer a sign (fix round 1):
+# over 390 real PDFs (QA gate, `qa-brief-d-evidence/pdf/`) every one of
+# 121 rows 3.8.2's fallback would store began with the header, while
+# the only row with NULs and no header was a real text layer (two NULs
+# from pdfminer in 14,210 characters of TeX Live's `inriafonts.pdf`);
+# QualCoder 4.0 strips NULs as it extracts (pdf_utils.py:118). A PDF
+# that is only partly scanned cannot be recognised without a PDF engine
+# (study, 3.2), which this server does not have.
 # ----------------------------------------------------------------------------
 PDF_NO_TEXT_LAYER = "no_text_layer"
 PDF_STORED_AS_TEXT = "pdf_file_stored_as_text"
@@ -941,9 +948,8 @@ PDF_PROBLEM_MESSAGES = {
     PDF_STORED_AS_TEXT: (
         "QualCoder 3.8.2 appears to have stored this PDF file itself as "
         "its text (recognised by a heuristic: the PDF header near the "
-        "start of the stored text, or NUL characters in it), so the "
-        "stored text is withheld here and this file is not searched or "
-        "coded. To repair it in place, open the file in QualCoder 4.0's "
+        "start of the stored text), so the stored text is withheld here "
+        "and this file is not searched, coded or linked to a case. To repair it in place, open the file in QualCoder 4.0's "
         "PDF view and accept 'Restructure' (the file keeps its id, "
         "attributes and case links). To code its words, run OCR on the "
         "PDF outside this server (this server bundles none) and import "
@@ -951,18 +957,21 @@ PDF_PROBLEM_MESSAGES = {
 }
 
 
-def pdf_text_problem(text: Optional[str]) -> Optional[str]:
+def pdf_text_problem(text: Any) -> Optional[str]:
     """Why a PDF source's stored text is unusable, or None.
 
     Call it only for a source `_detect_file_type` calls "pdf". Returns
     PDF_STORED_AS_TEXT (a heuristic, see above), PDF_NO_TEXT_LAYER, or
-    None for a PDF with a text layer.
+    None for a PDF with a text layer. A value stored as bytes (a damaged
+    or hand-made row) is read as UTF-8 with replacement characters.
     """
     if text is None:
         return PDF_NO_TEXT_LAYER
-    if not isinstance(text, str):
-        return PDF_STORED_AS_TEXT
-    if "\x00" in text or "%PDF-" in text[:PDF_HEADER_WINDOW]:
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    elif not isinstance(text, str):
+        text = str(text)
+    if "%PDF-" in text[:PDF_HEADER_WINDOW]:
         return PDF_STORED_AS_TEXT
     if not text.strip():
         return PDF_NO_TEXT_LAYER
@@ -978,6 +987,17 @@ def unusable_pdf_block(problem: str) -> Dict[str, Any]:
                                "whitespace"),
         "message": PDF_PROBLEM_MESSAGES[problem],
     }
+
+
+def unusable_pdf_link_refusal(name: Any, problem: str) -> str:
+    """Why `link_file_to_case` refuses a PDF with no usable text (fix
+    round 1): a whole-file link to it would carry the stored file, or
+    nothing, as the case's text."""
+    return (f"File '{name}' is a PDF with no usable text ({problem}), so "
+            f"it is not linked to a case here: a case link covers a "
+            f"file's text, and this file has none this server can use. "
+            f"{PDF_PROBLEM_MESSAGES[problem]} QualCoder itself can still "
+            f"link it to the case.")
 
 
 def validate_qda_path(db_path: str) -> Path:
@@ -1766,7 +1786,8 @@ BACKUP_IGNORE_PATTERNS = ("*.lock",) + QUALCODER_BACKUP_IGNORE_PATTERNS
 
 
 def _copy_ignore(project_root: Union[str, Path], skipped: List[str],
-                 database_copied: bool = False):
+                 database_copied: bool = False,
+                 exclude_real: Optional[set] = None):
     """The ignore callback shared by backup_project and copy_project_to_workspace.
 
     Applies BACKUP_IGNORE_PATTERNS and additionally skips any entry that
@@ -1789,7 +1810,9 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str],
 
     With `database_copied` (v0.14), `data.qda` and its side files at the
     project root are left out too: the caller has already written the
-    database into the copy by `_copy_database`.
+    database into the copy by `_copy_database`. `exclude_real` (fix round
+    1) names, by real path, the file a linked `data.qda` points to and
+    its side files, which the copy has already taken consistently.
     """
     root_real = os.path.normcase(os.path.realpath(project_root))
     patterns = shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
@@ -1814,6 +1837,11 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str],
         if database_copied and \
                 os.path.normcase(os.path.abspath(dirpath)) == root_norm:
             ignored.update(n for n in names if n in DATABASE_FILES)
+        if exclude_real:
+            ignored.update(
+                n for n in names
+                if os.path.normcase(os.path.realpath(
+                    os.path.join(dirpath, n))) in exclude_real)
         on_path = None
         for name in names:
             if name in ignored:
@@ -1874,10 +1902,19 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str],
 #
 # A database SQLite cannot read (not a database, or damaged) cannot be
 # copied that way; it is copied as a file, with any side files beside
-# it, so a restore's safety backup of a damaged project keeps it as it
-# is; such a copy is named unclean by `list_backups` when it carries a
-# journal. A database another program keeps locked past
+# it, and such a copy is named unclean by `list_backups` when it carries
+# a journal. A database another program keeps locked past
 # BACKUP_BUSY_SECONDS raises DatabaseLockedError: nothing is copied.
+#
+# A `data.qda` that is a link (fix round 1; QualCoder never makes one,
+# but the server accepts it): one resolving to a file inside the project
+# is copied the same way, from the file it points to, and that file and
+# its side files are left out of the rest of the copy, whose `data.qda`
+# is then a plain file (copytree would have followed the link and
+# copied the bytes, with no lock, beside the other program's journal
+# under the target's own name). One pointing outside the project, or to
+# nothing, raises BackupWithoutDatabaseError: the copy would hold no
+# database, so nothing is copied and no write proceeds on it.
 # ----------------------------------------------------------------------------
 DATABASE_SIDE_FILES = ("data.qda-journal", "data.qda-wal", "data.qda-shm")
 DATABASE_FILES = ("data.qda",) + DATABASE_SIDE_FILES
@@ -1885,20 +1922,62 @@ DATABASE_FILES = ("data.qda",) + DATABASE_SIDE_FILES
 # write was in flight (or before this release): the journal holds pages
 # of an uncommitted write, the WAL committed pages not yet in the file.
 UNCLEAN_BACKUP_SIDE_FILES = ("data.qda-journal", "data.qda-wal")
+_SIDE_SUFFIXES = ("-journal", "-wal", "-shm")
+
+
+class BackupWithoutDatabaseError(OSError):
+    """The project's data.qda is a link outside the project, or to
+    nothing: a backup or copy would hold no database (fix round 1)."""
+
+
+BACKUP_WITHOUT_DATABASE_MESSAGE = (
+    "This project's data.qda is a link to a file outside the project "
+    "folder (or to nothing), so a backup or copy of the project would not "
+    "hold its database; nothing was written or copied. Put the database "
+    "file itself in the project folder, as QualCoder makes it, and retry.")
+
+
+def _side_file_is_live(path: str) -> bool:
+    """A side file that SQLite would act on: a link, or a file with
+    something in it (an empty journal or WAL file is ignored by SQLite,
+    fix round 1)."""
+    try:
+        if os.path.islink(path):
+            return True
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except (OSError, ValueError):
+        return False
+
+
+def backup_database_is_link(folder: Union[str, Path]) -> bool:
+    """Whether a backup's data.qda is itself a link (fix round 1)."""
+    try:
+        return os.path.islink(os.path.join(os.fspath(folder), "data.qda"))
+    except (OSError, ValueError):
+        return False
 BACKUP_BUSY_SECONDS = 15.0
 _SQLITE_BUSY_CODES = (5, 6)   # SQLITE_BUSY, SQLITE_LOCKED
 
 
 def unclean_backup_side_files(folder: Union[str, Path]) -> List[str]:
     """The side files that make a backup folder unclean, by name: a
-    journal or a WAL file beside its `data.qda` (a link counts too)."""
+    journal or a WAL file beside its `data.qda` that is not empty (a
+    link counts too), and, when `data.qda` is a link, one beside the
+    file it points to (fix round 1: SQLite names a linked database's
+    journal after the target)."""
     out = []
+    base = os.fspath(folder)
     for name in UNCLEAN_BACKUP_SIDE_FILES:
+        if _side_file_is_live(os.path.join(base, name)):
+            out.append(name)
+    if backup_database_is_link(folder):
         try:
-            if os.path.lexists(os.path.join(os.fspath(folder), name)):
-                out.append(name)
+            real = os.path.realpath(os.path.join(base, "data.qda"))
         except (OSError, ValueError):
-            continue
+            return out
+        for suffix in ("-journal", "-wal"):
+            if _side_file_is_live(real + suffix):
+                out.append(os.path.basename(real) + suffix)
     return out
 
 
@@ -1953,10 +2032,10 @@ def _copy_database(source: Path, dest: Path,
         except FileNotFoundError:
             pass
     shutil.copy2(source, dest)
-    for name in DATABASE_SIDE_FILES:
-        side = source.parent / name
+    for suffix in _SIDE_SUFFIXES:
+        side = source.with_name(source.name + suffix)
         if side.is_file() and not side.is_symlink():
-            shutil.copy2(side, dest.parent / name)
+            shutil.copy2(side, dest.with_name(dest.name + suffix))
     if report is not None:
         report["database_copied_as_file"] = failure
 
@@ -1965,16 +2044,34 @@ def _copy_project_tree(source: Path, dest: Path, skipped: List[str],
                        report: Optional[Dict[str, Any]] = None) -> None:
     """Copy a project folder into `dest`, an empty folder the caller has
     just claimed (and removes on any failure): the database
-    consistently, the rest as before. A data.qda that is a link is left
-    to copytree and `_copy_ignore`, as before."""
+    consistently, the rest as before. A data.qda that is a link inside
+    the project is copied from the file it points to, which is then left
+    out with its side files; one pointing outside the project, or to
+    nothing, raises BackupWithoutDatabaseError before anything is
+    written (fix round 1)."""
     database = source / "data.qda"
-    database_copied = database.is_file() and not database.is_symlink()
-    if database_copied:
+    exclude_real: set = set()
+    database_copied = False
+    if database.is_symlink():
+        root_real = os.path.normcase(os.path.realpath(source))
+        real = os.path.realpath(database)
+        inside = os.path.normcase(real).startswith(root_real + os.sep)
+        if not inside or not os.path.isfile(real):
+            raise BackupWithoutDatabaseError(BACKUP_WITHOUT_DATABASE_MESSAGE)
+        _copy_database(Path(real), dest / "data.qda", report)
+        exclude_real = {os.path.normcase(real + suffix)
+                        for suffix in ("",) + _SIDE_SUFFIXES}
+        database_copied = True
+        if report is not None:
+            report["database_from_link"] = True
+    elif database.is_file():
         _copy_database(database, dest / "data.qda", report)
+        database_copied = True
     shutil.copytree(
         source, dest, dirs_exist_ok=True,
         ignore=_copy_ignore(source, skipped,
-                            database_copied=database_copied))
+                            database_copied=database_copied,
+                            exclude_real=exclude_real))
 
 
 def backup_project(project_path: Union[str, Path],
@@ -2067,6 +2164,13 @@ def backup_project(project_path: Union[str, Path],
         # Another program kept the database locked (v0.14): no backup,
         # so nothing may be written; said as the lock it is
         logger.error("Failed to create backup: the database stayed locked")
+        shutil.rmtree(backup_path, ignore_errors=True)
+        raise
+    except BackupWithoutDatabaseError:
+        # The copy would hold no database (fix round 1): no backup, so
+        # nothing may be written
+        logger.error("Failed to create backup: data.qda links outside "
+                     "the project")
         shutil.rmtree(backup_path, ignore_errors=True)
         raise
     except Exception as e:
@@ -2188,6 +2292,11 @@ def copy_project_to_workspace(
         return dest_path
     except DatabaseLockedError:
         logger.error("Failed to copy project: the database stayed locked")
+        shutil.rmtree(dest_path, ignore_errors=True)
+        raise
+    except BackupWithoutDatabaseError:
+        logger.error("Failed to copy project: data.qda links outside the "
+                     "project")
         shutil.rmtree(dest_path, ignore_errors=True)
         raise
     except Exception as e:
@@ -3941,6 +4050,19 @@ class QualcoderDatabase:
             _raise_query_error(e, "count_codings_for_code",
                                "Failed to count codings")
 
+    def unusable_pdf_problem(self, file_id: int) -> Optional[str]:
+        """`pdf_text_problem` for one source when it is a PDF, else None."""
+        try:
+            row = self.conn.execute(
+                "SELECT mediapath FROM source WHERE id = ?",
+                (int(file_id),)).fetchone()
+        except sqlite3.Error as e:
+            _raise_query_error(e, "unusable_pdf_problem",
+                               "Failed to read the source")
+        if row is None or _detect_file_type(row["mediapath"]) != "pdf":
+            return None
+        return self.pdf_text_problems([int(file_id)]).get(int(file_id))
+
     def non_text_coding_counts(self, code_ids: Optional[Sequence[int]] = None,
                                file_ids: Optional[Sequence[int]] = None,
                                coder: Optional[str] = None,
@@ -4036,22 +4158,24 @@ class QualcoderDatabase:
         """`pdf_text_problem` for each of these PDF sources, by id, for
         those that have one, without reading every PDF's whole text.
 
-        The NUL test runs inside SQLite on the stored bytes; the header
-        test reads the first 1,024 characters; a whole text is read only
-        when those characters are all whitespace and the text is longer.
+        Reads the first bytes of each stored text as bytes (so a row that
+        is not UTF-8 cannot take the list down; fix round 1) and decodes
+        them with replacement characters: 4 bytes a character at most, so
+        the first 1,024 characters are always whole. A whole text is read
+        only when those bytes are all whitespace and the text is longer.
         Agrees with `pdf_text_problem` on the whole text (tested).
         """
         out: Dict[int, str] = {}
         ids = [int(i) for i in file_ids]
+        head_bytes = 4 * PDF_HEADER_WINDOW
         for start in range(0, len(ids), 500):
             chunk = ids[start:start + 500]
             marks = ",".join("?" for _ in chunk)
             try:
                 rows = self.conn.execute(
                     f"SELECT id, fulltext IS NULL AS missing, "
-                    f"typeof(fulltext) AS kind, "
-                    f"instr(CAST(fulltext AS BLOB), X'00') AS nul, "
-                    f"substr(fulltext, 1, {PDF_HEADER_WINDOW}) AS head, "
+                    f"substr(CAST(fulltext AS BLOB), 1, {head_bytes}) "
+                    f"AS head, "
                     f"length(CAST(fulltext AS BLOB)) AS nbytes "
                     f"FROM source WHERE id IN ({marks})",
                     tuple(chunk)).fetchall()
@@ -4063,21 +4187,22 @@ class QualcoderDatabase:
                 if row["missing"]:
                     out[fid] = PDF_NO_TEXT_LAYER
                     continue
-                if row["kind"] != "text" or row["nul"]:
-                    out[fid] = PDF_STORED_AS_TEXT
-                    continue
-                head = row["head"] or ""
-                if "%PDF-" in head:
+                raw = bytes(row["head"] or b"")
+                head = raw.decode("utf-8", "replace")
+                if "%PDF-" in head[:PDF_HEADER_WINDOW]:
                     out[fid] = PDF_STORED_AS_TEXT
                     continue
                 if head.strip():
                     continue
-                if len(head.encode("utf-8", "surrogatepass")) \
-                        < (row["nbytes"] or 0):
-                    whole = self.conn.execute(
-                        "SELECT fulltext FROM source WHERE id = ?",
-                        (fid,)).fetchone()[0]
-                    problem = pdf_text_problem(whole)
+                if len(raw) < (row["nbytes"] or 0):
+                    try:
+                        whole = self.conn.execute(
+                            "SELECT CAST(fulltext AS BLOB) FROM source "
+                            "WHERE id = ?", (fid,)).fetchone()[0]
+                    except sqlite3.Error as e:
+                        _raise_query_error(e, "pdf_text_problems",
+                                           "Failed to read the PDF sources")
+                    problem = pdf_text_problem(bytes(whole or b""))
                     if problem is not None:
                         out[fid] = problem
                     continue
@@ -4380,8 +4505,23 @@ class QualcoderDatabase:
         if not row:
             return None
 
+        # A PDF with no usable text gives no text for its links (fix
+        # round 1): the excerpt of a PDF that 3.8.2 stored as the file
+        # itself is the file's own bytes, up to its first NUL, or whole
+        # when it has none. The rule is the file read's
+        # (`pdf_text_problems`); the excerpt is never selected.
+        linked = self.conn.execute(
+            "SELECT DISTINCT s.id, s.mediapath FROM case_text ct "
+            "JOIN source s ON ct.fid = s.id WHERE ct.caseid = ?",
+            (case_id,)).fetchall()
+        problems = self.pdf_text_problems(
+            [r["id"] for r in linked
+             if _detect_file_type(r["mediapath"]) == "pdf"])
+        withheld = sorted(problems)
+        marks = ",".join("?" for _ in withheld) or "NULL"
+
         # Get associated text segments
-        segments_cursor = self.conn.execute("""
+        segments_cursor = self.conn.execute(f"""
             SELECT
                 ct.id,
                 ct.pos0,
@@ -4389,16 +4529,18 @@ class QualcoderDatabase:
                 ct.memo,
                 s.name as file_name,
                 s.id as file_id,
-                substr(s.fulltext, ct.pos0 + 1, ct.pos1 - ct.pos0) as text_excerpt
+                CASE WHEN s.id IN ({marks}) THEN NULL
+                     ELSE substr(s.fulltext, ct.pos0 + 1, ct.pos1 - ct.pos0)
+                END as text_excerpt
             FROM case_text ct
             JOIN source s ON ct.fid = s.id
             WHERE ct.caseid = ?
             ORDER BY s.name, ct.pos0
-        """, (case_id,))
+        """, (*withheld, case_id))
 
         segments = []
         for seg_row in segments_cursor.fetchall():
-            segments.append({
+            segment = {
                 "id": seg_row["id"],
                 "file_name": seg_row["file_name"],
                 "file_id": seg_row["file_id"],
@@ -4406,7 +4548,12 @@ class QualcoderDatabase:
                 "position_end": seg_row["pos1"],
                 "text": seg_row["text_excerpt"] or "",
                 "memo": seg_row["memo"] or ""
-            })
+            }
+            problem = problems.get(seg_row["file_id"])
+            if problem is not None:
+                segment["text"] = ""
+                segment["unusable_pdf"] = unusable_pdf_block(problem)
+            segments.append(segment)
 
         return {
             "id": row["caseid"],
@@ -4981,120 +5128,6 @@ class QualcoderDatabase:
             return results
         except sqlite3.Error as e:
             _raise_query_error(e, "search_memos", "Failed to search memos")
-
-    def search_file_content(
-        self,
-        query: str,
-        case_sensitive: bool = False,
-        limit: int = DEFAULT_LIMIT,
-        context_chars: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Search through full text content of all text files.
-
-        WARNING: This searches ALL file content and can be slow for large projects
-        with many files. Consider using more specific search methods if possible.
-
-        Args:
-            query: Text to search for
-            case_sensitive: Whether to perform case-sensitive search (default: False)
-            limit: Maximum number of files to return (default: DEFAULT_LIMIT)
-            context_chars: Number of characters of context around each match (default: 100)
-
-        Returns:
-            List of dictionaries containing:
-            - file_id: The file ID
-            - file_name: The file name
-            - file_type: The file type
-            - match_count: Number of matches in this file
-            - matches: List of match dictionaries with:
-                - position: Character position of match
-                - preview: Text snippet with context around match
-        """
-        limit = validate_limit(limit)
-
-        if not query:
-            return []
-
-        try:
-            # Search through text files only
-            cursor = self.conn.execute("""
-                SELECT
-                    id,
-                    name,
-                    fulltext,
-                    mediapath,
-                    memo,
-                    owner,
-                    date
-                FROM source
-                WHERE mediapath IS NULL OR mediapath = ''
-                    OR mediapath LIKE '/docs/%' OR mediapath LIKE 'docs:%'
-                ORDER BY name
-            """)
-
-            results = []
-            files_checked = 0
-
-            for row in cursor.fetchall():
-                files_checked += 1
-                file_text = row["fulltext"] or ""
-
-                # Search the ORIGINAL text, so the reported position is a
-                # position in the file rather than in a lower-cased copy
-                # of it, which str.lower() is free to lengthen (QA round
-                # 1, F5: the same defect as in search_files).
-                content_regex = re.compile(
-                    re.escape(query), 0 if case_sensitive else re.IGNORECASE)
-
-                # Find all matches
-                matches = []
-                start_pos = 0
-
-                while True:
-                    found = content_regex.search(file_text, start_pos)
-                    if found is None:
-                        break
-                    pos = found.start()
-
-                    # Extract context around match
-                    context_start = max(0, pos - context_chars)
-                    context_end = min(len(file_text), found.end() + context_chars)
-                    preview = file_text[context_start:context_end]
-
-                    # Add ellipsis if truncated
-                    if context_start > 0:
-                        preview = "..." + preview
-                    if context_end < len(file_text):
-                        preview = preview + "..."
-
-                    matches.append({
-                        "position": pos,
-                        "preview": preview
-                    })
-
-                    start_pos = pos + 1  # Continue searching
-
-                # If matches found, add to results
-                if matches:
-                    results.append({
-                        "file_id": row["id"],
-                        "file_name": row["name"],
-                        "file_type": _detect_file_type(row["mediapath"]),
-                        "memo": row["memo"] or "",
-                        "match_count": len(matches),
-                        "matches": matches[:10]  # Limit to first 10 matches per file
-                    })
-
-                # Stop if we've reached the limit
-                if len(results) >= limit:
-                    break
-
-            logger.info(f"Content search found {len(results)} files with matches "
-                       f"(searched {files_checked} files)")
-            return results
-
-        except sqlite3.Error as e:
-            _raise_query_error(e, "search_file_content", "Failed to search file content")
 
     def search_files(
         self,
@@ -6970,6 +7003,10 @@ class QualcoderDatabase:
             raise ValueError(f"Case ID {case_id} does not exist")
         if not file_row:
             raise ValueError(f"File ID {file_id} does not exist")
+        problem = self.unusable_pdf_problem(file_id)
+        if problem is not None:
+            raise ValueError(unusable_pdf_link_refusal(file_row["name"],
+                                                       problem))
 
         # Whole-file span. Write convention standardized on
         # pos1 = len(fulltext): master's unified choice
@@ -9172,7 +9209,8 @@ class QualcoderDatabase:
                 # count a state that was never committed, so such a
                 # backup is skipped, as mode=ro alone would have refused
                 # it (fix round 3, F2A-5).
-                if unclean_backup_side_files(entry):
+                if unclean_backup_side_files(entry) or \
+                        backup_database_is_link(entry):
                     continue
                 uri = _sqlite_ro_uri(data) + "&immutable=1"
                 with closing(sqlite3.connect(uri, uri=True)) as con:
@@ -10511,6 +10549,11 @@ class QualcoderDatabase:
                 sources.append((fid, row["name"], rewritten[fid], None))
                 continue
             if str(row["mediapath"] or "").lower().endswith(".pdf"):
+                # A PDF that 3.8.2 stored as the file itself holds no text
+                # to count names in, and its bytes are never read out,
+                # not even as a longer word (fix round 1)
+                if pdf_text_problem(text) == PDF_STORED_AS_TEXT:
+                    continue
                 reason = "pdf_source"
             elif fid == chosen:
                 reason = "no_match"

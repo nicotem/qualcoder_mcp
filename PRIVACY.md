@@ -446,8 +446,17 @@ never committed, which some SQLite builds then show and others refuse
 to read. A backup that holds them (copied while a program was writing,
 made before 0.14, or made by QualCoder itself) is marked `unclean` by
 `list_backups` and refused by `restore_backup`; it can still be pruned.
-A database SQLite cannot read (a damaged one) is copied as a file, with
-its side files, so a backup of a damaged project keeps it as it was.
+The copy holds SQLite's read lock while it runs, about 1.2 seconds per
+gigabyte on a Mac's SSD, so QualCoder's own saves wait for it, and a
+save in an open QualCoder window can fail if the copy outlasts
+QualCoder's five-second wait (a database of about 4 GB or more, less on
+slower disks). A `data.qda` that is a link into the project is copied
+from the file it points to; one pointing outside the project is
+refused, and nothing is written. A damaged database is a different
+case: every tool here opens the database before it takes a backup, so
+none can back up or restore a project whose database will not open.
+Copy the whole project folder by hand, with QualCoder closed, before
+trying any repair, and keep that copy.
 
 Besides `restore_backup`, which checks that no journal or WAL file
 sits beside the database of the backup you choose, opens it to check

@@ -1323,8 +1323,12 @@ class TestResourcesLogNothingOverTheWire:
                                    configured=wire.research)
         assert _named_lines(stderr) == [], stderr
         assert "Error reading resource" not in stderr
-        assert "Directory must have .qda extension" in \
-            json.loads(answers[0])["error"]
+        # v0.14 brief D, fix round 1: one text for a configured project
+        # that cannot be opened, in every tool, without the path (it
+        # used to be "Directory must have .qda extension: <path>")
+        error = json.loads(answers[0])["error"]
+        assert error == server.CONFIGURED_PROJECT_UNAVAILABLE
+        assert str(wire.research) not in error
 
     def test_a_lost_connection(self, tmp_path):
         """Selected; a mistyped second selection drops the connection; the
@@ -1369,9 +1373,19 @@ class TestResourcesLogNothingOverTheWire:
                                    configured=wire.project)
         assert _named_lines(stderr) == [], stderr
         assert "Error reading resource" not in stderr
+        # v0.14 brief D, fix round 1: a configured project answers its
+        # one text; the log keeps the kind
         assert json.loads(answers[0]) == {
-            "error": "File or project not found."}
-        assert "Not found in get_project_info: FileNotFoundError" in stderr
+            "error": server.CONFIGURED_PROJECT_UNAVAILABLE}
+        assert "Failed to connect to database: FileNotFoundError" in stderr
+
+    def test_the_file_system_arm_answers_its_fixed_text(self):
+        """The arm the test above used to reach through a configured
+        project (QA's mutation Q5), now reached directly."""
+        answer = json.loads(server._error_answer(
+            "get_project_info",
+            FileNotFoundError("Path not found: /x/Thomas study.qda")))
+        assert answer == {"error": "File or project not found."}
 
 
 # =============================================================================

@@ -420,7 +420,9 @@ class TestAHalfWrittenBackupIsSkipped:
     def test_skipped(self, legacy, side):
         assert _file(5, "legacy2.txt")["changed"]
         [b1] = _backups(legacy)
-        (b1 / side).write_bytes(b"")
+        # Not empty (v0.14 brief D, fix round 1): SQLite ignores an empty
+        # journal or WAL file, and so does the rule that skips a backup
+        (b1 / side).write_bytes(b"pages of a write never committed")
         out = _file(5, "legacy.txt", create_backup=False)
         assert "already holds" in out.get("error", ""), out
         (b1 / side).unlink()

@@ -45,6 +45,7 @@ from .database import (
     documents_name_key,
     _detect_file_type as detect_file_type,
     unusable_pdf_block,
+    unusable_pdf_link_refusal,
     validate_id,
     validate_limit,
     MAX_LIMIT,
@@ -53,6 +54,9 @@ from .database import (
     MAX_CODER_NAME_LENGTH,
     backup_project,
     unclean_backup_side_files,
+    backup_database_is_link,
+    BackupWithoutDatabaseError,
+    BACKUP_WITHOUT_DATABASE_MESSAGE,
     default_workspace,
     qualcoder_lock_state,
     qualcoder_open_message,
@@ -453,6 +457,11 @@ def _error_answer(where: str, e: BaseException,
         return json.dumps({"error": DB_UNAVAILABLE_ERROR})
     if isinstance(e, (ValueError, TypeError)):
         return json.dumps({"error": str(e)})
+    if isinstance(e, BackupWithoutDatabaseError):
+        # A copy that would hold no database (fix round 1): its own fixed
+        # text, which carries no path
+        logger.error("No database to back up in %s", where)
+        return json.dumps({"error": BACKUP_WITHOUT_DATABASE_MESSAGE})
     if isinstance(e, FileNotFoundError):
         logger.error("Not found in %s: %s", where, error_label(e))
         return json.dumps({"error": "File or project not found."})
@@ -708,12 +717,34 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
             # Neither the path nor the folder's name (v0.14)
             logger.info("Connected to the project set in "
                         "QUALCODER_PROJECT_PATH")
-        except (ValueError, FileNotFoundError, RuntimeError) as e:
+        except (DatabaseLockedError, UnsupportedSchemaError):
+            # Their own texts, which carry no path: a lock is a moment,
+            # an old schema has its advice
+            raise
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as e:
+            # One text for a configured project that cannot be opened,
+            # in every tool, without the path (fix round 1)
             logger.error("Failed to connect to database: %s",
                          error_label(e))
-            raise
+            raise ConfiguredProjectError(
+                CONFIGURED_PROJECT_UNAVAILABLE) from None
 
     return db
+
+
+CONFIGURED_PROJECT_UNAVAILABLE = (
+    "The project set in QUALCODER_PROJECT_PATH could not be opened: it was "
+    "not found, is not a QualCoder project folder, or its database will not "
+    "open. Check the path in the host's configuration; if QualCoder has the "
+    "project open, close it and retry. While the database will not open, no "
+    "tool here can read, back it up or restore it: its backups, if any, sit "
+    "beside the project folder under its name with _backup_ or _BKUP_, and "
+    "one can be copied back by hand with QualCoder closed.")
+
+
+class ConfiguredProjectError(ValueError):
+    """The configured project could not be opened (fix round 1): answered
+    with CONFIGURED_PROJECT_UNAVAILABLE by every tool."""
 
 
 def _adopt_configured_project() -> None:
@@ -1715,6 +1746,14 @@ _SKIPPED_SYMLINKS_NOTE = (
     "backups or copies; the entries named here are absent from this copy.")
 
 
+_DATABASE_AS_FILE_NOTE = (
+    "SQLite could not read the project database as a database, so this "
+    "copy holds it as a file, with any journal or WAL file that was beside "
+    "it: it may not be one committed state. list_backups marks such a "
+    "backup unclean when it holds a journal, and restore_backup refuses "
+    "it then.")
+
+
 def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
                              prefix: str = "", always: bool = False) -> None:
     """Surface the symlinks a backup or project copy skipped (S-P1).
@@ -1733,6 +1772,12 @@ def _attach_skipped_symlinks(result: Any, report: Optional[Dict[str, Any]],
     if skipped:
         result[f"{prefix}skipped_symlink_names"] = skipped[:20]
         result[f"{prefix}skipped_symlinks_note"] = _SKIPPED_SYMLINKS_NOTE
+    # A database SQLite could not read, copied as a file (fix round 1)
+    as_file = (report or {}).get("database_copied_as_file")
+    if as_file:
+        result[f"{prefix}database_copied_as_file"] = as_file
+        result[f"{prefix}database_copied_as_file_note"] = \
+            _DATABASE_AS_FILE_NOTE
 
 
 def _skipped_symlinks_line(report: Optional[Dict[str, Any]]) -> str:
@@ -1740,11 +1785,16 @@ def _skipped_symlinks_line(report: Optional[Dict[str, Any]]) -> str:
     a tool whose result is Markdown rather than JSON (apply_codings);
     empty when nothing was skipped."""
     skipped = list((report or {}).get("skipped_symlinks") or [])
-    if not skipped:
-        return ""
-    return (f"backup_skipped_symlinks: {len(skipped)} "
-            f"({', '.join(skipped[:20])}). {_SKIPPED_SYMLINKS_NOTE} "
-            f"Relay this to the user.\n")
+    as_file = (report or {}).get("database_copied_as_file")
+    line = ""
+    if skipped:
+        line += (f"backup_skipped_symlinks: {len(skipped)} "
+                 f"({', '.join(skipped[:20])}). {_SKIPPED_SYMLINKS_NOTE} "
+                 f"Relay this to the user.\n")
+    if as_file:
+        line += (f"backup_database_copied_as_file: {as_file}. "
+                 f"{_DATABASE_AS_FILE_NOTE} Relay this to the user.\n")
+    return line
 
 
 # What a write says when it fails AFTER its backup was taken.
@@ -1828,9 +1878,12 @@ def _rollback_if_open(write_db) -> bool:
         return False
 
 
-def _backup_failed_text(locked: bool) -> str:
+def _backup_failed_text(locked: bool, no_database: bool = False) -> str:
     """Why a write stopped at its backup (v0.14): a database another
-    program kept locked is said as such, not as a disk problem."""
+    program kept locked is said as such, not as a disk problem, and a
+    backup that would hold no database (fix round 1) says why."""
+    if no_database:
+        return BACKUP_WITHOUT_DATABASE_MESSAGE
     if locked:
         return (DB_LOCKED_MESSAGE + " No backup could be taken, so "
                 "nothing was written.")
@@ -1917,7 +1970,8 @@ def _perform_write(op, create_backup: bool = True,
                     logger.error("Failed to create backup: %s", error_label(e))
                     return {
                         "error": _backup_failed_text(
-                            isinstance(e, DatabaseLockedError)),
+                            isinstance(e, DatabaseLockedError),
+                            isinstance(e, BackupWithoutDatabaseError)),
                         "message": f"Aborting to protect your data: "
                                    f"{backup_fail_detail}.",
                     }
@@ -3286,9 +3340,10 @@ def get_current_project() -> str:
 
         return _ai_json(result, indent=2)
 
-    except (DatabaseOpenError, sqlite3.Error):
+    except (DatabaseOpenError, sqlite3.Error, ConfiguredProjectError):
         # Let the tool guard return its fixed, path-free text instead of
-        # forwarding the sqlite message (S-H4)
+        # forwarding the sqlite message (S-H4), and the configured
+        # project's one text (fix round 1)
         raise
     except Exception as e:
         return json.dumps(
@@ -3354,8 +3409,9 @@ def copy_project_to_workspace(
     database's journal and WAL files included) and lock files, the same
     exclusions backups use. The database is copied with SQLite's own
     online backup, so a copy taken while QualCoder is writing holds what
-    was last committed. QualCoder rebuilds search.sqlite when it opens
-    the copy. Symlinks inside the project
+    was last committed; QualCoder's own saves wait while it runs, and on
+    a database of about 4 GB or more a save in an open QualCoder window
+    can fail. QualCoder rebuilds search.sqlite when it opens the copy. Symlinks inside the project
     that point outside the project folder (or dangle) are not followed:
     they are skipped and reported (skipped_symlinks, with names), so a
     shared or untrusted project folder cannot pull outside files into
@@ -6818,7 +6874,8 @@ def apply_codings(
                     _downgrade_to_readonly()
                     return json.dumps({
                         "error": _backup_failed_text(
-                            isinstance(e, DatabaseLockedError)),
+                            isinstance(e, DatabaseLockedError),
+                            isinstance(e, BackupWithoutDatabaseError)),
                         "message": "Aborting to protect your data: nothing was written."
                     })
 
@@ -7176,7 +7233,8 @@ def import_text_file(
                     logger.error("Failed to create backup: %s", error_label(e))
                     return json.dumps({
                         "error": _backup_failed_text(
-                            isinstance(e, DatabaseLockedError)),
+                            isinstance(e, DatabaseLockedError),
+                            isinstance(e, BackupWithoutDatabaseError)),
                         "message": "Aborting to protect your data."
                     })
 
@@ -7270,7 +7328,9 @@ def link_file_to_case(
     QualCoder's own "Case file manager" would create; without it, a file
     is invisible to get_codes_by_case, get_case_code_matrix, case reports
     and every other case-based analysis. Files imported with
-    import_text_file are NOT linked to any case by default.
+    import_text_file are NOT linked to any case by default. A PDF with no
+    usable text (no text layer, or the file itself stored by QualCoder
+    3.8.2) is refused: the case read would have no text from it.
 
     Refused while QualCoder has the project open (its heartbeat lock): ask the user to close the project in QualCoder, re-check with get_current_project (qualcoder_open must be false), then retry. The lock gate detects released QualCoder (3.x) only: QualCoder 4.0 builds no longer use a lock file, so 4.0 detection is best-effort heuristics (qualcoder_gui_signals in get_current_project); never write while any QualCoder window has this project open.
 
@@ -7308,8 +7368,16 @@ def link_file_to_case(
             })
 
     # Validate the file on the read-only connection
-    if ro_db.get_file_content(file_id) is None:
+    file_content = ro_db.get_file_content(file_id)
+    if file_content is None:
         return json.dumps({"error": f"File ID {file_id} does not exist"})
+    # A PDF with no usable text is not linked, before any backup (fix
+    # round 1): the case read would have nothing, or the stored file, as
+    # its text
+    unusable = (file_content.get("unusable_pdf") or {}).get("reason")
+    if unusable is not None:
+        return json.dumps({"error": unusable_pdf_link_refusal(
+            file_content["name"], unusable)}, indent=2)
 
     owner, owner_error = _resolve_write_owner()
     if owner_error is not None:
@@ -7522,11 +7590,12 @@ def list_backups() -> str:
 
 
 UNCLEAN_BACKUP_NOTE = (
-    "This backup holds its database's journal or WAL file beside it: it "
-    "was copied while a program was writing to the project (backups made "
-    "before v0.14 copied these files). What it holds depends on the "
-    "platform that opens it, so restore_backup refuses it; choose another "
-    "backup. It can be pruned like any other.")
+    "This backup holds its database's journal or WAL file beside it (it "
+    "was copied while a program was writing to the project; backups made "
+    "before v0.14 copied these files), or its data.qda is a link. What it "
+    "holds depends on the platform that opens it, or on where the link "
+    "points, so restore_backup refuses it; choose another backup. It can "
+    "be pruned like any other.")
 
 
 def _backup_log_name(name: str, project_folder: Path) -> str:
@@ -7571,10 +7640,15 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
                     "size_mb": round(size_bytes / (1024 * 1024), 2),
                 }
                 side = unclean_backup_side_files(entry)
-                if side:
+                linked = backup_database_is_link(entry)
+                if side or linked:
                     # Named, never silently used (v0.14)
                     item["unclean"] = {"side_files": side,
                                        "note": UNCLEAN_BACKUP_NOTE}
+                    if linked:
+                        # Its data.qda is a link (fix round 1): what it
+                        # holds is wherever the link points now
+                        item["unclean"]["linked_database"] = True
                 backups.append(item)
             except OSError as e:
                 logger.debug("Cannot stat backup %s: %s",
@@ -7733,6 +7807,19 @@ def prune_backups(keep_last: Optional[int] = None,
                     "delete these backup folders. QualCoder's own _BKUP_ "
                     "backups are never touched.",
         }
+        # A kept backup restore_backup would refuse (fix round 1): a
+        # retention policy can otherwise keep only backups that cannot
+        # be restored
+        kept_unclean = [b["name"] for b in kept if "unclean" in b]
+        if kept_unclean:
+            preview["would_keep_unclean"] = kept_unclean
+            notes.append(
+                f"{len(kept_unclean)} of the {len(kept)} backup(s) this "
+                f"would keep are marked unclean, and restore_backup "
+                f"refuses them"
+                + (": none of the backups kept could be restored."
+                   if len(kept_unclean) == len(kept) else ".")
+                + " Keep more, or check list_backups first.")
         if notes:
             preview["notes"] = notes
         try:
@@ -8022,13 +8109,17 @@ def restore_backup(backup_path: str,
     # platform that opens it. Refused on the preview and again on the
     # execute, never used silently, and checked before anything opens it.
     side = unclean_backup_side_files(backup_folder)
-    if side:
-        return json.dumps({
+    linked = backup_database_is_link(backup_folder)
+    if side or linked:
+        refusal = {
             "error": "This backup cannot be restored: " + UNCLEAN_BACKUP_NOTE,
             "reason": "unclean_backup",
             "side_files": side,
             "nothing_changed": True,
-        }, indent=2)
+        }
+        if linked:
+            refusal["linked_database"] = True
+        return json.dumps(refusal, indent=2)
     # The backup itself must be a valid QualCoder project
     validate_qda_path(str(backup_folder))
 
@@ -12604,8 +12695,9 @@ def pseudonymise_source(
     Thomas_P01 is counted even under case_mode="exact". Every count is
     two readings, wide and whole-word, and the residue's file_text block
     counts the names left in the text of every file after the run, the
-    files this run does not touch included; a name inside a longer word
-    is reported and never substituted.
+    files this run does not touch included (not a PDF QualCoder 3.8.2
+    stored as the file itself, which holds no text); a name inside a
+    longer word is reported and never substituted.
 
     The backup keeps the real names, and so does pseudonyms.json if the
     researcher keeps one; both are the reverse key and belong somewhere
