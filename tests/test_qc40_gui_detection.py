@@ -211,6 +211,12 @@ class TestProcessFilter:
             "/usr/bin/python3 -m qualcoder_mcp.server",
             "uv run --directory /x/qualcoder_mcp qualcoder-mcp",
             "python3 script.py /Users/x/Applications/QualCoder",
+            # this server itself, under every name it runs as
+            "qualcoder-mcp",
+            "/Users/x/.local/bin/qualcoder-mcp --stdio",
+            "C:\\Users\\u\\venv\\Scripts\\qualcoder-mcp.exe",
+            '"qualcoder-mcp.exe","5150","Console","1","40 K"',
+            "code /Users/x/GitHub/qualcoder-mcp/README.md",
         ]
         assert _filter_qualcoder_processes(lines) == []
 
@@ -224,9 +230,25 @@ class TestProcessFilter:
             "python3 /home/u/QualCoder/src/qualcoder/__main__.py",
             "python -m qualcoder.__main__",
             "/Applications/QualCoder.app/Contents/MacOS/QualCoder",
-            "/tmp/.mount_QualCo1a2b/usr/bin/QualCoder",
+            # the dmg's bundle, as QualCoder's qualcoder.spec names it
+            "/Applications/Qualcoder.app/Contents/MacOS/QualCoder",
+            "/usr/bin/qualcoder",               # 4.0's Debian package
             "C:\\Program Files\\QualCoder\\QualCoder.exe",
             '"QualCoder.exe","4242","Console","1","150,000 K"',
+            # The files QualCoder's releases publish (fix round 1 of brief
+            # C, QA M1): one-file programs, which run under the name they
+            # were downloaded as, in a path, from psutil, and as a
+            # `tasklist` row.
+            "C:\\Users\\u\\Downloads\\Win_Qualcoder-4.0-beta_PORTABLE.exe",
+            '"Win_Qualcoder-4.0-beta_PORTABLE.exe","4242","Console","1","9 K"',
+            "/home/u/Downloads/QualCoder-4.0-beta-linux-executable",
+            "./QualCoder-4.0-beta-linux-executable",
+            "C:\\Users\\u\\Desktop\\QualCoder_3_8_2_Win_Portable.exe",
+            '"QualCoder_3_8_2_Win_Portable.exe","17","Console","1","9 K"',
+            "/home/u/QualCoder_3_8_2_ubuntu",
+            "./QualCoder_3_8_2_ubuntu",
+            "C:\\Users\\u\\Downloads\\Windows-QualCoder-3.6.exe",
+            '"Windows-QualCoder-3.6.exe","18","Console","1","9 K"',
             '"C:\\Python313\\python.exe" -m qualcoder',
             # QualCoder's own README (3.8.2) starts it this way on Windows
             "py -m qualcoder",
@@ -254,6 +276,35 @@ class TestProcessFilter:
         finally:
             database._process_scan_cache["at"] = 0.0
         assert hits == ["/usr/bin/python3 -m qualcoder"]
+
+    def test_a_release_download_running_is_a_signal(self, monkeypatch,
+                                                     tmp_path):
+        """End to end through the ps fallback: 4.0-Beta's Linux download
+        running (as parent and one-file child) is the process signal
+        select_project reads (fix round 1 of brief C, QA M1)."""
+        import subprocess
+        own = os.getpid()
+        listing = (
+            f"  {own + 1} /home/u/Downloads/"
+            f"QualCoder-4.0-beta-linux-executable\n"
+            f"  {own + 2} /home/u/Downloads/"
+            f"QualCoder-4.0-beta-linux-executable\n"
+            f"  {own + 3} tail -f /x/mcp-server-qualcoder.log\n").encode()
+
+        class Done:
+            stdout = listing
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+        monkeypatch.setattr(database.os, "name", "posix")
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        database._process_scan_cache["at"] = 0.0
+        try:
+            signals = qualcoder_gui_signals(tmp_path)
+        finally:
+            database._process_scan_cache["at"] = 0.0
+        assert signals == [
+            "a process that looks like QualCoder is running on this "
+            "machine (2 match(es))"]
 
     def test_scan_never_raises(self, monkeypatch):
         # Whatever the platform offers, the scan returns a list

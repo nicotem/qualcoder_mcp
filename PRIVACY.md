@@ -483,10 +483,14 @@ Two further rules touch files on your disk:
   preview, which is the call without a preview_token) also looks at the
   list of processes running on this machine (`ps` or `tasklist`, or
   psutil when installed). The listing is filtered in memory for
-  processes that are QualCoder itself (its own program, or a Python
-  running QualCoder's package; since v0.14 a command line that merely
-  mentions QualCoder no longer counts, and this server's own process is
-  left out) and only the NUMBER of
+  processes that are QualCoder itself: a program whose own name holds
+  "qualcoder" once this server's names (`qualcoder-mcp`,
+  `qualcoder_mcp`) are taken out, which covers QualCoder's installers,
+  its app and the portable and Linux downloads it publishes, or a Python
+  running QualCoder's package (`-m qualcoder`, its `__main__.py`, its
+  `qualcoder` script). Since v0.14 a command line that merely mentions
+  QualCoder in its arguments no longer counts, and this server's own
+  process is left out. Only the NUMBER of
   matches is reported into the conversation; process names, command
   lines and other users' processes never leave the server, the
   filtered matches are held in memory for at most five seconds so that

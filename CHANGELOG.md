@@ -53,11 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The recently modified chat history signal is no longer presented as a
   QualCoder 4.0 AI signal: both 3.8.2 and 4.0 rewrite that file on every
   open.
-- The process scan counts only a process that is QualCoder itself (its
-  own program, or a Python running QualCoder's package), and never this
-  server's own process: a shell, editor or test run whose command line
-  merely mentioned QualCoder made every selection say the project
-  "APPEARS to be open in QualCoder".
+- The process scan reads a process's program, not its arguments: it
+  counts a program whose name holds "qualcoder" once this server's own
+  names are taken out (QualCoder's installers, its app, and the portable
+  and Linux downloads its releases publish), or a Python running
+  QualCoder's package, and never this server's own process. A shell,
+  editor or test run whose command line merely mentioned QualCoder made
+  every selection say the project "APPEARS to be open in QualCoder".
 - `scripts/create_test_project.py` is rebuilt on the creation code: it
   takes a new folder, refuses one that exists and deletes nothing (it
   used to delete `~/Documents/QDA Projects/test_project.qda` first, and

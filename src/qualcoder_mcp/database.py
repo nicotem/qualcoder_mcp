@@ -476,14 +476,21 @@ def _mtime_age_seconds(path: Path) -> Optional[float]:
         return None
 
 
-# How a running QualCoder shows in a process list: its own program
-# (an installed `qualcoder` entry point, a packaged QualCoder.app or
-# QualCoder.exe), or a Python running QualCoder's package or its
+# How a running QualCoder shows in a process list: a PROGRAM whose name
+# holds "qualcoder" once this server's own names are taken out (the
+# installed `qualcoder` entry point, QualCoder.app's `QualCoder`,
+# QualCoder.exe, and the names QualCoder's releases publish, which a
+# one-file program keeps as it runs: `Win_Qualcoder-4.0-beta_PORTABLE.exe`,
+# `QualCoder-4.0-beta-linux-executable`, `QualCoder_3_8_2_Win_Portable.exe`,
+# `QualCoder_3_8_2_ubuntu`), or a Python running QualCoder's package or its
 # __main__.py. Until v0.14 any command line holding the word "qualcoder"
 # counted once this server's own names were blanked out, so a shell or an
 # editor that merely mentioned it (the create-project study measured it:
 # test runs, a `tail` of the host's "mcp-server-qualcoder.log") gave a
-# false "APPEARS to be open in QualCoder".
+# false "APPEARS to be open in QualCoder". The rule reads the program's
+# name, not its arguments; fix round 1 of brief C widened it from the
+# exact name `qualcoder`, which missed the release downloads.
+_OWN_NAMES = ("qualcoder-mcp", "qualcoder_mcp")
 _QUALCODER_MODULES = ("qualcoder", "qualcoder.__main__")
 _QUALCODER_SCRIPTS = ("qualcoder", "qualcoder.py", "qualcoder-script.py")
 _PYTHON_OPTIONS_WITH_A_VALUE = ("-W", "-X", "-Q")
@@ -513,10 +520,13 @@ def _program_and_arguments(line: str) -> Tuple[str, List[str]]:
 def _process_is_qualcoder(line: str) -> bool:
     """Whether one process line is a running QualCoder (see above)."""
     program, arguments = _program_and_arguments(line)
-    name = program.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    name = program.replace("\\", "/").rsplit("/", 1)[-1].casefold()
     if name.endswith(".exe"):
         name = name[:-4]
-    if name == "qualcoder":
+    own_names_out = name
+    for own in _OWN_NAMES:
+        own_names_out = own_names_out.replace(own, "")
+    if "qualcoder" in own_names_out:
         return True
     # a Python, or Windows' launcher (`py -m qualcoder`, as QualCoder's
     # own README says to start it on Windows)
