@@ -149,7 +149,9 @@ def test_the_documents_count_the_tools_the_server_registers():
     assert f"(the default, `QUALCODER_MCP_TOOLSET=full`) registers " \
            f"{count} tools" in _flat("README.md")
     install = _flat("INSTALL.md")
-    assert f"`full` (default) registers all {count} tools" in install
+    # v0.14: `full` is no longer every tool once `lifecycle` exists
+    assert f"`full` (default) registers {count} tools" in install
+    assert f"registers all {count} tools" not in install
     assert f"This server exposes {count} tools by default" in install
 
 

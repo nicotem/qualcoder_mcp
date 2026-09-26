@@ -977,7 +977,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `export_case_code_matrix_csv(output_path, sanitize_formulas, overwrite)` - Case by code cross-tab as CSV
 
 **Memos, Annotations & Journal (Write Operations):**
-- `set_memo(target_type, target_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Write or clear the public part of a memo on a code, category, file, coding, or case, or the project memo (`target_type` `project`, `target_id` null), which QualCoder 4.0's assistant reads as the study's context (an existing `#####` private section survives; content-only, matching QualCoder, never rewrites date/owner)
+- `set_memo(target_type, target_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Write or clear the public part of a memo on a code, category, file, coding, or case, or the project memo (`target_type` `project`, `target_id` null), which QualCoder 4.0's own assistant reads as the study's context (an existing `#####` private section survives; content-only, matching QualCoder, never rewrites date/owner)
 - `add_journal_entry(name, entry, create_backup)` - **WRITES TO DATABASE** - Add or update a research journal entry
 - `add_annotation(file_id, start_pos, end_pos, memo, create_backup)` - **WRITES TO DATABASE** - Attach a note to a text span of a file
 - `update_annotation(annotation_id, memo, create_backup, allow_hidden_coder)` - **WRITES TO DATABASE** - Edit an annotation's note (an empty note deletes the annotation, as in QualCoder, unless a private section keeps the row)

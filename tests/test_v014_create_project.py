@@ -955,3 +955,43 @@ class TestWindowsPathLimits:
                 or text.startswith("The project could not be created"))
         assert server.DB_UNAVAILABLE_ERROR not in text
         assert not os.path.lexists(_extended(folder))
+
+
+class TestTheLogNamesNothing:
+    """The tool's own log lines carry no name, path or error text: a
+    project is often named after its participant, and the host keeps
+    the log (the privacy rules of v0.14). The failure lines carry the
+    stage and the error's kind, even when the error's own text holds
+    the path."""
+
+    MARK = "Zebedee"
+
+    def _mine(self, caplog):
+        return [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith((
+                    "Created a new project", "Creating a project failed",
+                    "A created project could not be selected",
+                    "The workspace could not be made"))]
+
+    def test_success_and_each_failure(self, tmp_path, monkeypatch, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG)
+        work = tmp_path / f"{self.MARK} folder"
+        work.mkdir()
+        assert create(f"{self.MARK} study", work,
+                      coder_name=f"{self.MARK} coder")["created"]
+        _fail_with(monkeypatch, sqlite3.OperationalError(
+            f"disk full at {work}/{self.MARK}.qda"), 3)
+        refused(create(f"{self.MARK} two", work))
+        monkeypatch.undo()
+
+        def refuse(path, read_only=True):
+            raise RuntimeError(f"cannot open {path}")
+
+        monkeypatch.setattr(server, "switch_project", refuse)
+        assert create(f"{self.MARK} three", work)["selected"] is False
+        lines = self._mine(caplog)
+        assert len(lines) == 4, lines
+        assert not [line for line in lines if self.MARK in line]
+        assert "Creating a project failed at the database stage: " \
+               "OperationalError" in lines
