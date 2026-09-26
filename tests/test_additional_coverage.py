@@ -145,40 +145,67 @@ class TestNoProjectLoaded:
 
     # Resources
     def test_get_project_info_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_project_info()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.get_project_info())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_list_all_codes_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.list_all_codes()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.list_all_codes())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_list_all_categories_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.list_all_categories()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.list_all_categories())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_code_info_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_code_info(1)
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.get_code_info(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_list_all_files_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.list_all_files()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.list_all_files())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_file_content_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_file_content(1)
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.get_file_content(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_list_all_cases_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.list_all_cases()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.list_all_cases())
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_case_info_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_case_info(1)
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.get_case_info(1))
+        assert "No Qualcoder project selected" in data["error"]
 
     def test_get_journal_entries_no_project(self):
-        with pytest.raises(ValueError, match="No Qualcoder project selected"):
-            server.get_journal_entries()
+        # A resource answers the error as its content since v0.14's
+        # fix round 1 (the MCP library logs every error a resource
+        # raises, with its traceback)
+        data = json.loads(server.get_journal_entries())
+        assert "No Qualcoder project selected" in data["error"]
 
 
 # =============================================================================

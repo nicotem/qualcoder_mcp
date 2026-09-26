@@ -715,13 +715,21 @@ host decides where that goes. Claude Desktop shows it under Settings >
 Developer > Show Logs. LM Studio on macOS persists it into
 `~/Library/Logs/LM Studio/main.log`; search that file for
 `qualcoder_mcp` to find the server's start-up lines (which report the
-toolset mode and the number of tools registered) and any errors. In
-ordinary use the log carries no memo text (a project built to do it,
-with a database trigger, or a damaged one, with a note that is not
-UTF-8, can make several tools log a database message that quotes a
-note, private part included; closing that is on the list for v0.14);
-it does carry project file names, code and case names and, for
-a database that will not open, the SQLite error text.
+toolset mode and the number of tools registered) and any errors. The
+lines this server writes carry no memo text, and since v0.14 no SQLite
+message: a database error is logged by its kind and SQLite's short name
+for it, so a project built to put a note into an error (with a database
+trigger), or a damaged one (with a note that is not UTF-8), no longer
+makes a tool log that note, private part included. They name no
+project, file, code, category, case, journal entry or attribute and no
+path: they carry ids, counts and the kinds of errors, and a project's
+schema version only when it has QualCoder's form. The MCP library's own
+lines beside them name the kind of each request. That is not all a
+host may keep in the same file: Claude Desktop's server log (the file
+Show Logs opens) also records every request and every answer in full,
+so it holds everything the tools returned and the arguments they were
+given, names, paths and quoted text included, as the conversation does.
+Before sharing such a file, read it as you would the conversation.
 
 ---
 
@@ -983,7 +991,10 @@ If you want to remove the MCP server:
    holds the AI-coding session files (`sessions/`), the last-used
    project pointer (`mru_project.json`), the preview-token secret
    (`preview_secret`, which signs the tokens that authorise a destructive
-   operation; deleting it only invalidates outstanding previews) and the
+   operation and keys the digests in the run manifests; deleting it
+   invalidates outstanding previews, and those digests can then no
+   longer be checked, as when the server replaces a secret it finds
+   malformed or readable by other accounts) and the
    run manifests `pseudonymise_source` writes (`pseudonymisation/`, one
    JSON file per run: the pseudonyms applied, the replacement spans, the
    row ids and offsets of the rows the run moved and, since v0.13, where

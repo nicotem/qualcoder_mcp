@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
+from .database import error_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -537,7 +539,7 @@ class SessionManager:
         # created on the first save; every read path copes with its
         # absence (a glob over a missing directory yields nothing).
         self.storage_dir = Path(storage_dir).expanduser()
-        logger.debug(f"SessionManager storage: {self.storage_dir}")
+        logger.debug("SessionManager storage ready")
 
     def _ensure_storage_dir(self) -> None:
         """Create the storage directory; called before every write."""
@@ -609,14 +611,14 @@ class SessionManager:
             with handle as f:
                 json.dump(session.to_dict(), f, indent=2)
             os.replace(str(tmp), str(filepath))
-            logger.info(f"Saved session {session.session_id} to {filepath}")
+            logger.info(f"Saved session {session.session_id}")
         except Exception as e:
             if tmp is not None:
                 try:
                     tmp.unlink()
                 except OSError:
                     pass
-            logger.error(f"Failed to save session {session.session_id}: {e}")
+            logger.error(f"Failed to save session {session.session_id}: {error_label(e)}")
             raise
 
     def load_session(self, session_id: str) -> AICodingSession:
@@ -641,10 +643,10 @@ class SessionManager:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             session = AICodingSession.from_dict(data)
-            logger.info(f"Loaded session {session_id} from {filepath}")
+            logger.info(f"Loaded session {session_id}")
             return session
         except Exception as e:
-            logger.error(f"Failed to load session {session_id}: {e}")
+            logger.error(f"Failed to load session {session_id}: {error_label(e)}")
             raise
 
     def session_exists(self, session_id: str) -> bool:
@@ -717,14 +719,15 @@ class SessionManager:
                         'project_path': data['project_path']
                     })
                 except Exception as e:
-                    logger.warning(f"Skipping invalid session file {filepath}: {e}")
+                    logger.warning(f"Skipping invalid session file "
+                                   f"{filepath.name}: {error_label(e)}")
                     continue
 
             # Sort by last modified (most recent first)
             sessions.sort(key=lambda x: x['last_modified'], reverse=True)
 
         except Exception as e:
-            logger.error(f"Error listing sessions: {e}")
+            logger.error(f"Error listing sessions: {error_label(e)}")
             raise
 
         return sessions
@@ -750,7 +753,7 @@ class SessionManager:
                 logger.info(f"Deleted session {session_id}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to delete session {session_id}: {e}")
+                logger.error(f"Failed to delete session {session_id}: {error_label(e)}")
                 raise
         return False
 
@@ -777,10 +780,11 @@ class SessionManager:
                         deleted += 1
                         logger.info(f"Deleted old session {data['session_id']}")
                 except Exception as e:
-                    logger.warning(f"Error processing {filepath} during cleanup: {e}")
+                    logger.warning(f"Error processing {filepath.name} during "
+                                   f"cleanup: {error_label(e)}")
                     continue
         except Exception as e:
-            logger.error(f"Error during session cleanup: {e}")
+            logger.error(f"Error during session cleanup: {error_label(e)}")
             raise
 
         logger.info(f"Cleaned up {deleted} old sessions")

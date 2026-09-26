@@ -25,6 +25,8 @@ from mcp.server.fastmcp import Context
 from .database import (
     QualcoderDatabase,
     sqlite_error_label,
+    error_label,
+    error_text,
     pseudonyms_json_fingerprint,
     CoderVisibilityUnreadable,
     coder_is_hidden,
@@ -349,7 +351,7 @@ def _remember_mru_project(project_path: str) -> None:
             json.dump(payload, f)
         tmp.replace(_MRU_FILE)
     except Exception as e:
-        logger.debug(f"Could not record MRU project: {e}")
+        logger.debug("Could not record MRU project: %s", error_label(e))
         if tmp is not None:
             try:
                 tmp.unlink()
@@ -426,42 +428,107 @@ DB_UNAVAILABLE_ERROR = (
 )
 
 
+def _error_answer(where: str, e: BaseException,
+                  unexpected: Optional[str] = None) -> str:
+    """The error JSON a tool or a resource answers for `e`, and the log
+    line it writes (the kind only, v0.14).
+
+    One policy for both guards: this server's own errors answer their
+    message; a locked database and an old schema their own texts; a
+    database that will not open, a SQLite error and a file-system error
+    a fixed text, because their messages can carry a note or a path; an
+    error of any other kind its kind alone.
+    """
+    unexpected = unexpected or UNEXPECTED_ERROR
+    if isinstance(e, (DatabaseLockedError, UnsupportedSchemaError)):
+        return json.dumps({"error": str(e)})
+    if isinstance(e, DatabaseOpenError):
+        # Before the generic ValueError branch (it is a subclass): the
+        # sqlite text goes to the log, never into the conversation
+        # (S-H4). select_project keeps its own project-scoped wording.
+        logger.error("Database would not open in %s: %s", where,
+                     error_label(e))
+        return json.dumps({"error": DB_UNAVAILABLE_ERROR})
+    if isinstance(e, (ValueError, TypeError)):
+        return json.dumps({"error": str(e)})
+    if isinstance(e, FileNotFoundError):
+        logger.error("Not found in %s: %s", where, error_label(e))
+        return json.dumps({"error": "File or project not found."})
+    if isinstance(e, OSError):
+        logger.error("OS error in %s: %s", where, error_label(e))
+        return json.dumps({"error": FILE_SYSTEM_ERROR})
+    if isinstance(e, sqlite3.Error):
+        logger.error("SQLite error in %s: %s", where, error_label(e))
+        return json.dumps({"error": DB_UNAVAILABLE_ERROR})
+    if isinstance(e, RuntimeError):
+        logger.error("Runtime error in %s: %s", where, error_label(e))
+        return json.dumps({"error": error_text(e)})
+    # The last route (v0.14): an error of a kind no branch above names
+    # used to leave the guard for the MCP library, which answers the
+    # model with its message and logs the traceback. No such error is
+    # expected; if one comes, its kind is enough to report it, and its
+    # message is not sent.
+    logger.error("Unexpected error in %s: %s", where, error_label(e))
+    return json.dumps({"error": unexpected.format(kind=type(e).__name__)})
+
+
 def _tool_guard(fn):
     """Convert anticipated exceptions into sanitised error JSON.
 
     Applied to every MCP tool so that failures (no project selected, locked
     database, old schema, validation errors, corruption) reach the client as
-    actionable error JSON instead of raw tracebacks.
+    actionable error JSON instead of raw tracebacks (`_error_answer`).
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except DatabaseLockedError as e:
-            return json.dumps({"error": str(e)})
-        except UnsupportedSchemaError as e:
-            return json.dumps({"error": str(e)})
-        except DatabaseOpenError as e:
-            # Before the generic ValueError branch (it is a subclass): the
-            # sqlite text goes to the log, never into the conversation
-            # (S-H4). select_project keeps its own project-scoped wording.
-            logger.error(f"Database would not open in {fn.__name__}: {e}")
-            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
-        except (ValueError, TypeError) as e:
-            return json.dumps({"error": str(e)})
-        except FileNotFoundError as e:
-            logger.error(f"Not found in {fn.__name__}: {e}")
-            return json.dumps({"error": "File or project not found."})
-        except OSError as e:
-            logger.error(f"OS error in {fn.__name__}: {e}")
-            return json.dumps({"error": "File system operation failed: check "
-                                         "disk space and permissions."})
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error in {fn.__name__}: {e}")
-            return json.dumps({"error": DB_UNAVAILABLE_ERROR})
-        except RuntimeError as e:
-            logger.error(f"Runtime error in {fn.__name__}: {e}")
-            return json.dumps({"error": str(e)})
+        except Exception as e:
+            return _error_answer(fn.__name__, e)
+    return wrapper
+
+
+# What a tool answers for an error of a kind `_tool_guard` does not name
+# (v0.14). Its kind only: the message of an unexpected error is not
+# known to be free of the project's text.
+UNEXPECTED_ERROR = (
+    "An unexpected error ({kind}) stopped this tool; nothing more of it is "
+    "reported here. If it persists, report it with the tool's name.")
+UNEXPECTED_RESOURCE_ERROR = (
+    "An unexpected error ({kind}) stopped this read; nothing more of it is "
+    "reported here. If it persists, report it with the resource's address.")
+
+# The fixed text a tool or a resource answers when the file system
+# refused it.
+FILE_SYSTEM_ERROR = ("File system operation failed: check disk space and "
+                     "permissions.")
+
+
+def _resource_guard(fn):
+    """What a resource read answers when it fails: the error as the
+    resource's content, never raised (v0.14, fix round 1).
+
+    The MCP library reads resources, and it logs every error a resource
+    raises with its traceback at ERROR, which reaches the host's log
+    (mcp 1.30.0, `server/fastmcp/server.py` 406-411). A raised error's
+    message would therefore be logged whatever it was, and several of
+    this server's own messages carry a path: "No Qualcoder project
+    selected" with the last-used project's path, and every refusal of a
+    configured path (`validate_qda_path`). So a resource returns the
+    error JSON a tool would answer for the same error (`_error_answer`,
+    one policy for both), as `qualcoder://cases/{id}` already answered a
+    missing case, and the library logs nothing. The hint to the
+    last-used project stays in the answer, where it helps, as it does in
+    a tool's; a host that records every answer records it there, as it
+    records the tools' answers.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            return _error_answer(fn.__name__, e,
+                                 unexpected=UNEXPECTED_RESOURCE_ERROR)
     return wrapper
 
 
@@ -538,11 +605,12 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
                         entry["note"] = NO_USABLE_DATABASE
                     projects.append(entry)
                 except (OSError, PermissionError) as e:
-                    logger.debug(f"Cannot access {qda_file}: {e}")
+                    logger.debug("Cannot access a project found: %s",
+                                 error_label(e))
                     continue
 
         except (PermissionError, OSError) as e:
-            logger.debug(f"Cannot search {search_path}: {e}")
+            logger.debug("Cannot search a folder: %s", error_label(e))
             continue
 
     # Sort by most recently modified
@@ -569,14 +637,17 @@ def switch_project(project_path: str, read_only: bool = True) -> None:
         try:
             db.close()
         except Exception as e:
-            logger.warning(f"Error closing previous connection: {e}")
+            logger.warning("Error closing previous connection: %s",
+                           error_label(e))
         finally:
             db = None
 
     # Connect to new project (read-only by default)
     db = QualcoderDatabase(project_path, read_only=read_only)
     current_project_path = project_path
-    logger.info(f"Switched to project: {Path(project_path).name} (read_only={read_only})")
+    # No project folder name in the log (v0.14): a single-case study is
+    # often named after its participant, and the host keeps the log.
+    logger.info("Switched to the selected project (read_only=%s)", read_only)
 
 
 def get_db(read_only: bool = True) -> QualcoderDatabase:
@@ -609,13 +680,15 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
 
     # If we have a project path set but db is None, try to reconnect
     if db is None and current_project_path is not None:
-        logger.warning(f"Database connection lost but project path exists: {Path(current_project_path).name}. Attempting to reconnect...")
+        logger.warning("Database connection lost; reconnecting to the "
+                       "selected project")
         try:
             db = QualcoderDatabase(current_project_path, read_only=read_only)
-            logger.info(f"Successfully reconnected to: {Path(current_project_path).name}")
+            logger.info("Reconnected to the selected project")
             return db
         except Exception as e:
-            logger.error(f"Failed to reconnect to database: {e}")
+            logger.error("Failed to reconnect to database: %s",
+                         error_label(e))
             # Fall through to normal error handling
 
     if db is None:
@@ -628,10 +701,12 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
         try:
             db = QualcoderDatabase(db_path, read_only=read_only)
             current_project_path = db_path
-            # Log only filename, not full path (security best practice)
-            logger.info(f"Connected to Qualcoder database: {Path(db_path).name}")
+            # Neither the path nor the folder's name (v0.14)
+            logger.info("Connected to the project set in "
+                        "QUALCODER_PROJECT_PATH")
         except (ValueError, FileNotFoundError, RuntimeError) as e:
-            logger.error(f"Failed to connect to database: {e}")
+            logger.error("Failed to connect to database: %s",
+                         error_label(e))
             raise
 
     return db
@@ -653,7 +728,8 @@ def _downgrade_to_readonly():
         try:
             db = QualcoderDatabase(current_project_path, read_only=True)
         except Exception as e:
-            logger.error(f"Failed to downgrade to read-only: {e}")
+            logger.error("Failed to downgrade to read-only: %s",
+                         error_label(e))
             db = None
 
 
@@ -675,11 +751,10 @@ def _coder_visibility_note(coder: Optional[str] = None,
     instead (methodological transparency either way).
 
     `hidden` lets a caller that has already read the visibility map
-    supply the count from it; without it the count keys on the
-    connect-time probe, which is right for the reads this note
-    describes, because their rows come from the same connect-time
-    source and a fresh count beside a stale read would claim a filter
-    that was not applied.
+    supply the count from it; without it the count keys on the same
+    answer the read's source did (since v0.14 re-read on every read, so
+    a coder hidden after this server connected is filtered and counted
+    alike).
     """
     coder = normalize_coder(coder)  # blank means no filter (F10)
     if hidden is None:
@@ -831,9 +906,14 @@ def _schema_block() -> Dict[str, Any]:
     db = get_db()
     supported, reason, overridden = db.write_support()
     caps = getattr(db, "capabilities", None)
+    capabilities = caps.to_dict() if caps is not None else {}
+    if capabilities:
+        # As it stands now, as the reads it decides are (v0.14): coder
+        # visibility can arrive after the connection opened.
+        capabilities["has_coder_visibility"] = db.has_coder_visibility_now()
     block: Dict[str, Any] = {
         "databaseversion": getattr(db, "db_version", None),
-        "capabilities": caps.to_dict() if caps is not None else {},
+        "capabilities": capabilities,
         "write_support": supported,
     }
     if reason:
@@ -1684,7 +1764,8 @@ def _rollback_if_open(write_db) -> bool:
             write_db.conn.rollback()
         return True
     except Exception as e:
-        logger.error(f"Rollback after a failed write did not go through: {e}")
+        logger.error("Rollback after a failed write did not go through: %s",
+                     error_label(e))
         return False
 
 
@@ -1764,7 +1845,7 @@ def _perform_write(op, create_backup: bool = True,
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     return {
                         "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
@@ -1801,7 +1882,8 @@ def _perform_write(op, create_backup: bool = True,
                 # transaction did not commit, and said "consider
                 # restoring a backup" over a database that did not
                 # change.
-                logger.error(f"SQLite error during a write: {e}")
+                logger.error("SQLite error during a write: %s",
+                             error_label(e))
                 return _with_backup(
                     {"error": _write_failed_text(
                         _rollback_if_open(write_db), backup_fail_detail,
@@ -2170,6 +2252,7 @@ def _alternative_gloss(alt: Dict[str, Any]) -> str:
 # ============================================================================
 
 @mcp.resource("qualcoder://project/info")
+@_resource_guard
 def get_project_info() -> str:
     """Get information about the current Qualcoder project.
 
@@ -2180,6 +2263,7 @@ def get_project_info() -> str:
 
 
 @mcp.resource("qualcoder://codes/list")
+@_resource_guard
 def list_all_codes() -> str:
     """Get a list of all codes in the project.
 
@@ -2191,6 +2275,7 @@ def list_all_codes() -> str:
 
 
 @mcp.resource("qualcoder://categories/list")
+@_resource_guard
 def list_all_categories() -> str:
     """Get a list of all code categories.
 
@@ -2201,6 +2286,7 @@ def list_all_categories() -> str:
 
 
 @mcp.resource("qualcoder://codes/{code_id}")
+@_resource_guard
 def get_code_info(code_id: int) -> str:
     """Get detailed information about a specific code.
 
@@ -2217,6 +2303,7 @@ def get_code_info(code_id: int) -> str:
 
 
 @mcp.resource("qualcoder://files/list")
+@_resource_guard
 def list_all_files() -> str:
     """Get a list of all source files in the project.
 
@@ -2228,6 +2315,7 @@ def list_all_files() -> str:
 
 
 @mcp.resource("qualcoder://files/{file_id}")
+@_resource_guard
 def get_file_content(file_id: int) -> str:
     """Get the content of a specific text file.
 
@@ -2244,6 +2332,7 @@ def get_file_content(file_id: int) -> str:
 
 
 @mcp.resource("qualcoder://cases/list")
+@_resource_guard
 def list_all_cases() -> str:
     """Get a list of all cases in the project.
 
@@ -2255,6 +2344,7 @@ def list_all_cases() -> str:
 
 
 @mcp.resource("qualcoder://cases/{case_id}")
+@_resource_guard
 def get_case_info(case_id: int) -> str:
     """Get detailed information about a specific case.
 
@@ -2270,6 +2360,7 @@ def get_case_info(case_id: int) -> str:
 
 
 @mcp.resource("qualcoder://journal")
+@_resource_guard
 def get_journal_entries() -> str:
     """Get all journal entries from the project.
 
@@ -2369,6 +2460,7 @@ one.
     description="Grounding rules, the four-way methodological vocabulary, and "
                 "citations to the method literature QualCoder 4.0 ships "
                 "prompts for. Static; needs no project.")
+@_resource_guard
 def get_methods_guidance() -> str:
     """Static methods notes: no project, no database, identical on every call."""
     return METHODS_GUIDANCE
@@ -2415,8 +2507,9 @@ def list_available_projects(search_directories: Optional[List[str]] = None) -> s
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error discovering projects: {e}")
-        return json.dumps({"error": f"Failed to discover projects: {str(e)}"})
+        logger.error("Error discovering projects: %s", error_label(e))
+        return json.dumps(
+            {"error": f"Failed to discover projects: {error_text(e)}"})
 
 
 # v0.14 (the create-project study's findings 1 and 7, and its check).
@@ -2608,20 +2701,22 @@ def select_project(project_path: str) -> str:
         return _ai_json(result, indent=2)
 
     except DatabaseLockedError as e:
-        logger.error(f"Project locked during select: {e}")
+        logger.error("Project locked during select: %s", error_label(e))
         return json.dumps({
             "success": False,
             "error": str(e)
         })
     except UnsupportedSchemaError as e:
-        logger.error(f"Unsupported schema during select: {e}")
+        logger.error("Unsupported schema during select: %s",
+                     error_label(e))
         return json.dumps({
             "success": False,
             "error": str(e)
         })
     except (ValueError, FileNotFoundError) as e:
-        # Log full error for debugging, but don't expose internal paths to user
-        logger.error(f"Failed to select project: {e}")
+        # The kind only (v0.14): the message is the path, the project
+        # folder's name in it
+        logger.error("Failed to select project: %s", error_label(e))
         if isinstance(e, DatabaseOpenError):
             # The path IS a well-formed project, but SQLite refused its
             # data.qda at validation time: a hot journal left by a 4.0
@@ -2643,10 +2738,12 @@ def select_project(project_path: str) -> str:
         })
     except sqlite3.Error as e:
         # e.g. "database disk image is malformed" surfacing mid-read (F3)
-        logger.error(f"SQLite error while opening project: {e}")
+        logger.error("SQLite error while opening project: %s",
+                     error_label(e))
         return json.dumps(_project_open_failure_result(project_path))
     except RuntimeError as e:
-        logger.error(f"Failed to open project database: {e}")
+        logger.error("Failed to open project database: %s",
+                     error_label(e))
         return json.dumps({
             "success": False,
             "error": "Failed to open project database"
@@ -2872,7 +2969,8 @@ def _keep_unreadable_sidecar_aside(folder: Path) -> Tuple[Optional[Path],
     try:
         os.replace(str(path), str(target))
     except OSError as e:
-        logger.error(f"Could not move the unreadable sidecar aside: {e}")
+        logger.error("Could not move the unreadable sidecar aside: %s",
+                     error_label(e))
         return None, UNREADABLE_MESSAGE
     return target, None
 
@@ -2937,6 +3035,25 @@ def _set_name_warnings(ro, state, name: str,
             "Unchanged; recorded again.")
     return warnings
 
+def _pseudonyms_json_error(e: BaseException) -> str:
+    """What an answer says when the project's pseudonyms.json could not be
+    read (v0.14 fix round 1, Security secB-3).
+
+    The reader's own refusals by their message, which it writes and which
+    never quote a value from the file (a `ValueError`, or its own
+    "was not found", a `FileNotFoundError` with no errno). Anything the
+    system or pathlib raised by its kind alone: an `OSError`'s text is
+    the file's path, the project folder's name in it, and so is the
+    `RuntimeError` pathlib raises for a link that loops on Python before
+    3.13; a `RecursionError` (a file nested past Python's limit) says
+    nothing useful beyond its kind.
+    """
+    if isinstance(e, ValueError) or (isinstance(e, OSError)
+                                     and e.errno is None):
+        return str(e)
+    return f"{PSEUDONYMS_JSON_NAME} could not be read ({error_label(e)})."
+
+
 def _pseudonyms_json_read() -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
     """One read of the project's pseudonyms.json, for the two routes.
 
@@ -2950,11 +3067,11 @@ def _pseudonyms_json_read() -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
         return {"present": False}, None
     try:
         entries, encoding = read_project_pseudonyms(folder)
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, RuntimeError) as e:
+        # RuntimeError too (Security secB-7): pathlib's link loop before
+        # Python 3.13, and a RecursionError, failed the whole report.
         return {"present": True, "entries": None,
-                "error": (str(e) if isinstance(e, ValueError) else
-                          f"{PSEUDONYMS_JSON_NAME} could not be read "
-                          f"({type(e).__name__}).")}, None
+                "error": _pseudonyms_json_error(e)}, None
     return {"present": True, "entries": len(entries),
             "encoding": encoding}, entries
 
@@ -3087,7 +3204,8 @@ def get_current_project() -> str:
         # forwarding the sqlite message (S-H4)
         raise
     except Exception as e:
-        return json.dumps({"error": f"Failed to get project info: {str(e)}"})
+        return json.dumps(
+            {"error": f"Failed to get project info: {error_text(e)}"})
 
 
 @mcp.tool()
@@ -3294,8 +3412,8 @@ def _novelty_block(db_, code_ids: List[int], coder: Optional[str],
     (which reads the base table, ai_mcp_server.py:5228) and the deviation
     is what keeps the filter from becoming an oracle for hidden work.
     """
-    caps = getattr(db_, "capabilities", None)
-    if caps is None or not caps.visibility_declared():
+    # Asked of the project now, as the read it describes was (v0.14)
+    if not db_.visibility_applies():
         visibility = "not_applicable"
     elif coder is not None:
         visibility = "honoured_plus_named_coder"
@@ -3959,9 +4077,9 @@ def search_files(
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in search_files: {e}")
+        logger.error("Error in search_files: %s", error_label(e))
         return json.dumps({
-            "error": f"Failed to search files: {str(e)}",
+            "error": f"Failed to search files: {error_text(e)}",
             "search_parameters": {
                 "pattern": pattern,
                 "searched_filename": search_filename,
@@ -4658,8 +4776,8 @@ def _hidden_count_in(visibility: Optional[Dict[str, int]]) -> int:
     """How many coders a `coder_visibility_map()` result hides (a count).
 
     The map is keyed by name, so this is the DISTINCT count
-    `hidden_coder_count` computes, taken from the fresh read rather than
-    from the connect-time probe that `hidden_coder_count` keys on.
+    `hidden_coder_count` computes, taken from the map a caller already
+    holds (both re-read the declaration since v0.14).
     """
     if not visibility:
         return 0
@@ -6526,7 +6644,7 @@ def apply_codings(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     _downgrade_to_readonly()
                     return json.dumps({
                         "error": "Failed to create a backup: check disk space "
@@ -6582,7 +6700,8 @@ def apply_codings(
                 # write body and carried the same gap (Security S-1).
                 # Its bespoke counts stay. The sqlite text goes to the
                 # log, never into the answer.
-                logger.error(f"SQLite error while applying codings: {e}")
+                logger.error("SQLite error while applying codings: %s",
+                             error_label(e))
                 rolled_back = _rollback_if_open(write_db)
                 _downgrade_to_readonly()
                 return json.dumps(_with_backup({
@@ -6597,14 +6716,16 @@ def apply_codings(
                     write_db.conn.rollback()
                 except Exception:
                     pass
-                logger.error(f"Failed to apply codings, rolled back: {e}")
+                logger.error("Failed to apply codings, rolled back: %s",
+                             error_label(e))
                 _downgrade_to_readonly()
                 # A failure after the backup names it here too (the
                 # pre-commit lock re-check lands on this arm), so the
                 # CHANGELOG's "every failure route out of a write" holds
                 # for this body as well.
                 return json.dumps(_with_backup({
-                    "error": f"Failed to apply codings (all changes rolled back): {str(e)}",
+                    "error": f"Failed to apply codings (all changes rolled "
+                             f"back): {error_text(e)}",
                     "applied_before_failure": len(results),
                     "total_approved": len(approved)
                 }, backup_path))
@@ -6767,10 +6888,9 @@ def import_text_file(
             # refusal text quotes a value from it (D1 3.10, Security S3).
             validated = pseudo.validate_mapping(entries, "exact",
                                                 may_echo_names=False)
-        except FileNotFoundError as e:
-            return json.dumps({"error": str(e)}, indent=2)
-        except (ValueError, OSError, pseudo.MappingError) as e:
-            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError, RuntimeError) as e:
+            return json.dumps({"error": _pseudonyms_json_error(e)},
+                              indent=2)
         if content.startswith("﻿"):
             content = content[1:]
         content = content.replace("\r\n", "\n").replace("\r", "\n")
@@ -6882,7 +7002,7 @@ def import_text_file(
                 try:
                     backup_path = write_db.backup_before_write()
                 except Exception as e:
-                    logger.error(f"Failed to create backup: {e}")
+                    logger.error("Failed to create backup: %s", error_label(e))
                     return json.dumps({
                         "error": "Failed to create a backup: check disk space "
                                  "and permissions. Nothing was written.",
@@ -6926,7 +7046,8 @@ def import_text_file(
                 # The same post-backup failure as `_perform_write`'s, in
                 # one of the two write bodies not routed through it
                 # (`apply_codings` is the other).
-                logger.error(f"SQLite error during the import: {e}")
+                logger.error("SQLite error during the import: %s",
+                             error_label(e))
                 return json.dumps(_with_backup(
                     {"error": _write_failed_text(
                         _rollback_if_open(write_db),
@@ -7210,6 +7331,18 @@ def list_backups() -> str:
     }, indent=2)
 
 
+def _backup_log_name(name: str, project_folder: Path) -> str:
+    """A backup as a log line may name it (v0.14): the part after the
+    project folder's name, which is what tells one backup from another,
+    as the lines that take a backup name it. A backup's folder is named
+    after the project's, and a single-case study after its participant.
+    """
+    stem = Path(project_folder).stem
+    if name.startswith(stem):
+        return "(project folder name withheld)" + name[len(stem):]
+    return "(name withheld)"
+
+
 def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
     """Collect both backup families next to the project, newest first.
 
@@ -7240,7 +7373,9 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
                     "size_mb": round(size_bytes / (1024 * 1024), 2),
                 })
             except OSError as e:
-                logger.debug(f"Cannot stat backup {entry}: {e}")
+                logger.debug("Cannot stat backup %s: %s",
+                             _backup_log_name(entry.name, project_folder),
+                             error_label(e))
                 continue
 
     backups.sort(key=lambda b: b["created"], reverse=True)
@@ -7433,7 +7568,11 @@ def prune_backups(keep_last: Optional[int] = None,
             shutil.rmtree(backup["path"])
             removed.append(backup["name"])
         except OSError as e:
-            logger.error(f"Failed to remove backup {backup['name']}: {e}")
+            # The backup's own name carries the project folder's, as the
+            # lines that take a backup already knew (v0.14)
+            logger.error("Failed to remove backup %s: %s",
+                         _backup_log_name(backup["name"], project_folder),
+                         error_label(e))
             failed.append(backup["name"])
 
     result: Dict[str, Any] = {
@@ -7809,7 +7948,7 @@ def restore_backup(backup_path: str,
         # half-replaced project that the next read tool silently reconnects
         # to (fault-injection D1). Remove any partial folder first so the
         # safety-backup recovery always runs on a clean slate.
-        logger.error(f"Restore failed mid-swap: {e}")
+        logger.error("Restore failed mid-swap: %s", error_label(e))
         try:
             if project_folder.exists():
                 # The original folder was already rmtree'd inside the swap;
@@ -7838,7 +7977,8 @@ def restore_backup(backup_path: str,
                                      prefix="safety_backup_")
             return json.dumps(recovered)
         except Exception as recovery_error:
-            logger.error(f"Recovery also failed: {recovery_error}")
+            logger.error("Recovery also failed: %s",
+                         error_label(recovery_error))
         failed: Dict[str, Any] = {
             "error": "Restore failed. The pre-restore state is preserved in "
                      "the safety backup; copy it back over the project folder "
@@ -7899,7 +8039,8 @@ def restore_backup(backup_path: str,
         _attach_skipped_symlinks(result, safety_report,
                                  prefix="safety_backup_")
     except Exception as e:                        # noqa: BLE001
-        logger.error(f"Restore completed, reporting degraded: {e}")
+        logger.error("Restore completed, reporting degraded: %s",
+                     error_label(e))
         result["report_incomplete"] = (
             "The restore completed and the paths above are correct. This "
             "server could not finish describing the restored project "
@@ -7951,8 +8092,8 @@ def get_coding_session_info(coding_session_id: str) -> str:
         return json.dumps(payload, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in get_coding_session_info: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in get_coding_session_info: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -8000,8 +8141,8 @@ def list_coding_sessions(
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in list_coding_sessions: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in list_coding_sessions: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -8040,8 +8181,8 @@ def delete_coding_session(coding_session_id: str) -> str:
             }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in delete_coding_session: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in delete_coding_session: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 @mcp.tool()
@@ -8079,8 +8220,8 @@ def cleanup_old_sessions(days_old: int = 30) -> str:
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in cleanup_old_sessions: {e}")
-        return json.dumps({"error": str(e)})
+        logger.error("Error in cleanup_old_sessions: %s", error_label(e))
+        return json.dumps({"error": error_text(e)})
 
 
 
@@ -10618,6 +10759,21 @@ def merge_category(from_category_id: int,
 # behind a per-file fingerprint check that nothing has moved.
 
 PSEUDONYMISATION_DIRNAME = "pseudonymisation"
+# The run record's format. 3 since v0.14: each file's text before and
+# after the run is fingerprinted with a digest keyed with the token
+# secret (`old_text_hmac_sha256`, `new_text_hmac_sha256`) in place of the
+# plain SHA-256 pairs `old_fingerprint` and `new_fingerprint` that
+# formats 1 (v0.12) and 2 (v0.13) carried. A plain digest of the text
+# before the run, beside the pseudonymised text, confirms a guessed name
+# put back where its pseudonym sits (the v0.13 release's security gate
+# recovered two names from a 3,000-name list in a fifth of a second).
+PSEUDONYMISE_RECORD_FORMAT = 3
+# What a text digest in the record is keyed over: this label, then the
+# text as UTF-8. The label keeps the digest of a file's text apart from
+# every other value keyed with the same secret (the token's MAC and bind,
+# the mapping digest), so a text built to spell one of those payloads
+# does not make the record carry that value.
+RUN_RECORD_TEXT_LABEL = b"qualcoder-mcp run record text\n"
 # The run record's one fixed sentence (v0.13, ruling 2): what it is for,
 # and that it is not a way back.
 PSEUDONYMISE_RECORD_NOTE = (
@@ -10698,8 +10854,8 @@ def _write_run_manifest(payload: Dict[str, Any],
         tmp = None
         return target
     except Exception as e:
-        logger.error(f"Could not write the pseudonymisation run "
-                     f"manifest: {e}")
+        logger.error("Could not write the pseudonymisation run manifest: %s",
+                     error_label(e))
         if tmp is not None:
             try:
                 tmp.unlink()
@@ -10840,7 +10996,9 @@ def _pseudonyms_json_merge(folder: Path, validated) -> Dict[str, Any]:
             # parsed, extra keys included, for the write-back.
             existing, encoding, raw, read_mode = \
                 read_project_pseudonyms_with_raw(folder)
-        except (ValueError, OSError, LookupError) as e:
+        except (ValueError, OSError, LookupError, RuntimeError) as e:
+            # RuntimeError: pathlib's link loop before Python 3.13, whose
+            # text is the path, answered by its kind like an OSError.
             detail = (str(e).rstrip(".") if isinstance(e, ValueError)
                       and PSEUDONYMS_JSON_NAME in str(e) else
                       f"{PSEUDONYMS_JSON_NAME} could not be read "
@@ -11780,7 +11938,8 @@ def _stale_sessions_for(file_ids: Sequence[int]) -> List[str]:
         listed = session_manager.list_sessions(
             project_path=current_project_path, days_old=36500)
     except Exception as e:
-        logger.debug(f"Could not list sessions for stale check: {e}")
+        logger.debug("Could not list sessions for stale check: %s",
+                     error_label(e))
         return stale
     for meta in listed:
         session_id = meta.get("coding_session_id")
@@ -11947,6 +12106,21 @@ def _pseudonymise_journal_body(plan: Dict[str, Any], written: Dict[str, Any],
     return "\n".join(lines)
 
 
+def run_record_text_digest(secret: str, text: str) -> str:
+    """A file text's fingerprint in the run record: HMAC-SHA256 under the
+    token secret over `RUN_RECORD_TEXT_LABEL` and the text as UTF-8.
+
+    Only someone holding the secret (this account's
+    `~/.qualcoder_mcp/preview_secret`, or the state home the server was
+    given) can compute it, so it tells, on this account, whether a text at
+    hand is the one a run read or wrote, and confirms nothing to anyone
+    else who holds the record and the pseudonymised text.
+    """
+    return hmac.new(secret.encode("ascii"),
+                    RUN_RECORD_TEXT_LABEL + text.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
 def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            compiled, bind: str, backup_path: Optional[str],
                            journal_entry: Optional[str],
@@ -11955,7 +12129,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
                            rewrite_memos: bool = False,
                            retention: Optional[Dict[str, Any]] = None
                            ) -> Dict[str, Any]:
-    """The run record kept in the state home (D1 3.2), format 2.
+    """The run record kept in the state home (D1 3.2), format 3.
 
     An audit record: which rows this run changed and where the
     pseudonyms now sit, spans in the NEW text plus row ids and old and
@@ -11975,13 +12149,18 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     own name, which can carry a participant's name: where a reader would
     see one, the key is withheld (`key_withheld`), by the rule
     `_pseudonymise_safe_name` applies to file names.
+
+    Format 3 (v0.14) fingerprints each file's text before and after the
+    run with `run_record_text_digest`, keyed with the token secret as the
+    mapping digest is, where formats 1 and 2 carried each text's length
+    and plain SHA-256 (`old_fingerprint`, `new_fingerprint`), which beside
+    the pseudonymised text confirm a guessed name. Records already written
+    are left as they are; no tool reads or rewrites them.
     """
     entries = compiled.mapping.entries
     withheld = set(pseudo.pseudonyms_withheld(compiled))
-    by_id = {item["file_id"]: item for item in written["files"]}
     files = []
     for item in plan["files"]:
-        report = by_id.get(item["file_id"], {})
         offset = 0
         spans = []
         for replacement in item["replacements"]:
@@ -12005,9 +12184,16 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
         files.append({
             "file_id": item["file_id"],
             "name": _pseudonymise_safe_name(item["name"], compiled),
-            "old_fingerprint": list(item["old_fingerprint"]),
-            "new_fingerprint": [report.get("new_length"),
-                                report.get("new_sha256")],
+            # Keyed, as `mapping_hmac_sha256` is (format 3): a plain
+            # digest of the text before the run confirms a guessed name
+            # beside the pseudonymised text. The lengths stay plain; the
+            # preview already gives both to the conversation.
+            "old_length": len(item["old_text"]),
+            "old_text_hmac_sha256": run_record_text_digest(
+                secret, item["old_text"]),
+            "new_length": len(item["new_text"]),
+            "new_text_hmac_sha256": run_record_text_digest(
+                secret, item["new_text"]),
             "replacements": spans,
             **rows,
         })
@@ -12029,7 +12215,7 @@ def _pseudonymise_manifest(plan: Dict[str, Any], written: Dict[str, Any],
     project_path = _pseudonymise_safe_name(project_path_at_start, compiled)
     safe_backup_path = _pseudonymise_safe_name(backup_path, compiled)
     manifest = {
-        "format": 2,
+        "format": PSEUDONYMISE_RECORD_FORMAT,
         "created": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "project_path": project_path,
         "token_bind": bind,
@@ -12168,8 +12354,10 @@ def pseudonymise_source(
     anonymise (PRIVACY.md).
 
     What this does NOT rewrite, and where the names will remain: case
-    names, file names, attribute values, PDFs, media files, QualCoder
-    4.0's ai_data folder, speakers.json and speaker_regex.json; notes (the
+    names, file names, attribute values, PDFs, media files, an imported
+    document's stored copy in the project's documents/ folder (the
+    original text, which QualCoder's exports ship), QualCoder 4.0's
+    ai_data folder, speakers.json and speaker_regex.json; notes (the
     twelve kinds of note) and journal entries are rewritten only when
     rewrite_memos is on, in their public part only and across the whole
     project, and otherwise remain too. Case and file names are changed
@@ -12441,10 +12629,9 @@ def pseudonymise_source(
         try:
             mapping, sidecar_encoding = read_project_pseudonyms(
                 _current_project_folder())
-        except FileNotFoundError as e:
-            return json.dumps({"error": str(e)}, indent=2)
-        except (ValueError, OSError) as e:
-            return json.dumps({"error": str(e)}, indent=2)
+        except (ValueError, OSError, RuntimeError) as e:
+            return json.dumps({"error": _pseudonyms_json_error(e)},
+                              indent=2)
 
     # Whether the names in this mapping are already in the conversation.
     # They are when the caller typed them; they are NOT when they were
@@ -15500,9 +15687,12 @@ def main(argv: Optional[List[str]] = None):
     if db_path:
         # Option B: Fixed project path provided
         if not Path(db_path).exists():
-            print(f"Error: Database file not found: {db_path}", file=sys.stderr)
+            print("Error: the project set in QUALCODER_PROJECT_PATH was not "
+                  "found; check the path in the host's configuration.",
+                  file=sys.stderr)
             sys.exit(1)
-        logger.info(f"Starting Qualcoder MCP server with pre-configured project: {Path(db_path).name}")
+        logger.info("Starting Qualcoder MCP server with the project set in "
+                    "QUALCODER_PROJECT_PATH")
     else:
         # Option A: Dynamic project selection
         logger.info("Starting Qualcoder MCP server in dynamic mode (no project pre-configured)")

@@ -44,18 +44,25 @@ What stays local, always:
   atomically and created owner-only on POSIX systems (mode 0600)
 - the preview-token secret (`~/.qualcoder_mcp/preview_secret`): 64
   random hex characters, created owner-only on POSIX systems, used to
-  sign the tokens that authorise a destructive operation. It never
-  leaves your machine, never appears in a result, a log line or an error,
-  and holds nothing about your project. Deleting it invalidates
-  outstanding preview tokens, which means the next execute asks for a
-  fresh preview; nothing else. No export can be written into this
-  folder: the export tools refuse paths inside it.
+  sign the tokens that authorise a destructive operation and to key the
+  digests in the pseudonymisation run manifests. It never leaves your
+  machine, never appears in a result, a log line or an error, and holds
+  nothing about your project. Deleting it invalidates outstanding
+  preview tokens, which means the next execute asks for a fresh
+  preview, and the keyed digests in the run manifests already written
+  can then no longer be checked; nothing else. The server replaces the
+  secret by itself, with the same two effects, when it finds the file
+  malformed or, on macOS and Linux, readable by other accounts (after a
+  restore or a sync tool widened its mode), and logs that it did. No
+  export can be written into this folder: the export tools refuse paths
+  inside it.
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
   the path of the project most recently selected under your user
   account, plus a timestamp, written on every successful
-  select_project). It has one outward flow: when a tool is called
-  before a project is selected, the error message names that path as a
-  recovery hint (only while that project still exists on disk), so a
+  select_project). It has one outward flow: when a tool is called, or
+  a resource read, before a project is selected, the error answer names
+  that path as a recovery hint (only while that project still exists on
+  disk; never in a line this server logs), so a
   project path chosen in one MCP host or session
   can appear in another host's conversation on the same account.
   Nothing is ever selected automatically from it; only a path with the
@@ -77,17 +84,30 @@ What stays local, always:
   one JSON file per `pseudonymise_source` run, created owner-only on
   POSIX systems): the pseudonyms applied, the replacement spans, the
   row ids and the old and new offsets of every row the run moved, the
-  case mode and overlap policy, two digests keyed with the
-  preview-token secret (`token_bind`, `mapping_hmac_sha256`), and, for
-  each file, the length and plain SHA-256 of its text before and after
-  the run (`old_fingerprint`, `new_fingerprint`). Those two are not
-  keyed: together with the pseudonymised text they confirm a guessed
-  original name, so the manifest must not be shared, not even as an
-  audit record beside the pseudonymised data. Never an
-  original name: the project path, the backup path and a file's name
-  are withheld where a reader would see one, and "Practical
-  mitigations" below says how. Since v0.13 the record is format 2: it
-  also says whether the run rewrote notes (`rewrite_memos`) and, when it
+  case mode and overlap policy, digests keyed with the preview-token
+  secret (`token_bind`, `mapping_hmac_sha256` and, since v0.14, each
+  file's text before and after the run, `old_text_hmac_sha256` and
+  `new_text_hmac_sha256`), and each file's length before and after the
+  run (`old_length`, `new_length`). A keyed digest can be recomputed
+  only with that secret, so beside the pseudonymised text it confirms no
+  guessed name to anyone without it. The two lengths, with the spans,
+  say by how many characters the replaced names were longer or shorter
+  in total than their pseudonyms, which narrows a guess without
+  confirming it; the preview gives the conversation the same two
+  lengths. Records written before v0.14 (format 1 by v0.12, format 2 by
+  v0.13) carry each file's length and plain SHA-256 before and after
+  the run instead (`old_fingerprint`, `new_fingerprint`): together with
+  the pseudonymised text those confirm a guessed original name, so such
+  a record must not be shared, not even as an audit record beside the
+  pseudonymised data. This server never rewrites or re-keys a record
+  already written; delete the old ones you do not need. A reader tells
+  the two kinds apart by the record's `format` (3 is keyed) and by the
+  field names: a field ending `_hmac_sha256` is keyed, an
+  `old_fingerprint` or `new_fingerprint` pair holds a plain SHA-256.
+  Never an original name: the project path, the backup path and a
+  file's name are withheld where a reader would see one, and "Practical
+  mitigations" below says how. Since v0.13 (format 2) the record also
+  says whether the run rewrote notes (`rewrite_memos`) and, when it
   did, lists each note it rewrote in a `memos` section (the table, the
   row's key, whether the note has a private part, the length of its
   public part before and after as a `public_length` pair, and where each
@@ -99,6 +119,52 @@ What stays local, always:
   files back: each is an audit record of which rows a run changed and
   where the pseudonyms now sit, kept so a run can be accounted for
   afterwards. It is not a way back; the backup taken before the run is.
+
+**Error answers and the server's log.** An error answer goes to the AI
+provider like any other result, and the server's log lines go to the
+host, which may keep them on disk (INSTALL.md, "Reading the server
+log"). Since v0.14 neither carries SQLite's message: an error from the
+database is reported by its kind and SQLite's short name for it (for
+example `IntegrityError SQLITE_CONSTRAINT_TRIGGER`; Python 3.10 has no
+such name, and there the kind stands alone, as it does for a value that
+is not UTF-8, which Python itself reports). SQLite's message can quote a
+note, private part included: a project built to do it can give a
+trigger's error whatever it reads from a row, and a note or a name
+stored as bytes that are not UTF-8 makes Python's sqlite3 quote the
+whole value in the error it raises. The same rule holds for the
+resources (the `qualcoder://` addresses), which answer an error as a
+tool does, as their content, so the MCP library, which logs every error
+a resource raises with its traceback, has none to log; and for an error
+of a kind this server does not expect, which is reported by its kind
+alone. This server's own error texts, which it writes, are answered as
+they are; some repeat what the caller supplied, such as a code name that
+is already taken. The rule closes one channel, SQLite's message; it
+does not make a project built to leak safe to open. Python's own
+messages can quote a stored value (a text stored where a number
+belongs makes the conversion's error quote it, and that error is
+answered), and a trigger can copy a note's private part into a field
+every read returns. Since v0.14 the log also names no project, file,
+code, category, case, journal entry or attribute, and carries no path:
+creating a code, a category, a case or a journal entry, or importing a
+file, logs its id, and an attribute type or value is logged without its
+name; the lines that select a project, start the server and connect to
+the database name no project folder; and the lines about taking,
+listing, restoring, pruning and copying backups and projects name no
+path (a backup by the part of its name after the project folder's). A
+file-system error in the log is its kind and the system's short name
+for it (for example `PermissionError EACCES`), never the file it names,
+and a project's schema version only when it has QualCoder's form (`v`
+and digits). The results still name what they name, as each tool says.
+All of this is about the lines this server writes, and the MCP
+library's own lines beside them, which name the kind of each request
+(and, for a prompt called with an argument it does not declare, that
+argument's value, which is the caller's own). A host may record more in
+the same file: Claude Desktop's
+server log (the file Settings > Developer > Show Logs opens) records
+every request and every answer as well, so there the file also holds
+everything the tools returned and the arguments they were given, names,
+paths and quoted text included, as the conversation does. Read such a
+file as you would the conversation before sharing it.
 
 Paging cursors (the `c1.` tokens the search and segment tools return)
 are not stored anywhere: they are handed to the model in a result and
@@ -314,34 +380,35 @@ project has the coder-visibility capability:
   counts, for parity with QualCoder's own report.
 - **When the capability arrives while this server is connected.**
   QualCoder creates the visibility column and its views when it opens a
-  project, which can be after this server connected to it. Every
-  decision that puts a coder's NAME into a result re-reads the
-  declaration from the project at the time it is made: the
-  pseudonymisation preview's owner breakdown and hidden-row counts, the
-  cascade previews' `by_owner` and `discarded_by_owner` lists and their
-  masked row owner, the coder comparison's refusal and its hidden
+  project, which can be after this server connected to it. Since v0.14
+  every read re-reads the declaration from the project when it is made,
+  as every decision that puts a coder's NAME into a result already did
+  (the pseudonymisation preview's owner breakdown and hidden-row counts,
+  the cascade previews' `by_owner` and `discarded_by_owner` lists and
+  their masked row owner, the coder comparison's refusal and its hidden
   count, the frequencies export's coder list and the AI coder name
-  setter. So a coder hidden after this server connected is treated as
-  hidden by all of them. That re-read is one way: a declaration that
-  was there when the connection opened is never withdrawn by it,
-  because a column that disappears under a live connection is damage
-  or a concurrent rebuild, and the answer to those is the "cannot be
-  determined" posture above; and if the declaration itself cannot be
-  read, the answer is the same posture rather than "nobody is hidden".
-  What is NOT re-read is which table each READ goes to. That is settled
-  when the connection opens, so on a project that gained the capability
-  afterwards the read tools (coded segments, searches, the file view,
-  frequencies and the rest of the list above) go to the base tables
-  until the project is selected again, and can return a hidden coder's
-  row with its owner; the hidden-coder count those results disclose
-  keys on the same connect-time answer, so it does not claim a filter
-  that was not applied. Reopening the project (`select_project`, or
-  restarting the server) settles it, and so does any write that opens
-  the database, because such a write opens a fresh connection
-  (`prune_backups` opens no fresh project connection and settles nothing).
-  If you hide a coder in QualCoder
-  while a conversation is in progress, re-select the project before
-  relying on what the read tools return.
+  setter). So a coder hidden after this server connected is filtered out
+  of the read tools (coded segments, searches, the file view,
+  frequencies and the rest of the list above) from the next call on,
+  and counted in the hidden-coder count they disclose, without selecting
+  the project again. The re-read is one query of the project's schema
+  per read, and only on a project that did not declare visibility when
+  the connection opened: 5 to 6 microseconds each on the development
+  Mac, and a read tool makes a few per call. That re-read is one way: a
+  declaration that was there when the connection opened, or that any
+  call has seen since (a read or a decision that names a coder: they
+  share one memory of it), is never withdrawn by it, because a column
+  that disappears under a live connection is damage or a concurrent
+  rebuild, and the answer to those is the "cannot be determined"
+  posture above; and if the declaration itself cannot be read, the
+  answer is the same posture rather than "nobody is hidden". A
+  declaration seen without all four of QualCoder's views is refused by
+  the read it would shape, and the views are read again at the next:
+  QualCoder adds the column before the views, so a read can land
+  between the two, and the first read after QualCoder has finished
+  answers, filtered. A whole view set, once seen, is kept, and a view
+  dropped afterwards fails the read that selects from it, as for a
+  declaration present when the connection opened.
 
 Projects without the coder-visibility capability (schemas older than
 v14) are unaffected.
@@ -840,16 +907,23 @@ will ask, and the summary above depends on them:
     The manifest's `token_bind` and its `mapping_hmac_sha256` are both
     keyed with the per-user token secret rather than plain digests, so
     neither of those two confirms a guessed name to anyone who holds the
-    manifest or the preview without also holding that secret. The
-    per-file digests are not keyed: each file's length and plain
-    SHA-256 before and after the run are in the manifest
-    (`old_fingerprint`, `new_fingerprint`) and in the run's result
-    (`old_length`, `old_sha256`, `new_length`, `new_sha256`), so they
-    reach the AI provider as well. With the pseudonymised text beside
-    them, a guessed name can be put back where a pseudonym sits and
-    checked against the digest of the text before the run: they do
-    confirm a guessed name, to anyone who holds them and that text. The
-    manifest must not be shared.
+    manifest or the preview without also holding that secret. Since
+    v0.14 so are the per-file digests: each file's text before and after
+    the run is fingerprinted in the manifest under that secret
+    (`old_text_hmac_sha256`, `new_text_hmac_sha256`, over a fixed label
+    and the text, so no file's text can make it equal a token's
+    signature), and the run's result carries no digest of the text
+    before the run, only the two lengths (`old_length`, `new_length`)
+    and the plain SHA-256 of the text after it (`new_sha256`), which is
+    a digest of text the reader can already read. Before v0.14 the result carried the plain
+    SHA-256 of the text before the run as well (`old_sha256`), and the
+    manifest the plain pair (`old_fingerprint`, `new_fingerprint`): with
+    the pseudonymised text beside them, a guessed name can be put back
+    where a pseudonym sits and checked against that digest, so they
+    confirm a guessed name to anyone who holds them and that text. A
+    conversation from an earlier version still holds those results, and
+    a manifest written by one still holds that pair; such a manifest
+    must not be shared.
   - **The preview's own reply.** On the `use_project_pseudonyms` path
     the mapping is the researcher's own reverse key and the model never
     supplied it, so no diagnostic and no refusal quotes a name from it

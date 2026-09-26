@@ -995,3 +995,31 @@ class TestTheLogNamesNothing:
         assert not [line for line in lines if self.MARK in line]
         assert "Creating a project failed at the database stage: " \
                "OperationalError" in lines
+
+
+class TestCreatingLogsNoNameOrPath:
+    """With v0.14's privacy rules merged: creating a project named after
+    its participant, in a folder so named, with the researcher's coder
+    name, then setting the AI coder name and the project memo, and
+    refusing the same name again, leaves no log record, from any module,
+    that holds the name (the host keeps the log on disk)."""
+
+    MARK = "Zebedee"
+
+    def test_no_record_names_the_project(self, tmp_path, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG)
+        work = tmp_path / f"{self.MARK} folder"
+        work.mkdir()
+        made = create(f"{self.MARK} study", work,
+                      coder_name=f"{self.MARK} Smith")
+        assert made["created"] and made["selected"]
+        assert json.loads(server.set_project_ai_coder_name(
+            f"{self.MARK} AI"))["success"]
+        assert json.loads(server.set_memo(
+            "project", None, f"About {self.MARK}"))["success"]
+        refused(create(f"{self.MARK} study", work))
+        records = [r.getMessage() for r in caplog.records]
+        assert records, "nothing was logged: the check sees nothing"
+        assert "Created a new project (schema v17)" in records
+        assert [line for line in records if self.MARK in line] == []

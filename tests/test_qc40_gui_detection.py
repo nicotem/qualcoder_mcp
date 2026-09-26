@@ -482,9 +482,17 @@ class TestDatabaseOpenErrorIsGeneric:
                 lambda: server.copy_project_to_workspace(qualcoder_db_path),
             ):
                 self._assert_generic(call(), qualcoder_db_path)
-        # The diagnostic detail is logged, not returned
-        logged = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "readonly" in logged or "not a database" in logged, logged
+        # The diagnostic detail is logged, not returned: since v0.14 the
+        # kind and SQLite's short name for it, never SQLite's message
+        # (on Python 3.10, which has no names, the kind alone)
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        if sys.version_info >= (3, 11):
+            assert ("SQLITE_READONLY" in logged
+                    or "SQLITE_NOTADB" in logged), logged
+        else:
+            assert "Error" in logged, logged
+        assert "readonly database" not in logged
+        assert "not a database" not in logged
 
     def test_select_project_keeps_its_scoped_wording(self, setup_server,
                                                      qualcoder_db_path,

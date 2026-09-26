@@ -81,13 +81,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns it red; on Windows, whose thread clock is too coarse for a 15 ms
   count, it stays on the wall clock. It still fails when the reader's
   sweep goes back to `str.translate`.
-- Serialised tool JSON as it stands after this change: full = 171,907
-  characters (about 43.0k tokens at chars/4) over 73 tools, core =
-  57,435 (about 14.4k) over 21, and the new opt-in lifecycle set =
-  174,334 over 74. Measured as for 0.13, on the final tree through the
-  toolset gate, under Python 3.13.5 with mcp 1.30.0, in the repository's
-  own `venv/`; on Python 3.11.13, in the repository's `.venv/`, 180,723,
-  60,447 and 183,282.
+
+### Changed: privacy of the run record, error answers and the log
+
+- **The run's fingerprints no longer confirm a guessed name.** The
+  result of `pseudonymise_source` no longer carries `old_sha256`, the
+  plain SHA-256 of each file's text before the run: beside the
+  rewritten text, which the conversation can read, it confirmed a name
+  put back where its pseudonym sits (the v0.13 release's security
+  review recovered two names from a list of 3,000 in a fifth of a
+  second). The lengths before and after and `new_sha256` stay. The run
+  record is now format 3: each file's text before and after the run is
+  fingerprinted as `old_text_hmac_sha256` and `new_text_hmac_sha256`,
+  keyed with the preview-token secret over a fixed label and the text,
+  as `mapping_hmac_sha256` already was, where formats 1 and 2 carried
+  the plain pairs `old_fingerprint` and `new_fingerprint`. Records
+  already written are left as they are and still hold the plain
+  digests: keep them private, or delete the ones you do not need. A
+  reader tells the two apart by `format` (3 is keyed) and by the field
+  names. PRIVACY.md says what each format holds.
+- `pseudonymise_source`'s list of what it does not rewrite names an
+  imported document's stored copy in the project's `documents/` folder,
+  which keeps the original text and which QualCoder's exports ship.
+- **One rule for every error answer and log line: the kind of error and
+  SQLite's short name for it, never SQLite's message.** A project built
+  to do it (a trigger whose error quotes a row) or a damaged one (a note
+  or a name stored as bytes that are not UTF-8, which Python's sqlite3
+  quotes whole) could put a note, private part included, into an
+  answer the AI provider receives or a line the host logs. Now
+  `add_journal_entry`, `create_code`, `rename_code`, `create_category`,
+  `rename_category` and `import_text_file` answer, for instance,
+  "Failed to add code: IntegrityError SQLITE_CONSTRAINT_TRIGGER", and so
+  does the coding write behind `apply_codings` and
+  `create_proposed_codes` (and the database layer's note write for a
+  coding, which no tool calls); the shared
+  handler behind most reads logs the kind; the tool guard, the select,
+  write, restore, session and export routes and `search_files` do the
+  same; the pseudonymisation run's journal write, through either of its
+  branches, logs the kind; and a rename beside a file name that is not
+  UTF-8 logs the kind. Python 3.10, which has no SQLite names, gives
+  the kind alone. Two routes that bypassed the tool guard are closed:
+  the resources (`qualcoder://...`), which the MCP library reads and
+  whose errors it answered and logged in full with a traceback, now
+  answer an error as a tool does, as their content, so the library logs
+  nothing (a resource read before any project was selected had put the
+  last-used project's path into the host's log, and a misconfigured
+  `QUALCODER_PROJECT_PATH` the configured one); and an error of a kind
+  the guard did not name, which the library answered with its message,
+  is now answered by its kind. A test reads every handler in the source
+  that can catch a SQLite error and fails on any use of its message,
+  and four tests read every resource on a real server over standard
+  input and output, its standard error searched line by line. The rule
+  closes one channel: Python's own messages can still quote a stored
+  value, and PRIVACY.md says so. When `pseudonyms.json` cannot be
+  read, the answers give the kind of error, not the system's text,
+  which named the file's path (a link that loops included, which
+  pathlib reports differently before Python 3.13), and
+  `get_current_project` no longer fails whole on such a file.
+- **No names or paths in the log.** Creating a code, a category or a
+  case, adding a journal entry and importing a file log the id, not the
+  name, and an attribute type or value is logged without its name. The
+  lines that select a project, start the server with a configured
+  project and connect or reconnect to it no longer name the project
+  folder (and the start-up error for a configured path that does not
+  exist no longer prints the path). The two backup-failure lines, the
+  lock-file warning every restore writes, the prune's line for a backup
+  it could not remove, the backup listing's line for one it could not
+  read, and the lines that copy a project to the workspace carry no
+  path: a file-system error is logged as its kind and the system's name
+  for it (`PermissionError EACCES`), and a backup by the part of its
+  name after the project folder's, as the lines that take a backup
+  already did. The session and export lines drop their paths too, and
+  a project's schema version is logged only when it has QualCoder's
+  form (`v` and digits): the field is the project's own, and a trigger
+  could copy a note or a participant's name into it. A test reads every
+  log call in the source and fails on one that carries a caught error
+  other than by its kind. What the log covers is the lines this server
+  writes and the MCP library's beside them; INSTALL.md and PRIVACY.md
+  now say that a host may record more in the same file (Claude
+  Desktop's server log records every request and answer).
+- **Every read re-checks whether the project hides coders.** QualCoder
+  creates the visibility column and its four views when it opens a
+  project, which can be after this server connected. The decisions that
+  name a coder already re-read that; the reads did not, and went on
+  returning a hidden coder's rows, with the owner, until the project was
+  selected again. Now every read re-reads the declaration, one way as
+  before (a declaration seen is never withdrawn), so a coder hidden in
+  QualCoder mid-conversation is filtered from the next call; a
+  declaration seen by any read or by a decision that names a coder is
+  kept for both; a read that lands after QualCoder has added the column
+  and before it has added the views is refused, and the next read after
+  it has added them answers, filtered. The cost is one schema query per read on a project that did
+  not declare visibility when the connection opened, 5 to 6
+  microseconds each on the development Mac and a few per read tool
+  call (about 11 to 25 microseconds on the reads measured), and nothing
+  on a project that did.
+- Two tests v0.13's review of the note rewriting asked for: the mode a
+  saved `pseudonyms.json` keeps is shown to come from the file that was
+  read even when the name is swapped for a link at the reader's own
+  close, and the run's note-statement log line is pinned whole for an
+  error with no SQLite name (Python 3.10's shape) on every interpreter.
+  No behaviour changed.
+- Serialised tool JSON as it stands, after the privacy change and the
+  creation of projects: full = 172,032 characters (about 43.0k tokens
+  at chars/4) over 73 tools, core = 57,435 (about 14.4k) over 21, and
+  the new opt-in lifecycle set = 174,459 (about 43.6k) over 74. Moved
+  by `pseudonymise_source`'s description (privacy; not in `core`) and
+  by `set_memo`'s, `set_project_ai_coder_name`'s and `select_project`'s
+  (creating a project; all three in `core`); `pseudonymise_source`'s
+  own share rounds to 18,000 as before. Measured as for 0.13, on the
+  final tree through the toolset gate, under Python 3.13.5 with mcp
+  1.30.0, in the repository's own `venv/`; on Python 3.11.13, in the
+  repository's `.venv/`, 180,856, 60,447 and 183,415.
 
 ## [0.13.0-alpha] - 2026-09-25
 

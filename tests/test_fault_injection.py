@@ -1772,12 +1772,14 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
 
     def test_a_second_writer_met_by_the_import_method_names_it(
             self, fi_env, monkeypatch):
-        """The import body's RuntimeError arm (re-verification R1-1 and
-        R3 F-1). The import method, like `add_code`, re-raises a locked
-        database as RuntimeError, so the mandate's second named case
-        lands on this arm for this body; it named the backup and no test
-        noticed when it stopped. Driven as the `set_memo` case is, on
-        `import_text_file`."""
+        """The import body's lock arm (re-verification R1-1 and R3 F-1).
+        The import method, like `add_code`, re-raised a locked database
+        as a RuntimeError carrying SQLite's message, so the mandate's
+        second named case landed on the RuntimeError arm; since v0.14 it
+        raises the lock as `DatabaseLockedError` with this server's own
+        text (SQLite's message is never used), which lands on the lock
+        arm. Either way it names the backup. Driven as the `set_memo`
+        case is, on `import_text_file`."""
         env = fi_env
         pre_hash = env.hash()
         before = env.backup_names()
@@ -1799,9 +1801,7 @@ class TestAWriteThatFailsAfterItsBackupNamesIt:
             holder.rollback()
             holder.close()
 
-        assert out["error"].startswith(
-            "Database error: Failed to import text file"), out
-        assert "database is locked" in out["error"]
+        assert out["error"] == DB_LOCKED_MESSAGE, out
         taken = env.backup_names() - before
         assert len(taken) == 1
         assert Path(out["backup_path"]).is_dir()
@@ -1830,8 +1830,13 @@ class TestPerformWriteUnexpectedException:
             raise KeyError("unexpected internal key")
 
         monkeypatch.setattr(QualcoderDatabase, "set_memo", keyboom)
-        with pytest.raises(KeyError):
-            server.set_memo("code", 1, "x", create_backup=False)
+        # Since v0.14 the tool guard answers an error of a kind it does
+        # not name by its kind, rather than letting it reach the MCP
+        # library with its message; the clean-up is what this pins.
+        out = json.loads(server.set_memo("code", 1, "x",
+                                         create_backup=False))
+        assert out == {"error": server.UNEXPECTED_ERROR.format(
+            kind="KeyError")}
 
         assert env.hash() == pre_hash
         assert server.db is not None

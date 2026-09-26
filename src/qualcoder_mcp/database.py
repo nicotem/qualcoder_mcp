@@ -3,6 +3,7 @@
 
 import ast
 import bisect
+import errno
 import locale
 import os
 import sqlite3
@@ -675,7 +676,7 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
                     f"a process that looks like QualCoder is running on "
                     f"this machine ({len(hits)} match(es))")
     except Exception as e:  # never let a heuristic break a tool
-        logger.debug(f"GUI-open heuristics failed: {e}")
+        logger.debug(f"GUI-open heuristics failed: {error_label(e)}")
     return signals
 
 
@@ -718,7 +719,8 @@ def hold_project_lock(project_dir: Union[str, Path]):
                 raise DatabaseLockedError(qualcoder_open_message(holder2)) from None
             # stale — leave the file alone and proceed unheld
         except OSError as e:
-            logger.warning(f"Could not create project lock file: {e}")
+            logger.warning("Could not create project lock file: %s",
+                           error_label(e))
 
     try:
         yield held
@@ -727,7 +729,11 @@ def hold_project_lock(project_dir: Union[str, Path]):
             try:
                 lock.unlink()
             except OSError as e:
-                logger.warning(f"Could not remove project lock file: {e}")
+                # The kind only (v0.14): the error's text is the lock
+                # file's path, the project folder's name in it, and this
+                # line fires on every restore.
+                logger.warning("Could not remove project lock file: %s",
+                               error_label(e))
 
 
 def position_safe(fulltext: str) -> bool:
@@ -765,15 +771,71 @@ def sqlite_error_label(error: BaseException) -> str:
     return type(error).__name__
 
 
+def _version_for_log(version: Any) -> str:
+    """A project's `databaseversion` as a log line may carry it: the
+    value when it has QualCoder's shape (`v` and up to four digits),
+    otherwise a fixed phrase. The field is the project's own text."""
+    if isinstance(version, str) and re.fullmatch(r"v\d{1,4}", version):
+        return version
+    return "(a value not in QualCoder's form, withheld)"
+
+
+def error_label(error: BaseException) -> str:
+    """Any error as a log line may carry it: its kind and a short name,
+    never its message (v0.14, one rule for every log line).
+
+    A SQLite error, or one raised while handling it, is labelled by
+    `sqlite_error_label`. An `OSError` is its class and the symbolic
+    name of its errno (`PermissionError EACCES`), because its message
+    names the file, and a path carries the project folder's name, which
+    in a single-case study is the participant's. Anything else is its
+    class alone.
+    """
+    for candidate in (error, error.__cause__, error.__context__):
+        if isinstance(candidate, sqlite3.Error):
+            return sqlite_error_label(candidate)
+    if isinstance(error, OSError):
+        name = errno.errorcode.get(error.errno) \
+            if isinstance(error.errno, int) else None
+        return (f"{type(error).__name__} {name}" if name
+                else type(error).__name__)
+    return type(error).__name__
+
+
+def error_text(error: BaseException) -> str:
+    """An error as an answer may carry it (v0.14): the errors this server
+    raises (`ValueError`, `TypeError`, `RuntimeError` and their kinds) by
+    their message, which it writes; a SQLite error, an `OSError` and any
+    other kind as `error_label` gives it.
+
+    SQLite's message is never used. A trigger in the project can make it
+    whatever it computes from a row, a note's private part included, and
+    a note or a name stored as bytes that are not UTF-8 makes Python's
+    sqlite3 quote the whole value in it; either would reach the AI
+    provider in an answer. A wrapper this server raises while handling a
+    SQLite error carries the label, never the message, so its own
+    message is safe to use. An error of another kind is not one this
+    server raises, and nothing says its message is free of the
+    project's text.
+    """
+    if isinstance(error, (sqlite3.Error, OSError)):
+        return error_label(error)
+    if isinstance(error, (ValueError, TypeError, RuntimeError)):
+        return str(error)
+    return error_label(error)
+
+
 def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
     """Convert a sqlite3 error from a query into a typed, sanitised error.
 
     Locked databases get a distinct, actionable error; everything else is
-    logged in full and re-raised as a generic sanitised RuntimeError.
+    logged by its kind and SQLite's name for it, never its message (v0.14:
+    a trigger or a note that is not UTF-8 can make the message a note),
+    and re-raised as a generic sanitised RuntimeError.
     """
     if isinstance(e, sqlite3.OperationalError) and _is_locked_error(e):
         raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-    logger.error(f"Database error in {where}: {e}")
+    logger.error("Database error in %s: %s", where, sqlite_error_label(e))
     raise RuntimeError(message) from None
 
 # Workspace configuration. Users should work in this folder to keep
@@ -894,9 +956,11 @@ def validate_qda_path(db_path: str) -> Path:
         # A locked database is NOT corrupted: report it distinctly
         if _is_locked_error(e):
             raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-        raise DatabaseOpenError(f"Cannot open SQLite database: {e}")
+        raise DatabaseOpenError(
+            f"Cannot open SQLite database: {sqlite_error_label(e)}")
     except sqlite3.DatabaseError as e:
-        raise DatabaseOpenError(f"Invalid or corrupted SQLite database: {e}")
+        raise DatabaseOpenError(
+            f"Invalid or corrupted SQLite database: {sqlite_error_label(e)}")
     finally:
         if conn is not None:
             try:
@@ -1739,10 +1803,10 @@ def backup_project(project_path: Union[str, Path],
     # and that is what is kept. The folder lives beside the project, so
     # nothing that could be found before is unfindable now.
     #
-    # Still open, deliberately, and carried as a written item: the two
-    # `Failed to create backup` lines below log the exception, whose
-    # text can carry the whole path. They fire only when the backup
-    # failed, and there the path is the diagnostic.
+    # The two `Failed to create backup` lines below log the error's kind
+    # only (v0.14): its text can carry the whole path, and the kind with
+    # the system's name for it (`PermissionError EACCES`) says what
+    # failed.
     suffix = backup_name[len(project_path.stem):]
     logger.info("Creating backup: (project folder name withheld)%s", suffix)
 
@@ -1761,14 +1825,14 @@ def backup_project(project_path: Union[str, Path],
         # copytree's makedirs failed before anything was written: the
         # folder appeared under someone else's hand and is never ours to
         # remove (S-H5)
-        logger.error(f"Failed to create backup: {e}")
-        raise OSError(f"Backup failed: {e}") from None
+        logger.error("Failed to create backup: %s", error_label(e))
+        raise OSError(f"Backup failed: {error_label(e)}") from None
     except Exception as e:
-        logger.error(f"Failed to create backup: {e}")
+        logger.error(f"Failed to create backup: {error_label(e)}")
         # Never leave a partial tree behind: list_backups would present
         # it as a restorable backup (S-H5)
         shutil.rmtree(backup_path, ignore_errors=True)
-        raise OSError(f"Backup failed: {e}") from None
+        raise OSError(f"Backup failed: {error_label(e)}") from None
 
 
 def copy_project_to_workspace(
@@ -1857,7 +1921,9 @@ def copy_project_to_workspace(
             workspace_resolved not in dest_resolved.parents:
         raise ValueError("refusing to copy the project outside the workspace")
 
-    logger.info(f"Copying project to workspace: {dest_path}")
+    # The destination's name is the project's (or one the caller chose),
+    # so it stays out of the log (v0.14); the result names it.
+    logger.info("Copying project to workspace (folder name withheld)")
 
     skipped: List[str] = []
     try:
@@ -1865,20 +1931,20 @@ def copy_project_to_workspace(
             source_path, dest_path,
             ignore=_copy_ignore(source_path, skipped)
         )
-        logger.info(f"Project copied successfully: {dest_path}")
+        logger.info("Project copied successfully (folder name withheld)")
         if report is not None:
             report["skipped_symlinks"] = skipped
         return dest_path
     except FileExistsError as e:
         # The destination appeared under someone else's hand between the
         # existence check and the copy; never touch it (S-H5)
-        logger.error(f"Failed to copy project: {e}")
-        raise OSError(f"Copy failed: {e}") from None
+        logger.error("Failed to copy project: %s", error_label(e))
+        raise OSError(f"Copy failed: {error_label(e)}") from None
     except Exception as e:
-        logger.error(f"Failed to copy project: {e}")
+        logger.error(f"Failed to copy project: {error_label(e)}")
         # Never leave a partial project copy behind (S-H5)
         shutil.rmtree(dest_path, ignore_errors=True)
-        raise OSError(f"Copy failed: {e}") from None
+        raise OSError(f"Copy failed: {error_label(e)}") from None
 
 
 def memo_has_private_zone(memo: Any) -> bool:
@@ -2162,6 +2228,14 @@ class QualcoderDatabase:
         # Validate path before opening
         self.db_path = validate_qda_path(db_path)
         self.read_only = read_only
+        # Coder visibility arriving after this connection opened (v0.14):
+        # whether any read or naming decision has seen the declaration
+        # (kept, one way, `_visibility_is_declared_now`), and whether a
+        # read has seen QualCoder's whole view set with it (kept once
+        # whole; a partial set is read again, `_visibility_in_force`).
+        self._declaration_seen = False
+        self._visibility_arrived = False
+        self._arrived_views: frozenset = frozenset()
 
         try:
             if read_only:
@@ -2177,9 +2251,11 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to open database: {e}") from e
+            raise RuntimeError(
+                f"Failed to open database: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to open database: {e}") from e
+            raise RuntimeError(
+                f"Failed to open database: {sqlite_error_label(e)}") from None
 
         try:
             # Validate this is a Qualcoder database
@@ -2216,7 +2292,8 @@ class QualcoderDatabase:
             try:
                 self.conn.close()
             except Exception as e:
-                logger.warning(f"Error closing database connection: {e}")
+                logger.warning("Error closing database connection: %s",
+                               error_label(e))
             finally:
                 self.conn = None
 
@@ -2241,9 +2318,13 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to validate database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to validate database schema: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to validate database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to validate database schema: "
+                f"{sqlite_error_label(e)}") from None
 
     def _check_version(self):
         """Check database version and log warnings if unsupported.
@@ -2268,18 +2349,25 @@ class QualcoderDatabase:
                 self.db_version = version
                 self.qualcoder_about_ok = "QualCoder" in (row[1] or "")
                 if version not in SUPPORTED_DB_VERSIONS:
+                    # The value only when it has QualCoder's shape (`v`
+                    # and digits): the field is the project's own, and a
+                    # trigger can copy a note, private part included, or
+                    # a participant's name into it (v0.14 fix round 1,
+                    # Security secB-2).
                     logger.warning(
-                        f"Untested database version: {version}. "
-                        f"Supported versions: {SUPPORTED_DB_VERSIONS}"
-                    )
+                        "Untested database version: %s. Supported "
+                        "versions: %s", _version_for_log(version),
+                        SUPPORTED_DB_VERSIONS)
                 else:
                     logger.info(f"Connected to Qualcoder database version {version}")
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            logger.warning(f"Could not determine database version: {e}")
+            logger.warning("Could not determine database version: %s",
+                           sqlite_error_label(e))
         except sqlite3.Error as e:
-            logger.warning(f"Could not determine database version: {e}")
+            logger.warning("Could not determine database version: %s",
+                           sqlite_error_label(e))
 
     def _probe_capabilities(self):
         """Populate self.capabilities from column/table existence.
@@ -2329,9 +2417,11 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            logger.warning(f"Could not probe schema capabilities: {e}")
+            logger.warning("Could not probe schema capabilities: %s",
+                           sqlite_error_label(e))
         except sqlite3.Error as e:
-            logger.warning(f"Could not probe schema capabilities: {e}")
+            logger.warning("Could not probe schema capabilities: %s",
+                           sqlite_error_label(e))
 
     def _unknown_future_schema(self) -> bool:
         """True when databaseversion names a schema newer than the verified
@@ -2420,9 +2510,13 @@ class QualcoderDatabase:
         except sqlite3.OperationalError as e:
             if _is_locked_error(e):
                 raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
-            raise RuntimeError(f"Failed to check database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to check database schema: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
-            raise RuntimeError(f"Failed to check database schema: {e}") from e
+            raise RuntimeError(
+                f"Failed to check database schema: "
+                f"{sqlite_error_label(e)}") from None
 
     def get_project_info(self) -> Dict[str, Any]:
         """Get project metadata."""
@@ -2634,16 +2728,86 @@ class QualcoderDatabase:
         caller can opt out, which is the point: one rule, decided here,
         never at the call sites (fix round 4).
         """
+        if not honor_visibility:
+            return base
+        whole = self._visibility_in_force()
+        if whole is None:
+            return base
         caps = getattr(self, "capabilities", None)
-        if honor_visibility and caps is not None and caps.visibility_declared():
-            if not (caps.has_coder_visibility and caps.table_exists(view)):
-                raise CoderVisibilityUnreadable(
-                    "Could not determine coder visibility for this project "
-                    "(one of its coder-visibility views is missing). Open "
-                    "the project in QualCoder, which recreates them, and "
-                    "try again")
-            return view
-        return base
+        present = (caps.table_exists(view) if caps is not None
+                   and caps.visibility_declared()
+                   else view in getattr(self, "_arrived_views", ()))
+        if not (whole and present):
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(one of its coder-visibility views is missing). Open "
+                "the project in QualCoder, which recreates them, and "
+                "try again")
+        return view
+
+    def _visibility_in_force(self) -> Optional[bool]:
+        """Whether this project can hide a coder, asked on every read.
+
+        None: it declares no visibility, and nothing is hidden. True: it
+        declares it and has QualCoder's whole view set. False: it
+        declares it without the whole set, which the read refuses.
+
+        A declaration present when the connection opened is the probe's
+        answer and is never withdrawn (the one-way rule of
+        `_visibility_is_declared_now`). Without one, the declaration is
+        re-read here, on every read (v0.14): QualCoder creates the
+        column and its four views on every project open, under this
+        server's long-lived connection, and until then a read went to
+        the base tables and could return a hidden coder's row, with its
+        owner, until the project was selected again. The cost is that
+        re-read, one `PRAGMA table_info(coder_names)` per read on a
+        project without the declaration.
+
+        Once the declaration has been seen, by a read or by a decision
+        that names a coder, it is never withdrawn (one memory for both,
+        fix round 1, QA F3). The views are kept only once the whole set
+        has been seen; a partial set refuses this read and is read again
+        on the next (QA F2). QualCoder commits the column before the
+        views, so a read can land between the two; keeping that partial
+        answer refused every later read until the project was selected
+        again. A view dropped after the whole set was seen fails the
+        read that selects from it, as for a declaration present at
+        connect.
+        """
+        caps = getattr(self, "capabilities", None)
+        if caps is not None and caps.visibility_declared():
+            return caps.has_coder_visibility
+        if getattr(self, "_visibility_arrived", False):
+            return True
+        if not self._visibility_is_declared_now(say_a_lock=True):
+            return None
+        try:
+            views = {row[0] for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'view'")}
+        except sqlite3.Error as e:
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Could not read the coder-visibility views: %s",
+                         sqlite_error_label(e))
+            raise CoderVisibilityUnreadable(
+                "Could not determine coder visibility for this project "
+                "(its coder-visibility views could not be read)") from None
+        self._arrived_views = frozenset(views & VISIBILITY_VIEWS)
+        whole = VISIBILITY_VIEWS <= views
+        if whole:
+            self._visibility_arrived = True
+        return whole
+
+    def visibility_applies(self) -> bool:
+        """Whether reads on this project are shaped by coder visibility
+        now: declared when the connection opened, or since."""
+        return self._visibility_in_force() is not None
+
+    def has_coder_visibility_now(self) -> bool:
+        """The capability `has_coder_visibility` as it stands now: the
+        declaration with QualCoder's whole view set, when the connection
+        opened or since (v0.14)."""
+        return bool(self._visibility_in_force())
 
     def code_text_source(self, honor_visibility: bool = True) -> str:
         return self._visible_source("code_text", "code_text_visible",
@@ -2652,59 +2816,25 @@ class QualcoderDatabase:
     def _naming_source(self, base: str, view: str) -> str:
         """The table or view a decision that NAMES a coder reads from.
 
-        `_visible_source` keeps the connect-time answer, and the reads
-        that go through it are the arrival-state residual PRIVACY.md
-        discloses: on a project that gained the capability after this
-        server connected, a read tool returns a hidden coder's row
-        until the project is re-selected. A decision that puts a
-        coder's NAME into a preview cannot stand on that answer, because
-        "never name a hidden coder" is owner-ruled (X1) and the
-        pseudonymisation preview already re-reads the declaration per
-        call; the cascade previews' `by_owner` and `discarded_by_owner`
-        did not, and named the coder the flagship withheld, on one
-        project in one session (fix round 3, B3).
-
-        So: with a declaration present at connect, exactly
-        `_visible_source` (the one-way rule and the view-set rule are
-        both there). With none, the declaration is re-read
-        (`_visibility_is_declared_now`, one way); still none, the base
-        table, where nothing is hidden. Arrived since, the view has to
-        exist NOW, because a declaration without its view cannot be
-        filtered as QualCoder filters it, and the answer is the refusal
-        `_visible_source` gives for the same state. That is a full
-        re-read of exactly the two facts this decision needs, and no
-        others: which table every OTHER read goes to is still settled
-        when the connection opens.
+        Since v0.14 exactly `_visible_source`, which re-reads the
+        declaration on every read. Until then `_visible_source` kept the
+        connect-time answer and only the decisions that name a coder
+        re-read it here (the pseudonymisation preview's owner breakdown,
+        the cascade previews' `by_owner` and `discarded_by_owner`: fix
+        round 3, B3), so a read tool returned a hidden coder's row after
+        the project gained the capability. Kept as a name so those call
+        sites still say what they decide. One tightening against the
+        v0.13 form: a declaration that arrived without QualCoder's whole
+        view set is refused whichever view is asked for, as it is for a
+        declaration present at connect.
         """
-        caps = getattr(self, "capabilities", None)
-        if caps is not None and caps.visibility_declared():
-            return self._visible_source(base, view)
-        if not self._visibility_is_declared_now():
-            return base
-        try:
-            row = self.conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'view' "
-                "AND name = ?", (view,)).fetchone()
-        except sqlite3.Error as e:
-            logger.error(f"Could not check for the coder-visibility view "
-                         f"{view}: {e}")
-            raise CoderVisibilityUnreadable(
-                "Could not determine coder visibility for this project "
-                "(its coder-visibility views could not be read)") from None
-        if row is None:
-            raise CoderVisibilityUnreadable(
-                "Could not determine coder visibility for this project "
-                "(one of its coder-visibility views is missing). Open "
-                "the project in QualCoder, which recreates them, and "
-                "try again")
-        return view
+        return self._visible_source(base, view)
 
     def hidden_coder_count(self) -> int:
         """How many coders this project currently hides (0 without the
         visibility capability). Used for result disclosure; hidden
         coders' NAMES are never disclosed."""
-        caps = getattr(self, "capabilities", None)
-        if caps is None or not caps.visibility_declared():
+        if not self.visibility_applies():
             return 0
         try:
             # DISTINCT, for the same reason coder_visibility_map folds:
@@ -2932,7 +3062,7 @@ class QualcoderDatabase:
                 return str(row[0])
         return None
 
-    def _visibility_is_declared_now(self) -> bool:
+    def _visibility_is_declared_now(self, say_a_lock: bool = False) -> bool:
         """Whether `coder_names` declares per-coder visibility, re-read.
 
         The capability set is probed once, when the connection opens
@@ -2949,17 +3079,18 @@ class QualcoderDatabase:
         disclosure had already happened, and "never name a hidden coder"
         is an owner-ruled invariant (X1).
 
-        Re-read HERE and nowhere else, which is what makes this a
-        contained change rather than a server-wide one: this is the only
-        per-project read of the declaration that decides who may be
-        named, `_visible_source` keeps the connect-time answer, and the
+        The one per-project read of the declaration: the decisions that
+        name a coder call it directly, and since v0.14 every read calls
+        it too, through `_visible_source` (`_visibility_in_force`); the
         flagship reads its span rows from the base tables in either
-        case. One `PRAGMA table_info` per call, on a handful of calls
-        per tool call, and only on projects that had no declaration when
-        the connection opened.
+        case. One `PRAGMA table_info` per call, and only on projects
+        that had no declaration when the connection opened and on which
+        no call has seen one since.
 
         ONE-WAY, and this is the whole design. A declaration that was
-        there at connect time is never withdrawn by this re-read, only
+        there at connect time, or that any call has seen since (fix
+        round 1 of v0.14, QA F3: one memory for the reads and the
+        naming decisions), is never withdrawn by this re-read, only
         added. QualCoder's migration is additive: the column and the
         views arrive and never leave, so a declaration that disappears
         under a live connection is damage, drift, or a concurrent
@@ -2986,17 +3117,30 @@ class QualcoderDatabase:
         caps = getattr(self, "capabilities", None)
         if caps is not None and caps.visibility_declared():
             return True
+        if getattr(self, "_declaration_seen", False):
+            return True
         try:
             columns = {row[1] for row in self.conn.execute(
                 "PRAGMA table_info(coder_names)").fetchall()}
         except sqlite3.Error as e:
+            # A read asks for a lock to be said as one (v0.14: every read
+            # now re-reads this, and a locked database is not a damaged
+            # one). A decision that calls this directly keeps the posture
+            # below ("cannot be decided"); one that goes through
+            # `_naming_source` is a read here and says a lock as a lock.
+            # Closed either way.
+            if say_a_lock and _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
             logger.error(f"Could not re-read the coder visibility "
-                         f"declaration: {e}")
+                         f"declaration: {sqlite_error_label(e)}")
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility declaration could not be read)"
             ) from None
-        return "visibility" in columns
+        if "visibility" in columns:
+            self._declaration_seen = True
+            return True
+        return False
 
     def coder_visibility_map(self) -> Optional[Dict[str, int]]:
         """{name: visibility} for the whole `coder_names` table.
@@ -3028,7 +3172,8 @@ class QualcoderDatabase:
             rows = self.conn.execute(
                 "SELECT name, visibility FROM coder_names").fetchall()
         except sqlite3.Error as e:
-            logger.error(f"Database error in coder_visibility_map: {e}")
+            logger.error("Database error in coder_visibility_map: %s",
+                         sqlite_error_label(e))
             raise CoderVisibilityUnreadable(
                 "Could not determine coder visibility for this project "
                 "(its coder-visibility table did not answer)") from None
@@ -5824,11 +5969,18 @@ class QualcoderDatabase:
             # Check for unique constraint violation
             if "unique" in str(e).lower():
                 raise ValueError(f"Coding already exists at this position for this user") from None
-            raise RuntimeError(f"Failed to add coding: {e}") from None
+            raise RuntimeError(
+                f"Failed to add coding: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_coding: {e}")
-            raise RuntimeError(f"Failed to add coding: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_coding: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to add coding: {sqlite_error_label(e)}") from None
 
     def find_text_coding(self, code_id: int, file_id: int, start_pos: int,
                          end_pos: int, owner: str) -> Optional[int]:
@@ -5956,18 +6108,25 @@ class QualcoderDatabase:
                 self.conn.commit()
 
             cid = cursor.lastrowid
-            logger.info(f"Added code: cid={cid}, name={name}, category={category_id}")
+            logger.info("Added code: cid=%s, category=%s", cid, category_id)
             return cid
 
         except sqlite3.IntegrityError as e:
             self.conn.rollback()
             if "unique" in str(e).lower():
                 raise ValueError(f"Code name '{name}' already exists") from None
-            raise RuntimeError(f"Failed to add code: {e}") from None
+            raise RuntimeError(
+                f"Failed to add code: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_code: {e}")
-            raise RuntimeError(f"Failed to add code: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_code: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to add code: {sqlite_error_label(e)}") from None
 
     def add_memo_to_coding(self, coding_id: int, memo: str, owner: str) -> None:
         """Add or update memo on an existing coding.
@@ -6014,8 +6173,14 @@ class QualcoderDatabase:
 
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in add_memo_to_coding: {e}")
-            raise RuntimeError(f"Failed to update memo: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in add_memo_to_coding: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to update memo: {sqlite_error_label(e)}") from None
 
     def get_coding(self, coding_id: int) -> Optional[Dict[str, Any]]:
         """Get a single coded segment (code_text row) by its ctid.
@@ -6303,10 +6468,8 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
 
-            logger.info(
-                f"Imported text file: id={file_id}, name={name}, "
-                f"length={len(content)}"
-            )
+            logger.info("Imported text file: id=%s, length=%s", file_id,
+                        len(content))
             return {
                 "id": file_id,
                 "name": name,
@@ -6322,11 +6485,20 @@ class QualcoderDatabase:
                 raise ValueError(
                     f"A file named '{name}' already exists"
                 ) from None
-            raise RuntimeError(f"Failed to import text file: {e}") from None
+            raise RuntimeError(
+                f"Failed to import text file: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"Database error in import_text_file: {e}")
-            raise RuntimeError(f"Failed to import text file: {e}") from None
+            # A second writer's lock, said plainly, as `_raise_query_error`
+            # says it: SQLite's own words for it are its message (v0.14).
+            if _is_locked_error(e):
+                raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+            logger.error("Database error in import_text_file: %s",
+                         sqlite_error_label(e))
+            raise RuntimeError(
+                f"Failed to import text file: "
+                f"{sqlite_error_label(e)}") from None
 
     def link_file_to_case(
         self,
@@ -6690,14 +6862,16 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
             jid = cursor.lastrowid
-            logger.info(f"Added journal entry: jid={jid}, name={name}")
+            logger.info("Added journal entry: jid=%s", jid)
         except sqlite3.IntegrityError as e:
             self._rollback_own_transaction(auto_commit)
             if "unique" in str(e).lower():
                 raise ValueError(
                     f"A journal entry named '{name}' already exists"
                 ) from None
-            raise RuntimeError(f"Failed to add journal entry: {e}") from None
+            raise RuntimeError(
+                f"Failed to add journal entry: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             self._rollback_own_transaction(auto_commit)
             _raise_query_error(e, "add_journal_entry",
@@ -6765,7 +6939,8 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A code named '{new_name}' already exists") from None
-            raise RuntimeError(f"Failed to rename code: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename code: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -7240,7 +7415,7 @@ class QualcoderDatabase:
             if auto_commit:
                 self.conn.commit()
             catid = cursor.lastrowid
-            logger.info(f"Added category: catid={catid}, name={name}")
+            logger.info("Added category: catid=%s", catid)
         except sqlite3.IntegrityError as e:
             try:
                 self.conn.rollback()
@@ -7248,7 +7423,8 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A category named '{name}' already exists") from None
-            raise RuntimeError(f"Failed to add category: {e}") from None
+            raise RuntimeError(
+                f"Failed to add category: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -7295,7 +7471,9 @@ class QualcoderDatabase:
                 pass
             if "unique" in str(e).lower():
                 raise ValueError(f"A category named '{new_name}' already exists") from None
-            raise RuntimeError(f"Failed to rename category: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename category: "
+                f"{sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -8229,7 +8407,7 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(f"Added case: caseid={case_id}, name={name}")
+            logger.info("Added case: caseid=%s", case_id)
         except ValueError:
             raise
         except sqlite3.IntegrityError:
@@ -8294,7 +8472,8 @@ class QualcoderDatabase:
             if "unique" in str(e).lower():
                 raise ValueError(f"A {kind} named '{new_name}' already "
                                  f"exists") from None
-            raise RuntimeError(f"Failed to rename {kind}: {e}") from None
+            raise RuntimeError(
+                f"Failed to rename {kind}: {sqlite_error_label(e)}") from None
         except sqlite3.Error as e:
             try:
                 self.conn.rollback()
@@ -8733,10 +8912,8 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(
-                f"Added attribute type '{name}' ({applies_to}/{value_type}), "
-                f"{len(entity_ids)} placeholder(s)"
-            )
+            logger.info("Added an attribute type (%s/%s), %s placeholder(s)",
+                        applies_to, value_type, len(entity_ids))
         except ValueError:
             raise
         except sqlite3.IntegrityError:
@@ -8872,10 +9049,8 @@ class QualcoderDatabase:
 
             if auto_commit:
                 self.conn.commit()
-            logger.info(
-                f"Set {target_type} attribute '{attr_name}' on "
-                f"{target_type} {target_id}"
-            )
+            logger.info("Set an attribute on %s %s", target_type,
+                        target_id)
         except ValueError:
             raise
         except sqlite3.Error as e:
@@ -10898,13 +11073,18 @@ class QualcoderDatabase:
                     "Could not rewrite this project's text; nothing was "
                     "written.") from None
             length, sha = self.fingerprint_of_text(new_text)
+            # No digest of the text BEFORE the run (v0.14, the owner's
+            # ruling of 2026-09-25): beside the rewritten text, which the
+            # conversation can read, a plain digest of the old text
+            # confirms a guessed name put back where its pseudonym sits.
+            # The digest of the new text is of text the reader already
+            # has, and confirms nothing.
             report.append({
                 "file_id": fid,
                 "name": item["name"],
                 "replacements": len(item["replacements"]),
                 "old_length": len(item["old_text"]),
                 "new_length": length,
-                "old_sha256": item["old_fingerprint"][1],
                 "new_sha256": sha,
                 "codings_updated": counts["code_text"],
                 "annotations_updated": counts["annotation"],

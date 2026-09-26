@@ -1587,11 +1587,12 @@ class TestManifest:
         """The spans say where the pseudonyms now sit, so a run can be
         accounted for afterwards; they are not an input to any undo
         (ruling C dropped undoing a run, and ruling 2 versioned the
-        record as an audit record: format 2, v0.13 Brief 2, 4.9)."""
+        record as an audit record: format 2, v0.13 Brief 2, 4.9; format 3
+        since v0.14 keys each file's text digests)."""
         result = execute_from(preview_of())
         manifest = json.loads(
             Path(result["manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["format"] == 2
+        assert manifest["format"] == 3
         assert manifest["rewrite_memos"] is False
         assert "memos" not in manifest
         assert "memos_not_rewritten_marker_risk" not in manifest
@@ -1601,7 +1602,7 @@ class TestManifest:
         for span in item["replacements"]:
             start, end = span["new_span"]
             assert text[start:end] in ("Alex", "Sam")
-        assert item["new_fingerprint"][0] == len(text)
+        assert item["new_length"] == len(text)
         assert [row["id"] for row in item["codings"]] == [1, 2, 3, 4]
 
     def test_a_file_name_that_holds_a_name_is_withheld(self, project):
@@ -3596,13 +3597,21 @@ class TestTheNoteRewriteIsWritten:
         assert query(project, "SELECT memo FROM source WHERE id=1"
                      )[0]["memo"].startswith("Met Thomas.")
 
+    @pytest.mark.parametrize("named", [True, False],
+                             ids=["named", "nameless"])
     def test_a_failed_note_statement_logs_no_note_text_on_any_sqlite(
-            self, project, caplog, monkeypatch):
+            self, project, caplog, monkeypatch, named):
         """Security S-6 on every platform, whatever the SQLite: the note
         statement itself raises the error a leaking trigger would, an
         IntegrityError whose message is the note being written, private
         part included. Only the connection the note statements run on is
-        wrapped, and only for their duration."""
+        wrapped, and only for their duration.
+
+        `nameless` is Python 3.10's shape, an error with no SQLite name
+        (v0.13's re-verification, RF2-3, and v0.14's item 5): the label
+        is the class alone, and the whole line is pinned, so a branch
+        that logged the message where there is no name is red on every
+        interpreter, not only on CI's 3.10 runners."""
         import logging
         _plant_note(project, "UPDATE source SET memo=? WHERE id=1",
                     "Met Thomas.\n#####PRIVATE-SENTINEL words")
@@ -3617,7 +3626,8 @@ class TestTheNoteRewriteIsWritten:
             def execute(self, sql, parameters=()):
                 if sql.startswith("UPDATE source SET memo = ?"):
                     error = sqlite3.IntegrityError(parameters[0])
-                    error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+                    if named:
+                        error.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
                     raised.append(parameters[0])
                     raise error
                 return self._conn.execute(sql, parameters)
@@ -3648,7 +3658,8 @@ class TestTheNoteRewriteIsWritten:
         line = [r.getMessage() for r in caplog.records
                 if "pseudonymise_write (notes)" in r.getMessage()]
         assert line == ["Database error in pseudonymise_write (notes): "
-                        "IntegrityError SQLITE_CONSTRAINT_TRIGGER"]
+                        + ("IntegrityError SQLITE_CONSTRAINT_TRIGGER"
+                           if named else "IntegrityError")]
         # Rolled back: every note, and the file's text, as they were.
         assert self._snapshot(project) == before
         assert query(project, "SELECT fulltext FROM source WHERE id=1"
@@ -4604,6 +4615,63 @@ class TestSavingTheMappingIntoPseudonymsJson:
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
         assert json.loads(_written(project))[0] == {"original": "Peter",
                                                     "pseudonym": "Pat"}
+        # The file linked to is not touched.
+        assert stat.S_IMODE(loud.stat().st_mode) == 0o666
+        assert loud.read_text(encoding="utf-8") == "[]"
+
+    @POSIX_ONLY
+    def test_the_kept_mode_is_read_before_the_reader_closes_the_file(
+            self, project, tmp_path, monkeypatch):
+        """v0.13's re-verification (RF2-2) and v0.14's item 5: the swap
+        above comes after the reader has returned, so a reader that took
+        the mode by path after closing its descriptor would pass it. Here
+        the name is swapped for a link at the reader's own close, inside
+        the merge the run's transaction makes, so only a mode taken from
+        the descriptor that was read is 0600."""
+        from qualcoder_mcp import database as database_module
+        _sidecar_file(project, [{"original": "Peter", "pseudonym": "Pat"}])
+        os.chmod(project / "pseudonyms.json", 0o600)
+        loud = tmp_path / "world.json"
+        loud.write_text("[]", encoding="utf-8")
+        os.chmod(loud, 0o666)
+        real_reader = server.read_project_pseudonyms_with_raw
+        real_os = database_module.os
+        calls, armed, swapped = [], [], []
+
+        class OsWithASwapAtClose:
+            """The module's `os`, with `close` swapping the name for a
+            link once, when armed, just after the descriptor closes."""
+
+            def __getattr__(self, name):
+                return getattr(real_os, name)
+
+            @staticmethod
+            def close(fd):
+                real_os.close(fd)
+                if armed and not swapped:
+                    target = project / "pseudonyms.json"
+                    target.rename(project / "aside.json")
+                    target.symlink_to(loud)
+                    swapped.append(1)
+
+        def reader(folder):
+            calls.append(1)
+            if len(calls) == 4:     # the merge inside the run's transaction
+                armed.append(1)
+            try:
+                return real_reader(folder)
+            finally:
+                armed.clear()
+
+        monkeypatch.setattr(database_module, "os", OsWithASwapAtClose())
+        monkeypatch.setattr(server, "read_project_pseudonyms_with_raw",
+                            reader)
+        _, result = _save_run()
+        assert len(calls) == 4 and swapped == [1]
+        assert result["mapping_saved"] is True
+        target = project / "pseudonyms.json"
+        assert not target.is_symlink()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
         # The file linked to is not touched.
         assert stat.S_IMODE(loud.stat().st_mode) == 0o666
         assert loud.read_text(encoding="utf-8") == "[]"
@@ -5742,7 +5810,7 @@ class TestTheManifestPathIsSettledBeforeTheWrite:
         assert "Alex" in rows[0]["fulltext"]
         manifest = json.loads(
             Path(result["manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["files"][0]["new_fingerprint"][0] == \
+        assert manifest["files"][0]["new_length"] == \
             len(rows[0]["fulltext"])
 
 
@@ -7756,12 +7824,17 @@ class TestResultShape:
         assert "search index" in joined
         _house_rules(result["notes"])
 
-    def test_the_result_reports_both_fingerprints(self, project):
+    def test_the_result_reports_both_lengths_and_the_new_digest(
+            self, project):
+        """No digest of the text before the run since v0.14: beside the
+        rewritten text it confirms a guessed name (the owner's ruling of
+        2026-09-25; test_v014_privacy.py pins the attack)."""
         result = execute_from(preview_of())
         item = result["files"][0]
         assert item["old_length"] == len(TEXT)
         assert item["new_length"] == len(TEXT) - 10
-        assert item["old_sha256"] != item["new_sha256"]
+        assert "old_sha256" not in item
+        assert len(item["new_sha256"]) == 64
 
     def test_a_run_with_nothing_to_replace_answers_without_a_backup(
             self, project):
@@ -8101,10 +8174,13 @@ class TestTheDescriptionCarriesWhatD1Requires:
         ("variants_are_needed",
          "Nicknames, inflections and spelling variants each need their own "
          "entry or a `variants` list."),
-        ("what_is_not_rewritten",                       # v0.13 Brief 2
+        ("what_is_not_rewritten",              # v0.13 Brief 2, and v0.14
          "What this does NOT rewrite, and where the names will remain: case "
-         "names, file names, attribute values, PDFs, media files, QualCoder "
-         "4.0's ai_data folder, speakers.json and speaker_regex.json; notes "
+         "names, file names, attribute values, PDFs, media files, an "
+         "imported document's stored copy in the project's documents/ "
+         "folder (the original text, which QualCoder's exports ship), "
+         "QualCoder 4.0's ai_data folder, speakers.json and "
+         "speaker_regex.json; notes "
          "(the twelve kinds of note) and journal entries are rewritten only "
          "when rewrite_memos is on, in their public part only and across "
          "the whole project, and otherwise remain too."),
@@ -8479,10 +8555,12 @@ class TestTheDocumentsTellTheTruth:
         assert claim not in self._flat("README.md")
 
     @pytest.mark.parametrize("sentence", [
-        # B3: the promise, scoped to what re-reads, and the residual.
-        "Every decision that puts a coder's NAME into a result re-reads "
-        "the declaration from the project at the time it is made",
-        "What is NOT re-read is which table each READ goes to.",
+        # B3: the promise, scoped to what re-reads; v0.14 closes the
+        # residual (every read re-reads).
+        "as every decision that puts a coder's NAME into a result already "
+        "did",
+        "Since v0.14 every read re-reads the declaration from the project "
+        "when it is made",
         "if the declaration itself cannot be read, the answer is the same "
         "posture rather than \"nobody is hidden\"",
         # S6 and S7: what the residue reads, and what it cannot reach.
@@ -8557,24 +8635,22 @@ class TestTheDocumentsTellTheTruth:
         "The manifest's `token_bind` and its `mapping_hmac_sha256` are "
         "both keyed with the per-user token secret rather than plain "
         "digests",
-        # v0.13 release fix round 1 (S-REL-1): the per-file digests are
-        # plain, in the manifest and in the result, and they confirm a
-        # guessed name beside the pseudonymised text.
-        "and, for each file, the length and plain SHA-256 of its text "
-        "before and after the run (`old_fingerprint`, `new_fingerprint`). "
-        "Those two are not keyed: together with the pseudonymised text "
-        "they confirm a guessed original name, so the manifest must not "
-        "be shared",
-        "each file's length and plain SHA-256 before and after the run are "
-        "in the manifest (`old_fingerprint`, `new_fingerprint`) and in the "
-        "run's result (`old_length`, `old_sha256`, `new_length`, "
-        "`new_sha256`), so they reach the AI provider as well.",
-        # Fix round 4, L3, worded exactly in fix round 5: prune_backups
-        # probes data.qda read-only through validate_qda_path and
-        # constructs no fresh project connection, so it settles nothing.
-        "and so does any write that opens the database, because such a "
-        "write opens a fresh connection (`prune_backups` opens no fresh "
-        "project connection and settles nothing)",
+        # v0.13 release fix round 1 (S-REL-1) said the per-file digests
+        # were plain and confirmed a guessed name; v0.14 keys them in the
+        # manifest and drops the old one from the result, and says what
+        # a record written before then still holds.
+        "Records written before v0.14 (format 1 by v0.12, format 2 by "
+        "v0.13) carry each file's length and plain SHA-256 before and "
+        "after the run instead (`old_fingerprint`, `new_fingerprint`): "
+        "together with the pseudonymised text those confirm a guessed "
+        "original name, so such a record must not be shared",
+        "A reader tells the two kinds apart by the record's `format` (3 is "
+        "keyed) and by the field names",
+        "Since v0.14 so are the per-file digests",
+        "the run's result carries no digest of the text before the run",
+        # (Fix round 4, L3's sentence, that a write settles which table
+        # the reads go to and `prune_backups` does not, went with the
+        # residual it qualified: v0.14, every read re-reads.)
         # Fix round 4, R3: the symlink route.
         "On `pseudonymise_source`'s result the name of a skipped symlink "
         "is withheld where a reader of it would see a name from the "
@@ -8650,6 +8726,11 @@ class TestTheDocumentsTellTheTruth:
         assert ("and two digests keyed with the preview-token secret "
                 "(`token_bind`, `mapping_hmac_sha256`). Never an original "
                 "name" not in flat)
+        # v0.14: the v0.13 sentences that the per-file digests are not
+        # keyed, true of v0.13's code, are gone with it.
+        assert "The per-file digests are not keyed" not in flat
+        assert "Those two are not keyed" not in flat
+        assert "(`old_length`, `old_sha256`, `new_length`" not in flat
 
     def test_privacy_no_longer_makes_the_unqualified_promise(self):
         flat = self._flat("PRIVACY.md")
@@ -8873,10 +8954,9 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         from qualcoder_mcp.database import CoderVisibilityUnreadable
         folder = self._connected_before_qualcoder(tmp_path)
         hide_coder(folder, "Hidden Helga")
-        control = preview_of()
-        assert "Hidden Helga" not in json.dumps(control)
-        assert control["preview"]["hidden_coder_rows"]["override_required"] \
-            is True
+        # No call has seen the declaration yet: since v0.14's fix round 1
+        # a sighting is remembered (QA F3), and a remembered one answers
+        # without the re-read, closed as well (pinned below).
         real = server.db.conn
         server.db.conn = self._PragmaFaults(real)
         try:
@@ -8892,8 +8972,20 @@ class TestTheVisibilityDeclarationIsRereadPerCall:
         finally:
             server.db.conn = real
         # And the fault is the only thing in the way.
-        assert preview_of()["preview"]["hidden_coder_rows"][
+        control = preview_of()
+        assert "Hidden Helga" not in json.dumps(control)
+        assert control["preview"]["hidden_coder_rows"][
             "override_required"] is True
+        # Once seen, the declaration is remembered: the same fault now
+        # changes nothing, and the answer is still closed.
+        server.db.conn = self._PragmaFaults(real)
+        try:
+            again = preview_of()
+            assert "Hidden Helga" not in json.dumps(again)
+            assert again["preview"]["hidden_coder_rows"][
+                "override_required"] is True
+        finally:
+            server.db.conn = real
 
     def test_a_declaration_present_at_connect_never_reaches_the_re_read(
             self, project, tmp_path):
@@ -8967,7 +9059,9 @@ class TestTheOlderTokenGatedToolsRereadTheDeclarationToo:
         assert server.db.capabilities.visibility_declared() is False
         hide_coder(folder, "Hidden Helga")
         assert server.db.capabilities.visibility_declared() is False
-        assert server.db.code_text_source() == "code_text"     # the residual
+        # v0.14: every read re-checks, so the read tools filter her too
+        # (test_v014_privacy.py); until then this was the residual
+        assert server.db.code_text_source() == "code_text_visible"
         return folder
 
     def test_delete_code_counts_her_and_gates_the_execute(

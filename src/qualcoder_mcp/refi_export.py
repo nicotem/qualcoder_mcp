@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Set
 from datetime import datetime, timezone
 
-from .database import QualcoderDatabase
+from .database import QualcoderDatabase, error_label, error_text
 from .sessions import CodingSuggestion
 
 logger = logging.getLogger(__name__)
@@ -518,7 +518,7 @@ class RefiQdaExporter:
             file_guids = self.db.get_file_guids()
 
             # Create .qdpx file (ZIP archive)
-            logger.info(f"Creating .qdpx archive: {output_file}")
+            logger.info("Creating a .qdpx archive")
             with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 # project.qde at the root, lowercase (QualCoder's importer
                 # hard-codes this name). Python str -> UTF-8, never a BOM:
@@ -538,16 +538,18 @@ class RefiQdaExporter:
                         continue  # validated above; defensive only
                     member = f"sources/{file_guids[file_id]}.txt"
                     zipf.writestr(member, content)
-                    logger.debug(f"Added source file: {member}")
+                    logger.debug("Added a source file to the archive")
 
-            logger.info(f"Successfully exported {len(suggestions)} suggestions to {output_file}")
+            logger.info("Exported %s suggestion(s) to a .qdpx archive",
+                        len(suggestions))
             return str(output_file)
 
         except ValueError:
             raise
         except Exception as e:
-            logger.error(f"Failed to export to REFI-QDA: {e}")
-            raise RuntimeError(f"REFI-QDA export failed: {e}") from None
+            logger.error("Failed to export to REFI-QDA: %s", error_label(e))
+            raise RuntimeError(
+                f"REFI-QDA export failed: {error_text(e)}") from None
 
     def validate_suggestions(self, suggestions: List[CodingSuggestion]) -> List[str]:
         """Validate suggestions before export.
@@ -574,7 +576,8 @@ class RefiQdaExporter:
             file_ids = {f["id"] for f in files}
 
         except Exception as e:
-            warnings.append(f"Could not load project data for validation: {e}")
+            warnings.append(f"Could not load project data for validation: "
+                            f"{error_text(e)}")
             return warnings
 
         # File text lengths (also identifies files with no exportable text)

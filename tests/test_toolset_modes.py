@@ -428,13 +428,13 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 171_907          # 73 tools, Python 3.13.5, mcp 1.30.0
+    FULL_MEASURED = 172_032          # 73 tools, Python 3.13.5, mcp 1.30.0
     CORE_MEASURED = 57_435           # 21 tools, same environment
-    FULL_MEASURED_310 = 180_723      # the same tree on Python 3.11.13
+    FULL_MEASURED_310 = 180_856      # the same tree on Python 3.11.13
     CORE_MEASURED_310 = 60_447
     # v0.14's opt-in `lifecycle` set: `full` plus create_project.
-    LIFECYCLE_MEASURED = 174_334     # 74 tools, same environment
-    LIFECYCLE_MEASURED_310 = 183_282
+    LIFECYCLE_MEASURED = 174_459     # 74 tools, same environment
+    LIFECYCLE_MEASURED_310 = 183_415
 
     # Why two per cent, away from the reference environment.
     #
@@ -461,7 +461,7 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "171,907"
+    FULL_CHARS = "172,032"
     CORE_CHARS = "57,435"
     FULL_ROUNDED = "172,000"
     CORE_ROUNDED = "57,000"
@@ -485,9 +485,10 @@ class TestThePublishedSchemaBudget:
         history the moment a tool surface moves. v0.13 removed an
         argument from six tools, so the two live in different entries
         for the first time and this class follows the current one.
-        v0.14 moves the tool surface again (creating a project: the AI
-        coder name setter's description, `set_memo`'s project target and
-        `select_project`'s signals), so the release being written
+        v0.14 moves the tool surface again (privacy: `pseudonymise_source`'s
+        description; creating a project: the AI coder name setter's
+        description, `set_memo`'s project target and `select_project`'s
+        signals), so the release being written
         is the Unreleased entry, and the 0.13 figure is history
         (`_v013_entry`).
         """

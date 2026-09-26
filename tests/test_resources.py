@@ -151,8 +151,12 @@ class TestResourcesNoProject:
             # Remove env var if set
             original_env = os.environ.pop("QUALCODER_PROJECT_PATH", None)
 
-            with pytest.raises(ValueError, match="No Qualcoder project selected"):
-                server.get_project_info()
+            # Since v0.14 (fix round 1) a resource answers the error as
+            # its content rather than raising it: the MCP library logs
+            # every error a resource raises, with its traceback, and this
+            # text can carry the last-used project's path.
+            data = json.loads(server.get_project_info())
+            assert data["error"].startswith("No Qualcoder project selected")
         finally:
             server.db = original_db
             server.current_project_path = original_path
