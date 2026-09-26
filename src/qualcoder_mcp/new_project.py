@@ -302,17 +302,20 @@ class ProjectWriteFailed(Exception):
     """Writing a new project failed after its folder was claimed.
 
     `stage` is "subfolder" or "database"; `cause` is the error that
-    stopped it; `left` names what could not be removed afterwards
-    (empty when everything this call made is gone). The caller words
-    the answer; the cause's own message is never shown, because an
-    operating system or SQLite message can carry a path.
+    stopped it (chained, as `__cause__`); `left` names what could not be
+    removed afterwards (empty when everything this call made is gone).
+    The caller words the answer; the cause's own message is never shown,
+    because an operating system or SQLite message can carry a path.
     """
 
-    def __init__(self, stage: str, cause: BaseException, left: List[str]):
+    def __init__(self, stage: str, left: List[str]):
         super().__init__(f"project write failed at the {stage} stage")
         self.stage = stage
-        self.cause = cause
         self.left = left
+
+    @property
+    def cause(self) -> Optional[BaseException]:
+        return self.__cause__
 
 
 def remove_what_was_made(folder: Path, subfolders: Sequence[str],
@@ -374,7 +377,8 @@ def write_project(folder: Union[str, Path],
         left = remove_what_was_made(folder, made, database_started)
         if not isinstance(error, Exception):
             raise
-        raise ProjectWriteFailed(stage, error, left) from None
+        # chained, never carried in the message (v0.14's privacy rule)
+        raise ProjectWriteFailed(stage, left) from error
     return folder / DATABASE_FILE
 
 
