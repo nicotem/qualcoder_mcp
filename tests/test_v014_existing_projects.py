@@ -559,3 +559,101 @@ class TestRegionCodingsDisclosed:
                 server.db.close()
             server.db, server.current_project_path = saved
 
+
+# ===========================================================================
+# 5. The backup tools on a project set in the host's configuration
+# ===========================================================================
+
+@pytest.fixture
+def configured(opened, monkeypatch):
+    """A server started with QUALCODER_PROJECT_PATH and no tool run yet."""
+    folder = opened("v17")
+    monkeypatch.setenv("QUALCODER_PROJECT_PATH", str(folder))
+    server.db = None
+    server.current_project_path = None
+    return folder
+
+
+class TestAConfiguredProjectAtFirstUse:
+
+    def test_list_backups_answers_first(self, configured):
+        out = json.loads(server.list_backups())
+        assert "error" not in out, out
+        assert out["project"] == configured.stem
+        assert out["backup_count"] == 0
+        assert Path(server.current_project_path).resolve() == \
+            configured.resolve()
+
+    def test_prune_backups_answers_first(self, configured):
+        out = json.loads(server.prune_backups(keep_last=5))
+        assert "No Qualcoder project selected" not in json.dumps(out)
+        assert "error" not in out, out
+
+    def test_restore_backup_answers_first(self, configured):
+        out = json.loads(server.restore_backup(
+            str(configured.parent / "missing_backup.qda")))
+        assert "Backup path not found" in out["error"]
+
+    @pytest.mark.parametrize("call", [
+        lambda: server.get_current_project(),
+        lambda: server.read_pseudonym_list(),
+        lambda: server.set_project_ai_coder_name("Model A"),
+        lambda: server.set_memo("code", 1, "a note", create_backup=False),
+    ])
+    def test_the_other_tools_that_asked_first(self, configured, call):
+        out = json.loads(call())
+        assert "No Qualcoder project selected" not in json.dumps(out)
+        assert "No project currently open" not in json.dumps(out)
+        assert out.get("error") is None, out
+
+    def test_a_configured_path_that_cannot_be_opened_says_why(
+            self, tmp_path, monkeypatch, opened):
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH",
+                           str(tmp_path / "gone.qda"))
+        server.db = None
+        server.current_project_path = None
+        out = json.loads(server.list_backups())
+        assert "No Qualcoder project selected" not in out["error"]
+        assert server.current_project_path is None
+
+    def test_without_a_configured_project_nothing_changes(self, opened,
+                                                          monkeypatch):
+        monkeypatch.delenv("QUALCODER_PROJECT_PATH", raising=False)
+        server.db = None
+        server.current_project_path = None
+        out = json.loads(server.list_backups())
+        assert "No Qualcoder project selected" in out["error"]
+
+    def test_over_the_wire_the_first_call_is_list_backups(self, tmp_path):
+        """The real start-up path: a server started with the project in
+        its configuration, and list_backups as the very first call."""
+        import asyncio
+        import os
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        folder = make_project(tmp_path, "v17")
+        backup = folder.parent / f"{folder.stem}_backup_20260926_101500.qda"
+        backup.mkdir()
+        (backup / "data.qda").write_bytes((folder / "data.qda").read_bytes())
+        home = tmp_path / "wirehome"
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        env["QUALCODER_PROJECT_PATH"] = str(folder)
+        env.pop("QUALCODER_MCP_TOOLSET", None)
+        params = StdioServerParameters(
+            command=sys.executable, args=["-m", "qualcoder_mcp.server"],
+            env=env)
+
+        async def drive():
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool("list_backups", {})
+                    return "".join(b.text for b in result.content
+                                   if getattr(b, "type", None) == "text")
+
+        out = json.loads(asyncio.run(drive()))
+        assert "error" not in out, out
+        assert [b["name"] for b in out["backups"]] == [backup.name]

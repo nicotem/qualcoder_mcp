@@ -715,6 +715,27 @@ def get_db(read_only: bool = True) -> QualcoderDatabase:
     return db
 
 
+def _adopt_configured_project() -> None:
+    """Make a project set in the host's configuration the current one
+    at its first use, whichever tool comes first (v0.14).
+
+    `current_project_path` is set by `select_project`, or by `get_db`
+    when it first connects to the project in `QUALCODER_PROJECT_PATH`.
+    The tools that ask "is a project selected?" before they read
+    anything (the three backup tools, `get_current_project`, the AI
+    coder name setter, the pseudonym tools, every write's owner check
+    and a session's project check) therefore answered "No Qualcoder
+    project selected" on a configured project until another tool had
+    run (plan, Appendix F). This connects first, read-only, exactly as
+    any read would. A configured path that cannot be opened raises as
+    `get_db` does, so the tool guard answers with the reason rather
+    than "no project selected".
+    """
+    if current_project_path is None and db is None \
+            and os.environ.get("QUALCODER_PROJECT_PATH"):
+        get_db()
+
+
 def _downgrade_to_readonly():
     """Downgrade the global database connection back to read-only mode.
 
@@ -1606,6 +1627,7 @@ def _resolve_write_owner(
     unset, then this host's declaration conflicting with the project's
     name, then a tool-supplied owner that is not the project's name.
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return None, {"error": _no_project_message()}
     state = read_sidecar(_current_project_folder())
@@ -1960,6 +1982,7 @@ def _check_session_project(session: AICodingSession) -> Optional[Dict[str, Any]]
         None if the session matches the current project, otherwise a dict
         suitable for JSON error output.
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return {
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
@@ -2885,6 +2908,7 @@ def set_project_ai_coder_name(name: str, note: str = "",
     Example:
         "Store this project's AI codings under the name Qwen 3.8 6bit"
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({"error": _no_project_message()})
 
@@ -3193,6 +3217,7 @@ def get_current_project() -> str:
         project still exists.
     """
     try:
+        _adopt_configured_project()
         if current_project_path is None:
             return json.dumps({
                 "current_project": None,
@@ -3282,6 +3307,7 @@ def read_pseudonym_list() -> str:
         `present` false when the project has no such file; an error, with
         the reader's value-free message, when it cannot be read.
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({"error": _no_project_message()}, indent=2)
     report, entries = _pseudonyms_json_read()
@@ -7009,6 +7035,7 @@ def import_text_file(
     # normalised text through changes nothing.
     pseudonym_report = None
     if apply_project_pseudonyms:
+        _adopt_configured_project()
         if current_project_path is None:
             return json.dumps({"error": _no_project_message()}, indent=2)
         try:
@@ -7425,6 +7452,7 @@ def list_backups() -> str:
         JSON with the project name and an array of backups
         (name, path, created, size_mb)
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
@@ -7570,6 +7598,7 @@ def prune_backups(keep_last: Optional[int] = None,
     Returns:
         JSON preview (requires_confirmation) or the removal result
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
@@ -7912,6 +7941,7 @@ def restore_backup(backup_path: str,
     Example:
         "Restore the project from the backup made this morning"
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({
             "error": "No Qualcoder project selected. Use 'list_available_projects' "
@@ -12062,6 +12092,10 @@ def _stale_sessions_for(file_ids: Sequence[int]) -> List[str]:
     """
     wanted = set(file_ids)
     stale: List[str] = []
+    try:
+        _adopt_configured_project()
+    except Exception:
+        return stale
     if current_project_path is None:
         return stale
     try:
@@ -12712,6 +12746,7 @@ def pseudonymise_source(
     Returns:
         JSON: the preview and a preview_token, or the result of the run.
     """
+    _adopt_configured_project()
     if current_project_path is None:
         return json.dumps({"error": _no_project_message()}, indent=2)
     if case_mode not in pseudo.CASE_MODES:
