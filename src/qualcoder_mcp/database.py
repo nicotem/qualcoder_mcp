@@ -864,20 +864,67 @@ def _raise_query_error(e: sqlite3.Error, where: str, message: str) -> None:
 
 # Workspace configuration. Users should work in this folder to keep
 # MCP-modified projects separate from originals.
-def default_workspace() -> Path:
-    """The folder `copy_project_to_workspace` copies into when none is given.
 
-    `~/Documents/Qualcoder MCP Projects`, resolved from the home directory
-    at CALL time. Until 0.12 this was a module constant computed once at
-    import, so a process that redirected HOME afterwards, which is what
-    the test sandbox does, still copied into the home the interpreter
-    started with: the suite had deposited 93 `test_project_<timestamp>.qda`
-    folders in the researcher's own workspace before anyone noticed. The
-    location is unchanged; only WHEN it is read has moved. A test that
-    needs another folder redirects HOME or patches this function, and
-    `tests/test_suite_hygiene.py` pins that the redirect takes effect.
-    """
+# The variable that names another workspace (v0.14): the Claude Desktop
+# extension's "folder for projects" setting fills it, because
+# `~/Documents` is synced by iCloud (Desktop and Documents) and by
+# OneDrive (Known Folder Move) on many researchers' computers, and a
+# project folder that a sync service rewrites under the server is a
+# risk to the data. Blank means not set.
+WORKSPACE_ENV = "QUALCODER_MCP_WORKSPACE"
+
+
+def standard_workspace() -> Path:
+    """`~/Documents/Qualcoder MCP Projects`: the workspace when
+    QUALCODER_MCP_WORKSPACE is not set, resolved at call time."""
     return Path.home() / "Documents" / "Qualcoder MCP Projects"
+
+
+def workspace_setting_problem() -> Optional[str]:
+    """Why QUALCODER_MCP_WORKSPACE cannot be used, or None (also when it
+    is not set). Checked at start-up, where a bad value stops the server,
+    and again by `default_workspace`; the text names no path, as the
+    other start-up errors do not."""
+    raw = os.environ.get(WORKSPACE_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        given = Path(raw).expanduser()
+    except (RuntimeError, ValueError):
+        return (f"{WORKSPACE_ENV} is not a folder path this server can "
+                f"use; check the folder in the host's configuration.")
+    if not given.is_absolute():
+        return (f"{WORKSPACE_ENV} must be a full path or one starting "
+                f"with ~ (the home folder); a relative path would be read "
+                f"from the server's own working folder. Check the folder "
+                f"in the host's configuration.")
+    return None
+
+
+def default_workspace() -> Path:
+    """The folder `copy_project_to_workspace` copies into and
+    `create_project` creates in when none is given.
+
+    The folder QUALCODER_MCP_WORKSPACE names, `~` expanded, when it is
+    set and not blank; otherwise `standard_workspace()`. Either way it is
+    resolved at CALL time. Until 0.12 this was a module constant computed
+    once at import, so a process that redirected HOME afterwards, which
+    is what the test sandbox does, still copied into the home the
+    interpreter started with: the suite had deposited 93
+    `test_project_<timestamp>.qda` folders in the researcher's own
+    workspace before anyone noticed. A test that needs another folder
+    redirects HOME or patches this function (the sandbox also clears the
+    variable), and `tests/test_suite_hygiene.py` pins that the redirect
+    takes effect. A value that is not a usable path raises ValueError
+    (the server refuses to start with one, so this is the late guard).
+    """
+    problem = workspace_setting_problem()
+    if problem is not None:
+        raise ValueError(problem)
+    raw = os.environ.get(WORKSPACE_ENV)
+    if raw is None or not raw.strip():
+        return standard_workspace()
+    return Path(raw).expanduser()
 
 
 def _detect_file_type(mediapath: str) -> str:

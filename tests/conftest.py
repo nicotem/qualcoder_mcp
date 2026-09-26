@@ -128,6 +128,10 @@ def _isolate_home(tmp_path, _sandbox_patch):
     home.mkdir(exist_ok=True)
     _sandbox_patch.setenv("HOME", str(home))
     _sandbox_patch.setenv("USERPROFILE", str(home))
+    # v0.14: a workspace set in the developer's or CI's environment (the
+    # desktop extension's folder for projects) would point the workspace
+    # back outside the sandbox; tests that exercise it set it themselves.
+    _sandbox_patch.delenv("QUALCODER_MCP_WORKSPACE", raising=False)
     assert Path.home().resolve() == home.resolve()
     assert _database.default_workspace().resolve().is_relative_to(
         tmp_path.resolve())

@@ -190,18 +190,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   close, and the run's note-statement log line is pinned whole for an
   error with no SQLite name (Python 3.10's shape) on every interpreter.
   No behaviour changed.
-- Serialised tool JSON as it stands, after the privacy change and the
-  creation of projects: full = 172,119 characters (about 43.0k tokens
-  at chars/4) over 73 tools, core = 57,522 (about 14.4k) over 21, and
-  the new opt-in lifecycle set = 174,601 (about 43.7k) over 74. Moved
-  by `pseudonymise_source`'s description (privacy; not in `core`) and
-  by `set_memo`'s, `set_project_ai_coder_name`'s, `select_project`'s and
-  `get_current_project`'s (creating a project; all four in `core`);
+- Serialised tool JSON as it stands, after the privacy change, the
+  creation of projects and the folder for projects: full = 172,272
+  characters (about 43.1k tokens at chars/4) over 73 tools, core =
+  57,646 (about 14.4k) over 21, and the new opt-in lifecycle set =
+  174,826 (about 43.7k) over 74. Moved by `pseudonymise_source`'s
+  description (privacy; not in `core`), by `set_memo`'s,
+  `set_project_ai_coder_name`'s, `select_project`'s and
+  `get_current_project`'s (creating a project; all four in `core`), and
+  by the workspace sentences of `copy_project_to_workspace`,
+  `import_text_file`, `list_available_projects` and `create_project`
+  (the folder for projects; the first and third in `core`);
   `pseudonymise_source`'s own share rounds to 18,000 as before.
   Measured as for 0.13, on the final tree through the toolset gate,
   under Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`;
-  on Python 3.11.13, in the repository's `.venv/`, 180,947, 60,538 and
-  183,565.
+  on Python 3.11.13, in the repository's `.venv/`, 181,112, 60,670 and
+  183,806.
 
 ## [0.13.0-alpha] - 2026-09-25
 

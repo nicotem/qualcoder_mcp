@@ -1,0 +1,9 @@
+{
+  "name": "qualcoder-mcp-extension-validator",
+  "private": true,
+  "description": "The official MCPB tooling, pinned, for CI's check of the desktop extension's manifest (see scripts/build_desktop_extension.py).",
+  "license": "LGPL-3.0-or-later",
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2"
+  }
+}

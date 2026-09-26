@@ -69,6 +69,13 @@ GUARDED_REAL_FOLDERS = {
     "workspace": REAL_WORKSPACE,
     "state home": REAL_STATE_HOME,
 }
+# v0.14: when the environment sets QUALCODER_MCP_WORKSPACE (the desktop
+# extension's folder for projects), REAL_WORKSPACE above is that folder,
+# and the standard one is watched as well, since the sandbox clears the
+# variable and a leak would then land there.
+if Path(_database.standard_workspace()) != REAL_WORKSPACE:
+    GUARDED_REAL_FOLDERS["standard workspace"] = Path(
+        _database.standard_workspace())
 
 
 def real_workspace_entries(workspace=None):

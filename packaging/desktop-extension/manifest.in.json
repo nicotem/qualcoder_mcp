@@ -1,0 +1,49 @@
+{
+  "manifest_version": "0.4",
+  "display_name": "qualcoder-mcp",
+  "description": "Work on QualCoder projects from Claude: read, search and code your qualitative data, edit the codebook, write memos and export, in the project files on this computer.",
+  "long_description": "qualcoder-mcp lets Claude open the QualCoder projects on this computer and work on them with you: read transcripts with their codings, search, suggest codings for you to review before anything is written, edit the codebook, write memos and export reports. It is an independent project, not part of QualCoder and not made by its developers.\n\nEvery write is preceded by a backup of the project. The server runs on this computer and adds no telemetry of its own, but what its tools return enters the conversation and is sent to Anthropic like any other chat content: read PRIVACY.md before you use research data (https://github.com/nicotem/qualcoder_mcp/blob/main/PRIVACY.md).\n\nThe settings choose the tool set (with or without creating new projects) and the folder where new projects and working copies are kept.",
+  "documentation": "https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md",
+  "server": {
+    "type": "uv",
+    "entry_point": "src/qualcoder_mcp/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "qualcoder-mcp"
+      ],
+      "env": {
+        "QUALCODER_MCP_TOOLSET": "${user_config.toolset}",
+        "QUALCODER_MCP_WORKSPACE": "${user_config.projects_folder}"
+      }
+    }
+  },
+  "tools_generated": false,
+  "prompts_generated": true,
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
+  },
+  "user_config": {
+    "toolset": {
+      "type": "string",
+      "title": "Tool set",
+      "description": "Type one of three words. lifecycle: every tool, including creating a new project (recommended). full: every tool except creating a project. core: a smaller set for local models. Any other word stops the extension from starting.",
+      "default": "lifecycle",
+      "required": false
+    },
+    "projects_folder": {
+      "type": "directory",
+      "title": "Folder for projects",
+      "description": "Where new projects are created and working copies of projects are kept. The default, QualCoder projects in your home folder (~), is outside Documents, which iCloud or OneDrive may sync; it is made when the first project needs it. If you choose another folder, choose one that no sync service keeps.",
+      "default": "~/QualCoder projects",
+      "required": false
+    }
+  }
+}
