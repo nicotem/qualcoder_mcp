@@ -7366,6 +7366,78 @@ class QualcoderDatabase:
                 "DELETE FROM gr_free_line_item WHERE fromcid = ? OR tocid = ?",
                 (cid, cid))
 
+    # A category's own rows in QualCoder's saved graphs (v0.14): its node,
+    # which has no cid, and the lines that end on that node, whose cid at
+    # that end is NULL. A code node and a line to a code node store the
+    # code's category too (view_graph.py:2040, saved at :4959-4963 and
+    # :5020-5023 at pin 9bddf17), so matching on catid alone, as master's
+    # own category statements do (code_tree.py:987-989, :1425-1427),
+    # would also take the nodes and lines of the codes a merge keeps.
+    _CATEGORY_GRAPH_ROWS = (
+        ("gr_cdct_text_item", "cid IS NULL AND catid = ?", 1),
+        ("gr_cdct_line_item",
+         "(fromcatid = ? AND fromcid IS NULL) OR "
+         "(tocatid = ? AND tocid IS NULL)", 2),
+        ("gr_free_line_item",
+         "(fromcatid = ? AND fromcid IS NULL) OR "
+         "(tocatid = ? AND tocid IS NULL)", 2),
+    )
+
+    def _category_graph_rows(self, catid: int,
+                             delete: bool = False) -> Dict[str, int]:
+        """Count, or delete, a category's own saved-graph rows.
+
+        Same gate as `_cleanup_graph_rows_for_cid`: projects at v16 and
+        later only (the supercid probe), so a v14 or v15 category delete
+        or merge stays byte-exact with QualCoder 3.8.2, which cleans no
+        graph row; and only the tables that exist. Returns the number of
+        category nodes and lines (on both line tables) found, or removed
+        when `delete` is true; both zero when the gate is shut.
+
+        A departure from QualCoder, named: no master path deletes a
+        category shallowly AND cleans its graph rows (the Code Organiser,
+        the AI undo and master's MCP server clean nothing), and master's
+        own category merge matches rows by catid alone, which erases the
+        nodes and lines of the codes it keeps (GRAPHS_STUDY finding 5).
+        Without this, QualCoder 4.0's Graph window reports "Category does
+        not exist" on every load, and the next category given the same
+        number silently takes over the node (finding 6).
+        """
+        counts = {"category_nodes": 0, "lines": 0}
+        caps = getattr(self, "capabilities", None)
+        if caps is None or not caps.has_supercid:
+            return counts
+        for table, where, n_args in self._CATEGORY_GRAPH_ROWS:
+            if not caps.table_exists(table):
+                continue
+            args = (catid,) * n_args
+            key = ("category_nodes" if table == "gr_cdct_text_item"
+                   else "lines")
+            if delete:
+                cur = self.conn.execute(
+                    f"DELETE FROM {table} WHERE {where}", args)
+                counts[key] += max(0, cur.rowcount)
+            else:
+                counts[key] += self.conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {where}",
+                    args).fetchone()[0]
+        return counts
+
+    def _saved_graph_preview(self, catid: int) -> Optional[Dict[str, Any]]:
+        """The preview's word on saved graphs, or None when nothing on a
+        saved graph is removed (no rows, or a v14/v15 project)."""
+        counts = self._category_graph_rows(catid)
+        if not counts["category_nodes"] and not counts["lines"]:
+            return None
+        return {
+            **counts,
+            "note": "QualCoder saved graphs: the category's own node and "
+                    "the lines that end on it are removed, so QualCoder's "
+                    "Graph window does not report a missing category on "
+                    "every load. The category's codes, their nodes and "
+                    "their lines stay on the graphs.",
+        }
+
     def move_code_to_category(self, code_id: int,
                               category_id: Optional[int],
                               auto_commit: bool = True) -> Dict[str, Any]:
@@ -7869,6 +7941,9 @@ class QualcoderDatabase:
                     "never reparented to a grandparent). Coded data is "
                     "untouched.",
         }
+        graphs = self._saved_graph_preview(category_id)
+        if graphs is not None:
+            preview["saved_graph_rows_removed"] = graphs
         if self._visibility_is_declared_now():
             # No coding rows are touched, so none of a hidden coder's
             preview["hidden_coder_codings_affected"] = 0
@@ -7903,6 +7978,8 @@ class QualcoderDatabase:
                 "UPDATE code_cat SET supercatid = NULL WHERE supercatid IS "
                 "NOT NULL AND supercatid NOT IN (SELECT catid FROM code_cat)"
             )
+            # The category's own saved-graph rows, v16 and later (v0.14)
+            self._category_graph_rows(category_id, delete=True)
             if auto_commit:
                 self.conn.commit()
             logger.info(f"Deleted category {category_id}, reparented children")
@@ -8274,6 +8351,9 @@ class QualcoderDatabase:
                     "they key on the code, not the category), then deletes "
                     "the source category." + memo_note,
         }
+        graphs = self._saved_graph_preview(from_category_id)
+        if graphs is not None:
+            preview["saved_graph_rows_removed"] = graphs
         if self._visibility_is_declared_now():
             preview["hidden_coder_codings_affected"] = 0
         return preview
@@ -8357,6 +8437,10 @@ class QualcoderDatabase:
                 "UPDATE code_cat SET supercatid = NULL WHERE supercatid IS "
                 "NOT NULL AND supercatid NOT IN (SELECT catid FROM code_cat)"
             )
+            # The source category's own saved-graph rows, v16 and later,
+            # and only those: the kept codes' nodes and lines stay, which
+            # master's catid-only statements would erase (v0.14)
+            self._category_graph_rows(from_category_id, delete=True)
             if auto_commit:
                 self.conn.commit()
             logger.info(f"Merged category {from_category_id} into "
