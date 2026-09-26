@@ -791,7 +791,17 @@ will ask, and the summary above depends on them:
     across unread, so a name there is still there and nothing in this
     server can report it. A second run with `rewrite_memos` on also
     rewrites the journal entries this server wrote for earlier runs,
-    which the preview counts and warns about. The count is in the
+    which the preview counts and warns about. **Two people who share a
+    name:** one file per call gives each their own pseudonym in the file
+    text only. With `rewrite_memos` on, whichever run carries it
+    rewrites that name in notes across the whole project, the other
+    person's notes included, whatever the order of the runs, so a note
+    about one person can end up carrying the other person's pseudonym.
+    Keep `rewrite_memos` off on every run of a shared name and change
+    the notes that name either person by hand; give the second person a
+    typed mapping with `save_mapping_to_project` off and
+    `researcher_keeps_mapping` on, because `pseudonyms.json` holds one
+    pseudonym per name. The count is in the
     preview's `residue` block, and a name that occurs only in a
     `#####` private note is neither read nor counted. Those counts are a
     heuristic that reads wider than the rewrite does: the rewrite

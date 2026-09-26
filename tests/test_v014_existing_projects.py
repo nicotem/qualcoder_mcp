@@ -911,3 +911,47 @@ class TestUncleanBackupsNamed:
         again = json.loads(server.restore_backup(str(clean)))
         assert again["reason"] == "unclean_backup"
         assert "preview_token" not in again
+
+
+# ===========================================================================
+# 7. Two people who share a name, and notes: the caveat, in every place
+#    v0.13's promise of two pseudonyms was made
+# ===========================================================================
+
+def _flat(text: str) -> str:
+    """A document with its wrapping (and Markdown quote marks and code
+    marks) flattened, so a line break cannot hide a sentence."""
+    return " ".join(text.replace("\n>", " ").replace("`", "").split())
+
+
+class TestTheSharedNameCaveat:
+
+    def _description(self):
+        import asyncio
+        tools = asyncio.run(server.mcp.list_tools())
+        return _flat(next(t.description for t in tools
+                          if t.name == "pseudonymise_source"))
+
+    @pytest.mark.parametrize("where", ["description", "README.md",
+                                       "PRIVACY.md", "CHANGELOG.md"])
+    def test_the_caveat_and_the_safe_route(self, where):
+        text = (self._description() if where == "description" else
+                _flat((REPO / where).read_text(encoding="utf-8")))
+        if where == "CHANGELOG.md":
+            text = text.split("## [0.13")[0]    # the release being written
+        assert "whichever run carries it rewrites that name in notes " \
+               "across the whole project" in text
+        assert "the other person's notes included" in text
+        assert "keep rewrite_memos off on every run" in text.lower()
+        assert "change the notes that name either person by hand" in text
+        assert "save_mapping_to_project off" in text
+        assert "researcher_keeps_mapping on" in text
+        assert "pseudonyms.json holds one pseudonym per name" in text
+
+    def test_the_v013_entry_carries_it_as_the_release_notes_do(self):
+        text = _flat((REPO / "CHANGELOG.md").read_text(encoding="utf-8"))
+        v013 = text[text.index("## [0.13"):text.index("## [0.12")]
+        promise = v013.index("share a name get two pseudonyms")
+        assert "with rewrite_memos on, a run rewrites that name in notes " \
+               "across the whole project" in v013[promise:promise + 500]
+

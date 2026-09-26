@@ -70,6 +70,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes a new folder, refuses one that exists and deletes nothing (it
   used to delete `~/Documents/QDA Projects/test_project.qda` first, and
   built a project neither QualCoder nor this server would open).
+- `pseudonymise_source`'s description, the README and PRIVACY.md now
+  say that one file per call gives two people who share a name two
+  pseudonyms in the file text only: with `rewrite_memos` on, whichever
+  run carries it rewrites that name in notes across the whole project,
+  the other person's notes included, whatever the order of the runs.
+  The safe route: keep `rewrite_memos` off on every run of a shared
+  name and change the notes that name either person by hand, and give
+  the second person a typed mapping with `save_mapping_to_project` off
+  and `researcher_keeps_mapping` on (`pseudonyms.json` holds one
+  pseudonym per name). v0.13's documents promised the two pseudonyms
+  with no caveat. Only the wording changes; a switch to limit the note
+  rewrite to one file is planned.
 
 - The GPL text moved from `COPYING` to `legal/GPL-3.0.txt`, so that
   GitHub shows the project's licence as the LGPL; the text still ships
@@ -192,19 +204,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   No behaviour changed.
 - Serialised tool JSON as it stands, after the privacy change, the
   creation of projects and the handling of existing projects: full =
-  172,722 characters (about 43.2k tokens at chars/4) over 73 tools,
+  173,264 characters (about 43.3k tokens at chars/4) over 73 tools,
   core = 58,005 (about 14.5k) over 21, and the new opt-in lifecycle set
-  = 175,204 (about 43.8k) over 74. Moved by `pseudonymise_source`'s
-  description (privacy; not in `core`), by `set_memo`'s,
-  `set_project_ai_coder_name`'s, `select_project`'s and
-  `get_current_project`'s (creating a project; all four in `core`), and
-  by `list_backups`'s and `copy_project_to_workspace`'s (both in
-  `core`) and `restore_backup`'s (existing projects);
-  `pseudonymise_source`'s own share rounds to 18,000 as before.
+  = 175,746 (about 43.9k) over 74. Moved by `pseudonymise_source`'s
+  description (privacy, and the caveat for two people who share a
+  name; not in `core`), by `set_memo`'s, `set_project_ai_coder_name`'s,
+  `select_project`'s and `get_current_project`'s (creating a project;
+  all four in `core`), and by `list_backups`'s and
+  `copy_project_to_workspace`'s (both in `core`) and `restore_backup`'s
+  (existing projects); `pseudonymise_source`'s own share now rounds to
+  18,500, from 18,000.
   Measured as for 0.13, on the final tree through the toolset gate,
   under Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`;
-  on Python 3.11.13, in the repository's `.venv/`, 181,590, 61,053 and
-  184,208.
+  on Python 3.11.13, in the repository's `.venv/`, 182,168, 61,053 and
+  184,786.
 
 ## [0.13.0-alpha] - 2026-09-25
 
@@ -546,7 +559,11 @@ the project database and QualCoder's source, not in a QualCoder window.
   is now `file_id`, one required id. A mapping that is right for one
   participant is applied to that participant's file, so two people who
   share a name get two pseudonyms by running their two files with two
-  mappings. This is also the shape QualCoder itself has: its
+  mappings, in the file text (caveat added 2026-09-26, as in the
+  published release notes: with `rewrite_memos` on, a run rewrites that
+  name in notes across the whole project, so when two people share a
+  name keep it off and change their notes by hand). This is also the
+  shape QualCoder itself has: its
   `pseudonyms.json` is applied per file at import. To pseudonymise a
   project, run it file by file; with `use_project_pseudonyms` the
   mapping is read from the project's own `pseudonyms.json` each time,

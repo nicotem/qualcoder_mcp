@@ -12549,6 +12549,16 @@ def pseudonymise_source(
     repeated on each call. The notes and the report always cover the
     whole project.
 
+    Two people who share a name: one file per call gives each their own
+    pseudonym in the file text only. With rewrite_memos on, whichever
+    run carries it rewrites that name in notes across the whole project,
+    the other person's notes included, and no order of runs avoids
+    this. Keep rewrite_memos off on every run of a shared name and
+    change the notes that name either person by hand; give the second
+    person a typed mapping with save_mapping_to_project off and
+    researcher_keeps_mapping on (pseudonyms.json holds one pseudonym
+    per name).
+
     Preview first, relay the counts, the collisions and the residue to
     the user, get an explicit yes, then execute with the token.
 
