@@ -278,8 +278,12 @@ variable is optional.
 - `QUALCODER_PROJECT_PATH`: a project to open at start-up (Option B
   above): the folder ending in `.qda`, or the `data.qda` file inside it.
   If the path does not exist the server refuses to start and prints
-  "Error: Database file not found: <path>" to stderr. Without it, select
-  a project with the tools (Option A).
+  "Error: the project set in QUALCODER_PROJECT_PATH was not found; check
+  the path in the host's configuration." to stderr. The project is
+  opened by whichever tool comes first (since v0.14; before, the backup
+  tools and a few others answered "No Qualcoder project selected" until
+  another tool had run). Without it, select a project with the tools
+  (Option A).
 - `QUALCODER_MCP_TOOLSET`: `full` (default) registers 73 tools;
   `core` registers the 21-tool supervised coding set for local models
   (see the LM Studio recipe); `lifecycle` (Experimental, v0.14)

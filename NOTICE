@@ -330,13 +330,16 @@ the format dictates.
     From: __main__.py, lines 2296-2346.
 
 33. The media path prefixes that tell text, PDF, image, audio and video
-    sources apart.
-    Here: src/qualcoder_mcp/database.py, _detect_file_type and
-    QualcoderDatabase.search_file_content.
+    sources apart, and what a PDF source with no text layer holds (only
+    whitespace, by the test QualCoder 4.0's import applies; the PDF file
+    itself, decoded as text, in a 3.8.2 import).
+    Here: src/qualcoder_mcp/database.py, _detect_file_type,
+    QualcoderDatabase.search_file_content, pdf_text_problem and
+    QualcoderDatabase.pdf_text_problems.
     Here: src/qualcoder_mcp/server.py, _stored_copy_block and
     stored_file_name.
-    From: manage_files.py, lines 615-619 and 1429-1434; code_text.py,
-    line 4319.
+    From: manage_files.py, lines 615-619, 1429-1434 and 3301-3308;
+    code_text.py, line 4319 (3.8.2 manage_files.py, lines 2010-2020).
 
 34. The project folder layout and the project table's "about" marker.
     Here: src/qualcoder_mcp/database.py, validate_qda_path and
@@ -383,11 +386,14 @@ the format dictates.
     line 647.
 
 39. The graph clean-up after a delete and the sub-code reparenting after
-    a merge.
+    a merge, and where a saved graph keeps a category's own node and the
+    lines that end on it.
     Here: src/qualcoder_mcp/database.py,
-    QualcoderDatabase._cleanup_graph_rows_for_cid and
-    QualcoderDatabase.merge_codes.
-    From: code_tree.py, lines 856-858 and 1565-1570.
+    QualcoderDatabase._cleanup_graph_rows_for_cid,
+    QualcoderDatabase.merge_codes and
+    QualcoderDatabase._CATEGORY_GRAPH_ROWS.
+    From: code_tree.py, lines 856-858 and 1565-1570; __main__.py, lines
+    1832-1849; view_graph.py, lines 2040, 4959-4963 and 5020-5023.
 
 40. The column order of QualCoder's table reads, and its value_type
     message.

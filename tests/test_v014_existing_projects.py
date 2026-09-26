@@ -955,3 +955,54 @@ class TestTheSharedNameCaveat:
         assert "with rewrite_memos on, a run rewrites that name in notes " \
                "across the whole project" in v013[promise:promise + 500]
 
+
+# ===========================================================================
+# 6. The documents say what the code does
+# ===========================================================================
+
+class TestTheDocumentsSayIt:
+
+    def test_the_changelog(self):
+        entry = _flat((REPO / "CHANGELOG.md").read_text(
+            encoding="utf-8")).split("## [0.13")[0]
+        section = entry[entry.index(
+            "### Changed: existing projects handled honestly"):]
+        for phrase in ("saved_graph_rows_removed", "unusable_pdf",
+                       "codings_not_shown", "codings_not_counted",
+                       "SQLite's own online backup", "unclean",
+                       "QUALCODER_PROJECT_PATH",
+                       "a departure from QualCoder 4.0's own merge"):
+            assert phrase in section, phrase
+
+    def test_the_readme(self):
+        readme = _flat((REPO / "README.md").read_text(encoding="utf-8"))
+        for phrase in ("the category's own node in QualCoder's saved graphs",
+                       "files_refused", "codings_not_shown",
+                       "codings_not_counted", "marked unclean",
+                       "an unclean backup is refused",
+                       "copied with SQLite's own online backup",
+                       "a configured project is used by whichever tool "
+                       "comes first"):
+            assert phrase in readme, phrase
+
+    def test_privacy_and_install(self, tmp_path, monkeypatch, capsys):
+        privacy = _flat((REPO / "PRIVACY.md").read_text(encoding="utf-8"))
+        assert "data.qda is copied with SQLite's own online backup" in \
+            privacy
+        assert "marked unclean by list_backups and refused by " \
+               "restore_backup" in privacy
+        install = _flat((REPO / "INSTALL.md").read_text(encoding="utf-8"))
+        assert "The project is opened by whichever tool comes first" in \
+            install
+        assert "Error: the project set in QUALCODER_PROJECT_PATH was not " \
+               "found" in install
+        # and that is what the server prints
+        monkeypatch.setenv("QUALCODER_PROJECT_PATH",
+                           str(tmp_path / "gone.qda"))
+        monkeypatch.delenv("QUALCODER_MCP_TOOLSET", raising=False)
+        with pytest.raises(SystemExit):
+            server.main([])
+        printed = " ".join(capsys.readouterr().err.split())
+        assert "Error: the project set in QUALCODER_PROJECT_PATH was not " \
+               "found; check the path in the host's configuration." in \
+            printed

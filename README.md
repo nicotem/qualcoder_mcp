@@ -568,7 +568,16 @@ minus QualCoder's own backup ignore set (`search.sqlite`,
 `search.sqlite-*`, `*.sqlite-shm`, `*.sqlite-wal`, `*.sqlite-journal`)
 and lock files. `search.sqlite` is the regenerable AI search index and
 holds a plaintext copy of every text source; QualCoder rebuilds it on
-project open, so a restored project without one is normal. Unlike
+project open, so a restored project without one is normal. The project
+database itself is copied with SQLite's own online backup (since
+0.14; QualCoder copies it as a file), so a backup or copy taken while
+QualCoder is writing holds what was last committed, and the database's
+journal and WAL files are never copied: QualCoder's ignore set misses
+them, and a backup that carried a journal read differently on
+different platforms. `list_backups` marks a backup that holds them
+`unclean` and `restore_backup` refuses it. If QualCoder keeps the
+database locked for more than about 15 seconds, no backup is taken and
+the write is refused, as a locked database. Unlike
 QualCoder's backups, symlinks that point outside the project folder,
 that dangle, or that loop back into a folder already being copied are
 not followed; skipped entries are reported (`backup_skipped_symlinks`
@@ -907,13 +916,13 @@ carries the complete list.
 - `read_pseudonym_list()` - **Sends real names to the AI provider**: returns the entries of the project's own `pseudonyms.json` (the researcher's reverse key), for use only when the researcher asks to see or check the list; each call writes one log line with the count and no name. In the full toolset only. QualCoder's Pseudonyms dialog (the button in Manage Files) shows the same list without sending it anywhere
 
 **Core Data Analysis:**
-- `search_files(pattern, search_filename, search_content, search_memo, limit, exclude_code_ids, cursor, max_matches_per_file)` - Find files by name, content, or memo with smart clarification workflow; `exclude_code_ids` hides content matches that are already coded under those codes, and `cursor` walks the results page by page
+- `search_files(pattern, search_filename, search_content, search_memo, limit, exclude_code_ids, cursor, max_matches_per_file)` - Find files by name, content, or memo with smart clarification workflow; `exclude_code_ids` hides content matches that are already coded under those codes, and `cursor` walks the results page by page. A PDF with no usable text (no text layer, or a PDF QualCoder 3.8.2 stored as the file itself) is not content-searched and is counted and named as not searched, so finding nothing there is not a "not found"; a search of any PDF covers its text layer only
 - `search_coded_text(query, code_name, limit, coder, exclude_code_ids, cursor)` - Search coded segments, with the same novelty filter and paging
-- `get_coded_segments(code_id, limit, coder, strategy, max_chars, file_ids, cursor)` - Segments for a code, sampled by strategy (`by_document`, `diverse_by_document`, `recent_first`, `sequential`) under an optional character budget
-- `get_coding_frequencies(coder)` - Coding statistics
+- `get_coded_segments(code_id, limit, coder, strategy, max_chars, file_ids, cursor)` - Segments for a code, sampled by strategy (`by_document`, `diverse_by_document`, `recent_first`, `sequential`) under an optional character budget; `codings_not_shown` counts the code's region codings (areas on PDF pages or images) and audio/video codings in the same scope, which a text read does not show
+- `get_coding_frequencies(coder)` - Coding statistics: text codings per code, with `codings_not_counted` giving the region and audio/video codings beside them, so the two together are QualCoder's own count
 - `search_memos(query, limit)` - Search memos and annotations (public memo text only)
 - `export_code_report(code_name)` - Detailed code report returned into the conversation (public memo text only)
-- `get_project_summary()` - Comprehensive project overview
+- `get_project_summary()` - Comprehensive project overview, naming any PDF with no usable text and counting the region and audio/video codings the text statistics leave out
 
 On projects with the coder-visibility capability (QualCoder 3.8.2 and
 4.0, schema v14 and later) that hide coders, tools with a `coder`
@@ -922,7 +931,7 @@ the full data when `coder` is given (see "Working alongside QualCoder
 4.0").
 
 **Rich Transcript Analysis:**
-- `analyze_file_with_coding(file_id)` - Get complete file text with all coding context for deep analysis
+- `analyze_file_with_coding(file_id)` - Get complete file text with all coding context for deep analysis; counts the file's region and audio/video codings it does not show, and names a PDF with no usable text (a PDF QualCoder 3.8.2 stored as the file itself, recognised by a heuristic, has its text withheld)
 
 **Attributes & Demographics:**
 - `list_attribute_types()` - List all available attributes (age, gender, etc.)
@@ -940,8 +949,8 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `get_cases_by_code(code_id, coder)` - Get all cases containing a specific code
 
 **AI-Assisted Coding (Conversational Workflow):**
-- `analyze_for_coding(file_ids, code_names, instruction, min_confidence)` - Create an analysis session for Claude to perform coding suggestions (returns the `coding_session_id` the other session tools take)
-- `record_suggestions(coding_session_id, suggestions, replace)` - Record Claude's suggestions into the session (each verified against the file text; positions auto-corrected when the excerpt is unique)
+- `analyze_for_coding(file_ids, code_names, instruction, min_confidence)` - Create an analysis session for Claude to perform coding suggestions (returns the `coding_session_id` the other session tools take); a PDF with no usable text is refused by name (`files_refused`), with the way forward: OCR outside this server, which bundles none, then import the result, and for a PDF 3.8.2 stored as the file itself, QualCoder 4.0's Restructure first
+- `record_suggestions(coding_session_id, suggestions, replace)` - Record Claude's suggestions into the session (each verified against the file text; positions auto-corrected when the excerpt is unique; a PDF with no usable text is refused, as it is by `edit_suggestion`, `apply_codings`, proposal evidence and `add_annotation`)
 - `review_suggestions(coding_session_id, suggestion_guids, show_context)` - Show detailed information about specific suggestions
 - `edit_suggestion(coding_session_id, suggestion_guid, start_pos, end_pos, segment_text, use_alternative, code_id, code_name)` - Adjust a pending suggestion's span or code before approval (session-only; server-computed shorter/longer alternatives)
 - `update_suggestion_status(coding_session_id, approve, reject)` - Approve or reject suggestions by GUID
@@ -970,11 +979,11 @@ the full data when `coder` is given (see "Working alongside QualCoder
 - `set_attribute(target_type, target_id, attribute_name, value, create_backup)` - **WRITES TO DATABASE** - Set or clear an attribute value
 
 **Recovery & Safety:**
-- `copy_project_to_workspace(source_path, new_name)` - Copy a project to the safe workspace for AI coding (same exclusions as backups; reports skipped symlinks)
+- `copy_project_to_workspace(source_path, new_name)` - Copy a project to the safe workspace for AI coding (the database copied consistently and the same exclusions as backups; reports skipped symlinks)
 - `delete_coding(coding_id, create_backup, allow_hidden_coder, confirm_private_note_deletion)` - **WRITES TO DATABASE** - Remove one coded segment (refuses a hidden coder's row or a row carrying a private note unless the override is passed)
-- `list_backups()` - List this project's backup snapshots (both this server's `_backup_` and QualCoder's `_BKUP_` families)
+- `list_backups()` - List this project's backup snapshots (both this server's `_backup_` and QualCoder's `_BKUP_` families); a backup holding its database's journal or WAL file, copied while a program was writing, is marked `unclean`
 - `prune_backups(keep_last, older_than_days, preview_token)` - Delete this server's own backups by a retention policy (preview first, then the token the preview returns; QualCoder's `_BKUP_` backups are never removed)
-- `restore_backup(backup_path, preview_token)` - Guarded project restore (previews first, then the token the preview returns, reporting `qualcoder_gui_signals`; safety backup of the current state)
+- `restore_backup(backup_path, preview_token)` - Guarded project restore (previews first, then the token the preview returns, reporting `qualcoder_gui_signals`; safety backup of the current state; an `unclean` backup is refused)
 
 **Interchange & Report Exports (exported files keep full memos, private sections included):**
 - `export_refi_qda(output_path, coding_session_id, overwrite)` - Export codings (or a session's suggestions) as a REFI-QDA .qdpx for QualCoder/NVivo/ATLAS.ti/MAXQDA
@@ -1005,8 +1014,8 @@ the full data when `coder` is given (see "Working alongside QualCoder
 **Codebook, Destructive (preview, then token, then safety backup):**
 - `merge_codes(from_code_id, into_code_id, preview_token, allow_hidden_coder)` - **WRITES TO DATABASE** - Merge one code into another (lossy on overlaps, exactly matching QualCoder)
 - `delete_code(code_id, preview_token, cascade, allow_hidden_coder)` - **WRITES TO DATABASE** - Delete a code and all its coded segments (`cascade=true` is required for a code that has sub-codes)
-- `delete_category(category_id, preview_token)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data)
-- `merge_category(from_category_id, into_category, preview_token)` - **WRITES TO DATABASE** - Merge a category into another (or into the top level); its codes and sub-categories move to the target
+- `delete_category(category_id, preview_token)` - **WRITES TO DATABASE** - Delete a category; its codes and sub-categories move to the top level (no cascade to coded data). On projects QualCoder 4.0 has opened (schema v16 and later), the category's own node in QualCoder's saved graphs and the lines that end on it are removed with it, and the preview counts them; its codes stay on the graphs
+- `merge_category(from_category_id, into_category, preview_token)` - **WRITES TO DATABASE** - Merge a category into another (or into the top level); its codes and sub-categories move to the target. Saved graphs as for `delete_category`: only the merged category's own node and lines go, where QualCoder 4.0's own merge also erases the kept codes' nodes and lines
 
 Since v0.12 these four, `pseudonymise_source`, `restore_backup` and
 `prune_backups`, are two-step: call without `preview_token` for a preview of exactly what
@@ -1053,7 +1062,7 @@ Built-in prompt templates for common analysis tasks:
 
 ### "No Qualcoder project selected" Error
 
-With Option A, ask Claude to list and select a project; the error also names the last project used on this machine when it still exists, so one `select_project` call recovers. With Option B, make sure the `env` section in your configuration includes the `QUALCODER_PROJECT_PATH` variable with the full path to your `.qda` project folder (or its `data.qda` file).
+With Option A, ask Claude to list and select a project; the error also names the last project used on this machine when it still exists, so one `select_project` call recovers. With Option B, make sure the `env` section in your configuration includes the `QUALCODER_PROJECT_PATH` variable with the full path to your `.qda` project folder (or its `data.qda` file); since 0.14 a configured project is used by whichever tool comes first (before, the backup tools and a few others gave this error until another tool had run), and a configured path that cannot be opened is answered with the reason.
 
 ### Testing the Server Manually
 

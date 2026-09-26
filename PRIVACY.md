@@ -436,7 +436,21 @@ and avoids multiplying plaintext copies of your sources across backup
 folders. A restored or copied project without `search.sqlite` is
 normal: QualCoder rebuilds it on project open.
 
-Besides `restore_backup`, which opens the backup you choose to check
+The project database is the one file not copied as a file (since
+0.14): `data.qda` is copied with SQLite's own online backup, from a
+read-only connection, so a backup or copy made while QualCoder is
+writing holds only what was last committed, and the database's journal
+and WAL files are never copied. QualCoder's ignore set does not match
+them, and a journal copied mid-write holds pages of a write that was
+never committed, which some SQLite builds then show and others refuse
+to read. A backup that holds them (copied while a program was writing,
+made before 0.14, or made by QualCoder itself) is marked `unclean` by
+`list_backups` and refused by `restore_backup`; it can still be pruned.
+A database SQLite cannot read (a damaged one) is copied as a file, with
+its side files, so a backup of a damaged project keeps it as it was.
+
+Besides `restore_backup`, which checks that no journal or WAL file
+sits beside the database of the backup you choose, opens it to check
 it, reads its first bytes for the preview and copies it back,
 one tool reads the backups' contents: `rename_file`, to recognise a
 rename back (a name, or an ending, the file had before). Only when one of

@@ -204,10 +204,13 @@ def test_privacy_says_rename_file_reads_the_backups():
     """Fix round 2, R1-9."""
     flat = _flat("PRIVACY.md")
     # Fix round 3, B-5, F2A-2, F2A-6, F2A-7, P-5.
-    assert "Besides `restore_backup`, which opens the backup you choose " \
-           "to check it, reads its first bytes for the preview and copies " \
-           "it back, one tool reads the backups' contents: `rename_file`, " \
-           "to recognise a rename back" in flat
+    # v0.14 (existing projects, part 6): restore checks for a journal or
+    # WAL file beside the backup's database before it opens it
+    assert "Besides `restore_backup`, which checks that no journal or WAL " \
+           "file sits beside the database of the backup you choose, opens " \
+           "it to check it, reads its first bytes for the preview and " \
+           "copies it back, one tool reads the backups' contents: " \
+           "`rename_file`, to recognise a rename back" in flat
     assert "once per question, stopping at the first that shows the name. " \
            "It reads only the name and the date of the row with this " \
            "file's id there; for a copy in the project's documents folder " \

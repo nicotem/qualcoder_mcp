@@ -102,6 +102,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count, it stays on the wall clock. It still fails when the reader's
   sweep goes back to `str.translate`.
 
+### Changed: existing projects handled honestly
+
+- **Saved graphs after a category is deleted or merged.**
+  `delete_category` and `merge_category` remove the category's own node
+  from QualCoder's saved graphs, and the lines that end on it, on
+  projects at schema v16 and later (those QualCoder 4.0 has opened), as
+  the clean-up after deleting a code already does; v14 and v15 projects
+  keep every graph row, as QualCoder 3.8.2 does. QualCoder 4.0's Graph
+  window no longer reports "Category does not exist" on every load, and
+  a later category given the same number no longer takes over the node.
+  The category's codes keep their nodes and lines: a departure from
+  QualCoder 4.0's own merge, which matches graph rows by category alone
+  and erases the kept codes' nodes and lines. The preview counts what
+  goes (`saved_graph_rows_removed`). Checked in QualCoder 4.0's own
+  Graph window.
+- **PDFs with no usable text.** A PDF with no text layer, and a PDF
+  QualCoder 3.8.2 stored as the file itself (recognised by a heuristic:
+  the PDF header within the first 1,024 characters, or NUL characters),
+  are named in reads (`unusable_pdf`: the file resource,
+  `analyze_file_with_coding`, the file list, `get_project_summary`),
+  never have the stored file returned, are not content-searched and are
+  counted and named as not searched by `search_files`, and are refused
+  by the coding tools (`analyze_for_coding`, `record_suggestions`,
+  `edit_suggestion`, `apply_codings`, proposal evidence,
+  `add_annotation`) with the way forward: OCR outside this server,
+  which bundles none, and for a 3.8.2 row QualCoder 4.0's Restructure
+  first. No new dependency.
+- **Region codings disclosed.** `get_coded_segments` and
+  `analyze_file_with_coding` say how many region codings (areas on PDF
+  pages or images) and audio/video codings they do not show
+  (`codings_not_shown`); `get_coding_frequencies` and
+  `get_project_summary` say how many they do not count
+  (`codings_not_counted`), so the reads agree with the delete previews
+  and with QualCoder's own counts.
+- **Backups made consistently.** A backup (and a workspace copy) copies
+  the project database with SQLite's own online backup, from a
+  read-only connection, and never copies its journal or WAL file, which
+  QualCoder's backup ignore set does not match: a backup taken while
+  QualCoder was writing used to carry its journal, and then read
+  differently on different platforms (refused read-only on newer
+  SQLite, or malformed). The rest of the folder is copied as before.
+  About 1.2 seconds per gigabyte of database, measured. A database kept
+  locked for more than about 15 seconds is answered as a locked
+  database, with nothing written. `list_backups` marks a backup that
+  holds a journal or WAL file `unclean`, and `restore_backup` refuses
+  one. A departure from QualCoder's own backups, which copy the
+  database as a file.
+- **A configured project at first use.** On a project set in the host's
+  configuration (`QUALCODER_PROJECT_PATH`), `list_backups`,
+  `prune_backups`, `restore_backup`, `get_current_project`,
+  `set_project_ai_coder_name`, `read_pseudonym_list` and
+  `pseudonymise_source` no longer answer "No Qualcoder project
+  selected" (or "No project currently open") when no other tool has run
+  yet; a configured path that cannot be opened is answered with the
+  reason.
+
 ### Changed: privacy of the run record, error answers and the log
 
 - **The run's fingerprints no longer confirm a guessed name.** The
