@@ -15377,10 +15377,12 @@ def _create_project_place_refusal(name: Any, directory: Any):
         parent, is_default = new_project.resolve_parent_folder(
             directory, default_workspace())
         new_project.check_parent_folder(
-            parent, Path(preview_tokens_state_home()).resolve(), is_default)
+            parent, Path(preview_tokens_state_home()).resolve(), is_default,
+            Path.home() / ".qualcoder")
         folder = parent / folder_name
         refusal = (new_project.windows_path_refusal(
             folder, os.name == "nt", new_project.windows_long_paths_enabled())
+            or new_project.sqlite_path_refusal(folder, os.name == "nt")
             or new_project.scan_parent(parent, folder_name, stem))
     except new_project.Refusal as error:
         refusal = str(error)

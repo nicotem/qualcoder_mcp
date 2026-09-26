@@ -549,12 +549,34 @@ class Refusal(ValueError):
     tool's answer."""
 
 
-def _inside(path: Path, folder: Path) -> bool:
-    return path == folder or folder in path.parents
+def _inside(path: Path, folder: Optional[Path]) -> bool:
+    """Whether `path` is `folder` or inside it: by spelling, and by
+    identity (device and inode), so another letter case of the same
+    folder on a disk that ignores case, or another way to it, is the same
+    folder (fix round 1 of brief C, Security 3)."""
+    if folder is None:
+        return False
+    if path == folder or folder in path.parents:
+        return True
+    try:
+        target = os.stat(folder)
+    except OSError:
+        return False
+    if not target.st_ino:
+        return False              # a file system with no inode numbers
+    for part in (path,) + tuple(path.parents):
+        try:
+            info = os.stat(part)
+        except OSError:
+            continue
+        if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+            return True
+    return False
 
 
 def check_parent_folder(parent: Path, state_home: Optional[Path],
-                        is_default: bool) -> None:
+                        is_default: bool,
+                        qualcoder_settings: Optional[Path] = None) -> None:
     """Refuse a parent folder a project must not be created in.
 
     `parent` is resolved. The researcher's own folder must exist and be
@@ -575,11 +597,17 @@ def check_parent_folder(parent: Path, state_home: Optional[Path],
         if not parent.is_dir():
             raise Refusal(f"'{parent}' is not a folder. Name an existing "
                           f"folder, or leave `directory` out.")
-    if state_home is not None and _inside(parent, state_home):
+    if _inside(parent, state_home):
         raise Refusal(
             f"{where} is inside this server's state folder "
             f"(~/.qualcoder_mcp), which holds its internal state; choose "
             f"another folder.")
+    if _inside(parent, qualcoder_settings):
+        raise Refusal(
+            f"{where} is inside QualCoder's own settings folder "
+            f"(~/.qualcoder), which holds its settings and API keys; a "
+            f"project and its backups beside them invite a later copy or "
+            f"sync of that folder. Choose another folder.")
     for part in (parent,) + tuple(parent.parents):
         if part.name.lower().endswith(PROJECT_SUFFIX):
             raise Refusal(
@@ -606,7 +634,20 @@ def resolve_parent_folder(directory: Optional[str],
         raise Refusal("`directory` is empty. Name an existing folder, or "
                       "leave `directory` out to use the workspace.")
     try:
-        return Path(directory).expanduser().resolve(), False
+        given = Path(directory).expanduser()
+    except (RuntimeError, ValueError):
+        raise Refusal(f"'{directory}' is not a folder path this tool can "
+                      f"use.") from None
+    if not given.is_absolute():
+        # Read from the server's working folder, which the host chooses
+        # and the researcher cannot see (Security 5); on Windows "C:x" is
+        # relative to that drive's working folder, and "\x" to the drive.
+        raise Refusal(
+            f"'{directory}' is a relative path, which would be read from "
+            f"the server's own working folder. Give the folder's full path, "
+            f"or one starting with ~ (the home folder).")
+    try:
+        return given.resolve(), False
     except (OSError, RuntimeError, ValueError):
         raise Refusal(f"'{directory}' is not a folder path this tool can "
                       f"use.") from None
@@ -935,6 +976,28 @@ def windows_path_refusal(folder: Path, on_windows: bool,
             f"{WINDOWS_MAX_FILE_PATH} unless long paths are switched on. "
             f"Choose a shorter name, or a folder nearer the top of the "
             f"disk.")
+
+
+# SQLite's own limit on a file's path, in bytes, on macOS and Linux
+# (MAX_PATHNAME in its unix layer): the journal's path, the longest it
+# makes, must fit. Measured here with SQLite 3.49.1 and 3.50.4: a
+# data.qda path of 504 bytes opens, 505 does not.
+SQLITE_MAX_PATH_BYTES = 512
+
+
+def sqlite_path_refusal(folder: Path, on_windows: bool) -> Optional[str]:
+    """The refusal for a project whose database SQLite could not open
+    because its path is too long (not on Windows, whose limits are
+    `windows_path_refusal`'s), or None."""
+    if on_windows:
+        return None
+    size = len(os.fsencode(str(folder / _LONGEST_DATABASE_FILE)))
+    if size <= SQLITE_MAX_PATH_BYTES:
+        return None
+    return (f"The project's database path would be too long for SQLite: "
+            f"its journal's path would be {size} bytes, and SQLite cannot "
+            f"open a file whose path passes {SQLITE_MAX_PATH_BYTES}. Choose "
+            f"a shorter name, or a folder nearer the top of the disk.")
 
 
 def file_name_room(folder: Path) -> int:

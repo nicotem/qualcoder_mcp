@@ -3158,6 +3158,12 @@ class TestNamesLeftInText:
 
         cache = getattr(providers, "CONSTANTS_CACHE", None)
         if cache is not None:
+            # A Hypothesis that injects constants but has renamed its hook
+            # would make the patch below do nothing, and this test fragile
+            # again without a word (QA n1): say so instead.
+            assert hasattr(providers, "_get_local_constants"), (
+                "Hypothesis no longer has providers._get_local_constants; "
+                "find its new hook for local constants and patch that")
             cache.cache.clear()
         monkeypatch.setattr(providers, "_get_local_constants",
                             no_local_constants, raising=False)

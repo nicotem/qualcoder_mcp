@@ -1300,3 +1300,109 @@ class TestCleanUpRemovesOnlyItsOwn:
         assert sorted(str(p.relative_to(folder))
                       for p in folder.rglob("*")) == [
             "documents", os.path.join("documents", "theirs.txt")]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: the smaller fixes (Security 3, 5, notes 7 and 9; QA m5)
+# ---------------------------------------------------------------------------
+
+class TestTheFolderGuardsInFixRound1:
+
+    def test_the_state_folder_in_another_letter_case(self):
+        """Security 3: compared by identity, not spelling."""
+        from qualcoder_mcp import preview_tokens
+        state = Path(preview_tokens.STATE_HOME)
+        (state / "sessions").mkdir(parents=True, exist_ok=True)
+        variant = state.parent / state.name.upper()
+        if not variant.exists():
+            pytest.skip("a case-sensitive disk: the variant is another "
+                        "folder, which the spelling check already covers")
+        for target in (variant, variant / "SESSIONS"):
+            assert "state folder" in refused(create("Case", target))
+        assert not list(state.rglob("*.qda"))
+
+    def test_qualcoders_settings_folder(self):
+        """Security note 9: the folder beside the API keys."""
+        settings = Path.home() / ".qualcoder"
+        (settings / "sub").mkdir(parents=True)
+        for target in (settings, settings / "sub"):
+            text = refused(create("Beside keys", target))
+            assert "QualCoder's own settings folder" in text
+        assert not list(settings.rglob("*.qda"))
+
+    @pytest.mark.parametrize("relative", [
+        "Research", "./Research", "../Research", "C:Research"])
+    def test_a_relative_folder_is_refused(self, tmp_path, monkeypatch,
+                                          relative):
+        """Security 5: a relative path is read from the server's working
+        folder, which the researcher cannot see."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "Research").mkdir()
+        text = refused(create("Relative", relative))
+        assert "relative path" in text and "full path" in text
+        assert not list(tmp_path.rglob("Relative.qda"))
+
+    def test_a_path_past_sqlites_limit(self, tmp_path):
+        """Security note 7: refused up front, worded as too long for
+        SQLite (the journal's path may be 512 bytes, no more)."""
+        if os.name == "nt":
+            pytest.skip("SQLite's limit here is the unix layer's")
+        def parent_for(journal_bytes):
+            base = tmp_path / f"p{journal_bytes}"
+            rest = journal_bytes - len(os.fsencode(
+                str(base / "Study.qda" / "data.qda-journal"))) - 1
+            path = base
+            while rest > 0:
+                segment = min(200, rest)
+                if rest - segment == 1:
+                    segment -= 1
+                path = path / ("d" * segment)
+                rest -= segment + 1
+            path.mkdir(parents=True)
+            return path
+        fits = parent_for(512)
+        assert len(os.fsencode(str(fits / "Study.qda" /
+                                   "data.qda-journal"))) == 512
+        assert create("Study", fits)["created"] is True
+        too_long = parent_for(513)
+        text = refused(create("Study", too_long))
+        assert "too long for SQLite" in text and "513 bytes" in text
+        assert not (too_long / "Study.qda").exists()
+
+    def test_the_windows_folder_limit_at_its_edge(self):
+        """QA m5: a folder path of 247 characters is allowed, 248 not.
+        (The file limit, 259, never binds first: `documents` is ten
+        characters past the folder, the journal seventeen, so a folder
+        within 247 keeps the journal within 254.)"""
+        def folder_with(length_of_documents):
+            base = "C:\\" + "d" * (length_of_documents - len(
+                "C:\\\\Study.qda\\documents"))
+            return Path(base) / "Study.qda"
+        # `documents` is the longest subfolder name, so it decides
+        for length, allowed in ((247, True), (248, False)):
+            folder = folder_with(length)
+            assert new_project.path_lengths(folder)[0] == length
+            text = new_project.windows_path_refusal(folder, True, False)
+            assert (text is None) == allowed, (length, text)
+            if allowed:
+                assert new_project.path_lengths(folder)[1] == 254
+
+
+class TestTheSetterWarnsOnANullCoderName:
+
+    def test_null_as_well_as_empty(self, tmp_path):
+        """QA m5: the project's coder name NULL (QualCoder never writes
+        it, but a project may hold it) draws the same warning as ''."""
+        folder = tmp_path / "Null.qda"
+        new_project.write_project(folder, new_project.creation_statements(
+            "", "x (QualCoder)", "2026-09-26 10:00:00"))
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        try:
+            conn.execute("UPDATE project SET codername = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+        server.select_project(str(folder))
+        out = json.loads(server.set_project_ai_coder_name("AI Helper"))
+        assert out["success"] is True
+        assert server.RESEARCHER_CODER_NAME_UNKNOWN in out["warnings"]
