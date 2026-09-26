@@ -3132,17 +3132,40 @@ class TestNamesLeftInText:
             assert P.names_left_in_text(wider, text, False, rewritten)[
                 "occurrences"]["wide"]
 
-    def test_the_generator_reaches_every_kind(self):
+    def test_the_generator_reaches_every_kind(self, monkeypatch):
         """A property proves nothing about a branch its inputs never
         reach: over the real distribution (derandomised), every kind is
         reached, the whole-word count is non-zero somewhere, and so is a
         whole word only the rewriter sees (a combining mark after a
-        name, fix round 1)."""
+        name, fix round 1).
+
+        v0.14: Hypothesis also draws, now and then, from the string and
+        number constants it finds in the package's own source, so any
+        change to `src/` moved this test's inputs, derandomised or not.
+        Merging the privacy and project-creation briefs moved them so
+        that, on the Windows jobs only, the rarest kind (a whole word
+        only the rewriter sees) was never reached. That injection is
+        switched off for this test, with the cache of permitted constants
+        cleared on both sides, so the inputs depend on the seed and the
+        strategy alone; the examples are raised from 400 to 1,000 for
+        margin. Older Hypothesis versions, which inject nothing, lack the
+        hook, and the patch then changes nothing.
+        """
+        from hypothesis.internal.conjecture import providers
+
+        def no_local_constants():
+            return providers.Constants()
+
+        cache = getattr(providers, "CONSTANTS_CACHE", None)
+        if cache is not None:
+            cache.cache.clear()
+        monkeypatch.setattr(providers, "_get_local_constants",
+                            no_local_constants, raising=False)
         seen = {kind: 0 for kind in P.TEXT_RESIDUE_REASONS}
         seen["whole_word"] = 0
         seen["rewriter_only"] = 0
 
-        @settings(max_examples=400, deadline=None, derandomize=True,
+        @settings(max_examples=1000, deadline=None, derandomize=True,
                   phases=[Phase.generate],
                   suppress_health_check=[HealthCheck.too_slow,
                                          HealthCheck.filter_too_much])
@@ -3158,7 +3181,11 @@ class TestNamesLeftInText:
                 compiled.pattern.search(text)
                 and not compiled.detector.contains(text))
 
-        count()
+        try:
+            count()
+        finally:
+            if cache is not None:
+                cache.cache.clear()
         assert all(value > 0 for value in seen.values()), seen
 
 
