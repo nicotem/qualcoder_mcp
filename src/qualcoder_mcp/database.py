@@ -905,6 +905,81 @@ def _detect_file_type(mediapath: str) -> str:
     return "media"
 
 
+# ----------------------------------------------------------------------------
+# PDFs whose stored text cannot be read, searched or coded (v0.14 guard
+# rails; PDF coding study, sections 3.1 and 8; owner ruling 7)
+#
+# QualCoder stores a PDF's text in `source.fulltext`, extracted at import.
+# Two kinds of PDF source carry no usable text:
+# - no text layer: QualCoder 4.0 imports a scanned PDF anyway and stores
+#   one line break per page (manage_files.py:3301-3308 at pin 9bddf17);
+#   the text is empty or only whitespace;
+# - the PDF file itself: QualCoder 3.8.2, when pdfminer returned no text,
+#   fell through to decoding the file as plain text (3.8.2
+#   manage_files.py:2010-2020), so the row holds the PDF's bytes (a
+#   4,323,940-character row with 102,993 NUL characters in the study).
+#   Master repairs such a row in place with its PDF view's Restructure.
+# Recognising the second is a HEURISTIC, named as one wherever it is
+# reported: the PDF header '%PDF-' within the first 1,024 characters
+# (where the PDF format allows it), or a NUL character anywhere. A real
+# text layer that quotes a PDF header near its start would be taken for
+# one. A PDF that is only partly scanned cannot be recognised without a
+# PDF engine (study, 3.2), which this server does not have.
+# ----------------------------------------------------------------------------
+PDF_NO_TEXT_LAYER = "no_text_layer"
+PDF_STORED_AS_TEXT = "pdf_file_stored_as_text"
+PDF_HEADER_WINDOW = 1024
+
+PDF_PROBLEM_MESSAGES = {
+    PDF_NO_TEXT_LAYER: (
+        "This PDF has no text layer (a scanned PDF, or pages that are "
+        "images): QualCoder stored no text for it, so there is nothing "
+        "here to read, search or code as text. QualCoder can code it only "
+        "by drawing regions in its PDF view. To code its words, run OCR "
+        "on the PDF outside this server (this server bundles none) and "
+        "import the result as a text file."),
+    PDF_STORED_AS_TEXT: (
+        "QualCoder 3.8.2 appears to have stored this PDF file itself as "
+        "its text (recognised by a heuristic: the PDF header near the "
+        "start of the stored text, or NUL characters in it), so the "
+        "stored text is withheld here and this file is not searched or "
+        "coded. To repair it in place, open the file in QualCoder 4.0's "
+        "PDF view and accept 'Restructure' (the file keeps its id, "
+        "attributes and case links). To code its words, run OCR on the "
+        "PDF outside this server (this server bundles none) and import "
+        "the result as a text file."),
+}
+
+
+def pdf_text_problem(text: Optional[str]) -> Optional[str]:
+    """Why a PDF source's stored text is unusable, or None.
+
+    Call it only for a source `_detect_file_type` calls "pdf". Returns
+    PDF_STORED_AS_TEXT (a heuristic, see above), PDF_NO_TEXT_LAYER, or
+    None for a PDF with a text layer.
+    """
+    if text is None:
+        return PDF_NO_TEXT_LAYER
+    if not isinstance(text, str):
+        return PDF_STORED_AS_TEXT
+    if "\x00" in text or "%PDF-" in text[:PDF_HEADER_WINDOW]:
+        return PDF_STORED_AS_TEXT
+    if not text.strip():
+        return PDF_NO_TEXT_LAYER
+    return None
+
+
+def unusable_pdf_block(problem: str) -> Dict[str, Any]:
+    """What a read or a refusal says about an unusable PDF."""
+    return {
+        "reason": problem,
+        "recognised_by": ("heuristic" if problem == PDF_STORED_AS_TEXT
+                          else "the stored text is empty or only "
+                               "whitespace"),
+        "message": PDF_PROBLEM_MESSAGES[problem],
+    }
+
+
 def validate_qda_path(db_path: str) -> Path:
     """Validate that the path is a legitimate Qualcoder project.
 
@@ -3728,8 +3803,12 @@ class QualcoderDatabase:
         """)
 
         files = []
-        for row in cursor.fetchall():
-            files.append({
+        rows = cursor.fetchall()
+        problems = self.pdf_text_problems(
+            [row["id"] for row in rows
+             if _detect_file_type(row["mediapath"]) == "pdf"])
+        for row in rows:
+            entry = {
                 "id": row["id"],
                 "name": row["name"],
                 "memo": row["memo"] or "",
@@ -3737,8 +3816,64 @@ class QualcoderDatabase:
                 "date": row["date"],
                 "type": _detect_file_type(row["mediapath"]),
                 "media_path": row["mediapath"]
-            })
+            }
+            # A PDF with no usable text is named in the list (v0.14)
+            if row["id"] in problems:
+                entry["unusable_pdf"] = problems[row["id"]]
+            files.append(entry)
         return files
+
+    def pdf_text_problems(self, file_ids: Sequence[int]) -> Dict[int, str]:
+        """`pdf_text_problem` for each of these PDF sources, by id, for
+        those that have one, without reading every PDF's whole text.
+
+        The NUL test runs inside SQLite on the stored bytes; the header
+        test reads the first 1,024 characters; a whole text is read only
+        when those characters are all whitespace and the text is longer.
+        Agrees with `pdf_text_problem` on the whole text (tested).
+        """
+        out: Dict[int, str] = {}
+        ids = [int(i) for i in file_ids]
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" for _ in chunk)
+            try:
+                rows = self.conn.execute(
+                    f"SELECT id, fulltext IS NULL AS missing, "
+                    f"typeof(fulltext) AS kind, "
+                    f"instr(CAST(fulltext AS BLOB), X'00') AS nul, "
+                    f"substr(fulltext, 1, {PDF_HEADER_WINDOW}) AS head, "
+                    f"length(CAST(fulltext AS BLOB)) AS nbytes "
+                    f"FROM source WHERE id IN ({marks})",
+                    tuple(chunk)).fetchall()
+            except sqlite3.Error as e:
+                _raise_query_error(e, "pdf_text_problems",
+                                   "Failed to read the PDF sources")
+            for row in rows:
+                fid = int(row["id"])
+                if row["missing"]:
+                    out[fid] = PDF_NO_TEXT_LAYER
+                    continue
+                if row["kind"] != "text" or row["nul"]:
+                    out[fid] = PDF_STORED_AS_TEXT
+                    continue
+                head = row["head"] or ""
+                if "%PDF-" in head:
+                    out[fid] = PDF_STORED_AS_TEXT
+                    continue
+                if head.strip():
+                    continue
+                if len(head.encode("utf-8", "surrogatepass")) \
+                        < (row["nbytes"] or 0):
+                    whole = self.conn.execute(
+                        "SELECT fulltext FROM source WHERE id = ?",
+                        (fid,)).fetchone()[0]
+                    problem = pdf_text_problem(whole)
+                    if problem is not None:
+                        out[fid] = problem
+                    continue
+                out[fid] = PDF_NO_TEXT_LAYER
+        return out
 
     def get_file_content(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get the content of a text file.
@@ -3783,20 +3918,32 @@ class QualcoderDatabase:
                 (file_id,)
             ).fetchone()["cnt"]
 
-            return {
+            file_type = _detect_file_type(row["mediapath"])
+            content = row["fulltext"] or ""
+            problem = (pdf_text_problem(row["fulltext"])
+                       if file_type == "pdf" else None)
+            if problem == PDF_STORED_AS_TEXT:
+                # Never returned (v0.14): it is the PDF file's own bytes
+                content = ""
+            result = {
                 "id": row["id"],
                 "name": row["name"],
-                "content": row["fulltext"] or "",
+                "content": content,
                 "memo": row["memo"] or "",
                 "owner": row["owner"],
                 "date": row["date"],
                 "media_path": row["mediapath"],
-                "is_text": _detect_file_type(row["mediapath"]) in ("text", "pdf"),
+                # An unusable PDF is not a text source (v0.14): every
+                # coding path that checks this refuses it
+                "is_text": file_type in ("text", "pdf") and problem is None,
                 # False when the text contains \r\n or astral characters:
                 # QualCoder's GUI positions diverge on such files (QA2-4)
-                "position_safe": position_safe(row["fulltext"] or ""),
+                "position_safe": position_safe(content),
                 "code_count": code_count
             }
+            if problem is not None:
+                result["unusable_pdf"] = unusable_pdf_block(problem)
+            return result
         except sqlite3.Error as e:
             _raise_query_error(e, "get_file_content", "Failed to retrieve file content")
 
@@ -3844,7 +3991,12 @@ class QualcoderDatabase:
                 return None
 
             file_type = _detect_file_type(file_row["mediapath"])
-            is_text = file_type in ("text", "pdf")
+            full_text = file_row["fulltext"] or ""
+            problem = (pdf_text_problem(file_row["fulltext"])
+                       if file_type == "pdf" else None)
+            if problem == PDF_STORED_AS_TEXT:
+                full_text = ""  # never returned (v0.14)
+            is_text = file_type in ("text", "pdf") and problem is None
 
             # Get all coded segments for this file (P1-3: through the
             # visibility view when the project has one, so this analysis
@@ -3931,7 +4083,7 @@ class QualcoderDatabase:
                     "date": ann_row["date"]
                 })
 
-            return {
+            result = {
                 "file_info": {
                     "id": file_row["id"],
                     "name": file_row["name"],
@@ -3941,7 +4093,7 @@ class QualcoderDatabase:
                     "owner": file_row["owner"],
                     "date": file_row["date"]
                 },
-                "full_text": file_row["fulltext"] or "",
+                "full_text": full_text,
                 "coded_segments": coded_segments,
                 "codes_used": codes_used,
                 "annotations": annotations,
@@ -3949,9 +4101,13 @@ class QualcoderDatabase:
                     "total_segments": len(coded_segments),
                     "unique_codes": len(codes_used),
                     "total_annotations": len(annotations),
-                    "text_length": len(file_row["fulltext"] or "")
+                    "text_length": len(full_text)
                 }
             }
+            if problem is not None:
+                result["file_info"]["unusable_pdf"] = \
+                    unusable_pdf_block(problem)
+            return result
 
         except sqlite3.Error as e:
             _raise_query_error(e, "get_file_with_coding", "Failed to retrieve file with coding")
@@ -4810,6 +4966,10 @@ class QualcoderDatabase:
             results = []
             files_searched = 0
             files_skipped_no_text = 0
+            # PDFs with no usable text: not content-searched, and named,
+            # so a search that finds nothing there is not a false "not
+            # found" (v0.14)
+            unusable_pdfs: List[Dict[str, Any]] = []
             total_excluded = 0
             files_all_excluded = 0
             last_key = None
@@ -4861,7 +5021,15 @@ class QualcoderDatabase:
                 content_shown = 0
                 if search_content:
                     file_text = row["fulltext"] or ""
-                    if not file_text:
+                    problem = (pdf_text_problem(row["fulltext"])
+                               if _detect_file_type(row["mediapath"])
+                               == "pdf" else None)
+                    if problem is not None:
+                        unusable_pdfs.append({
+                            "file_id": row["id"], "file_name": raw_name,
+                            "reason": problem})
+                        file_text = ""
+                    elif not file_text:
                         files_skipped_no_text += 1
                     mask_entry = (exclude_mask or {}).get(row["id"])
 
@@ -4980,6 +5148,21 @@ class QualcoderDatabase:
                         f"{files_skipped_no_text} source(s) without text content "
                         f"(e.g. image/audio/video) were not content-searched"
                     )
+                performance_info["files_skipped_unusable_pdf"] = \
+                    len(unusable_pdfs)
+                if unusable_pdfs:
+                    performance_info["unusable_pdfs_not_searched"] = \
+                        unusable_pdfs
+                    performance_info["unusable_pdf_note"] = (
+                        f"{len(unusable_pdfs)} PDF source(s) were not "
+                        f"content-searched, so finding nothing in them "
+                        f"means nothing: {PDF_NO_TEXT_LAYER} is a PDF with "
+                        f"no text layer (OCR it outside this server and "
+                        f"import the result); {PDF_STORED_AS_TEXT} is a "
+                        f"PDF that QualCoder 3.8.2 stored as the file "
+                        f"itself, recognised by a heuristic (repair it "
+                        f"with 'Restructure' in QualCoder 4.0's PDF view). "
+                        f"A search of any PDF covers its text layer only.")
 
             logger.info(f"File search found {len(results)} matches (searched {files_searched} files)")
 

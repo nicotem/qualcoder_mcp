@@ -44,6 +44,7 @@ from .database import (
     documents_clash_message,
     documents_name_key,
     _detect_file_type as detect_file_type,
+    unusable_pdf_block,
     validate_id,
     validate_limit,
     MAX_LIMIT,
@@ -733,6 +734,18 @@ def _downgrade_to_readonly():
             logger.error("Failed to downgrade to read-only: %s",
                          error_label(e))
             db = None
+
+
+def _unusable_pdf_reason(file_content: Optional[Dict[str, Any]]
+                         ) -> Optional[str]:
+    """The refusal a coding tool gives for a PDF with no usable text
+    (v0.14), or None: its name, the kind, and the way forward."""
+    block = (file_content or {}).get("unusable_pdf")
+    if not block:
+        return None
+    return (f"file '{file_content.get('name')}' is a PDF with no usable "
+            f"text ({block['reason']}), so it cannot be coded as text: "
+            f"{block['message']}")
 
 
 def _snippet(text: Optional[str], max_len: int = 80) -> str:
@@ -4519,6 +4532,20 @@ def get_project_summary() -> str:
     for file in files:
         file_type = file["type"]
         summary["file_types"][file_type] = summary["file_types"].get(file_type, 0) + 1
+    # PDFs with no usable text, named (v0.14)
+    unusable = [{"file_id": f["id"], "file_name": f["name"],
+                 "reason": f["unusable_pdf"]}
+                for f in files if f.get("unusable_pdf")]
+    if unusable:
+        summary["unusable_pdfs"] = unusable
+        summary["unusable_pdfs_note"] = (
+            "These PDF sources have no usable text, so they are not "
+            "searched and cannot be coded as text here: no_text_layer is "
+            "a PDF with no text layer (OCR it outside this server and "
+            "import the result); pdf_file_stored_as_text is a PDF that "
+            "QualCoder 3.8.2 stored as the file itself, recognised by a "
+            "heuristic (repair it with 'Restructure' in QualCoder 4.0's "
+            "PDF view). analyze_file_with_coding says more for each.")
 
     note = _coder_visibility_note()
     if note:
@@ -4579,7 +4606,12 @@ def analyze_file_with_coding(file_id: int) -> str:
 
     # Non-text sources: say so explicitly — an empty full_text was
     # previously indistinguishable from a genuinely empty text file (track6)
-    if not result.get("file_info", {}).get("is_text", True):
+    unusable = result.get("file_info", {}).get("unusable_pdf")
+    if unusable:
+        # A PDF with no usable text, named (v0.14); a PDF 3.8.2 stored as
+        # the file itself has its text withheld by the read
+        result["note"] = unusable["message"]
+    elif not result.get("file_info", {}).get("is_text", True):
         result["note"] = (
             f"This source is {result['file_info'].get('type', 'media')}, not "
             f"text; it has no codable text content, and its image/audio-video "
@@ -5508,6 +5540,22 @@ def analyze_for_coding(
     files_to_analyze = [f for f in all_files if f['id'] in file_ids]
     if not files_to_analyze:
         return json.dumps({"error": "No valid files found with those IDs"})
+    # A PDF with no usable text is refused here, by name (v0.14): a
+    # session on it would end in suggestions that cannot be verified
+    files_refused = [
+        {"file_id": f["id"], "file_name": f["name"],
+         **unusable_pdf_block(f["unusable_pdf"])}
+        for f in files_to_analyze if f.get("unusable_pdf")]
+    if files_refused:
+        refused_ids = {f["file_id"] for f in files_refused}
+        files_to_analyze = [f for f in files_to_analyze
+                            if f["id"] not in refused_ids]
+        file_ids = [fid for fid in file_ids if fid not in refused_ids]
+        if not files_to_analyze:
+            return json.dumps({
+                "error": "None of these files can be coded as text: each "
+                         "is a PDF with no usable text.",
+                "files_refused": files_refused}, indent=2)
 
     # Filter codes if specified
     if code_names:
@@ -5612,6 +5660,8 @@ Once Claude records and presents suggestions, you can:
         # shape (QA6-1)
         "qualcoder_open": state == "active",
     }
+    if files_refused:
+        envelope["files_refused"] = files_refused
     if state == "active":
         envelope["action_required"] = action_required
     else:
@@ -5664,6 +5714,10 @@ def _validate_proposal_evidence(ro_db, items, file_cache):
             file_cache[file_id] = ro_db.get_file_content(file_id)
         fc = file_cache[file_id]
         fulltext = (fc or {}).get("content") or ""
+        unusable = _unusable_pdf_reason(fc)
+        if unusable is not None:
+            rejected.append({"index": idx, "reason": unusable})
+            continue
         if fc is None or not fc.get("is_text") or not fulltext:
             rejected.append({"index": idx,
                              "reason": f"file_id {file_id} is not a text source"})
@@ -5818,6 +5872,10 @@ def record_suggestions(
             rejected.append({"index": idx, "reason": f"file_id {file_id} does not exist"})
             continue
         fulltext = file_content.get("content") or ""
+        unusable = _unusable_pdf_reason(file_content)
+        if unusable is not None:
+            rejected.append({"index": idx, "reason": unusable})
+            continue
         if not file_content.get("is_text") or not fulltext:
             rejected.append({
                 "index": idx,
@@ -6171,6 +6229,9 @@ def edit_suggestion(
         # sessions have none stored)
         alt_content = get_db().get_file_content(sugg.file_id)
         alt_fulltext = (alt_content or {}).get("content") or ""
+        unusable = _unusable_pdf_reason(alt_content)
+        if unusable is not None:
+            return json.dumps({"error": unusable})
         if alt_content is None or not alt_content.get("is_text") \
                 or not alt_fulltext:
             return json.dumps({
@@ -6232,6 +6293,9 @@ def edit_suggestion(
     if wants_span:
         file_content = ro_db.get_file_content(sugg.file_id)
         fulltext = (file_content or {}).get("content") or ""
+        unusable = _unusable_pdf_reason(file_content)
+        if unusable is not None:
+            return json.dumps({"error": unusable})
         if file_content is None or not file_content.get("is_text") or not fulltext:
             return json.dumps({
                 "error": f"file_id {sugg.file_id} no longer exists or is "
@@ -6558,6 +6622,8 @@ def apply_codings(
         fulltext = (file_content or {}).get("content") or ""
         if file_content is None:
             problem = {"reason": f"file_id {sugg.file_id} does not exist"}
+        elif _unusable_pdf_reason(file_content) is not None:
+            problem = {"reason": _unusable_pdf_reason(file_content)}
         elif not file_content.get("is_text") or not fulltext:
             problem = {"reason": f"file '{file_content['name']}' is not a text "
                                  f"source; text codings require text content"}
@@ -13298,6 +13364,11 @@ def add_annotation(file_id: int, start_pos: int, end_pos: int, memo: str,
     owner, owner_error = _resolve_write_owner()
     if owner_error is not None:
         return json.dumps(owner_error, indent=2)
+    # Refused before any backup is taken (v0.14)
+    unusable = _unusable_pdf_reason(
+        get_db().get_file_content(validate_id(file_id, "file_id")))
+    if unusable is not None:
+        return json.dumps({"error": unusable}, indent=2)
 
     def _op(wdb):
         created = wdb.add_annotation(file_id, start_pos, end_pos, memo,
