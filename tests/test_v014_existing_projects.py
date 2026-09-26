@@ -657,3 +657,257 @@ class TestAConfiguredProjectAtFirstUse:
         out = json.loads(asyncio.run(drive()))
         assert "error" not in out, out
         assert [b["name"] for b in out["backups"]] == [backup.name]
+
+
+# ===========================================================================
+# 4. Backups made consistently; unclean ones named, never used
+# ===========================================================================
+
+import subprocess  # noqa: E402
+from qualcoder_mcp.database import (backup_project,  # noqa: E402
+                                    copy_project_to_workspace,
+                                    DatabaseLockedError)
+
+HOLDER = r"""
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+if sys.argv[2] == "exclusive":
+    c.execute("BEGIN EXCLUSIVE")
+else:
+    c.execute("BEGIN IMMEDIATE")
+    c.execute("UPDATE code_name SET memo = 'uncommitted' WHERE cid = 1")
+    c.execute("DELETE FROM code_text")
+print("holding", flush=True)
+sys.stdin.readline()
+c.execute("ROLLBACK")
+c.close()
+"""
+
+
+class _Writer:
+    """Another program inside a write on the project's database."""
+
+    def __init__(self, folder: Path, mode: str):
+        self.proc = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(folder / "data.qda"), mode],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert self.proc.stdout.readline().strip() == "holding"
+
+    def release(self):
+        try:
+            self.proc.stdin.write("\n")
+            self.proc.stdin.flush()
+        except OSError:
+            pass
+        self.proc.wait(timeout=30)
+
+
+def _read_backup(folder: Path, how: str):
+    data = folder / "data.qda"
+    uri = {"ro": data.as_uri() + "?mode=ro",
+           "immutable": data.as_uri() + "?mode=ro&immutable=1"}[how]
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        return (conn.execute("SELECT memo FROM code_name WHERE cid = 1"
+                             ).fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM code_text").fetchone()[0],
+                conn.execute("PRAGMA integrity_check").fetchone()[0])
+    finally:
+        conn.close()
+
+
+class TestBackupsMadeConsistently:
+
+    def test_a_backup_during_another_programs_write_is_clean(self, opened):
+        """The undo study's check, as a test: another program has begun
+        a write (its journal is beside the database) when the backup is
+        taken. The backup holds no side file and reads, read-only and as
+        immutable, as the last committed state, on every SQLite."""
+        folder = opened("v17")
+        writer = _Writer(folder, "reserved")
+        try:
+            assert (folder / "data.qda-journal").exists()
+            backup = backup_project(folder)
+        finally:
+            writer.release()
+        assert sorted(p.name for p in backup.iterdir()
+                      if p.name.startswith("data.qda")) == ["data.qda"]
+        for how in ("ro", "immutable"):
+            assert _read_backup(backup, how) == ("stress memo", 1, "ok")
+
+    def test_the_workspace_copy_is_made_the_same_way(self, opened,
+                                                     tmp_path):
+        folder = opened("v17")
+        writer = _Writer(folder, "reserved")
+        try:
+            copy = copy_project_to_workspace(folder,
+                                             workspace=tmp_path / "ws")
+        finally:
+            writer.release()
+        assert not (copy / "data.qda-journal").exists()
+        assert _read_backup(copy, "ro") == ("stress memo", 1, "ok")
+
+    def test_a_database_kept_locked_refuses_the_write(self, opened,
+                                                      monkeypatch):
+        """Past the wait, no backup and so no write: said as a lock."""
+        import qualcoder_mcp.database as database
+        monkeypatch.setattr(database, "BACKUP_BUSY_SECONDS", 0.2)
+        folder = opened("v17")
+        server.select_project(str(folder))
+        before = sorted(p.name for p in folder.parent.iterdir())
+        writer = _Writer(folder, "exclusive")
+        try:
+            with pytest.raises(DatabaseLockedError):
+                backup_project(folder)
+            assert sorted(p.name for p in folder.parent.iterdir()) == before
+        finally:
+            writer.release()
+        # through a write tool, once the lock has moved on to a write in
+        # flight at the backup (the tool's own lock wait is not this one)
+        monkeypatch.setattr(database, "_copy_database",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                DatabaseLockedError("locked")))
+        out = json.loads(server.set_memo("code", 1, "new", create_backup=True))
+        assert "locked" in out["error"] and "nothing was written" in \
+            out["error"]
+        assert _rows(folder, "SELECT memo FROM code_name WHERE cid = 1") == \
+            [("stress memo",)]
+        assert sorted(p.name for p in folder.parent.iterdir()) == before
+
+    def test_a_wal_database_is_backed_up_whole_in_one_file(self, opened):
+        folder = opened("v17")
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("UPDATE code_name SET memo = 'in the wal' WHERE cid = 1")
+        conn.commit()
+        try:
+            assert (folder / "data.qda-wal").exists()
+            backup = backup_project(folder)
+        finally:
+            conn.close()
+        assert not (backup / "data.qda-wal").exists()
+        assert not (backup / "data.qda-shm").exists()
+        check = sqlite3.connect(str(backup / "data.qda"))
+        try:
+            assert check.execute("PRAGMA journal_mode").fetchone()[0] == \
+                "delete"
+            assert check.execute("SELECT memo FROM code_name WHERE cid = 1"
+                                 ).fetchone()[0] == "in the wal"
+        finally:
+            check.close()
+
+    def test_a_database_sqlite_cannot_read_is_kept_as_it_is(self, tmp_path):
+        """A restore's safety backup of a damaged project keeps the bytes
+        and the journal, and the backup is then named unclean."""
+        folder = tmp_path / "Damaged.qda"
+        folder.mkdir()
+        (folder / "data.qda").write_bytes(b"not a database, " * 64)
+        (folder / "data.qda-journal").write_bytes(b"journal bytes")
+        (folder / "documents").mkdir()
+        report = {}
+        backup = backup_project(folder, report=report)
+        assert (backup / "data.qda").read_bytes() == b"not a database, " * 64
+        assert (backup / "data.qda-journal").read_bytes() == b"journal bytes"
+        assert report["database_copied_as_file"]
+        assert (backup / "documents").is_dir()
+
+    def test_a_crash_journal_is_kept_and_the_project_left_alone(
+            self, opened):
+        """A write killed part-way leaves a hot journal and pages of the
+        uncommitted write in the file. The backup reads read-only, so it
+        never rolls the live project back itself: it keeps the database
+        and the journal as they are, and the backup is named unclean."""
+        folder = opened("v17")
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        conn.executemany("INSERT INTO code_text (cid, fid, seltext, pos0, "
+                         "pos1, owner) VALUES (1, 1, ?, ?, ?, 'x')",
+                         [("s" * 400, i, i + 1) for i in range(2, 400)])
+        conn.commit()
+        conn.close()
+        crash = subprocess.run([sys.executable, "-c", (
+            "import os, sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+            "c.execute('PRAGMA cache_size=1')\n"
+            "c.execute('BEGIN IMMEDIATE')\n"
+            "c.execute(\"UPDATE code_text SET seltext = 'uncommitted'\")\n"
+            "os._exit(0)\n"), str(folder / "data.qda")])
+        assert crash.returncode == 0
+        journal = folder / "data.qda-journal"
+        assert journal.exists() and journal.stat().st_size > 0
+        before = journal.read_bytes()
+        report = {}
+        backup = backup_project(folder, report=report)
+        assert report["database_copied_as_file"]
+        assert journal.read_bytes() == before
+        assert (backup / "data.qda-journal").read_bytes() == before
+        # (select_project itself refuses a project with a hot journal,
+        # so the listing is read the way list_backups builds it)
+        listed = server._collect_backups(folder)
+        assert [b["name"] for b in listed if "unclean" in b] == \
+            [backup.name]
+
+    def test_the_rest_of_the_folder_is_copied_as_before(self, opened):
+        folder = opened("v17")
+        (folder / "documents").mkdir()
+        (folder / "documents" / "a.txt").write_text("text", encoding="utf-8")
+        (folder / "ai_data").mkdir()
+        (folder / "ai_data" / "search.sqlite").write_bytes(b"index")
+        (folder / "ai_data" / "chat_history.sqlite").write_bytes(b"chat")
+        (folder / "project_in_use.lock").write_text("x", encoding="utf-8")
+        backup = backup_project(folder)
+        assert (backup / "documents" / "a.txt").read_text(
+            encoding="utf-8") == "text"
+        assert (backup / "ai_data" / "chat_history.sqlite").read_bytes() == \
+            b"chat"
+        assert not (backup / "ai_data" / "search.sqlite").exists()
+        assert not (backup / "project_in_use.lock").exists()
+        assert (backup / "qualcoder_mcp.json").exists()
+
+
+def _plant_backup(folder: Path, suffix: str, side=()):
+    backup = folder.parent / f"{folder.stem}_backup_{suffix}.qda"
+    backup.mkdir()
+    (backup / "data.qda").write_bytes((folder / "data.qda").read_bytes())
+    for name in side:
+        (backup / name).write_bytes(b"side")
+    return backup
+
+
+class TestUncleanBackupsNamed:
+
+    def test_list_backups_names_them(self, opened):
+        folder = opened("v17")
+        _plant_backup(folder, "20260901_100000")
+        _plant_backup(folder, "20260902_100000", ["data.qda-journal"])
+        _plant_backup(folder, "20260903_100000", ["data.qda-wal",
+                                                  "data.qda-shm"])
+        _plant_backup(folder, "20260904_100000", ["data.qda-shm"])
+        server.select_project(str(folder))
+        out = json.loads(server.list_backups())
+        marks = {b["name"][-19:-4]: b.get("unclean", {}).get("side_files")
+                 for b in out["backups"]}
+        assert marks == {"20260901_100000": None,
+                         "20260902_100000": ["data.qda-journal"],
+                         "20260903_100000": ["data.qda-wal"],
+                         "20260904_100000": None}
+        assert len(out["unclean_backups"]) == 2
+        assert "restore_backup refuses it" in out["unclean_note"]
+
+    def test_restore_refuses_them_on_the_preview_and_the_execute(
+            self, opened):
+        folder = opened("v17")
+        clean = _plant_backup(folder, "20260901_100000")
+        server.select_project(str(folder))
+        preview = json.loads(server.restore_backup(str(clean)))
+        token = preview["preview_token"]
+        # the side file appears between the preview and the execute
+        (clean / "data.qda-journal").write_bytes(b"side")
+        out = json.loads(server.restore_backup(str(clean),
+                                               preview_token=token))
+        assert out["reason"] == "unclean_backup"
+        assert out["side_files"] == ["data.qda-journal"]
+        assert _rows(folder, "SELECT memo FROM code_name WHERE cid = 1") == \
+            [("stress memo",)]
+        again = json.loads(server.restore_backup(str(clean)))
+        assert again["reason"] == "unclean_backup"
+        assert "preview_token" not in again

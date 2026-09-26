@@ -212,7 +212,9 @@ class TestCopyFailureCleanup:
         import qualcoder_mcp.database as database
 
         def half_copy(src, dst, **_kwargs):
-            Path(dst).mkdir()
+            # v0.14: the folder is claimed and the database written before
+            # copytree runs, so the copy fails with both already there
+            Path(dst).mkdir(exist_ok=True)
             shutil.copy2(Path(src) / "data.qda", Path(dst) / "data.qda")
             raise shutil.Error([(str(src), str(dst), "disk full")])
 
@@ -225,18 +227,25 @@ class TestCopyFailureCleanup:
 
     def test_file_exists_error_leaves_foreign_folder_intact(
             self, qualcoder_db_path, tmp_path, monkeypatch):
-        # copytree's makedirs raising FileExistsError means the folder
-        # appeared under someone else's hand; it must never be removed
-        import qualcoder_mcp.database as database
+        # The claim (an atomic mkdir of the new folder; v0.14, before the
+        # database is written, where copytree's makedirs claimed it
+        # before) raising FileExistsError means the folder appeared under
+        # someone else's hand; it must never be removed
         foreign = {}
+        real_mkdir = Path.mkdir
 
-        def someone_elses_folder(src, dst, **_kwargs):
-            Path(dst).mkdir()
-            (Path(dst) / "theirs.txt").write_text("keep me", encoding="utf-8")
-            foreign["path"] = Path(dst)
-            raise FileExistsError(17, "File exists", str(dst))
+        def someone_elses_folder(self, *args, **kwargs):
+            if self.suffix == ".qda" and not foreign and \
+                    self.parent.exists() and not self.exists() and \
+                    ("_backup_" in self.name or self.parent.name == "ws"):
+                real_mkdir(self)
+                (self / "theirs.txt").write_text("keep me",
+                                                 encoding="utf-8")
+                foreign["path"] = self
+                raise FileExistsError(17, "File exists", str(self))
+            return real_mkdir(self, *args, **kwargs)
 
-        monkeypatch.setattr(database.shutil, "copytree", someone_elses_folder)
+        monkeypatch.setattr(Path, "mkdir", someone_elses_folder)
         with pytest.raises(OSError, match="Backup failed"):
             backup_project(qualcoder_db_path)
         assert (foreign["path"] / "theirs.txt").read_text(

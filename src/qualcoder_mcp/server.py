@@ -52,6 +52,7 @@ from .database import (
     private_note_refusal,
     MAX_CODER_NAME_LENGTH,
     backup_project,
+    unclean_backup_side_files,
     default_workspace,
     qualcoder_lock_state,
     qualcoder_open_message,
@@ -1827,6 +1828,16 @@ def _rollback_if_open(write_db) -> bool:
         return False
 
 
+def _backup_failed_text(locked: bool) -> str:
+    """Why a write stopped at its backup (v0.14): a database another
+    program kept locked is said as such, not as a disk problem."""
+    if locked:
+        return (DB_LOCKED_MESSAGE + " No backup could be taken, so "
+                "nothing was written.")
+    return ("Failed to create a backup: check disk space and "
+            "permissions. Nothing was written.")
+
+
 def _write_failed_text(rolled_back: bool, backup_fail_detail: str,
                        error: Optional[BaseException] = None) -> str:
     """The failure text for a write that did not commit.
@@ -1905,8 +1916,8 @@ def _perform_write(op, create_backup: bool = True,
                 except Exception as e:
                     logger.error("Failed to create backup: %s", error_label(e))
                     return {
-                        "error": "Failed to create a backup: check disk space "
-                                 "and permissions. Nothing was written.",
+                        "error": _backup_failed_text(
+                            isinstance(e, DatabaseLockedError)),
                         "message": f"Aborting to protect your data: "
                                    f"{backup_fail_detail}.",
                     }
@@ -3339,9 +3350,12 @@ def copy_project_to_workspace(
 
     The copy carries the whole project tree, ai_data/ included (the AI
     prompt library and chat history are user data), but omits the
-    regenerable ai_data/search.sqlite, sqlite sidecar files and lock
-    files, the same exclusions backups use. QualCoder rebuilds
-    search.sqlite when it opens the copy. Symlinks inside the project
+    regenerable ai_data/search.sqlite, sqlite sidecar files (the
+    database's journal and WAL files included) and lock files, the same
+    exclusions backups use. The database is copied with SQLite's own
+    online backup, so a copy taken while QualCoder is writing holds what
+    was last committed. QualCoder rebuilds search.sqlite when it opens
+    the copy. Symlinks inside the project
     that point outside the project folder (or dangle) are not followed:
     they are skipped and reported (skipped_symlinks, with names), so a
     shared or untrusted project folder cannot pull outside files into
@@ -6803,8 +6817,8 @@ def apply_codings(
                     logger.error("Failed to create backup: %s", error_label(e))
                     _downgrade_to_readonly()
                     return json.dumps({
-                        "error": "Failed to create a backup: check disk space "
-                                 "and permissions. Nothing was written.",
+                        "error": _backup_failed_text(
+                            isinstance(e, DatabaseLockedError)),
                         "message": "Aborting to protect your data: nothing was written."
                     })
 
@@ -7161,8 +7175,8 @@ def import_text_file(
                 except Exception as e:
                     logger.error("Failed to create backup: %s", error_label(e))
                     return json.dumps({
-                        "error": "Failed to create a backup: check disk space "
-                                 "and permissions. Nothing was written.",
+                        "error": _backup_failed_text(
+                            isinstance(e, DatabaseLockedError)),
                         "message": "Aborting to protect your data."
                     })
 
@@ -7439,8 +7453,13 @@ def list_backups() -> str:
     4.0's AI prompt library and chat history are non-regenerable user
     data), but exclude the regenerable vector-search database
     ai_data/search.sqlite (which duplicates every text source in
-    plaintext) and sqlite sidecar files, exactly like QualCoder's own
-    backups; QualCoder rebuilds search.sqlite on project open. Unlike
+    plaintext) and sqlite sidecar files, like QualCoder's own backups;
+    QualCoder rebuilds search.sqlite on project open. The project
+    database is copied with SQLite's own online backup, so a backup
+    taken while QualCoder is writing holds what was last committed, and
+    its journal and WAL files are never copied. A backup that holds
+    them (copied mid-write, or made before v0.14) is marked `unclean`
+    and restore_backup refuses it. Unlike
     QualCoder's backups, symlinks inside the project that point outside
     the project folder (or dangle) are not followed: they are skipped and
     the write result reports them (backup_skipped_symlinks), so a shared
@@ -7462,10 +7481,17 @@ def list_backups() -> str:
     project_folder = validate_qda_path(current_project_path).parent
     backups = _collect_backups(project_folder)
 
-    return json.dumps({
+    unclean = [b["name"] for b in backups if "unclean" in b]
+    answer: Dict[str, Any] = {
         "project": project_folder.stem,
         "backup_count": len(backups),
         "backups": backups,
+    }
+    if unclean:
+        answer["unclean_backups"] = unclean
+        answer["unclean_note"] = UNCLEAN_BACKUP_NOTE
+    return json.dumps({
+        **answer,
         "notes": [
             "kind='qualcoder' backups are made by QualCoder itself on "
             "project open; they may exclude audio/video files and QualCoder "
@@ -7480,13 +7506,27 @@ def list_backups() -> str:
             "Backups include the whole project tree, ai_data/ included "
             "(QualCoder 4.0's AI prompt library and chat history are "
             "non-regenerable user data), but exclude the regenerable "
-            "vector-search database ai_data/search.sqlite and sqlite "
-            "sidecar files, exactly like QualCoder's own backups. "
-            "QualCoder rebuilds search.sqlite when the project is opened."
+            "vector-search database ai_data/search.sqlite and its sqlite "
+            "sidecar files, like QualCoder's own backups. QualCoder "
+            "rebuilds search.sqlite when the project is opened.",
+            "Since v0.14 this server copies the project database with "
+            "SQLite's own online backup, so a backup taken while QualCoder "
+            "is writing holds what was last committed, and the database's "
+            "journal and WAL files are never copied (QualCoder's own "
+            "backups copy the database as a file). A backup that holds "
+            "them is marked unclean and is not restored."
         ],
         "hint": "Use restore_backup(backup_path) to roll the project back "
                 "to one of these snapshots."
     }, indent=2)
+
+
+UNCLEAN_BACKUP_NOTE = (
+    "This backup holds its database's journal or WAL file beside it: it "
+    "was copied while a program was writing to the project (backups made "
+    "before v0.14 copied these files). What it holds depends on the "
+    "platform that opens it, so restore_backup refuses it; choose another "
+    "backup. It can be pruned like any other.")
 
 
 def _backup_log_name(name: str, project_folder: Path) -> str:
@@ -7521,7 +7561,7 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
                     f.stat().st_size for f in entry.rglob("*") if f.is_file()
                 )
                 created = datetime.fromtimestamp(entry.stat().st_mtime)
-                backups.append({
+                item = {
                     "name": entry.name,
                     "path": str(entry),
                     "kind": kind,
@@ -7529,7 +7569,13 @@ def _collect_backups(project_folder: Path) -> List[Dict[str, Any]]:
                     "age_days": round(
                         max(0.0, (now - created).total_seconds()) / 86400, 1),
                     "size_mb": round(size_bytes / (1024 * 1024), 2),
-                })
+                }
+                side = unclean_backup_side_files(entry)
+                if side:
+                    # Named, never silently used (v0.14)
+                    item["unclean"] = {"side_files": side,
+                                       "note": UNCLEAN_BACKUP_NOTE}
+                backups.append(item)
             except OSError as e:
                 logger.debug("Cannot stat backup %s: %s",
                              _backup_log_name(entry.name, project_folder),
@@ -7906,7 +7952,9 @@ def restore_backup(backup_path: str,
        longer use a lock file, so 4.0 detection is best-effort heuristics
        (qualcoder_gui_signals, reported in this tool's own preview and in
        get_current_project); never restore while any QualCoder window has
-       this project open.
+       this project open,
+    5. refuses a backup list_backups marks `unclean` (its database's
+       journal or WAL file beside it: copied mid-write).
 
     Two-step by design. Call without preview_token: nothing is changed and
     the result is a preview of exactly what would be restored, with a
@@ -7969,6 +8017,18 @@ def restore_backup(backup_path: str,
                      "restored."
         })
 
+    # A clean backup (v0.14): a journal or WAL file beside its database
+    # means it was copied mid-write, and what it holds depends on the
+    # platform that opens it. Refused on the preview and again on the
+    # execute, never used silently, and checked before anything opens it.
+    side = unclean_backup_side_files(backup_folder)
+    if side:
+        return json.dumps({
+            "error": "This backup cannot be restored: " + UNCLEAN_BACKUP_NOTE,
+            "reason": "unclean_backup",
+            "side_files": side,
+            "nothing_changed": True,
+        }, indent=2)
     # The backup itself must be a valid QualCoder project
     validate_qda_path(str(backup_folder))
 

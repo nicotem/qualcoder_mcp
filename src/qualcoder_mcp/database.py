@@ -1765,7 +1765,8 @@ QUALCODER_BACKUP_IGNORE_PATTERNS = (
 BACKUP_IGNORE_PATTERNS = ("*.lock",) + QUALCODER_BACKUP_IGNORE_PATTERNS
 
 
-def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
+def _copy_ignore(project_root: Union[str, Path], skipped: List[str],
+                 database_copied: bool = False):
     """The ignore callback shared by backup_project and copy_project_to_workspace.
 
     Applies BACKUP_IGNORE_PATTERNS and additionally skips any entry that
@@ -1785,9 +1786,14 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
     from the project root down to the current folder, not only the
     current folder's ancestors as seen through one link (fix round 3).
     Skipped entries are appended to `skipped` as project-relative paths.
+
+    With `database_copied` (v0.14), `data.qda` and its side files at the
+    project root are left out too: the caller has already written the
+    database into the copy by `_copy_database`.
     """
     root_real = os.path.normcase(os.path.realpath(project_root))
     patterns = shutil.ignore_patterns(*BACKUP_IGNORE_PATTERNS)
+    root_norm = os.path.normcase(os.path.abspath(project_root))
 
     def _traversal_realpaths(dirpath):
         """Real paths of every folder copytree is inside at `dirpath`:
@@ -1805,6 +1811,9 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
 
     def _ignore(dirpath, names):
         ignored = set(patterns(dirpath, names))
+        if database_copied and \
+                os.path.normcase(os.path.abspath(dirpath)) == root_norm:
+            ignored.update(n for n in names if n in DATABASE_FILES)
         on_path = None
         for name in names:
             if name in ignored:
@@ -1840,6 +1849,132 @@ def _copy_ignore(project_root: Union[str, Path], skipped: List[str]):
         return ignored
 
     return _ignore
+
+
+# ----------------------------------------------------------------------------
+# Backups made consistently (v0.14; the undo study's check, lead's ruling
+# of 2026-09-25)
+#
+# A backup used to be one copytree of the project folder, which copied
+# `data.qda` byte by byte and its side files with it: QualCoder's own
+# ignore set, which ours reproduces, matches `*.sqlite-*` files only
+# (app.py:1619-1625 at pin 9bddf17), never `data.qda-journal`, `-wal` or
+# `-shm`. A backup taken while another program was inside a write
+# carried that program's journal, and what it yields then depends on the
+# platform: opened read-only it fails on newer SQLite ("attempt to write
+# a readonly database"), opened as immutable it can show an edit that
+# was never committed, or a malformed database. So `data.qda` is now
+# copied by SQLite's own online backup, all pages in one step under one
+# read lock, which holds exactly what was last committed whatever
+# another program is doing; the side files are never copied; the rest
+# of the folder is copied as before. A departure from QualCoder's
+# save_backup (a plain copytree), named here and in the documents. The
+# copy is written in rollback-journal mode whatever the source's mode,
+# so a backup is one self-contained file.
+#
+# A database SQLite cannot read (not a database, or damaged) cannot be
+# copied that way; it is copied as a file, with any side files beside
+# it, so a restore's safety backup of a damaged project keeps it as it
+# is; such a copy is named unclean by `list_backups` when it carries a
+# journal. A database another program keeps locked past
+# BACKUP_BUSY_SECONDS raises DatabaseLockedError: nothing is copied.
+# ----------------------------------------------------------------------------
+DATABASE_SIDE_FILES = ("data.qda-journal", "data.qda-wal", "data.qda-shm")
+DATABASE_FILES = ("data.qda",) + DATABASE_SIDE_FILES
+# A backup whose database has one of these beside it was taken while a
+# write was in flight (or before this release): the journal holds pages
+# of an uncommitted write, the WAL committed pages not yet in the file.
+UNCLEAN_BACKUP_SIDE_FILES = ("data.qda-journal", "data.qda-wal")
+BACKUP_BUSY_SECONDS = 15.0
+_SQLITE_BUSY_CODES = (5, 6)   # SQLITE_BUSY, SQLITE_LOCKED
+
+
+def unclean_backup_side_files(folder: Union[str, Path]) -> List[str]:
+    """The side files that make a backup folder unclean, by name: a
+    journal or a WAL file beside its `data.qda` (a link counts too)."""
+    out = []
+    for name in UNCLEAN_BACKUP_SIDE_FILES:
+        try:
+            if os.path.lexists(os.path.join(os.fspath(folder), name)):
+                out.append(name)
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+class _BackupBusy(Exception):
+    """The source database stayed locked past BACKUP_BUSY_SECONDS."""
+
+
+def _copy_database(source: Path, dest: Path,
+                   report: Optional[Dict[str, Any]] = None) -> None:
+    """Write `source` (a project's data.qda) into `dest` consistently.
+
+    SQLite's online backup, all pages in one step, from a read-only
+    connection: the step holds a read lock for the whole copy, so the
+    copy is one committed state. While
+    another program holds the write lock the step returns busy; Python
+    retries, and past BACKUP_BUSY_SECONDS this gives up with
+    DatabaseLockedError. A database SQLite cannot read is copied as a
+    file with its side files (see above), and `report` says so.
+    """
+    deadline = time.monotonic() + BACKUP_BUSY_SECONDS
+
+    def progress(status, remaining, total):
+        if status in _SQLITE_BUSY_CODES and time.monotonic() > deadline:
+            raise _BackupBusy()
+
+    try:
+        # Read-only: the backup never changes the project it copies. A
+        # journal left by a crash (a hot journal) is not rolled back
+        # here; SQLite refuses the read and the file copy below keeps
+        # the database and its journal as they are.
+        with closing(sqlite3.connect(
+                _sqlite_ro_uri(source), uri=True,
+                timeout=min(5.0, BACKUP_BUSY_SECONDS))) as src:
+            with closing(sqlite3.connect(os.fspath(dest))) as dst:
+                src.backup(dst, pages=-1, progress=progress)
+                # One self-contained file, whatever the source's mode
+                dst.execute("PRAGMA journal_mode=DELETE").fetchall()
+        return
+    except _BackupBusy:
+        raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+    except sqlite3.OperationalError as e:
+        if getattr(e, "sqlite_errorcode", None) in _SQLITE_BUSY_CODES or \
+                _is_locked_error(e):
+            raise DatabaseLockedError(DB_LOCKED_MESSAGE) from None
+        failure = sqlite_error_label(e)
+    except sqlite3.DatabaseError as e:
+        failure = sqlite_error_label(e)
+    # Not readable as a database: the bytes as they are, side files too
+    for name in ("-journal", "-wal", "-shm", ""):
+        try:
+            os.unlink(os.fspath(dest) + name)
+        except FileNotFoundError:
+            pass
+    shutil.copy2(source, dest)
+    for name in DATABASE_SIDE_FILES:
+        side = source.parent / name
+        if side.is_file() and not side.is_symlink():
+            shutil.copy2(side, dest.parent / name)
+    if report is not None:
+        report["database_copied_as_file"] = failure
+
+
+def _copy_project_tree(source: Path, dest: Path, skipped: List[str],
+                       report: Optional[Dict[str, Any]] = None) -> None:
+    """Copy a project folder into `dest`, an empty folder the caller has
+    just claimed (and removes on any failure): the database
+    consistently, the rest as before. A data.qda that is a link is left
+    to copytree and `_copy_ignore`, as before."""
+    database = source / "data.qda"
+    database_copied = database.is_file() and not database.is_symlink()
+    if database_copied:
+        _copy_database(database, dest / "data.qda", report)
+    shutil.copytree(
+        source, dest, dirs_exist_ok=True,
+        ignore=_copy_ignore(source, skipped,
+                            database_copied=database_copied))
 
 
 def backup_project(project_path: Union[str, Path],
@@ -1911,21 +2046,29 @@ def backup_project(project_path: Union[str, Path],
 
     skipped: List[str] = []
     try:
-        shutil.copytree(
-            project_path, backup_path,
-            ignore=_copy_ignore(project_path, skipped)
-        )
+        # The claim: an atomic mkdir, before anything is written
+        backup_path.mkdir()
+    except FileExistsError as e:
+        # The folder appeared under someone else's hand and is never
+        # ours to remove (S-H5)
+        logger.error("Failed to create backup: %s", error_label(e))
+        raise OSError(f"Backup failed: {error_label(e)}") from None
+    except Exception as e:
+        logger.error(f"Failed to create backup: {error_label(e)}")
+        raise OSError(f"Backup failed: {error_label(e)}") from None
+    try:
+        _copy_project_tree(project_path, backup_path, skipped, report)
         logger.info("Backup created successfully: (project folder name "
                     "withheld)%s", suffix)
         if report is not None:
             report["skipped_symlinks"] = skipped
         return backup_path
-    except FileExistsError as e:
-        # copytree's makedirs failed before anything was written: the
-        # folder appeared under someone else's hand and is never ours to
-        # remove (S-H5)
-        logger.error("Failed to create backup: %s", error_label(e))
-        raise OSError(f"Backup failed: {error_label(e)}") from None
+    except DatabaseLockedError:
+        # Another program kept the database locked (v0.14): no backup,
+        # so nothing may be written; said as the lock it is
+        logger.error("Failed to create backup: the database stayed locked")
+        shutil.rmtree(backup_path, ignore_errors=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to create backup: {error_label(e)}")
         # Never leave a partial tree behind: list_backups would present
@@ -2026,19 +2169,27 @@ def copy_project_to_workspace(
 
     skipped: List[str] = []
     try:
-        shutil.copytree(
-            source_path, dest_path,
-            ignore=_copy_ignore(source_path, skipped)
-        )
-        logger.info("Project copied successfully (folder name withheld)")
-        if report is not None:
-            report["skipped_symlinks"] = skipped
-        return dest_path
+        dest_path.mkdir()
     except FileExistsError as e:
         # The destination appeared under someone else's hand between the
         # existence check and the copy; never touch it (S-H5)
         logger.error("Failed to copy project: %s", error_label(e))
         raise OSError(f"Copy failed: {error_label(e)}") from None
+    except Exception as e:
+        logger.error(f"Failed to copy project: {error_label(e)}")
+        raise OSError(f"Copy failed: {error_label(e)}") from None
+    try:
+        # The database consistently, as a backup is made (v0.14): a copy
+        # taken while QualCoder writes holds what was last committed
+        _copy_project_tree(source_path, dest_path, skipped, report)
+        logger.info("Project copied successfully (folder name withheld)")
+        if report is not None:
+            report["skipped_symlinks"] = skipped
+        return dest_path
+    except DatabaseLockedError:
+        logger.error("Failed to copy project: the database stayed locked")
+        shutil.rmtree(dest_path, ignore_errors=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to copy project: {error_label(e)}")
         # Never leave a partial project copy behind (S-H5)
@@ -9021,8 +9172,7 @@ class QualcoderDatabase:
                 # count a state that was never committed, so such a
                 # backup is skipped, as mode=ro alone would have refused
                 # it (fix round 3, F2A-5).
-                if (entry / "data.qda-journal").exists() or \
-                        (entry / "data.qda-wal").exists():
+                if unclean_backup_side_files(entry):
                     continue
                 uri = _sqlite_ro_uri(data) + "&immutable=1"
                 with closing(sqlite3.connect(uri, uri=True)) as con:

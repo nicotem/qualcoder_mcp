@@ -41,10 +41,28 @@ def _exec(project_path, sql, args=()):
 
 def _folder_state(folder: Path):
     """Relative path -> content bytes for every file under a project folder
-    (content, not size — a new SQLite row can leave the file size unchanged)."""
+    (content, not size — a new SQLite row can leave the file size unchanged).
+
+    The database is compared by what it holds (its SQL dump) when it is
+    one: since v0.14 a backup copies it with SQLite's online backup,
+    which keeps every page's content but not the header's change
+    counter, so a project recovered from its safety backup holds exactly
+    the old rows in a file that is not byte for byte the old one."""
+    import sqlite3
     folder = Path(folder)
-    return {str(p.relative_to(folder)): p.read_bytes()
-            for p in sorted(folder.rglob("*")) if p.is_file()}
+    state = {}
+    for p in sorted(folder.rglob("*")):
+        if not p.is_file():
+            continue
+        data = p.read_bytes()
+        if p.name == "data.qda" and data.startswith(b"SQLite format 3\x00"):
+            conn = sqlite3.connect(p.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                data = "\n".join(conn.iterdump()).encode("utf-8")
+            finally:
+                conn.close()
+        state[str(p.relative_to(folder))] = data
+    return state
 
 
 def _reload():
