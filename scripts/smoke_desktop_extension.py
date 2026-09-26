@@ -4,7 +4,7 @@
 it for its tools, without Claude Desktop.
 
     python scripts/smoke_desktop_extension.py PACKAGE.mcpb --into DIR
-        [--uv PATH] [--set KEY=VALUE ...] [--expect-tools N]
+        [--uv PATH] [--set KEY=VALUE ...] [--expect-tools N|manifest]
         [--create NAME] [--offline-restart]
 
 The steps are the ones Claude Desktop 2.9939.2 takes for an extension of
@@ -135,7 +135,9 @@ def main(argv=None) -> int:
     parser.add_argument("--uv", default=shutil.which("uv") or "uv")
     parser.add_argument("--set", action="append", default=[],
                         metavar="KEY=VALUE", help="a setting's value")
-    parser.add_argument("--expect-tools", type=int)
+    parser.add_argument("--expect-tools", metavar="N|manifest",
+                        help="a number, or `manifest`: exactly the tools "
+                             "the manifest lists")
     parser.add_argument("--create", metavar="NAME",
                         help="create a project with the default folder")
     parser.add_argument("--offline-restart", action="store_true",
@@ -152,7 +154,15 @@ def main(argv=None) -> int:
             .read_text().strip()}
     seen.update(asyncio.run(ask(args.uv, config, folder, args.create)))
     failures = []
-    if args.expect_tools is not None and seen["tools"] != args.expect_tools:
+    if args.expect_tools == "manifest":
+        listed = sorted(t["name"] for t in manifest.get("tools", []))
+        if seen["tool_names"] != listed:
+            failures.append(
+                f"the server's tools are not the manifest's: missing "
+                f"{sorted(set(listed) - set(seen['tool_names']))}, extra "
+                f"{sorted(set(seen['tool_names']) - set(listed))}")
+    elif args.expect_tools is not None and \
+            seen["tools"] != int(args.expect_tools):
         failures.append(f"{seen['tools']} tools, expected "
                         f"{args.expect_tools}")
     if args.create:

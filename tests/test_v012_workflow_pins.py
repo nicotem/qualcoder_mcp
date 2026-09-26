@@ -198,7 +198,8 @@ JOB_PERMISSIONS_RE = re.compile(r"^    permissions:")
 # not. Adding, renaming or removing a job means recording it here, the
 # same step VERIFIED_TAGS asks for when an action pin moves.
 WORKFLOW_JOBS = {
-    "ci.yml": {"test"},
+    # v0.14: the desktop extension's build and its cross-platform check.
+    "ci.yml": {"test", "desktop-extension", "desktop-extension-same"},
     "publish.yml": {"build", "publish-to-testpypi", "publish-to-pypi"},
 }
 

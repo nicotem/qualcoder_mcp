@@ -27,18 +27,25 @@ REPO = Path(__file__).resolve().parents[1]
 
 JOB_TIME_LIMIT_MINUTES = 90
 PER_TEST_LIMIT_SECONDS = 600
+# Every job's limit, the suite's first. v0.14's desktop extension added
+# two short jobs, each with a limit of its own (the reasons in ci.yml).
+JOB_TIME_LIMITS = {
+    "test": JOB_TIME_LIMIT_MINUTES,
+    "desktop-extension": 20,
+    "desktop-extension-same": 10,
+}
 
 
 def test_every_ci_job_has_a_time_limit():
     jobs = _jobs(WORKFLOWS / "ci.yml")
-    assert [job["name"] for job in jobs] == ["test"]
+    assert [job["name"] for job in jobs] == list(JOB_TIME_LIMITS)
     for job in jobs:
+        limit = JOB_TIME_LIMITS[job["name"]]
         limits = [line for line in job["lines"]
                   if re.match(r"^\s*timeout-minutes:", line)]
-        assert limits == [f"    timeout-minutes: {JOB_TIME_LIMIT_MINUTES}"], (
+        assert limits == [f"    timeout-minutes: {limit}"], (
             f"{job['where']}: job '{job['name']}' should carry one "
-            f"job-level time limit of {JOB_TIME_LIMIT_MINUTES} minutes; "
-            f"found {limits}")
+            f"job-level time limit of {limit} minutes; found {limits}")
 
 
 def test_the_per_test_limit_is_live_in_this_run(pytestconfig):

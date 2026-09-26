@@ -379,3 +379,55 @@ class TestTheSpecification:
         assert entry["integrity"].startswith("sha512-")
         assert all(p.get("integrity") for name, p in lock["packages"].items()
                    if name)
+
+
+# ---------------------------------------------------------------------------
+# CI builds it on every run
+# ---------------------------------------------------------------------------
+
+class TestCiBuildsIt:
+
+    @staticmethod
+    def _job(name):
+        from test_v012_workflow_pins import WORKFLOWS, _jobs
+        jobs = {job["name"]: "\n".join(job["lines"])
+                for job in _jobs(WORKFLOWS / "ci.yml")}
+        return jobs[name]
+
+    def test_on_every_platform_from_the_commit_twice(self):
+        job = self._job("desktop-extension")
+        assert "os: [ubuntu-latest, windows-latest, macos-latest]" in job
+        runs = re.findall(r"python scripts/build_desktop_extension\.py "
+                          r"--ref HEAD --out (\S+)", job)
+        assert runs == ["dist/mcpb", "dist/again"]
+        assert "cmp dist/mcpb/*.mcpb dist/again/*.mcpb" in job
+
+    def test_uploaded_before_any_third_party_tool_runs(self):
+        job = self._job("desktop-extension")
+        upload = job.index("actions/upload-artifact@")
+        validate = job.index("npm ci --ignore-scripts")
+        smoke = job.index("pip install uv==")
+        assert upload < validate < smoke
+
+    def test_the_official_validator_checks_the_manifest(self):
+        job = self._job("desktop-extension")
+        assert "working-directory: packaging/desktop-extension/validator" \
+            in job
+        assert "npx --no-install mcpb validate " \
+               "../../../dist/mcpb/qualcoder-mcp-*/manifest.json" in job
+
+    def test_it_is_installed_and_started_as_the_app_does(self):
+        job = self._job("desktop-extension")
+        line = next(l for l in job.splitlines()
+                    if "python scripts/smoke_desktop_extension.py" in l
+                    and not l.strip().startswith("#"))
+        for part in ("--expect-tools manifest", "--create",
+                     "--offline-restart", 'HOME="$home"',
+                     'USERPROFILE="$home"'):
+            assert part in line
+
+    def test_the_platforms_give_the_same_bytes(self):
+        job = self._job("desktop-extension-same")
+        assert "needs: desktop-extension" in job
+        assert "pattern: desktop-extension-*" in job
+        assert "sort -u | wc -l)\" -eq 1" in job
