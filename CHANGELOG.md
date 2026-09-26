@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A one-click install for Claude Desktop**: the server as a desktop
+  extension, `qualcoder-mcp-<version>.mcpb` (MCPB manifest
+  specification 0.4, the `uv` type), to be attached to each release
+  from v0.14. The tester double-clicks it and clicks Install; Claude
+  fetches uv, uv fetches Python 3.13 and the dependencies as locked in
+  `uv.lock`, and a settings form offers the tool set (`lifecycle` by
+  default, so creating projects is on; `full` and `core`) and the
+  folder for projects (a folder picker; by default `~/QualCoder
+  projects`, outside Documents, which iCloud and OneDrive may sync).
+  Nothing secret is asked. The package is not signed: on a personal
+  plan it installs like any other extension, and an organisation that
+  requires signed extensions, or keeps an allowlist, blocks it
+  (INSTALL.md says what the tester sees). INSTALL.md now starts with
+  this route; the Terminal route stays for Claude Code, LM Studio,
+  other hosts and Claude Desktop configured by hand.
+- **`scripts/build_desktop_extension.py`** builds the package from a
+  commit or tag, the same bytes every time and on every platform; the
+  manifest's version is `pyproject.toml`'s and its tool list is asked of
+  the server, so neither is typed twice. `scripts/smoke_desktop_extension.py`
+  installs and starts a package the way Claude Desktop does. CI builds
+  it on Linux, Windows and macOS on every run, compares the three,
+  validates the manifest with the official MCPB tool (`@anthropic-ai/mcpb`
+  2.1.2, locked) and installs and starts it with the uv Claude Desktop
+  downloads.
+- **`QUALCODER_MCP_WORKSPACE`** names the workspace, the folder where
+  `create_project` makes a project when no folder is named and where
+  `copy_project_to_workspace` copies to; `list_available_projects`
+  searches its top level. Unset or blank, the workspace stays
+  `~/Documents/Qualcoder MCP Projects`. A relative path, or a folder
+  inside the state folder, QualCoder's settings folder or a project,
+  stops the server at start-up. The desktop extension's "Folder for
+  projects" sets it.
+
 - **Creating a project from the conversation** (Experimental, opt-in):
   `create_project(name, directory, coder_name, coder_name_not_known)`
   makes a new, empty project in QualCoder 4.0's format, exactly as 4.0's

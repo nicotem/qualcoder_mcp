@@ -431,3 +431,62 @@ class TestCiBuildsIt:
         assert "needs: desktop-extension" in job
         assert "pattern: desktop-extension-*" in job
         assert "sort -u | wc -l)\" -eq 1" in job
+
+
+# ---------------------------------------------------------------------------
+# The documents
+# ---------------------------------------------------------------------------
+
+def _flat(name):
+    text = (REPO / name).read_text(encoding="utf-8")
+    return " ".join(text.replace("\n>", " ").split())
+
+
+def _section(text, heading):
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    return text[start:end if end != -1 else len(text)]
+
+
+class TestTheDocuments:
+
+    def test_install_starts_with_the_extension(self):
+        text = (REPO / "INSTALL.md").read_text(encoding="utf-8")
+        headings = re.findall(r"^## (.+)$", text, flags=re.M)
+        assert headings[0] == "Claude Desktop: the one-click extension " \
+                              "(recommended)"
+        section = " ".join(_section(
+            text, "## Claude Desktop: the one-click extension").split())
+        option = TEMPLATE["user_config"]
+        assert f"`{option['toolset']['default']}` (the default)" in section
+        for mode in server._VALID_TOOLSET_MODES:
+            assert f"`{mode}`" in section
+        assert f"`{option['projects_folder']['default']}`" in section
+        assert "double-click the file" in section
+        assert "This extension isn't signed" in section
+        assert "the Terminal route" in section
+
+    def test_install_documents_every_variable_the_server_reads(self):
+        source = "".join(p.read_text(encoding="utf-8") for p in
+                         (REPO / "src" / "qualcoder_mcp").glob("*.py"))
+        read = set(re.findall(r'"(QUALCODER_[A-Z_]+)"', source))
+        assert database.WORKSPACE_ENV in read
+        text = (REPO / "INSTALL.md").read_text(encoding="utf-8")
+        section = _section(text, "## Environment variables the server reads")
+        documented = set(re.findall(r"^- `(QUALCODER_[A-Z_]+)`", section,
+                                    flags=re.M))
+        assert documented == read
+
+    def test_readmes_install_line_points_to_it(self):
+        text = (REPO / "README.md").read_text(encoding="utf-8")
+        install = _section(text, "## Installation")
+        assert install.index("### Claude Desktop: the one-click extension") \
+            < install.index("### Recommended: install from PyPI")
+        assert "INSTALL.md" in _section(
+            install, "### Claude Desktop: the one-click extension")
+
+    def test_the_workspace_setting_is_named_where_the_folder_is(self):
+        for name in ("README.md", "PRIVACY.md", "INSTALL.md"):
+            assert "QUALCODER_MCP_WORKSPACE" in _flat(name), name
+        assert "QUALCODER_MCP_WORKSPACE" in _flat("CHANGELOG.md").split(
+            "## [0.13")[0]

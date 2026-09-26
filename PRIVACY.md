@@ -37,7 +37,10 @@ What stays local, always:
   folder
 - exported files (CSV/txt/md reports, REFI-QDA `.qdpx`)
 - project copies made by copy_project_to_workspace, in
-  `~/Documents/Qualcoder MCP Projects/` by default (each carries the
+  `~/Documents/Qualcoder MCP Projects/` by default, or in the folder
+  `QUALCODER_MCP_WORKSPACE` names, which the desktop extension sets
+  from its "Folder for projects", by default `~/QualCoder projects/`
+  (each carries the
   same content as a backup, so the `ai_data/` and symlink rules below
   apply to it)
 - AI-coding session files (`~/.qualcoder_mcp/sessions/`), written

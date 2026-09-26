@@ -95,7 +95,7 @@ host and not capability-evaluated on local models.
 ## Prerequisites
 
 - **macOS** (or Linux/Windows with appropriate paths)
-- **Python 3.10 or higher**
+- **Python 3.10 or higher** (not with the Claude Desktop extension, which fetches its own)
 - **An MCP host**: Claude Desktop is the most common ([download here](https://claude.ai/download)); see "Choosing your AI host" above for alternatives
 - **Qualcoder** with at least one project created ([download here](https://github.com/ccbogel/QualCoder))
 
@@ -145,6 +145,20 @@ writes proceed at your own risk, and every write result then carries a
 warning.
 
 ## Installation
+
+### Claude Desktop: the one-click extension (recommended)
+
+For Claude Desktop on macOS or Windows, download
+`qualcoder-mcp-<version>.mcpb` from the Assets of the latest
+[release](https://github.com/nicotem/qualcoder_mcp/releases) (from
+v0.14), double-click it and click Install: Claude fetches Python and
+everything else itself, and a settings form chooses the tool set and
+the folder for projects. No Terminal, no configuration file. The steps,
+the two settings and what an unsigned extension means are in
+[INSTALL.md](https://github.com/nicotem/qualcoder_mcp/blob/main/INSTALL.md),
+"Claude Desktop: the one-click extension". The routes below are for
+Claude Code, LM Studio and other hosts, and for configuring Claude
+Desktop by hand.
 
 ### Recommended: install from PyPI
 
@@ -837,6 +851,11 @@ The AI coding workflow uses a workspace directory for safe modifications:
 ~/Documents/Qualcoder MCP Projects/
 ```
 
+A host can name another folder with `QUALCODER_MCP_WORKSPACE`; the
+Claude Desktop extension does, from its "Folder for projects" setting
+(by default `~/QualCoder projects/`, outside Documents, which iCloud or
+OneDrive may sync).
+
 Never work on your original projects with AI coding! Always:
 1. Copy project to workspace first
 2. Let Claude work on the workspace copy
@@ -1127,7 +1146,9 @@ For AI-assisted coding with direct database writes:
   the project, one per write (the whole project tree, `ai_data/`
   included, minus QualCoder's backup ignore set and lock files; prune
   them with `prune_backups`)
-- 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`
+- 🔒 Workspace directory: `~/Documents/Qualcoder MCP Projects/`, or the
+  folder `QUALCODER_MCP_WORKSPACE` names (the desktop extension's default
+  is `~/QualCoder projects/`)
 - 🔒 Session files: `~/.qualcoder_mcp/sessions/`
 - 🔒 Last-used project pointer: `~/.qualcoder_mcp/mru_project.json` (one
   project path and a timestamp, echoed only into the "no project selected"
