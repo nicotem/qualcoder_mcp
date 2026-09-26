@@ -257,46 +257,40 @@ class TestProcessFilter:
         assert _filter_qualcoder_processes(lines) == [
             line.strip()[:200] for line in lines]
 
-    def test_the_scan_leaves_this_process_out(self, monkeypatch):
+    def test_the_scan_leaves_this_process_out(self):
         """The ps fallback reads pids too, so this process never counts,
-        whatever its command line says."""
-        import subprocess
+        whatever its command line says. (A pure function: patching
+        os.name to reach the ps branch on Windows breaks pathlib, and
+        pytest with it.)"""
         own = os.getpid()
         listing = (f"  {own} /usr/bin/python3 -m qualcoder\n"
-                   f"  {own + 1} /usr/bin/python3 -m qualcoder\n").encode()
-
-        class Done:
-            stdout = listing
-
-        monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
-        monkeypatch.setattr(database.os, "name", "posix")
-        monkeypatch.setitem(sys.modules, "psutil", None)
-        database._process_scan_cache["at"] = 0.0
-        try:
-            hits = database._qualcoder_process_hits()
-        finally:
-            database._process_scan_cache["at"] = 0.0
-        assert hits == ["/usr/bin/python3 -m qualcoder"]
+                   f"  {own + 1} /usr/bin/python3 -m qualcoder\n")
+        lines = database._listing_lines(listing, own, windows=False)
+        assert _filter_qualcoder_processes(lines) == [
+            "/usr/bin/python3 -m qualcoder"]
 
     def test_a_release_download_running_is_a_signal(self, monkeypatch,
                                                      tmp_path):
-        """End to end through the ps fallback: 4.0-Beta's Linux download
-        running (as parent and one-file child) is the process signal
+        """End to end through the fallback listing of this platform (ps,
+        or tasklist on Windows): QualCoder's 4.0-Beta download running,
+        as a one-file program's parent and child, is the process signal
         select_project reads (fix round 1 of brief C, QA M1)."""
         import subprocess
         own = os.getpid()
-        listing = (
-            f"  {own + 1} /home/u/Downloads/"
-            f"QualCoder-4.0-beta-linux-executable\n"
-            f"  {own + 2} /home/u/Downloads/"
-            f"QualCoder-4.0-beta-linux-executable\n"
-            f"  {own + 3} tail -f /x/mcp-server-qualcoder.log\n").encode()
+        if os.name == "nt":
+            name = "Win_Qualcoder-4.0-beta_PORTABLE.exe"
+            listing = (f'"{name}","{own + 1}","Console","1","9 K"\n'
+                       f'"{name}","{own + 2}","Console","1","90 K"\n'
+                       f'"python.exe","{own}","Console","1","40 K"\n')
+        else:
+            path = "/home/u/Downloads/QualCoder-4.0-beta-linux-executable"
+            listing = (f"  {own + 1} {path}\n  {own + 2} {path}\n"
+                       f"  {own + 3} tail -f /x/mcp-server-qualcoder.log\n")
 
         class Done:
-            stdout = listing
+            stdout = listing.encode()
 
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
-        monkeypatch.setattr(database.os, "name", "posix")
         monkeypatch.setitem(sys.modules, "psutil", None)
         database._process_scan_cache["at"] = 0.0
         try:

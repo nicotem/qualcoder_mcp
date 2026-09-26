@@ -575,6 +575,22 @@ def _filter_qualcoder_processes(lines) -> List[str]:
     return hits
 
 
+def _listing_lines(output: str, own_pid: int, windows: bool) -> List[str]:
+    """The process lines of a `ps -axo pid=,args=` listing, this process
+    left out, or of `tasklist /fo csv /nh` (whose rows the filter reads
+    as they are; this server runs as a Python there, which never
+    counts)."""
+    if windows:
+        return output.splitlines()
+    lines: List[str] = []
+    for row in output.splitlines():
+        pid, _, args = row.strip().partition(" ")
+        if pid.isdigit() and int(pid) == own_pid:
+            continue
+        lines.append(args)
+    return lines
+
+
 def _qualcoder_process_hits() -> List[str]:
     """Best-effort scan for running QualCoder processes (cached).
 
@@ -610,15 +626,9 @@ def _qualcoder_process_hits() -> List[str]:
                 cmd = ["ps", "-axo", "pid=,args="]
             completed = subprocess.run(
                 cmd, capture_output=True, timeout=3, check=False)
-            output = completed.stdout.decode("utf-8", errors="replace")
-            if os.name == "nt":
-                lines = output.splitlines()
-            else:
-                for row in output.splitlines():
-                    pid, _, args = row.strip().partition(" ")
-                    if pid.isdigit() and int(pid) == own_pid:
-                        continue
-                    lines.append(args)
+            lines = _listing_lines(
+                completed.stdout.decode("utf-8", errors="replace"),
+                own_pid, os.name == "nt")
     except Exception:
         lines = []
     hits = _filter_qualcoder_processes(lines)
