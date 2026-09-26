@@ -24,12 +24,13 @@ each of this server's releases while 4.0 is in beta.
 """
 
 import datetime
+import errno
 import os
 import sqlite3
 import stat
 import unicodedata
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from .database import (
     MAX_FILE_NAME_BYTES,
@@ -295,63 +296,126 @@ def build_database(path: Union[str, Path],
         conn.close()
 
 
-# The files SQLite may make beside the database while it is written.
+# The files SQLite may make beside the database while it is written. The
+# journal is this call's only when the database is; `-wal` and `-shm` are
+# never made by it (the database keeps a rollback journal) and never
+# removed.
 _DATABASE_SIDE_FILES = ("data.qda-journal", "data.qda-wal", "data.qda-shm")
+_JOURNAL = "data.qda-journal"
+_NOT_EMPTY = {getattr(errno, "ENOTEMPTY", -1), errno.EEXIST}
+
+
+class Leftovers:
+    """What a failed creation's clean-up could not remove.
+
+    `kept`: entries that are not what this call made, or that hold
+    something it did not make, so they stay (the folder itself as ".").
+    `failed`: entries this call made whose removal the system refused.
+    `replaced`: the folder is no longer the one the call claimed (swapped
+    for another folder or a link), so nothing in it was touched.
+    """
+
+    def __init__(self) -> None:
+        self.kept: List[str] = []
+        self.failed: List[str] = []
+        self.replaced = False
+
+    @property
+    def nothing_left(self) -> bool:
+        return not (self.kept or self.failed or self.replaced)
 
 
 class ProjectWriteFailed(Exception):
     """Writing a new project failed after its folder was claimed.
 
     `stage` is "subfolder" or "database"; `cause` is the error that
-    stopped it (chained, as `__cause__`); `left` names what could not be
-    removed afterwards (empty when everything this call made is gone).
-    The caller words the answer; the cause's own message is never shown,
-    because an operating system or SQLite message can carry a path.
+    stopped it (chained, as `__cause__`); `leftovers` says what the
+    clean-up left and why. The caller words the answer; the cause's own
+    message is never shown, because an operating system or SQLite
+    message can carry a path.
     """
 
-    def __init__(self, stage: str, left: List[str]):
+    def __init__(self, stage: str, leftovers: Leftovers):
         super().__init__(f"project write failed at the {stage} stage")
         self.stage = stage
-        self.left = left
+        self.leftovers = leftovers
 
     @property
     def cause(self) -> Optional[BaseException]:
         return self.__cause__
 
 
-def remove_what_was_made(folder: Path, subfolders: Sequence[str],
-                         database_started: bool) -> List[str]:
-    """Remove what one creation made, by name and never recursively.
+Identity = Tuple[int, int]
 
-    The database, its side files and the named subfolders, then the
-    folder itself, each only if it is empty by then. Anything another
-    program put into the new folder meanwhile stays, and so does the
-    folder that holds it. Returns what could not be removed (names
-    relative to `folder`, the folder itself as ".").
-    """
-    left: List[str] = []
-    if database_started:
-        for name in _DATABASE_SIDE_FILES + (DATABASE_FILE,):
-            try:
-                (folder / name).unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                left.append(name)
-    for name in reversed(list(subfolders)):
-        try:
-            (folder / name).rmdir()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            left.append(name)
+
+def _identity(path: Path) -> Optional[Identity]:
+    """The (device, inode) of `path` itself, a link never followed."""
+    info = _lstat(path)
+    return None if info is None else (info.st_dev, info.st_ino)
+
+
+def _create_database_file(path: Path) -> None:
+    """Make the empty `data.qda` this call will fill: exclusively, so a
+    file, link or folder of that name (another program's) fails the call
+    and is never opened, written or removed. An empty file is a valid new
+    SQLite database."""
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    os.close(os.open(path, flags, 0o666))
+
+
+def _remove(path: Path, is_folder: bool, name: str,
+            leftovers: Leftovers) -> None:
     try:
-        folder.rmdir()
+        path.rmdir() if is_folder else path.unlink()
     except FileNotFoundError:
         pass
-    except OSError:
-        left.append(".")
-    return left
+    except OSError as error:
+        if is_folder and error.errno in _NOT_EMPTY:
+            leftovers.kept.append(name)
+        else:
+            leftovers.failed.append(name)
+
+
+def remove_what_was_made(folder: Path,
+                         made: Dict[str, Optional[Identity]]) -> Leftovers:
+    """Remove what one creation made, and nothing else, never recursively.
+
+    `made` holds the device and inode of each thing the call made (the
+    folder as "."). Before each removal the folder and the entry are read
+    again with `lstat`: an entry that is not the one made (another
+    program's, or put in its place) is kept, and a folder that is not the
+    one claimed is not touched at all. The journal goes only with this
+    call's own database; `-wal` and `-shm`, which it never makes, stay.
+    A folder that still holds anything is kept.
+    """
+    leftovers = Leftovers()
+    claimed = made.get(".")
+
+    def still_ours() -> bool:
+        info = _lstat(folder)
+        return (info is not None and stat.S_ISDIR(info.st_mode)
+                and (info.st_dev, info.st_ino) == claimed)
+
+    if claimed is None or not still_ours():
+        leftovers.replaced = True
+        return leftovers
+    database = folder / DATABASE_FILE
+    if made.get(DATABASE_FILE) is not None \
+            and _identity(database) == made[DATABASE_FILE]:
+        journal = _lstat(folder / _JOURNAL)
+        if journal is not None and stat.S_ISREG(journal.st_mode):
+            _remove(folder / _JOURNAL, False, _JOURNAL, leftovers)
+        _remove(database, False, DATABASE_FILE, leftovers)
+    for name in reversed(SUBFOLDERS):
+        entry = folder / name
+        if name in made and _identity(entry) == made[name]:
+            _remove(entry, True, name, leftovers)
+    if not still_ours():
+        leftovers.replaced = True
+        return leftovers
+    _remove(folder, True, ".", leftovers)
+    return leftovers
 
 
 def write_project(folder: Union[str, Path],
@@ -360,26 +424,30 @@ def write_project(folder: Union[str, Path],
     subfolders, and build its database in one transaction.
 
     The claim is an atomic `mkdir`: a folder, file or link of that name
-    raises FileExistsError and nothing is touched. After the claim, any
-    failure removes what this call made (`remove_what_was_made`) and
-    raises ProjectWriteFailed. Returns the path of `data.qda`.
+    raises FileExistsError and nothing is touched. The database file is
+    then made exclusively. Each thing made is recorded by device and
+    inode; after the claim, any failure removes those and nothing else
+    (`remove_what_was_made`) and raises ProjectWriteFailed. Returns the
+    path of `data.qda`.
     """
     folder = Path(folder)
     folder.mkdir()
-    made: List[str] = []
-    stage, database_started = "subfolder", False
+    made: Dict[str, Optional[Identity]] = {".": _identity(folder)}
+    stage = "subfolder"
     try:
         for name in SUBFOLDERS:
             (folder / name).mkdir()
-            made.append(name)
-        stage, database_started = "database", True
+            made[name] = _identity(folder / name)
+        stage = "database"
+        _create_database_file(folder / DATABASE_FILE)
+        made[DATABASE_FILE] = _identity(folder / DATABASE_FILE)
         build_database(folder / DATABASE_FILE, statements)
     except BaseException as error:
-        left = remove_what_was_made(folder, made, database_started)
+        leftovers = remove_what_was_made(folder, made)
         if not isinstance(error, Exception):
             raise
         # chained, never carried in the message (v0.14's privacy rule)
-        raise ProjectWriteFailed(stage, left) from error
+        raise ProjectWriteFailed(stage, leftovers) from error
     return folder / DATABASE_FILE
 
 

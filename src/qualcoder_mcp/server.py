@@ -15338,22 +15338,29 @@ def _creation_failure_reason(error: BaseException) -> str:
 
 
 def _creation_failure_text(error: BaseException, folder: Path,
-                           left: Sequence[str]) -> str:
+                           leftovers: Optional["new_project.Leftovers"]
+                           = None) -> str:
     """The answer for a creation that failed after the checks passed."""
     text = (f"The project could not be created: "
             f"{_creation_failure_reason(error)}.")
-    if not left:
+    if leftovers is None or leftovers.nothing_left:
         return text + " Nothing was left behind."
-    if list(left) == ["."]:
+    if leftovers.replaced:
         return text + (
-            f" The folder '{folder}' was left in place because it holds "
-            f"something this tool did not make; nothing of the project is "
-            f"in it.")
+            f" The folder '{folder}' was replaced while the project was "
+            f"being written (it is no longer the folder this call made), "
+            f"so nothing in it was removed.")
+    if leftovers.failed:
+        mine = ", ".join(n for n in leftovers.failed if n != ".") \
+            or "the folder itself"
+        return text + (
+            f" Part of what this call made could not be removed ({mine}, "
+            f"in '{folder}'); it holds no usable project, and the "
+            f"researcher may delete what this call made by hand.")
     return text + (
-        f" Part of what was made could not be removed ("
-        f"{', '.join(n for n in left if n != '.')} in '{folder}'); nothing "
-        f"there is a usable project, and the researcher may delete it by "
-        f"hand.")
+        f" The folder '{folder}' was kept, because it holds something "
+        f"this tool did not make; what this call made in it was "
+        f"removed.")
 
 
 def _create_project_place_refusal(name: Any, directory: Any):
@@ -15478,19 +15485,20 @@ def create_project(name: str, directory: Optional[str] = None,
             f"Something called '{folder_name}' already exists there. "
             f"Choose another name."))
     except new_project.ProjectWriteFailed as failure:
-        stage, cause, left = failure.stage, failure.cause, failure.left
+        stage, cause = failure.stage, failure.cause
+        leftovers = failure.leftovers
         # The kind only: an error's text can carry the path
         logger.error("Creating a project failed at the %s stage: %s",
                      stage, sqlite_error_label(cause))
         return _create_project_refusal(
-            _creation_failure_text(cause, folder, left))
+            _creation_failure_text(cause, folder, leftovers))
     except OSError as error:
         # The claim itself (the mkdir of the project folder) failed:
         # nothing was made.
         logger.error("Creating a project failed at the claim: %s",
                      sqlite_error_label(error))
         return _create_project_refusal(
-            _creation_failure_text(error, folder, []))
+            _creation_failure_text(error, folder))
     logger.info("Created a new project (schema %s)",
                 new_project.SCHEMA_VERSION)
 

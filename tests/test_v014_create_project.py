@@ -727,8 +727,9 @@ class TestFailures:
             new_project, "_connect",
             lambda path: Drop(real(path), sqlite3.OperationalError("x")))
         text = refused(create("Shared", work))
-        assert "was left in place because it holds something this tool " \
-               "did not make" in text
+        assert "was kept, because it holds something this tool did not " \
+               "make" in text
+        assert "delete" not in text
         assert (work / "Shared.qda" / "theirs.txt").read_text() == "keep"
         assert sorted(p.name for p in (work / "Shared.qda").iterdir()) == [
             "theirs.txt"]
@@ -747,8 +748,8 @@ class TestFailures:
 
         monkeypatch.setattr(Path, "unlink", unlink)
         text = refused(create("Stuck", work))
-        assert "could not be removed (data.qda in" in text
-        assert "may delete it by hand" in text
+        assert "could not be removed (data.qda, in" in text
+        assert "may delete what this call made by hand" in text
 
 
 _SPILL = """
@@ -1162,3 +1163,140 @@ class TestOnlyATrueLeftoverIsUnfinished:
         assert "its database could not be read" in text
         assert not [p for p in seen if _under(p, target)
                     or Path(p).name.startswith("config.ini")]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 (Security 2): the clean-up removes only what this call made
+# ---------------------------------------------------------------------------
+
+def _victim(parent: Path) -> Path:
+    """A real project of someone else's."""
+    folder = parent / "Victim.qda"
+    new_project.write_project(folder, new_project.creation_statements(
+        "dave", "x (QualCoder)", "2026-09-26 10:00:00"))
+    return folder
+
+
+def _statements():
+    return new_project.creation_statements("carol", "x (QualCoder)",
+                                           "2026-09-26 10:00:00")
+
+
+class TestCleanUpRemovesOnlyItsOwn:
+    """The Security gate's swaps: each needs another program to act in
+    the moment between the claim and the build; the clean-up then
+    removes nothing it did not make."""
+
+    def _link_or_skip(self, link: Path, target: Path):
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("this system cannot make a symbolic link here")
+
+    def test_the_folder_swapped_for_a_link_before_the_database(
+            self, tmp_path, monkeypatch):
+        victim = _victim(tmp_path)
+        before = (victim / "data.qda").read_bytes()
+        folder = tmp_path / "New.qda"
+        real = new_project._create_database_file
+
+        def swap_then_create(path):
+            folder.rename(tmp_path / "moved.qda")
+            self._link_or_skip(folder, victim)
+            real(path)
+
+        monkeypatch.setattr(new_project, "_create_database_file",
+                            swap_then_create)
+        with pytest.raises(new_project.ProjectWriteFailed) as caught:
+            new_project.write_project(folder, _statements())
+        assert caught.value.leftovers.replaced
+        assert (victim / "data.qda").read_bytes() == before
+        assert sorted(p.name for p in victim.iterdir()) == [
+            "audio", "data.qda", "documents", "images", "video"]
+
+    def test_the_folder_swapped_for_a_link_after_the_claim(
+            self, tmp_path, monkeypatch):
+        victim = _victim(tmp_path)
+        before = _snapshot(victim)
+        folder = tmp_path / "New.qda"
+        real_mkdir = Path.mkdir
+
+        def mkdir(self, *args, **kwargs):
+            real_mkdir(self, *args, **kwargs)
+            if self == folder:
+                folder.rename(tmp_path / "moved.qda")
+                try:
+                    folder.symlink_to(victim, target_is_directory=True)
+                except OSError:
+                    pytest.skip("no symbolic links here")
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        with pytest.raises(new_project.ProjectWriteFailed) as caught:
+            new_project.write_project(folder, _statements())
+        monkeypatch.undo()
+        assert caught.value.leftovers.replaced
+        assert _snapshot(victim) == before
+
+    def test_another_programs_wal_and_shm_are_kept(self, tmp_path,
+                                                   monkeypatch):
+        folder = tmp_path / "Side.qda"
+        real = new_project._connect
+
+        def drop_then_fail(path):
+            (folder / "data.qda-wal").write_bytes(b"theirs")
+            (folder / "data.qda-shm").write_bytes(b"theirs too")
+            conn = real(path)
+            conn.close()
+            raise sqlite3.OperationalError("injected")
+
+        monkeypatch.setattr(new_project, "_connect", drop_then_fail)
+        with pytest.raises(new_project.ProjectWriteFailed) as caught:
+            new_project.write_project(folder, _statements())
+        leftovers = caught.value.leftovers
+        assert leftovers.kept == ["."] and not leftovers.failed
+        assert sorted(p.name for p in folder.iterdir()) == [
+            "data.qda-shm", "data.qda-wal"]
+        assert (folder / "data.qda-wal").read_bytes() == b"theirs"
+
+    def test_another_programs_database_is_never_opened_or_removed(
+            self, tmp_path, monkeypatch):
+        work = tmp_path / "work"
+        work.mkdir()
+        real = new_project._create_database_file
+
+        def drop_first(path):
+            path.write_bytes(b"another program's database")
+            real(path)
+
+        monkeypatch.setattr(new_project, "_create_database_file",
+                            drop_first)
+        text = refused(create("Dropped", work))
+        assert "Nothing was left behind" not in text
+        assert "was kept, because it holds something this tool did " \
+               "not make" in text and "delete" not in text
+        folder = work / "Dropped.qda"
+        assert (folder / "data.qda").read_bytes() == \
+            b"another program's database"
+        assert [p.name for p in folder.iterdir()] == ["data.qda"]
+
+    def test_a_subfolder_holding_their_file_is_kept_not_failed(
+            self, tmp_path, monkeypatch):
+        work = tmp_path / "work"
+        work.mkdir()
+        _fail_with(monkeypatch, sqlite3.OperationalError("x"), 4)
+        real = new_project._create_database_file
+
+        def drop_in_documents(path):
+            (path.parent / "documents" / "theirs.txt").write_text("keep")
+            real(path)
+
+        monkeypatch.setattr(new_project, "_create_database_file",
+                            drop_in_documents)
+        text = refused(create("Kept", work))
+        assert "was kept, because it holds something this tool did " \
+               "not make" in text
+        assert "could not be removed" not in text and "delete" not in text
+        folder = work / "Kept.qda"
+        assert sorted(str(p.relative_to(folder))
+                      for p in folder.rglob("*")) == [
+            "documents", os.path.join("documents", "theirs.txt")]

@@ -194,7 +194,7 @@ class TestOneTransaction:
             with pytest.raises(new_project.ProjectWriteFailed) as caught:
                 new_project.write_project(folder, _statements(coder))
             assert caught.value.stage == "database"
-            assert caught.value.left == []
+            assert caught.value.leftovers.nothing_left
             assert not os.path.lexists(folder), after
         assert list(work.iterdir()) == []
 
@@ -226,7 +226,7 @@ class TestOneTransaction:
                 new_project.write_project(folder, _statements("x"))
             monkeypatch.setattr(Path, "mkdir", real_mkdir)
             assert caught.value.stage == "subfolder"
-            assert caught.value.left == []
+            assert caught.value.leftovers.nothing_left
             assert not folder.exists()
 
     def test_clean_up_keeps_what_another_program_put_there(
@@ -244,7 +244,9 @@ class TestOneTransaction:
                             lambda p: _Faulty(real(p), 3, before_raise=drop))
         with pytest.raises(new_project.ProjectWriteFailed) as caught:
             new_project.write_project(folder, _statements("x"))
-        assert caught.value.left == ["."]
+        leftovers = caught.value.leftovers
+        assert leftovers.kept == ["."] and not leftovers.failed
+        assert not leftovers.replaced
         assert (folder / "someone_elses.txt").read_text() == "keep me"
         assert sorted(p.name for p in folder.iterdir()) == [
             "someone_elses.txt"]
