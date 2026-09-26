@@ -414,3 +414,148 @@ class TestUnusablePdfsInCodingTools:
         assert "pdf_file_stored_as_text" in json.dumps(applied)
         assert _rows(folder, "SELECT COUNT(*) FROM code_text WHERE fid = 2"
                      ) == [(0,)]
+
+
+# ===========================================================================
+# 3. Region and audio/video codings disclosed in reads
+# ===========================================================================
+
+def _add_media_codings(folder: Path) -> None:
+    """Code 1 (Stress): its one text coding (the base fixture) plus two
+    areas on the PDF with a text layer, one by another coder; code 2
+    (Coping): one audio segment on an audio file."""
+    _add_pdfs(folder)
+    conn = sqlite3.connect(str(folder / "data.qda"))
+    conn.execute("INSERT INTO source (id, name, fulltext, mediapath, owner, "
+                 "date) VALUES (6, 'talk.mp3', NULL, '/audio/talk.mp3', "
+                 "'V17Test', '2024-01-15')")
+    conn.execute("INSERT INTO code_image (imid, id, x1, y1, width, height, "
+                 "cid, memo, date, owner, pdf_page) VALUES "
+                 "(1, 2, 157, 49, 113, 32, 1, '', '2024-01-15', 'V17Test', 0)")
+    conn.execute("INSERT INTO code_image (imid, id, x1, y1, width, height, "
+                 "cid, memo, date, owner, pdf_page) VALUES "
+                 "(2, 2, 10, 10, 50, 20, 1, '', '2024-01-15', 'Other', 1)")
+    conn.execute("INSERT INTO code_av (avid, cid, id, pos0, pos1, memo, "
+                 "owner, date) VALUES (1, 2, 6, 1000, 5000, '', 'V17Test', "
+                 "'2024-01-15')")
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def media_project(opened):
+    folder = opened("v17")
+    _add_media_codings(folder)
+    out = json.loads(server.select_project(str(folder)))
+    assert out.get("success") is True, out
+    return folder
+
+
+class TestRegionCodingsDisclosed:
+
+    def test_coded_segments_agree_with_the_delete_preview(self,
+                                                          media_project):
+        out = json.loads(server.get_coded_segments(1))
+        assert out["segment_count"] == 1
+        block = out["codings_not_shown"]
+        assert (block["region"], block["audio_video"]) == (2, 0)
+        assert "areas on PDF pages or images" in block["note"]
+        preview = json.loads(server.delete_code(1))["preview"]
+        assert preview["image_codings_to_delete"] == block["region"]
+        assert preview["av_codings_to_delete"] == block["audio_video"]
+        assert preview["total_codings_to_delete"] == (
+            out["segment_count"] + block["region"] + block["audio_video"])
+
+    def test_the_scope_of_the_read_is_the_scope_of_the_count(
+            self, media_project):
+        other = json.loads(server.get_coded_segments(1, coder="Other"))
+        assert other["segment_count"] == 0
+        assert other["codings_not_shown"]["region"] == 1
+        text_only = json.loads(server.get_coded_segments(1, file_ids=[1]))
+        assert "codings_not_shown" not in text_only
+        av = json.loads(server.get_coded_segments(2))
+        assert (av["codings_not_shown"]["region"],
+                av["codings_not_shown"]["audio_video"]) == (0, 1)
+
+    def test_a_file_read_counts_its_areas(self, media_project):
+        pdf = json.loads(server.analyze_file_with_coding(2))
+        assert pdf["coded_segments"] == []
+        assert pdf["codings_not_shown"]["region"] == 2
+        text = json.loads(server.analyze_file_with_coding(1))
+        assert "codings_not_shown" not in text
+        audio = json.loads(server.analyze_file_with_coding(6))
+        assert audio["codings_not_shown"]["audio_video"] == 1
+
+    def test_frequencies_and_the_summary_say_what_they_do_not_count(
+            self, media_project):
+        freq = json.loads(server.get_coding_frequencies())
+        codes = {c["code_id"]: c for c in freq["codes"]}
+        assert codes[1]["frequency"] == 1
+        assert codes[1]["codings_not_counted"] == {"region": 2,
+                                                   "audio_video": 0}
+        assert codes[2]["codings_not_counted"] == {"region": 0,
+                                                   "audio_video": 1}
+        total = freq["codings_not_counted"]
+        assert (total["region"], total["audio_video"]) == (2, 1)
+        # QualCoder's own counts (its Codebook export and Code Frequencies
+        # report: text, image and audio/video rows, every coder) are what
+        # the read counts plus what it says it does not
+        qualcoder = server.db.get_codebook_frequencies()
+        for cid, entry in codes.items():
+            extra = entry.get("codings_not_counted",
+                              {"region": 0, "audio_video": 0})
+            assert qualcoder.get(cid, 0) == (entry["frequency"]
+                                             + extra["region"]
+                                             + extra["audio_video"])
+        mine = json.loads(server.get_coding_frequencies(coder="V17Test"))
+        assert mine["codings_not_counted"]["region"] == 1
+        summary = json.loads(server.get_project_summary())
+        stats = summary["statistics"]["codings_not_counted"]
+        assert (stats["region"], stats["audio_video"]) == (2, 1)
+
+    def test_nothing_is_said_when_there_is_nothing(self, opened):
+        folder = opened("v17")
+        server.select_project(str(folder))
+        assert "codings_not_shown" not in json.loads(
+            server.get_coded_segments(1))
+        freq = json.loads(server.get_coding_frequencies())
+        assert "codings_not_counted" not in freq
+        assert all("codings_not_counted" not in c for c in freq["codes"])
+
+    def test_a_hidden_coders_areas_are_not_counted(self, tmp_path):
+        """On a project that hides a coder, the count is the visible
+        coders' own, as the read's is."""
+        from qualcoder_mcp import new_project
+        folder = tmp_path / "Hidden.qda"
+        new_project.write_project(folder, new_project.creation_statements(
+            "carol", new_project.about_line("0.14.0"),
+            "2026-09-26 10:00:00"))
+        conn = sqlite3.connect(str(folder / "data.qda"))
+        conn.execute("INSERT INTO coder_names (name, visibility) "
+                     "VALUES ('Other', 0)")
+        conn.execute("INSERT INTO code_name (cid, name, memo, owner, date, "
+                     "color) VALUES (1, 'Stress', '', 'carol', '2026', "
+                     "'#FF0000')")
+        conn.execute("INSERT INTO source (id, name, fulltext, mediapath, "
+                     "owner, date) VALUES (2, 'a.pdf', 'text', "
+                     "'/docs/a.pdf', 'carol', '2026')")
+        for imid, owner in ((1, "carol"), (2, "Other"), (3, "Other")):
+            conn.execute("INSERT INTO code_image (imid, id, x1, y1, width, "
+                         "height, cid, memo, date, owner, pdf_page) VALUES "
+                         "(?, 2, 1, 1, 5, 5, 1, '', '2026', ?, 0)",
+                         (imid, owner))
+        conn.commit()
+        conn.close()
+        H.write_fixture_sidecar(folder)
+        saved = (server.db, server.current_project_path)
+        try:
+            server.select_project(str(folder))
+            out = json.loads(server.get_coded_segments(1))
+            assert out["codings_not_shown"]["region"] == 1
+            other = json.loads(server.get_coded_segments(1, coder="Other"))
+            assert other["codings_not_shown"]["region"] == 2
+        finally:
+            if server.db is not None and server.db is not saved[0]:
+                server.db.close()
+            server.db, server.current_project_path = saved
+

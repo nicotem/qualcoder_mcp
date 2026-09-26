@@ -3790,6 +3790,64 @@ class QualcoderDatabase:
             _raise_query_error(e, "count_codings_for_code",
                                "Failed to count codings")
 
+    def non_text_coding_counts(self, code_ids: Optional[Sequence[int]] = None,
+                               file_ids: Optional[Sequence[int]] = None,
+                               coder: Optional[str] = None,
+                               honor_visibility: bool = True,
+                               by_code: bool = False) -> Dict[str, Any]:
+        """Region and audio/video codings a text read does not show (v0.14).
+
+        Region codings are `code_image` rows (an area on a PDF page or an
+        image); audio/video codings are `code_av` rows. Counted as the
+        delete previews count them (the rows themselves, no join), in the
+        scope the calling read has: these codes, these files, one coder
+        from the base table, or the visible coders when the project
+        hides some. Returns {"region": n, "audio_video": m}, or with
+        `by_code` those two per code id.
+        """
+        coder = self._validate_coder(coder)
+        totals = {"region": 0, "audio_video": 0}
+        per_code: Dict[int, Dict[str, int]] = {}
+        for key, base, view in (("region", "code_image", "code_image_visible"),
+                                ("audio_video", "code_av", "code_av_visible")):
+            table = self._visible_source(base, view,
+                                         honor_visibility and coder is None)
+            where: List[str] = []
+            params: List[Any] = []
+            if code_ids is not None:
+                ids = [int(c) for c in code_ids]
+                if not ids:
+                    continue
+                where.append("cid IN (" + ",".join("?" for _ in ids) + ")")
+                params.extend(ids)
+            if file_ids is not None:
+                fids = [int(f) for f in file_ids]
+                if not fids:
+                    continue
+                where.append("id IN (" + ",".join("?" for _ in fids) + ")")
+                params.extend(fids)
+            if coder is not None:
+                where.append("owner = ?")
+                params.append(coder)
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
+            try:
+                rows = self.conn.execute(
+                    f"SELECT cid, COUNT(*) FROM {table}{clause} GROUP BY cid",
+                    tuple(params)).fetchall()
+            except sqlite3.Error as e:
+                _raise_query_error(e, "non_text_coding_counts",
+                                   "Failed to count region and audio/video "
+                                   "codings")
+            for cid, n in rows:
+                totals[key] += int(n)
+                if by_code and cid is not None:
+                    per_code.setdefault(int(cid), {"region": 0,
+                                                   "audio_video": 0})
+                    per_code[int(cid)][key] += int(n)
+        if by_code:
+            return {"totals": totals, "per_code": per_code}
+        return totals
+
     def list_files(self) -> List[Dict[str, Any]]:
         """Get all source files in the project.
 

@@ -736,6 +736,27 @@ def _downgrade_to_readonly():
             db = None
 
 
+def _not_shown_block(counts: Dict[str, int], shown: str,
+                     what: str) -> Optional[Dict[str, Any]]:
+    """The disclosure a text read gives of the codings it leaves out
+    (v0.14): region codings (areas on PDF pages or images) and
+    audio/video codings, which QualCoder counts with the text codings
+    and the delete previews count too. None when there are none."""
+    region = int(counts.get("region", 0))
+    av = int(counts.get("audio_video", 0))
+    if not region and not av:
+        return None
+    return {
+        "region": region,
+        "audio_video": av,
+        "note": (f"This read {shown} text codings only. {region} region "
+                 f"coding(s) (areas on PDF pages or images) and {av} "
+                 f"audio/video coding(s) {what} are not included; "
+                 f"QualCoder counts them with the text codings, and the "
+                 f"previews of delete_code and merge_codes count them."),
+    }
+
+
 def _unusable_pdf_reason(file_content: Optional[Dict[str, Any]]
                          ) -> Optional[str]:
     """The refusal a coding tool gives for a PDF with no usable text
@@ -3896,6 +3917,13 @@ def get_coded_segments(code_id: int, limit: int = 100,
                               returned_so_far + len(segments), has_more,
                               next_cursor, not has_more),
                    changed)
+    not_shown = _not_shown_block(
+        db_.non_text_coding_counts(code_ids=[code_id],
+                                   file_ids=scoped_files or None,
+                                   coder=coder),
+        "shows", "of this code in this scope")
+    if not_shown is not None:
+        payload["codings_not_shown"] = not_shown
     note = _coder_visibility_note(coder)
     if note:
         if coder is None:
@@ -4143,7 +4171,17 @@ def get_coding_frequencies(coder: Optional[str] = None) -> str:
         - total_coded_segments: Total count across all codes
         - codes: Array of codes with their frequencies, sorted by frequency
     """
-    frequencies = get_db().get_coding_frequencies(coder=coder)
+    db_ = get_db()
+    frequencies = db_.get_coding_frequencies(coder=coder)
+    counts = db_.non_text_coding_counts(coder=coder, by_code=True)
+    for entry in frequencies["codes"]:
+        extra = counts["per_code"].get(entry["code_id"])
+        if extra and (extra["region"] or extra["audio_video"]):
+            entry["codings_not_counted"] = dict(extra)
+    not_counted = _not_shown_block(counts["totals"], "counts",
+                                   "in this scope")
+    if not_counted is not None:
+        frequencies["codings_not_counted"] = not_counted
     note = _coder_visibility_note(coder)
     if note:
         frequencies["coder_visibility"] = note
@@ -4547,6 +4585,10 @@ def get_project_summary() -> str:
             "heuristic (repair it with 'Restructure' in QualCoder 4.0's "
             "PDF view). analyze_file_with_coding says more for each.")
 
+    not_counted = _not_shown_block(get_db().non_text_coding_counts(),
+                                   "counts", "in this project")
+    if not_counted is not None:
+        summary["statistics"]["codings_not_counted"] = not_counted
     note = _coder_visibility_note()
     if note:
         summary["coder_visibility"] = note
@@ -4618,6 +4660,11 @@ def analyze_file_with_coding(file_id: int) -> str:
             f"codings (if any) are not shown by this tool."
         )
 
+    not_shown = _not_shown_block(
+        get_db().non_text_coding_counts(file_ids=[file_id]),
+        "shows", "on this file")
+    if not_shown is not None:
+        result["codings_not_shown"] = not_shown
     note = _coder_visibility_note()
     if note:
         result["coder_visibility"] = note
