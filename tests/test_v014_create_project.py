@@ -1023,3 +1023,142 @@ class TestCreatingLogsNoNameOrPath:
         assert records, "nothing was logged: the check sees nothing"
         assert "Created a new project (schema v17)" in records
         assert [line for line in records if self.MARK in line] == []
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 (QA M2, Security 1): only a true leftover is "unfinished"
+# ---------------------------------------------------------------------------
+
+def _folder(parent: Path, name: str, files=(), database=None,
+            subfolders=True, journal=False) -> Path:
+    folder = parent / f"{name}.qda"
+    folder.mkdir()
+    if subfolders:
+        for sub in new_project.SUBFOLDERS:
+            (folder / sub).mkdir()
+    if database is not None:
+        (folder / "data.qda").write_bytes(database)
+    if journal:
+        (folder / "data.qda-journal").write_bytes(b"\xd9\xd5\x05\xf9" * 128)
+    for relative in files:
+        target = folder / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"the researcher's own bytes")
+    return folder
+
+
+def _snapshot(folder: Path):
+    return sorted((str(p.relative_to(folder)), p.is_dir(),
+                   None if p.is_dir() else p.read_bytes())
+                  for p in folder.rglob("*"))
+
+
+class TestOnlyATrueLeftoverIsUnfinished:
+    """The refuters' folders: each holds no usable database, and each
+    holds more than a creation leaves. None may be called an unfinished
+    creation or offered for deletion, in any of the three places."""
+
+    CASES = {
+        # QA: a project whose data.qda is empty, with its files, and a
+        # QualCoder backup beside it
+        "Fieldwork": dict(database=b"", files=(
+            "audio/interview_01.m4a", "documents/consent_forms.pdf")),
+        # QA and Security: iCloud's placeholders (macOS 13 and earlier)
+        "Interviews": dict(files=(".data.qda.icloud",
+                                  "documents/.transcript_07.docx.icloud")),
+        # Security: files and no data.qda
+        "Real Study": dict(files=("audio/interview-jane.m4a",
+                                  "documents/consent-jane.pdf")),
+        # the refuter: what QualCoder's own open leaves (an empty
+        # data.qda created beside a recording)
+        "Reopened": dict(database=b"", files=("audio/interview.m4a",)),
+        # the refuter: the four empty subfolders and a note of one's own
+        "Notes": dict(files=("memo.txt",)),
+    }
+
+    def _check_neutral(self, text, name):
+        assert "no usable project database" in text, text
+        assert "check what is in it before removing anything" in text
+        assert "delete" not in text and "remains" not in text
+        assert "did not finish" not in text
+        assert "Nothing in it can be opened" not in text
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_in_all_three_places(self, tmp_path, name):
+        work = tmp_path / "work"
+        work.mkdir()
+        folder = _folder(work, name, **self.CASES[name])
+        if name == "Fieldwork":
+            (work / "Fieldwork_BKUP_20260901_10.qda").mkdir()
+        before = _snapshot(folder)
+        refusal = refused(create(name, work))
+        self._check_neutral(refusal, name)
+        assert refusal.startswith(f"A folder called '{name}.qda' exists")
+        selected = json.loads(server.select_project(str(folder)))
+        assert selected["success"] is False
+        self._check_neutral(selected["error"], name)
+        listing = json.loads(server.list_available_projects([str(work)]))
+        (entry,) = [p for p in listing["projects"]
+                    if p["name"] == name]
+        assert entry["usable"] is False
+        self._check_neutral(entry["note"], name)
+        assert _snapshot(folder) == before
+        if name == "Fieldwork":
+            assert "'Fieldwork_BKUP_20260901_10.qda'" in refusal
+        if name == "Interviews":
+            assert "iCloud placeholders" in refusal
+            assert "'.data.qda.icloud'" in refusal
+
+    @pytest.mark.parametrize("layout", [
+        dict(database=b"", journal=True),       # killed before COMMIT
+        dict(subfolders=True),                  # killed before the database
+        dict(subfolders=False),                 # killed after the claim
+    ])
+    def test_a_true_leftover_still_gets_the_leftover_words(self, tmp_path,
+                                                           layout):
+        work = tmp_path / "work"
+        work.mkdir()
+        folder = _folder(work, "Left", **layout)
+        assert "remains of a project creation that did not finish" in \
+            refused(create("Left", work))
+        selected = json.loads(server.select_project(str(folder)))
+        assert selected["error"].startswith(server.NO_USABLE_DATABASE)
+        listing = json.loads(server.list_available_projects([str(work)]))
+        assert listing["projects"][0]["note"] == server.NO_USABLE_DATABASE
+
+    def test_a_linked_subfolder_is_not_a_leftover(self, tmp_path):
+        work = tmp_path / "work"
+        work.mkdir()
+        folder = _folder(work, "Linked", subfolders=False)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        try:
+            (folder / "audio").symlink_to(elsewhere,
+                                          target_is_directory=True)
+        except OSError:
+            pytest.skip("this system cannot make a symbolic link here")
+        assert not new_project.is_unfinished(folder)
+        self._check_neutral(refused(create("Linked", work)), "Linked")
+
+    def test_a_linked_database_is_never_opened(self, tmp_path):
+        """Security 4: a `data.qda` that is a link counts as unreadable
+        and is not followed, here to a stand-in for QualCoder's
+        settings file."""
+        work = tmp_path / "work"
+        work.mkdir()
+        folder = _folder(work, "Lure")
+        target = tmp_path / "config.ini"
+        target.write_text("[DEFAULT]\ncodername = alice\n")
+        try:
+            (folder / "data.qda").symlink_to(target)
+        except OSError:
+            pytest.skip("this system cannot make a symbolic link here")
+        seen = []
+        _AUDIT["sink"] = seen
+        try:
+            text = refused(create("Lure", work))
+        finally:
+            _AUDIT["sink"] = None
+        assert "its database could not be read" in text
+        assert not [p for p in seen if _under(p, target)
+                    or Path(p).name.startswith("config.ini")]

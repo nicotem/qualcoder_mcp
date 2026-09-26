@@ -597,12 +597,14 @@ def discover_projects(search_paths: Optional[List[str]] = None) -> List[Dict[str
                         "size_mb": round(stat.st_size / (1024 * 1024), 2),
                         "modified": stat.st_mtime
                     }
-                    # A folder a creation left unfinished is listed, and
-                    # marked (v0.14); its database is never opened here.
-                    if qda_file.is_dir() and _is_unfinished_creation(
-                            str(qda_file)):
+                    # A folder with no usable database is listed, and
+                    # marked (v0.14): as an unfinished creation only when
+                    # it holds nothing else; nothing is opened here.
+                    note = (_unusable_folder_note(str(qda_file))
+                            if qda_file.is_dir() else None)
+                    if note is not None:
                         entry["usable"] = False
-                        entry["note"] = NO_USABLE_DATABASE
+                        entry["note"] = note
                     projects.append(entry)
                 except (OSError, PermissionError) as e:
                     logger.debug("Cannot access a project found: %s",
@@ -2518,22 +2520,35 @@ PIPE_PATH_WARNING = (
     "from such a path, because it reads the text after a '|' as the path; "
     "to open it in QualCoder, move or rename the folder so that its path "
     "has no '|'. This server works with it as usual.")
+# For a folder holding only what a project creation that did not finish
+# leaves (new_project.is_unfinished: the four subfolders, each empty, and
+# an empty or missing data.qda with its journal). Any other folder with
+# no usable database gets new_project.no_database_note, with no advice to
+# delete (fix round 1 of brief C).
 NO_USABLE_DATABASE = (
-    "This folder holds no usable project database: its data.qda is missing "
-    "or empty, which is what a project creation that did not finish "
+    "This folder holds no usable project database, and nothing else but "
+    "empty folders: it is what a project creation that did not finish "
     "leaves. Nothing in it can be opened; it may be deleted by hand.")
 
 
-def _is_unfinished_creation(project_path: str) -> bool:
-    """A .qda folder whose data.qda is missing or empty, never opened."""
+def _unusable_folder_note(project_path: str) -> Optional[str]:
+    """What to say of a .qda folder with no usable database, or None.
+
+    Read from listings and `lstat` alone; nothing is opened."""
     try:
         folder = Path(project_path).expanduser()
         if folder.name == "data.qda":
             folder = folder.parent
-        return (folder.suffix.lower() == ".qda"
-                and new_project.is_unfinished(folder))
+        if folder.suffix.lower() != ".qda":
+            return None
+        state = new_project.database_state(folder)
+        if state == new_project.ORPHAN:
+            return NO_USABLE_DATABASE
+        if state == new_project.NO_DATABASE:
+            return new_project.no_database_note(folder)
     except (OSError, ValueError):
-        return False
+        return None
+    return None
 
 
 def _project_open_failure_result(project_path: str) -> Dict[str, Any]:
@@ -2724,11 +2739,12 @@ def select_project(project_path: str) -> str:
             # heuristics choose the wording; the damaged-database
             # advice is always kept (P1-5; QA round 1, F3/F22).
             return json.dumps(_project_open_failure_result(project_path))
-        if _is_unfinished_creation(project_path):
+        note = _unusable_folder_note(project_path)
+        if note is not None:
             return json.dumps({
                 "success": False,
-                "error": NO_USABLE_DATABASE + " Use 'list_available_projects' "
-                         "to find valid projects."})
+                "error": note + " Use 'list_available_projects' to find "
+                                "valid projects."})
         # A wrong or malformed path: no heuristic can explain it, so the
         # deterministic recovery hint stays exactly as it was
         return json.dumps({

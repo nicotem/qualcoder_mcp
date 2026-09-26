@@ -26,6 +26,7 @@ each of this server's releases while 4.0 is in beta.
 import datetime
 import os
 import sqlite3
+import stat
 import unicodedata
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
@@ -549,44 +550,163 @@ def resolve_parent_folder(directory: Optional[str],
 # ---------------------------------------------------------------------------
 
 ORPHAN = "orphan"
+NO_DATABASE = "no_database"
 PROJECT = "project"
 UNREADABLE = "unreadable"
 NOT_A_FOLDER = "not_a_folder"
 
+# What a creation writes into its folder that may be left when it stops:
+# the database (empty until COMMIT) and SQLite's rollback journal. The
+# four subfolders are allowed too, each empty.
+_LEFTOVER_FILES = (DATABASE_FILE, "data.qda-journal")
+_ICLOUD_SUFFIX = ".icloud"
+
+
+def _lstat(path: Path) -> Optional[os.stat_result]:
+    try:
+        return os.lstat(path)
+    except OSError:
+        return None
+
 
 def is_unfinished(path: Path) -> bool:
-    """A folder whose `data.qda` is missing or empty: what a creation that
-    did not finish leaves. Read from the folder listing and the file's
-    size alone; the database is not opened."""
-    database = path / DATABASE_FILE
+    """Whether `path` is only what a creation that did not finish leaves.
+
+    Fix round 1 of brief C: a missing or empty `data.qda` alone is not
+    enough, since a real project whose database went missing (moved, a
+    failed copy, evicted by a sync service, or recreated empty by
+    QualCoder's own open) keeps the researcher's recordings and
+    documents. Only a folder holding nothing but the four subfolders,
+    each empty, a missing or empty `data.qda` and its journal counts.
+    Every entry is read with `lstat`, and no link is followed: a link
+    anywhere makes the answer no. The database is never opened.
+    """
+    info = _lstat(path)
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        return False
     try:
-        if path.is_symlink() or not path.is_dir():
-            return False
-        if not os.path.lexists(database):
-            return True
-        return database.is_file() and database.stat().st_size == 0
+        with os.scandir(path) as listing:
+            entries = [(entry.name, entry.path) for entry in listing]
     except OSError:
         return False
+    for name, entry_path in entries:
+        entry = _lstat(Path(entry_path))
+        if entry is None:
+            return False
+        if name in SUBFOLDERS:
+            if not stat.S_ISDIR(entry.st_mode):
+                return False
+            try:
+                with os.scandir(entry_path) as inside:
+                    if next(inside, None) is not None:
+                        return False
+            except OSError:
+                return False
+        elif name == DATABASE_FILE:
+            if not stat.S_ISREG(entry.st_mode) or entry.st_size != 0:
+                return False
+        elif name in _LEFTOVER_FILES:
+            if not stat.S_ISREG(entry.st_mode):
+                return False
+        else:
+            return False
+    return True
+
+
+def database_state(path: Path) -> Optional[str]:
+    """ORPHAN, NO_DATABASE, or None when `path` has a database to open.
+
+    Read from listings and `lstat` alone, never opening anything: NO
+    DATABASE for a folder whose `data.qda` is missing or empty and that
+    holds anything a creation does not make. A linked `data.qda` is left
+    to the callers, who treat it as unreadable and never open it.
+    """
+    info = _lstat(path)
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        return None
+    if is_unfinished(path):
+        return ORPHAN
+    database = _lstat(path / DATABASE_FILE)
+    if database is None:
+        return NO_DATABASE
+    if stat.S_ISREG(database.st_mode) and database.st_size == 0:
+        return NO_DATABASE
+    return None
+
+
+def _icloud_placeholders(path: Path) -> List[str]:
+    """iCloud's placeholders for files not downloaded ('.<name>.icloud',
+    as macOS 13 and earlier leave an evicted file), in the folder and its
+    subfolders, one level down."""
+    found: List[str] = []
+    for folder in (path,) + tuple(path / name for name in SUBFOLDERS):
+        info = _lstat(folder)
+        if info is None or not stat.S_ISDIR(info.st_mode):
+            continue
+        try:
+            with os.scandir(folder) as listing:
+                found += [os.path.relpath(entry.path, path)
+                          for entry in listing
+                          if entry.name.startswith(".")
+                          and entry.name.endswith(_ICLOUD_SUFFIX)]
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def no_database_note(path: Path) -> str:
+    """The neutral words for a folder with no usable database that holds
+    more than a creation leaves: no advice to delete, a backup beside it
+    and iCloud placeholders named when there are any."""
+    text = (f"'{path.name}' holds no usable project database: its data.qda "
+            f"is missing or empty. It holds more than a project creation "
+            f"leaves, which may be the researcher's own files (QualCoder "
+            f"keeps a project's imported recordings and documents in its "
+            f"folders) or a project a sync service has not downloaded yet, "
+            f"so check what is in it before removing anything.")
+    placeholders = _icloud_placeholders(path)
+    if placeholders:
+        shown = ", ".join(f"'{name}'" for name in placeholders[:3])
+        text += (f" It holds iCloud placeholders ({shown}): the project may "
+                 f"be stored in iCloud and not downloaded to this computer "
+                 f"yet.")
+    try:
+        with os.scandir(path.parent) as listing:
+            siblings = backup_siblings([e.name for e in listing],
+                                       path.name[:-len(PROJECT_SUFFIX)]
+                                       if path.name.lower().endswith(
+                                           PROJECT_SUFFIX) else path.name)
+    except OSError:
+        siblings = []
+    if siblings:
+        text += (f" A backup of it sits beside it ('{siblings[-1]}'), which "
+                 f"may hold the project.")
+    return text
 
 
 def classify_existing(path: Path) -> str:
     """What an existing entry with the new project's name is.
 
-    ORPHAN only for a folder whose `data.qda` is missing or empty: what a
-    creation that did not finish leaves. PROJECT for a readable database
-    with a project row. UNREADABLE for anything else in a folder, which
-    includes a real project that another program was writing when it
-    stopped (a full `data.qda` with a journal beside it): that one is not
-    called an orphan. The database is opened read-only, so a stranger's
-    journal is never rolled back; NOT_A_FOLDER for a file or a link.
+    ORPHAN only for what a creation that did not finish leaves
+    (`is_unfinished`). NO_DATABASE for any other folder whose `data.qda`
+    is missing or empty. PROJECT for a readable database with a project
+    row. UNREADABLE for anything else in a folder, which includes a real
+    project that another program was writing when it stopped (a full
+    `data.qda` with a journal beside it) and a `data.qda` that is a link,
+    which is never followed. The database is opened read-only, so a
+    stranger's journal is never rolled back; NOT_A_FOLDER for a file or a
+    link.
     """
-    if path.is_symlink() or not path.is_dir():
+    info = _lstat(path)
+    if info is None or not stat.S_ISDIR(info.st_mode):
         return NOT_A_FOLDER
-    if is_unfinished(path):
-        return ORPHAN
+    state = database_state(path)
+    if state is not None:
+        return state
     database = path / DATABASE_FILE
-    if not database.is_file():
-        return UNREADABLE
+    entry = _lstat(database)
+    if entry is None or not stat.S_ISREG(entry.st_mode):
+        return UNREADABLE          # a link, a folder, a device: not opened
     conn = None
     try:
         conn = sqlite3.connect(_sqlite_ro_uri(database), uri=True)
@@ -599,8 +719,10 @@ def classify_existing(path: Path) -> str:
             conn.close()
 
 
-def existing_name_refusal(entry: str, folder_name: str, kind: str) -> str:
-    """The refusal for an entry that already holds the new folder's name."""
+def existing_name_refusal(entry: str, folder_name: str, kind: str,
+                          folder: Optional[Path] = None) -> str:
+    """The refusal for an entry that already holds the new folder's name
+    (`folder` is its path, for the words a NO_DATABASE folder gets)."""
     if entry != folder_name:
         return (f"The folder already holds '{entry}', which is the same "
                 f"name as '{folder_name}' on a disk that ignores letter "
@@ -620,6 +742,9 @@ def existing_name_refusal(entry: str, folder_name: str, kind: str) -> str:
                 f"in it can be opened. The researcher may delete it by "
                 f"hand; otherwise choose another name. This tool never "
                 f"deletes an existing folder.")
+    if kind == NO_DATABASE and folder is not None:
+        return (f"A folder called '{folder_name}' exists there. "
+                + no_database_note(folder) + " Choose another name.")
     if kind == NOT_A_FOLDER:
         return (f"Something called '{folder_name}' exists there that is "
                 f"not a project folder (a file or a link). Choose another "
@@ -675,7 +800,8 @@ def scan_parent(parent: Path, folder_name: str,
         entry = folder_name if folder_name in same else sorted(same)[0]
         kind = classify_existing(parent / entry) if entry == folder_name \
             else ""
-        return existing_name_refusal(entry, folder_name, kind)
+        return existing_name_refusal(entry, folder_name, kind,
+                                     parent / entry)
     siblings = backup_siblings(entries, stem)
     if siblings:
         return backup_siblings_refusal(siblings, stem)

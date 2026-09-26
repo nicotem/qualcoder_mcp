@@ -45,11 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not known, since its refusal of the researcher's name cannot then
   be made.
 - `select_project` warns when the project's path holds `|` (QualCoder
-  cannot open such a project), and names a folder whose `data.qda` is
-  missing or empty as the remains of an unfinished creation;
-  `list_available_projects` marks such folders. A database whose project
-  table has no row is refused plainly, as QualCoder refuses it, instead
-  of write refusals advising an upgrade.
+  cannot open such a project). A folder whose `data.qda` is missing or
+  empty is named plainly by `select_project` and marked by
+  `list_available_projects`: as the remains of an unfinished creation
+  (which may be deleted) only when it holds nothing a creation does not
+  make, the four subfolders empty; any other such folder is said to
+  hold no usable database and possibly the researcher's files or a
+  project not yet downloaded from a sync service, with a backup beside
+  it or iCloud placeholders named, and no advice to delete. A database
+  whose project table has no row is refused plainly, as QualCoder
+  refuses it, instead of write refusals advising an upgrade.
 - The recently modified chat history signal is no longer presented as a
   QualCoder 4.0 AI signal: both 3.8.2 and 4.0 rewrite that file on every
   open.
