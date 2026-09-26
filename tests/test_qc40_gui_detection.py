@@ -105,9 +105,10 @@ class TestSignals:
         signals = qualcoder_gui_signals(proj)
         assert len(signals) == 1
         assert "chat history" in signals[0]
-        # v0.14: both builds rewrite the file on every open, AI or not,
+        # v0.14: both builds create the file on a first open, AI or not,
         # so the signal is no longer presented as a 4.0 or AI one
-        assert "3.8.2 and 4.0 both rewrite it" in signals[0]
+        assert "3.8.2 and 4.0 both create it on a project's first open" \
+            in signals[0]
         assert "4.0 AI" not in signals[0]
 
     def test_old_chat_history_is_silent(self, tmp_path, no_process_hits):

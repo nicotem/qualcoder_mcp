@@ -432,12 +432,18 @@ shows where), which registers the full set of tools plus
 - **The format.** The project is made in QualCoder 4.0's format, exactly
   as 4.0's own New Project makes it (the folder `<name>.qda` with its
   four subfolders, and the database at schema v17), in one step: if
-  anything fails, nothing half-made is left. Its "about" line reads
+  anything fails, nothing committed is left, and what this call made is
+  removed; if the process is killed part way, the folder it leaves (empty
+  subfolders, an empty database and its journal) is recognised as such
+  next time, and the name refused. Its "about" line reads
   `qualcoder-mcp <version> (QualCoder schema v17)`.
 - **Where.** In the server's workspace, `~/Documents/Qualcoder MCP
-  Projects`, unless you name an existing folder. Keep projects on a
-  local disk that is not synced (iCloud, OneDrive, Dropbox): sync
-  services can copy the database and its journal separately. On Windows
+  Projects`, unless you name an existing folder (give its full path, or
+  one starting with `~`). Keep projects on a local disk that is not
+  synced (iCloud, OneDrive, Dropbox): sync services can copy the
+  database and its journal separately. On a Mac with iCloud's "Desktop
+  & Documents Folders" switched on, `~/Documents`, and so the default
+  workspace, is synced: name a folder outside it. On Windows
   where Documents has been moved (to OneDrive, say), the workspace may
   not be where QualCoder's Open dialog starts; the result gives the full
   path.
@@ -456,9 +462,10 @@ shows where), which registers the full set of tools plus
   backup folders sit in that folder are refused too, each with the
   reason. Short names, in folders near the top of the disk, travel
   better.
-- **Opening it in QualCoder.** QualCoder 4.0 opens it without a message
-  and without changing its format (Project, Open Project, then the
-  folder). QualCoder 3.8.2 opens it without any warning and keeps
+- **Opening it in QualCoder.** QualCoder 4.0 opens it without changing
+  its format (Project, Open Project, then the folder), and without a
+  message when you open it under the coder name you gave (under another
+  name, it asks whether to keep yours or switch). QualCoder 3.8.2 opens it without any warning and keeps
   everything in it, but cannot show what 4.0 added: sub-codes appear
   there as ordinary codes, and the labels, arrows and memo notes on
   graphs do not appear. If the project is edited in 3.8.2, three things
@@ -865,7 +872,7 @@ carries the complete list.
 > plus `create_project`, 74 tools. Creating projects stays out of the
 > default set so that researchers opt in to a tool that makes folders on
 > their disk; it is not in `core` either. Measured as below, the
-> `lifecycle` definitions run to about 174,000 characters, roughly 44k
+> `lifecycle` definitions run to about 175,000 characters, roughly 44k
 > tokens.
 
 > **Reduced toolset for local models (Experimental):** with
@@ -884,7 +891,7 @@ carries the complete list.
 > same method as the CHANGELOG, under Python 3.13.5 with mcp 1.30.0, in
 > the repository's own `venv/`), the
 > definitions run to about 172,000 characters for `full`, roughly 43k
-> tokens at four characters per token, and about 57,000 characters for
+> tokens at four characters per token, and about 58,000 characters for
 > `core`, roughly 14k tokens. On Python 3.10 to 3.12 the same
 > definitions measure about five per cent more, because those
 > interpreters keep the docstring indentation that 3.13 strips. See the

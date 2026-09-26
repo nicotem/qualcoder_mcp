@@ -272,3 +272,68 @@ class TestTheTestProjectScript:
         assert self._run().returncode == 2
         source = self.SCRIPT.read_text(encoding="utf-8")
         assert "rmtree" not in source and "QDA Projects" not in source
+
+
+def _read_flat(name):
+    return " ".join((REPO / name).read_text(encoding="utf-8").split())
+
+
+class TestTheDocumentsInFixRound1:
+    """Fix round 1 of brief C: the sentences the gates found wider than
+    the code, pinned to what the code does."""
+
+    def test_the_chat_history_sentence(self, tmp_path):
+        """Both builds CREATE the file on a first open and change it when
+        the chat is used; a later open leaves it (QA m1)."""
+        from qualcoder_mcp.database import qualcoder_gui_signals
+        import qualcoder_mcp.database as database
+        folder = tmp_path / "p.qda"
+        (folder / "ai_data").mkdir(parents=True)
+        (folder / "ai_data" / "chat_history.sqlite").write_bytes(b"c")
+        (signal,) = qualcoder_gui_signals(folder, include_process_scan=False)
+        assert "create it on a project's first open" in signal
+        assert "rewrite" not in signal
+        for text in (server.select_project.__doc__,
+                     server.get_current_project.__doc__,
+                     _read_flat("PRIVACY.md"), _read_flat("CHANGELOG.md")
+                     .split("## [0.13")[0]):
+            flat = " ".join(text.split())
+            assert "rewrite it" not in flat and "rewritten chat" not in flat
+            assert "rewrite that file" not in flat
+        assert "means a first open of the project by either QualCoder " \
+               "build, or its AI chat used" in _read_flat("PRIVACY.md")
+
+    def test_create_project_is_named_as_a_writer_of_the_pointer(self):
+        """QA m2, Security 6."""
+        privacy = _read_flat("PRIVACY.md")
+        assert ("written on every successful select_project and "
+                "create_project") in privacy
+        assert "records the new project as the last-used one" in privacy
+
+    def test_the_readme_says_what_a_failure_leaves(self):
+        """QA m3, Security 6: nothing committed, and the leftover named."""
+        readme = _read_flat("README.md")
+        assert "nothing half-made is left" not in readme
+        assert "nothing committed is left" in readme
+        assert "is recognised as such next time" in readme
+        assert "iCloud's \"Desktop & Documents Folders\" switched on" in \
+            readme
+
+    def test_every_place_that_asks_for_the_toolset_names_them_all(self):
+        """QA m4: `lifecycle` can be reported."""
+        template = (REPO / ".github" / "ISSUE_TEMPLATE" /
+                    "bug_report.yml").read_text(encoding="utf-8")
+        block = template[template.index("id: toolset"):]
+        block = block[:block.index("validations:")]
+        options = " ".join(line.strip()[2:] for line in block.splitlines()
+                           if line.strip().startswith("- "))
+        places = {
+            "bug_report.yml options": options,
+            "CONTRIBUTING.md": _read_flat("CONTRIBUTING.md"),
+            "SUPPORT.md": _read_flat("SUPPORT.md"),
+            "INSTALL.md": _read_flat("INSTALL.md")[
+                _read_flat("INSTALL.md").index("the toolset mode ("):][:60],
+        }
+        for mode in server._VALID_TOOLSET_MODES:
+            for where, text in places.items():
+                assert mode in text, (mode, where)

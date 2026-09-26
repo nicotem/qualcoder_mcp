@@ -469,7 +469,7 @@ That exceeds LM Studio's 8k default context several times over before
 you type a word, and tool counts this size are far past where
 small-model tool selection degrades. Set `QUALCODER_MCP_TOOLSET=core`
 (in the config of Step 5) to register only the 21-tool supervised
-coding set, measured at about 57,000 characters, roughly 14k tokens.
+coding set, measured at about 58,000 characters, roughly 14k tokens.
 
 **Step 4. Raise the context length.** Even the core toolset's roughly
 14k tokens of schema exceed the 8k default context. When loading the
@@ -960,7 +960,8 @@ around.
   see [SUPPORT.md](SUPPORT.md). Never paste research data into an
   issue; a redacted or synthetic example is enough. Include your
   QualCoder version, the server version, your host (Claude Desktop,
-  Claude Code, LM Studio) and the toolset mode (full or core).
+  Claude Code, LM Studio) and the toolset mode (full, core or
+  lifecycle).
 - **MCP Documentation**: https://modelcontextprotocol.io/
 - **Qualcoder Help**: https://github.com/ccbogel/QualCoder/wiki
 - **Claude Desktop**: https://claude.ai/help

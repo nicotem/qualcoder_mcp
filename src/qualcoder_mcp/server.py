@@ -2608,9 +2608,9 @@ def select_project(project_path: str) -> str:
     QualCoder 4.0 detection is best-effort: 4.0 writes no lock file, so
     the result also carries `qualcoder_gui_signals`, heuristics built from
     a write sidecar on the project database, recent activity on the 4.0 AI
-    search index, a recently rewritten chat history file (QualCoder 3.8.2
-    and 4.0 both rewrite it on every open), and a guarded local process
-    scan. When
+    search index, a recently changed chat history file (QualCoder 3.8.2
+    and 4.0 both create it on a project's first open, and it changes when
+    the chat is used), and a guarded local process scan. When
     any are present the warning says the project APPEARS to be open in
     QualCoder; confirm with the user before any write rather than treating
     it as certain. When none are present the warning names the limitation
@@ -3131,9 +3131,10 @@ def get_current_project() -> str:
     - `qualcoder_gui_signals` (list, always present): best-effort
       heuristics for an open QualCoder 4.0 window, which writes no lock
       file (a write sidecar on the project database, recent activity on
-      the 4.0 AI search index, a chat history file rewritten recently,
-      which both QualCoder builds do on every open, a running process
-      that looks like QualCoder). When any are present a
+      the 4.0 AI search index, a chat history file changed recently,
+      which both QualCoder builds create on a first open and change when
+      the chat is used, a running process that looks like QualCoder).
+      When any are present a
       `qualcoder_gui_hint`
       says the project APPEARS to be open; that is a heuristic, so confirm
       with the user before writing rather than treating it as certain. An
@@ -15422,9 +15423,10 @@ def create_project(name: str, directory: Optional[str] = None,
     Args:
         name: The project's name, without ".qda" (a typed ".qda" is
               dropped)
-        directory: An existing folder to create the project in; leave it
-                   out to use this server's workspace,
-                   ~/Documents/Qualcoder MCP Projects
+        directory: An existing folder to create the project in, as a
+                   full path or one starting with ~; leave it out to use
+                   this server's workspace, ~/Documents/Qualcoder MCP
+                   Projects
         coder_name: The coder name the researcher uses in QualCoder
                     (Settings, Coder name), exactly as they give it
         coder_name_not_known: True when the researcher does not know it;

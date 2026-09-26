@@ -428,13 +428,13 @@ class TestThePublishedSchemaBudget:
     # The published measurement, to the character. Re-measure every tree
     # the same way before changing these, and say in the CHANGELOG which
     # interpreter and which environment directory it was taken in.
-    FULL_MEASURED = 172_032          # 73 tools, Python 3.13.5, mcp 1.30.0
-    CORE_MEASURED = 57_435           # 21 tools, same environment
-    FULL_MEASURED_310 = 180_856      # the same tree on Python 3.11.13
-    CORE_MEASURED_310 = 60_447
+    FULL_MEASURED = 172_119          # 73 tools, Python 3.13.5, mcp 1.30.0
+    CORE_MEASURED = 57_522           # 21 tools, same environment
+    FULL_MEASURED_310 = 180_947      # the same tree on Python 3.11.13
+    CORE_MEASURED_310 = 60_538
     # v0.14's opt-in `lifecycle` set: `full` plus create_project.
-    LIFECYCLE_MEASURED = 174_459     # 74 tools, same environment
-    LIFECYCLE_MEASURED_310 = 183_415
+    LIFECYCLE_MEASURED = 174_601     # 74 tools, same environment
+    LIFECYCLE_MEASURED_310 = 183_565
 
     # Why two per cent, away from the reference environment.
     #
@@ -461,10 +461,10 @@ class TestThePublishedSchemaBudget:
     # drives both facts so this paragraph cannot rot away from them.
     TOLERANCE = 0.02
 
-    FULL_CHARS = "172,032"
-    CORE_CHARS = "57,435"
+    FULL_CHARS = "172,119"
+    CORE_CHARS = "57,522"
     FULL_ROUNDED = "172,000"
-    CORE_ROUNDED = "57,000"
+    CORE_ROUNDED = "58,000"
     FULL_TOKENS = "43k"
     CORE_TOKENS = "14k"
 
@@ -638,7 +638,7 @@ class TestThePublishedSchemaBudget:
         assert f"{self.FULL_MEASURED_310:,}" in entry
         assert f"{self.CORE_MEASURED_310:,}" in entry
 
-    LIFECYCLE_ROUNDED = "174,000"
+    LIFECYCLE_ROUNDED = "175,000"
     LIFECYCLE_TOKENS = "44k"
 
     def test_the_readme_quotes_the_lifecycle_measurement(self):

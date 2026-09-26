@@ -56,8 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose project table has no row is refused plainly, as QualCoder
   refuses it, instead of write refusals advising an upgrade.
 - The recently modified chat history signal is no longer presented as a
-  QualCoder 4.0 AI signal: both 3.8.2 and 4.0 rewrite that file on every
-  open.
+  QualCoder 4.0 AI signal: both 3.8.2 and 4.0 create that file on a
+  project's first open, AI enabled or not, and it changes when the chat
+  is used.
 - The process scan reads a process's program, not its arguments: it
   counts a program whose name holds "qualcoder" once this server's own
   names are taken out (QualCoder's installers, its app, and the portable
@@ -190,16 +191,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error with no SQLite name (Python 3.10's shape) on every interpreter.
   No behaviour changed.
 - Serialised tool JSON as it stands, after the privacy change and the
-  creation of projects: full = 172,032 characters (about 43.0k tokens
-  at chars/4) over 73 tools, core = 57,435 (about 14.4k) over 21, and
-  the new opt-in lifecycle set = 174,459 (about 43.6k) over 74. Moved
+  creation of projects: full = 172,119 characters (about 43.0k tokens
+  at chars/4) over 73 tools, core = 57,522 (about 14.4k) over 21, and
+  the new opt-in lifecycle set = 174,601 (about 43.7k) over 74. Moved
   by `pseudonymise_source`'s description (privacy; not in `core`) and
-  by `set_memo`'s, `set_project_ai_coder_name`'s and `select_project`'s
-  (creating a project; all three in `core`); `pseudonymise_source`'s
-  own share rounds to 18,000 as before. Measured as for 0.13, on the
-  final tree through the toolset gate, under Python 3.13.5 with mcp
-  1.30.0, in the repository's own `venv/`; on Python 3.11.13, in the
-  repository's `.venv/`, 180,856, 60,447 and 183,415.
+  by `set_memo`'s, `set_project_ai_coder_name`'s, `select_project`'s and
+  `get_current_project`'s (creating a project; all four in `core`);
+  `pseudonymise_source`'s own share rounds to 18,000 as before.
+  Measured as for 0.13, on the final tree through the toolset gate,
+  under Python 3.13.5 with mcp 1.30.0, in the repository's own `venv/`;
+  on Python 3.11.13, in the repository's `.venv/`, 180,947, 60,538 and
+  183,565.
 
 ## [0.13.0-alpha] - 2026-09-25
 

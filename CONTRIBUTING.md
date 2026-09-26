@@ -21,7 +21,8 @@ qualcoder-mcp version, the QualCoder version, the project's schema
 version (the `databaseversion` value in the `schema` block that
 `get_current_project` returns), your MCP host (Claude Desktop, Claude
 Code, LM Studio, other), the toolset (`QUALCODER_MCP_TOOLSET`: `core`,
-or `full` when the variable is not set) and your operating system.
+`lifecycle`, or `full` when the variable is not set) and your operating
+system.
 Never paste participant data, interview text or anything sensitive into
 an issue; describe the problem structurally ("a code name with an
 apostrophe", "a file of about 40k characters"). Security concerns take

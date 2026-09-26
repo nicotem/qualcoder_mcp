@@ -57,9 +57,9 @@ What stays local, always:
   export can be written into this folder: the export tools refuse paths
   inside it.
 - the last-used project pointer (`~/.qualcoder_mcp/mru_project.json`:
-  the path of the project most recently selected under your user
-  account, plus a timestamp, written on every successful
-  select_project). It has one outward flow: when a tool is called, or
+  the path of the project most recently selected or created under your
+  user account, plus a timestamp, written on every successful
+  select_project and create_project). It has one outward flow: when a tool is called, or
   a resource read, before a project is selected, the error answer names
   that path as a recovery hint (only while that project still exists on
   disk; never in a line this server logs), so a
@@ -505,14 +505,17 @@ Two further rules touch files on your disk:
   with no recent AI activity leaves no file trace, so only the process
   scan can see it; on Windows without psutil, a QualCoder run through
   `python.exe` is not seen), and a recently modified chat history file
-  means a recent open by either QualCoder build, not only AI use.
+  means a first open of the project by either QualCoder build, or its
+  AI chat used; a later open leaves the file as it is.
   `create_project` runs no process scan for the project it has just
   made.
 - **Creating a project** (`create_project`, only with
   `QUALCODER_MCP_TOOLSET=lifecycle`, v0.14). It writes a new folder
-  with four empty subfolders and a new `data.qda`, and nothing else: no
-  backup, no `qualcoder_mcp.json`, no entry in QualCoder's recent-project
-  list. The database holds the researcher's QualCoder coder name when
+  with four empty subfolders and a new `data.qda`, and records the new
+  project as the last-used one (the pointer above, whose path is then
+  offered as a recovery hint in another host's conversation before it
+  selects a project); nothing else: no backup, no `qualcoder_mcp.json`,
+  no entry in QualCoder's recent-project list. The database holds the researcher's QualCoder coder name when
   they give it (and QualCoder's speaker coder), and an "about" line
   naming this server and its version. The coder name is asked for,
   never read: the server does not open QualCoder's settings file

@@ -62,5 +62,5 @@ Issues help everyone, permanently. Please use
   show qualcoder-mcp`, `pipx list` and `uv tool list` still work and
   spell `0.13.0-alpha` as `0.13.0a0`), your MCP host (Claude Desktop, Claude
   Code, LM Studio, other), and the toolset (`QUALCODER_MCP_TOOLSET`:
-  `core`, or `full` when the variable is not set). The bug report
+  `core`, `lifecycle`, or `full` when the variable is not set). The bug report
   template asks for all of these.

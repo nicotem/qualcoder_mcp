@@ -69,10 +69,11 @@ body:
     id: toolset
     attributes:
       label: Toolset (QUALCODER_MCP_TOOLSET)
-      description: "`full` is the default when the variable is not set; `core` is the reduced set for local models."
+      description: "`full` is the default when the variable is not set; `core` is the reduced set for local models; `lifecycle` is the full set plus creating a project."
       options:
         - full (default, or variable not set)
         - core
+        - lifecycle
         - Not sure
     validations:
       required: true

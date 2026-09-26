@@ -445,12 +445,15 @@ def qualcoder_lock_state(project_dir: Union[str, Path]) -> tuple:
 #   recent AI activity leaves no file trace at all and is visible only
 #   to the process scan below (QA round 1, F2).
 # - ai_data/chat_history.sqlite mtime: the chat panel keeps this store
-#   open and writes on every message (ai_chat.py:1682-1718), but both
-#   QualCoder 3.8.2 and 4.0 also rewrite it on EVERY project open, AI
+#   open and writes on every message (ai_chat.py:1682-1718); both
+#   QualCoder 3.8.2 and 4.0 also CREATE it on a project's first open, AI
 #   enabled or not (3.8.2 ai_chat.py:181-214 from __main__.py:3034; 4.0
-#   ai_chat.py:1677-1718 from __main__.py:2444; the create-project
-#   study, 3.5), so a recent mtime means a recent open or recent chat in
-#   either build, and is not worded as a 4.0 or AI signal (v0.14).
+#   ai_chat.py:1677-1718 from __main__.py:2444), and 4.0 adds a column
+#   the first time it opens a 3.8.2 file (3.8.2 ai_chat.py:191-197).
+#   A later open leaves an existing file as it is (the QA gate of brief
+#   C measured it in both builds). So a recent mtime means a first open,
+#   or the chat used, in either build; it is not worded as a 4.0 or AI
+#   signal (v0.14).
 # - A best-effort local process scan for a running QualCoder
 #   (platform-guarded, optional, cached; never a hard dependency and
 #   never allowed to crash or block, including on Windows CI runners).
@@ -676,7 +679,8 @@ def qualcoder_gui_signals(project_dir: Union[str, Path],
                 f"the project's chat history file "
                 f"(ai_data/chat_history.sqlite) was modified "
                 f"{int(age // 60)} minute(s) ago; QualCoder 3.8.2 and 4.0 "
-                f"both rewrite it whenever they open the project")
+                f"both create it on a project's first open, and it "
+                f"changes when their AI chat is used")
 
         # 4. A QualCoder process is running on this machine
         if include_process_scan:
